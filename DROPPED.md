@@ -23,5 +23,11 @@ Status: `dropped` (no plan) · `deferred` (intended later) · `superseded` (repl
 | `rsutils` grab-bag: plotting, `rich_data_filter`, `utils_preprocess`, `esa_download`, `s2`/`s2cell` helpers | rsutils | dropped | not on the data-prep path; plotting belongs in notebooks | per-need |
 | `scripts_tobedeleted/*`, `*_old.py` | fetch_satdata | dropped | dead code | — |
 | Unused snakefiles (planet, malawi mask, demo_model_deploy, legacy s2l2a) | fetch_satdata | dropped | keep only in-memory S2 datacube snakefile | — |
+| `modify_bands.median_mosaic` (window/step) + numba kernel | rsutils | deferred | distinct from the datacube builder's `datacube_ops.median_mosaic`; not on the demo band-math path | a training-time rolling mosaic is needed |
+| `modify_bands.sav_gol` (Savitzky–Golay smoothing) | rsutils | deferred | not used by demo 01/02 band sequences | temporal smoothing wanted in prep |
+| `modify_bands.trim_bands` | rsutils | deferred | not used by demos | timestamp trimming needed as an op |
+| `modify_bands.modify_bands_chunkwise` | rsutils | deferred | memory-scaling chunked apply for huge flattened arrays; training is a notebook (out of core) | large-array band math hits memory limits |
+| `modify_bands.generate_preprocess_log_*` / `generate_sequence_from_preprocess_log` | rsutils | deferred | preprocess-sequence (de)serialization for reproducibility; not on the demo band path | persisting/replaying a preprocessing recipe is needed |
+| `rsutils.utils_preprocess` grab-bag (cloud-mask, SAR scaling, patch-finding) except the `mask_interpolate` kernel | rsutils | dropped | only `mask_interpolate` is needed (folded into `bands.modify`); rest is off-path | per-need |
 
 > When reconsidering an item, link the spec that re-introduces it.

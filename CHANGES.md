@@ -44,6 +44,14 @@ carried over (renames, restructures, behavioral tweaks). Pure removals go in
   `crop`/`reproject`/`resample_by_ref_meta`/`merge_inplace` (the spec-phase scaffold
   had sketched some as file-in/file-out; corrected to match what the datacube
   builder actually chains via op `sequence`s).
+- `bands.modify` carries only the demo-path ops (`modify_bands`,
+  `mask_invalid_and_interpolate`, `compute_bands`, `remove_bands`, `scale_bands`) plus
+  `expand_datacube`/`expand_flattened`. The `mask_interpolate` numba kernel that
+  `mask_invalid_and_interpolate` needed (was in `rsutils.utils_preprocess`) is folded
+  in as a private helper. All spectral indices from the legacy table are kept
+  (NDVI/NDRE/GCVI/SAVI + NDWI/LSWI/BSI/PSRI/NDTI). Off-path ops deferred — see
+  DROPPED.md (`median_mosaic`, `sav_gol`, `trim_bands`, `modify_bands_chunkwise`,
+  preprocess-log (de)serialization).
 
 ## Kept identical (intentionally, for notebook portability)
 - Datacube artifact format: `datacube.npy` + `metadata.pickle.npy` and the
