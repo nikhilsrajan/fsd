@@ -23,6 +23,9 @@ on. Two flavors:
 | `merge_inplace(data_profile_list, nodata)` | mosaic in-memory rasters |
 | `driver_specific_meta_updates(meta, driver)` | fix profile for GTiff etc. |
 | small helpers: `get_epochs_str`, `modify_filepath`, `add_epochs_prefix` | temp paths |
+| `save_geotiff(dst, data, profile)` | write any `(data, profile)` to GeoTIFF |
+| `stack_bands(data_profile_list)` | stack single-band rasters (shared grid) → multi-band |
+| `save_rgb_geotiff(dst, [r,g,b], scale_max=None)` | 3-band RGB GeoTIFF for QGIS (added for visual validation, TODO #7 done) |
 
 ## Decisions
 - Keep the `(data, profile)` in-memory convention — the in-memory datacube engine

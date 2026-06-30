@@ -185,6 +185,64 @@ def test_modify_images_length_mismatch_raises():
         images.modify_images(["a.tif", "b.tif"], ["x.tif"], sequence=[])
 
 
+# --- geotiff save / stack ----------------------------------------------------
+
+
+def test_save_geotiff_roundtrip(tmp_path):
+    data, profile = _synthetic(fill=42)
+    dst = str(tmp_path / "out/saved.tif")
+    images.save_geotiff(dst, data, profile)
+    out_data, out_profile = images.read_tif(dst)
+    assert np.array_equal(out_data, data)
+    assert out_profile["driver"] == "GTiff"
+    assert out_profile["crs"] == UTM
+
+
+def test_stack_bands():
+    b1 = _synthetic(fill=1)
+    b2 = _synthetic(fill=2)
+    b3 = _synthetic(fill=3)
+    stacked, profile = images.stack_bands([b1, b2, b3])
+    assert stacked.shape == (3, 10, 10)
+    assert profile["count"] == 3
+    assert (stacked[0] == 1).all() and (stacked[2] == 3).all()
+
+
+def test_stack_bands_grid_mismatch_raises():
+    b1 = _synthetic(width=10, height=10, fill=1)
+    b2 = _synthetic(width=5, height=5, fill=2)
+    with pytest.raises(ValueError):
+        images.stack_bands([b1, b2])
+
+
+def test_save_rgb_geotiff_native(tmp_path):
+    r, g, b = _synthetic(fill=100), _synthetic(fill=200), _synthetic(fill=300)
+    dst = str(tmp_path / "rgb.tif")
+    images.save_rgb_geotiff(dst, [r, g, b])
+    out_data, out_profile = images.read_tif(dst)
+    assert out_data.shape == (3, 10, 10)
+    assert out_profile["dtype"] == "uint16"
+    assert (out_data[0] == 100).all()
+
+
+def test_save_rgb_geotiff_scaled_to_uint8(tmp_path):
+    # scale_max=3000 maps reflectance to [0,255] uint8
+    r, g, b = _synthetic(fill=1500), _synthetic(fill=3000), _synthetic(fill=6000)
+    dst = str(tmp_path / "rgb8.tif")
+    images.save_rgb_geotiff(dst, [r, g, b], scale_max=3000)
+    out_data, out_profile = images.read_tif(dst)
+    assert out_profile["dtype"] == "uint8"
+    assert out_data[0].flat[0] == 127  # 1500/3000*255 = 127.5 -> 127
+    assert out_data[1].flat[0] == 255  # 3000 -> 255
+    assert out_data[2].flat[0] == 255  # clipped
+
+
+def test_save_rgb_geotiff_wrong_band_count_raises():
+    r, g = _synthetic(fill=1), _synthetic(fill=2)
+    with pytest.raises(ValueError):
+        images.save_rgb_geotiff("x.tif", [r, g])
+
+
 # --- helpers -----------------------------------------------------------------
 
 

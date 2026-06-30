@@ -44,6 +44,19 @@ def run_create_datacube(
    `shapefilepath, startdate, enddate, catalog_filepath, export_folderpath,
    datacube_filepath, images_count, id[, label], mosaic_days, scl_mask_classes,
    bands`.
+   > **Why a separate setup that materialises per-shape catalogs:** the full
+   > satellite catalog is LARGE. If every parallel build job re-read/queried that one
+   > file, they'd contend on it. Setup pre-slices it once per shape so each build job
+   > reads only its small subset — no shared-file blocking. This is also *why* the
+   > builder (`03`) has no date filter and only computes `area_contribution`: its
+   > input catalog is already date+spatial filtered. In fsd this slice is exactly
+   > `TileCatalog.filter(shape, startdate, enddate)` (spec 02, already implemented),
+   > which also persists `area_contribution` so the builder needn't recompute it.
+   > **Date caveat:** the `startdate`/`enddate` written per row are the **actual**
+   > tile-derived min/max acquisition dates of the subset, not the user-input range.
+   > That actual startdate becomes the `median_mosaic` anchor (spec 04 caveat,
+   > TODO.md #2). The two-step setup→create sequence itself may be simplifiable
+   > later (TODO.md #3); kept as-is for parallel-safety.
 2. **Run** (via a runner): one work-unit per `input.csv` row → invokes
    `fsd.workflows.task` (which calls the builder, `03-datacube.md`). The **local
    runner** = Snakemake: `start.txt`/`done.txt` sentinels for resumability + a small

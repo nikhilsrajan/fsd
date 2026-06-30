@@ -53,6 +53,9 @@ __all__ = [
     "modify_image",
     "modify_images",
     "read_tif",
+    "save_geotiff",
+    "stack_bands",
+    "save_rgb_geotiff",
     # helpers
     "driver_specific_meta_updates",
     "image_to_memfile",
@@ -450,6 +453,62 @@ def modify_images(
 def read_tif(filepath: str) -> tuple[np.ndarray, dict]:
     with rasterio.open(filepath) as src:
         return src.read(), src.meta.copy()
+
+
+def save_geotiff(dst_filepath: str, data: np.ndarray, profile: dict) -> None:
+    """Write an in-memory ``(data, profile)`` raster to a GeoTIFF.
+
+    ``count`` is taken from ``data`` (so this works for single- or multi-band
+    arrays). Used both to persist cropped inputs and datacube outputs for visual
+    inspection (QGIS).
+    """
+    out_profile = driver_specific_meta_updates(
+        {**profile, "driver": "GTiff"}, driver="GTiff"
+    )
+    out_profile["count"] = data.shape[0]
+    parent = os.path.dirname(dst_filepath)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with rasterio.open(dst_filepath, "w", **out_profile) as dst:
+        dst.write(data)
+    delete_aux_xml(dst_filepath)
+
+
+def stack_bands(data_profile_list) -> tuple[np.ndarray, dict]:
+    """Stack single-band ``(data, profile)`` rasters sharing a grid into one
+    multi-band ``(data, profile)`` (bands in list order). Grids must match."""
+    datas = [data for data, _ in data_profile_list]
+    profile = data_profile_list[0][1].copy()
+    shapes = {d.shape[1:] for d in datas}
+    if len(shapes) != 1:
+        raise ValueError(f"stack_bands: rasters do not share a grid: {shapes}")
+    stacked = np.concatenate(datas, axis=0)
+    profile["count"] = stacked.shape[0]
+    return stacked, profile
+
+
+def save_rgb_geotiff(
+    dst_filepath: str,
+    rgb_data_profiles,
+    *,
+    scale_max: float | None = None,
+) -> None:
+    """Write three single-band ``(data, profile)`` rasters (R, G, B order, same
+    grid) as a 3-band RGB GeoTIFF for visual comparison in QGIS.
+
+    Native uint16 reflectance is kept by default (QGIS can stretch it). Pass
+    ``scale_max`` to linearly map ``[0, scale_max] -> [0, 255]`` uint8 for a
+    ready-to-view image (e.g. ``scale_max=3000`` for S2 visible bands).
+    """
+    if len(rgb_data_profiles) != 3:
+        raise ValueError("save_rgb_geotiff expects exactly 3 (data, profile) bands.")
+    stacked, profile = stack_bands(rgb_data_profiles)
+    if scale_max is not None:
+        stacked = np.clip(stacked.astype(float) / scale_max * 255.0, 0, 255).astype(
+            "uint8"
+        )
+        profile = {**profile, "dtype": "uint8", "nodata": 0}
+    save_geotiff(dst_filepath, stacked, profile)
 
 
 # --- helpers -----------------------------------------------------------------

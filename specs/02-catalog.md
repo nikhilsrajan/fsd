@@ -53,3 +53,21 @@ class TileCatalog:
 - append → read round-trip; `files` union on re-append.
 - `filter` returns only in-range, overlapping tiles with correct
   `area_contribution`.
+
+## Workflow integration (clarified 2026-07-01)
+
+`filter(shape, startdate, enddate)` **is** the per-shape query the datacube
+**setup** stage (spec 08) runs to materialise each subset catalog: date-range +
+spatial overlap, with `area_contribution` persisted. The builder (spec 03) then
+reads the subset and uses the stored `area_contribution` to pick `dst_crs` — it
+does *not* re-filter. (Legacy recomputed `area_contribution` inside the builder via
+`calculate_area_contribution`; folding it into `filter` is a small clean-up.)
+
+## Real-catalog notes (from `satellite/.../catalog_sentinel-2.geojson`)
+
+The legacy on-disk catalog is **GeoJSON** (fsd writes GeoParquet) and carries a
+`last_update` column fsd still drops. Observed: `id` includes the `.SAFE` suffix and
+is unique; `geometry` may be a `MultiPolygon`; `files` is a comma-joined band list
+that includes `MTD_TL.xml` and `SCL.jp2`. A real-data notebook will need to read the
+GeoJSON and (optionally) convert to the fsd GeoParquet catalog; `local_folderpath`
+in the provided file is stale and must be corrected to the `satellite/` location.

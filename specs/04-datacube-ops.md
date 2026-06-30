@@ -23,6 +23,13 @@ def run_ops(datacube, metadata, sequence) -> (datacube, metadata)
   `nanmedian` (treating `mask_value` as NaN); writes `mosaic_index_intervals`,
   `previous_timestamps`, new `timestamps`. **Numba**-accelerated core (carry the
   `@njit` median kernel).
+  > **Anchor caveat (preserve legacy for now, flagged):** the `startdate` threaded
+  > in is the **actual first-acquisition date** of the filtered tiles (setup's
+  > `actual_startdate` = min catalog timestamp), *not* the user-input startdate.
+  > So the 20-day windows shift from ROI to ROI depending on when the first usable
+  > tile landed. The user notes this is probably undesirable — anchoring at the
+  > user-input `startdate`/`enddate` would be consistent across ROIs. Keep
+  > legacy behavior in v1; revisit per TODO.md #2.
 - (keep, used by deploy notebooks) **`area_median`** — collapse H×W to a single
   median pixel per timestamp.
 

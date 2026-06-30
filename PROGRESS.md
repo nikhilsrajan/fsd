@@ -16,8 +16,9 @@ Spec phase **complete and signed off**; package **scaffolded**; `storage` and
 | 0 | `config.py` | ✅ done (constants) |
 | 1 | `storage/fs.py` | ✅ implemented · ✅ verified (`tests/test_storage.py` + manual `storage.md` Section A all pass; Section B = S3, needs creds, still manual) |
 | 2 | `catalog/catalog.py` | ✅ implemented · ✅ verified (`tests/test_catalog.py`, 6 tests) |
-| 3 | `raster/images.py` | ✅ implemented · ✅ verified (`tests/test_raster.py`, 18 tests) |
+| 3 | `raster/images.py` | ✅ implemented · ✅ verified (`tests/test_raster.py`, 24 tests; + RGB/GeoTIFF save helpers) |
 | 3 | `bands/modify.py` | ✅ implemented · ✅ verified (`tests/test_bands.py`, 12 tests) |
+| — | **real-data validation** (raster+bands) | ✅ `tests/manual/realdata.md` — TCC/FCC/NDVI on tile T33UWP confirmed in QGIS by user |
 | 4 | `sources/cdse.py` | ⬜ scaffolded stub |
 | 5 | `datacube/ops.py → builder.py → flatten.py` | ⬜ scaffolded stubs |
 | 6 | `workflows/task.py · runners.py · create_datacube.py` + Snakefile | ⬜ scaffolded stubs |

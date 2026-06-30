@@ -32,6 +32,28 @@ Mirror the demo flow but importing `fsd`:
 > Hardcoded absolute paths in the legacy notebooks become a small config cell /
 > `.env`-style block at the top. No secrets committed.
 
+## Real-data validation notebooks (added 2026-07-01)
+
+Separate from the demo-flow ports above: small notebooks that exercise the built
+modules against the user's **real** local tile so image ops can be **visually
+inspected in QGIS** (the user/colleagues find LLMs unreliable on GeoTIFFs, so green
+unit tests are not enough — see TODO.md #8). Data lives in `satellite/` (editable;
+not one of the read-only legacy repos): one S2 L2A tile **T33UWP**, all 2018 dates
+(~147 acquisitions), a subset of bands + **SCL**, flattened EODATA layout
+`satellite/sentinel-2-l2a/Sentinel-2/MSI/L2A_N0500/YYYY/MM/DD/<product>/B*.jp2`, plus
+a `catalog_sentinel-2.geojson` whose `local_folderpath` needs correcting.
+
+Notebook goals, in order:
+1. **raster** — `load_image`/`crop_tif` a real band, crop to a small geometry, save
+   the crop as an **RGB GeoTIFF** (B04/B03/B02) for QGIS. (Needs an RGB-GeoTIFF save
+   helper — TODO.md #7.)
+2. **datacube** — build a datacube on a **small cropped ROI** (full tiles OOM a
+   laptop, so cropping first is mandatory) → SCL cloud-mask → median-mosaic. Save
+   both the cropped **input** crops and the **output** mosaiced result as RGB
+   GeoTIFFs, so bands can be compared side-by-side in QGIS.
+
+These complement `tests/manual/*.md`; the user will step through them by hand.
+
 ## Tooling
 - `ruff` for lint+format; `pytest` for `tests/` (fast, synthetic; network tests
   marked and opt-in).

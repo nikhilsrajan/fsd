@@ -1,0 +1,16 @@
+# TODO — deferred / revisit-later
+
+Items intentionally parked so the v1 core stays focused. Each notes the area and why
+it's deferred. Promote to a spec + implementation when it becomes important. Several
+came out of the 2026-07-01 design Q&A with the user (see CHANGES.md / specs).
+
+| # | Item | Area | Why deferred / note |
+|---|------|------|---------------------|
+| 1 | **Configurable output resolution.** Builder hardcodes 10 m via reference band B08. Allow other targets (e.g. 20 m) by resampling to a *known-resolution reference image* (a different reference band), per the user's reference-image resampling rule. | datacube builder | works for the S2 L2A demo path at 10 m; not blocking |
+| 2 | **median_mosaic anchor date.** Windows are currently anchored at the *first intersecting tile's* acquisition date (setup's `actual_startdate`), so they shift ROI-to-ROI. Consider anchoring at the user-input `startdate`/`enddate` for consistency. | datacube ops + workflows | preserve legacy behavior for now; flagged as possibly-wrong |
+| 3 | **setup→create two-step execution.** Reconsider whether the separate *setup* (per-shape catalog copies) + *create* steps can be simplified/merged. Kept split for parallel-safety (see spec 08). | workflows | maintain as-is; revisit if it complicates Azure Batch |
+| 4 | **`mask_value` int-truncation.** `bands.modify.mask_invalid_and_interpolate` defaults `mask_value=0` (int); on an integer datacube interpolated values truncate to int. Test float-vs-int; decide whether to force float internally. | bands | potential silent precision loss; demos cast to float first so unaffected today |
+| 5 | **dst_crs single-zone collapse.** All tiles collapse into the max-mean-`area_contribution` CRS because `rasterio.merge` needs a uniform CRS. Deliberate; revisit only if multi-zone output is ever required. | datacube builder | working as intended |
+| 6 | **Local `.SAFE` layout without long filenames.** Current download flattens `.SAFE` to short per-band names (avoids long-path CLI issues) but breaks tools like SNAP that expect `.SAFE`. Investigate keeping a `.SAFE`-compatible structure without the long paths. | sources/cdse + storage | the long-path problem may not actually bite; verify before solving |
+| 7 | ~~**RGB GeoTIFF save helper.**~~ ✅ DONE — `raster.save_geotiff` / `stack_bands` / `save_rgb_geotiff` added + tested; used by `tests/manual/realdata.md` (TCC/FCC/NDVI verified in QGIS). | raster | — |
+| 8 | **Validate the geospatial nit-picks.** Design tests to confirm the user's assumptions are real — e.g. does `rasterio` resample actually misalign pixels vs. resampling to a known reference image? | testing | some nit-picks may prove unnecessary; worth measuring |

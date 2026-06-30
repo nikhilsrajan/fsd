@@ -43,10 +43,17 @@ def build_datacube(
 2. **Load + crop**: read each (tile,band) `.jp2`, crop to `shape` (all_touched,
    nodata=0), keep `(data, profile)` in memory; drop invalid images.
 3. **dst_crs** = CRS with the highest mean area contribution among tiles.
+   *Why:* `rasterio.merge` (step 4) requires a uniform CRS, so all tiles must
+   collapse into a single zone; picking the max-area-contribution zone minimises
+   the reprojected area. Deliberate, not incidental (TODO.md #5).
 4. **Reference profile** = merge the `reference_band` (B08) images (reprojecting
    off-CRS ones to dst_crs first).
 5. **Resample** every image whose crs/height/width ≠ reference to the reference
-   profile (nearest).
+   profile (nearest). *Why a real B08 image and not a computed target grid:* the
+   user does not trust `rasterio`'s resample to align pixels to an abstract target,
+   so non-10 m bands are matched to an actual known-10 m image (B08). This is why
+   output is uniformly 10 m; other target resolutions would need a different
+   known-resolution reference image, not just different resample params (TODO.md #1).
 6. **Stack** per sorted timestamp × band → 4-D `(timestamps|ids, H, W, bands)`;
    missing `(ts,band)` filled with nodata.
 7. **Ops** (see `04-datacube-ops.md`): `apply_cloud_mask_scl(scl_mask_classes)`

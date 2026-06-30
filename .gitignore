@@ -26,3 +26,6 @@ data/
 # Secrets
 *credentials*.json
 .env
+
+# macOS
+.DS_Store
