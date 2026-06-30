@@ -33,6 +33,17 @@ carried over (renames, restructures, behavioral tweaks). Pure removals go in
 - CDSE catalog-query disk cache **removed** (always query live).
 - Python floor raised 3.10 → **3.11**.
 - Plotting / sklearn moved out of core into notebook extras.
+- **`raster.images` parallel helpers run serially when `njobs == 1`** (no
+  `multiprocessing.Pool`), instead of legacy's always-Pool. Same results; usable
+  inside tests/other already-parallel contexts and avoids pickling/process
+  overhead for the common single-job case. `njobs > 1` still uses a Pool.
+- **`raster.images.reproject` now guards its output fill against `nodata=None`**
+  (falls back to 0, matching the guard `resample_by_ref_meta` already had);
+  legacy `reproject` would build an all-None-filled array if `nodata` was unset.
+- `raster.images` follows the locked in-memory `(data, profile)` op convention for
+  `crop`/`reproject`/`resample_by_ref_meta`/`merge_inplace` (the spec-phase scaffold
+  had sketched some as file-in/file-out; corrected to match what the datacube
+  builder actually chains via op `sequence`s).
 
 ## Kept identical (intentionally, for notebook portability)
 - Datacube artifact format: `datacube.npy` + `metadata.pickle.npy` and the
