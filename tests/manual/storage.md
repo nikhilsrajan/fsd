@@ -82,7 +82,7 @@ out = fs.load_npy(p_arr)
 print(out.shape, out.dtype, bool((out == arr).all()))
 ```
 
-- [ ] `(3, 4) int64 True`
+- [x] `(3, 4) int64 True`
 
 ### A4. save_npy / load_npy (pickled metadata dict)
 
@@ -96,7 +96,7 @@ loaded = fs.load_npy(p_meta, allow_pickle=True)[()]
 print(loaded == meta, loaded)
 ```
 
-- [ ] `True {'bands': ['B02', 'B08'], 'timestamps': 3}`
+- [x] `True {'bands': ['B02', 'B08'], 'timestamps': 3}`
 
 ### A5. write_parquet / read_parquet (GeoDataFrame)
 
@@ -111,10 +111,12 @@ gdf = gpd.GeoDataFrame(
 p_pq = os.path.join(WORK, "catalog.parquet")
 fs.write_parquet(p_pq, gdf)
 back = fs.read_parquet(p_pq)
-print(len(back), str(back.crs), list(back["id"]), back.geometry.iloc[0].wkt)
+# GeoParquet stores the CRS as PROJJSON, so str(back.crs) is the verbose JSON
+# blob — compare the EPSG code instead, which is what's actually preserved.
+print(len(back), str(back.crs.to_epsg()), list(back["id"]), back.geometry.iloc[0].wkt)
 ```
 
-- [ ] `2 EPSG:4326 ['t1', 't2'] POINT (0 0)`
+- [x] `2 4326 ['t1', 't2'] POINT (0 0)`
 
 ### A6. ls / glob
 
@@ -123,8 +125,8 @@ print(sorted(os.path.basename(x) for x in fs.ls(WORK)))
 print(sorted(os.path.basename(x) for x in fs.glob(os.path.join(WORK, "*.npy"))))
 ```
 
-- [ ] First line includes: `['a', 'arr.npy', 'catalog.parquet', 'hello.txt', 'meta.pickle.npy']`
-- [ ] Second line: `['arr.npy', 'meta.pickle.npy']`
+- [x] First line includes: `['a', 'arr.npy', 'catalog.parquet', 'hello.txt', 'meta.pickle.npy']`
+- [x] Second line: `['arr.npy', 'meta.pickle.npy']`
 
 ### A7. put / get / transfer
 
@@ -148,7 +150,7 @@ print(
 )
 ```
 
-- [ ] `True True True`
+- [x] `True True True`
 
 ### A8. teardown
 
@@ -157,7 +159,7 @@ shutil.rmtree(WORK)
 print("cleaned:", not os.path.exists(WORK))
 ```
 
-- [ ] `cleaned: True`
+- [x] `cleaned: True`
 
 You can `exit()` the session now (Section B starts a fresh one).
 

@@ -6,16 +6,16 @@ _Last updated: 2026-06-30_
 
 ## Where we are
 
-Spec phase **complete and signed off**; package **scaffolded**; first module
-(`storage`) **implemented** and **partially verified** by hand.
+Spec phase **complete and signed off**; package **scaffolded**; `storage` and
+`catalog` **implemented and tested** (16 automated tests pass, ruff clean).
 
 ## Build order & status (from `specs/00-overview.md §7`)
 
 | # | Module | Status |
 |---|--------|--------|
 | 0 | `config.py` | ✅ done (constants) |
-| 1 | `storage/fs.py` | ✅ implemented · 🟡 manual verify in progress (`tests/manual/storage.md` §0,A1,A2 pass; A3–A8 + Section B pending) |
-| 2 | `catalog/catalog.py` | ⬜ scaffolded stub |
+| 1 | `storage/fs.py` | ✅ implemented · ✅ verified (`tests/test_storage.py` + manual `storage.md` Section A all pass; Section B = S3, needs creds, still manual) |
+| 2 | `catalog/catalog.py` | ✅ implemented · ✅ verified (`tests/test_catalog.py`, 6 tests) |
 | 3 | `raster/images.py`, `bands/modify.py` | ⬜ scaffolded stubs |
 | 4 | `sources/cdse.py` | ⬜ scaffolded stub |
 | 5 | `datacube/ops.py → builder.py → flatten.py` | ⬜ scaffolded stubs |
@@ -24,10 +24,10 @@ Spec phase **complete and signed off**; package **scaffolded**; first module
 
 ## Next step (when resuming)
 
-1. Finish running `tests/manual/storage.md` Section A (and Section B if creds handy);
-   report any mismatch so `storage/fs.py` can be fixed.
-2. (optional) Mirror Section A into automated `tests/test_storage.py`.
-3. Implement `catalog/catalog.py` (GeoParquet `TileCatalog`) on top of the storage seam.
+1. Implement module #3: `raster/images.py` (read/crop/resample/merge band rasters)
+   and `bands/modify.py` (band math on 5D arrays) per `specs/07-raster.md` +
+   `specs/06-bands.md`. These are the building blocks the datacube builder consumes.
+2. (when creds handy) Run `tests/manual/storage.md` Section B against CDSE S3.
 
 ## Decisions log (all locked unless noted)
 
