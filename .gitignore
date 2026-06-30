@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Data / artifacts (never commit downloaded tiles or datacubes)
+data/
+*.npy
+*.parquet
+*.geojson
+*.jp2
+*.tif
+*.tiff
+
+# Secrets
+*credentials*.json
+.env

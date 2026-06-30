@@ -1,0 +1,11 @@
+# Local-runner Snakefile for batch datacube creation.
+# Spec: specs/08-workflows.md  (PLACEHOLDER — not implemented yet)
+#
+# Plan: one job per input.csv row, each shelling out to the runner-agnostic task:
+#     python -m fsd.workflows.task ...
+# Use start.txt / done.txt sentinels for resumability + a small deterministic
+# jitter to stagger parallel job starts. Located at runtime via importlib.resources.
+
+rule all:
+    input:
+        []  # populated from config['input_csv'] at implementation time

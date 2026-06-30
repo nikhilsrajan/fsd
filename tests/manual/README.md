@@ -1,0 +1,13 @@
+# Manual test guides
+
+Step-by-step runbooks you read and execute by hand to verify a module against its
+spec. One file per module; they grow over time — ask to **augment** a file when you
+want more checks.
+
+| Guide | Module | Spec |
+|-------|--------|------|
+| `storage.md` | `fsd.storage.fs` | `specs/10-storage-and-scale.md` |
+
+These complement (don't replace) automated `pytest` in `tests/`. Use a manual guide
+for credentialed / remote / exploratory checks; deterministic local checks are also
+good candidates for automation when you want them hands-free.

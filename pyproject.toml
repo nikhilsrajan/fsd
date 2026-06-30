@@ -1,0 +1,63 @@
+[project]
+name = "fsd"
+version = "0.0.1"
+description = "Fetch satellite tiles and build datacubes (clean rewrite). Sentinel-2 L2A via CDSE; cloud-agnostic by design."
+authors = [{ name = "Nikhil Sasi Rajan", email = "nsasiraj@umd.edu" }]
+readme = "README.md"
+requires-python = ">=3.11"
+
+# Core deps only. Plotting/sklearn live in the [notebooks] extra; Azure backends
+# live in the [azure] extra (Phase 2). See specs/09-notebooks.md.
+dependencies = [
+    "numpy",
+    "pandas",
+    "geopandas",
+    "shapely",
+    "rasterio",
+    "pyarrow",        # GeoParquet catalog
+    "fsspec",         # storage seam (specs/10)
+    "s3fs",           # S3-compatible transport (any endpoint: AWS, CDSE EODATA, MinIO)
+    "sentinelhub",    # CDSE catalog (STAC) discovery
+    "numba",          # median-mosaic kernel
+    "snakemake",      # local runner only (specs/08)
+    "tqdm",
+]
+
+[project.optional-dependencies]
+notebooks = [
+    "matplotlib",
+    "seaborn",
+    "ipywidgets",
+    "scikit-learn",
+    "joblib",
+]
+azure = [          # Phase 2, not used in v1 code
+    "adlfs",       # fsspec Azure Blob backend
+]
+dev = [
+    "ruff",
+    "pytest",
+]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"fsd" = ["workflows/_snakefiles/**/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+extend-select = ["I"]  # import sorting
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "network: tests that hit the network (CDSE/S3); opt-in",
+]

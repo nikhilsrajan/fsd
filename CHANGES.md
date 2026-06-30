@@ -1,0 +1,42 @@
+# CHANGES vs legacy
+
+Living record of how `fsd` differs from the legacy repos for behavior that **is**
+carried over (renames, restructures, behavioral tweaks). Pure removals go in
+`DROPPED.md`.
+
+## Structure
+- Three repos (`fetch_satdata` + `rsutils` + `cdseutils`) → one `src`-layout
+  package `fsd` with functional modules: `sources/ catalog/ datacube/ bands/
+  raster/ workflows/`.
+- `cdseutils.*` → `fsd.sources.cdse` (+ shared bits in `fsd.config`).
+- `rsutils.modify_images` (+ raster helpers from `rsutils.utils`) → `fsd.raster.images`.
+- `rsutils.modify_bands` → `fsd.bands.modify`.
+- `fetch_satdata.datacube.create_datacube_inmemory_single` → `fsd.datacube.builder`.
+- `fetch_satdata.core.datacube_ops` → `fsd.datacube.ops`.
+- `fetch_satdata.datacube.datacube_flatten_2d` → `fsd.datacube.flatten`.
+- `fetch_satdata.workflows.create_datacube` + `setup_datacube_run` → `fsd.workflows.create_datacube`.
+
+## Behavioral
+- Catalog is the single file-based store (**GeoParquet**); the in-memory datacube
+  builder reads it directly. No SQLite, no separate datacube/config DBs.
+- Datacube builder is exposed behind a stable `build_datacube(...)` seam so an
+  alternate engine (e.g. `rslearn`) can emit the same artifacts.
+- **All file I/O via `fsspec`** (`fsd.storage`) — local in v1, Azure Blob / S3
+  additive. No module touches raw paths directly.
+- **S3 download generalized**: legacy's CDSE-private `boto3` download → a first-class,
+  provider-agnostic S3 transport in `fsd.storage` (fsspec/`s3fs`, any `endpoint_url`:
+  AWS, CDSE EODATA, MinIO…). CDSE keeps only STAC discovery + S2 file-selection. No
+  direct `boto3`.
+- Datacube creation restructured into **task + runner seam**: Snakemake becomes the
+  *local* runner; the datacube task is CLI-invokable and runner-agnostic so an Azure
+  Batch runner can dispatch it unchanged (Phase 2).
+- CDSE catalog-query disk cache **removed** (always query live).
+- Python floor raised 3.10 → **3.11**.
+- Plotting / sklearn moved out of core into notebook extras.
+
+## Kept identical (intentionally, for notebook portability)
+- Datacube artifact format: `datacube.npy` + `metadata.pickle.npy` and the
+  metadata dict keys.
+- Flattened-data artifact set: `data.npy / ids.npy / labels.npy / metadata.pickle.npy`.
+- 5-D band-array contract for `bands.modify`.
+- Default bands, `scl_mask_classes`, `mosaic_days`, reference band B08, nodata 0.
