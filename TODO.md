@@ -4,6 +4,20 @@ Items intentionally parked so the v1 core stays focused. Each notes the area and
 it's deferred. Promote to a spec + implementation when it becomes important. Several
 came out of the 2026-07-01 design Q&A with the user (see CHANGES.md / specs).
 
+## Post-v1 roadmap (sequencing — user, 2026-07-02)
+
+The table numbers below are stable IDs, **not** priority order. The intended order of
+the big efforts:
+
+1. **Finish v1 end-to-end** — download → datacube → flatten, local Snakemake runner
+   (current focus; datacube module #5 is next).
+2. **Azure setup + Batch processing** for datacube creation — the cloud-agnostic
+   scale-out end goal (`specs/10`). Comes **before** any source extension.
+3. **Source extension, incrementally** (item #11; promotes the source contract to the
+   `sources/base.py: Source` ABC, OQ-3): CDSE **S2 L2A** (done) → **MPC S2 L2A** →
+   CDSE **S1 GRD / S1 RTC** → **MPC S1** → other products (CHIRPS, ERA5, …).
+4. **Benchmark against `rslearn`** (item #12) — run in parallel with step 3.
+
 | # | Item | Area | Why deferred / note |
 |---|------|------|---------------------|
 | 1 | **Configurable output resolution.** Builder hardcodes 10 m via reference band B08. Allow other targets (e.g. 20 m) by resampling to a *known-resolution reference image* (a different reference band), per the user's reference-image resampling rule. | datacube builder | works for the S2 L2A demo path at 10 m; not blocking |
@@ -15,4 +29,6 @@ came out of the 2026-07-01 design Q&A with the user (see CHANGES.md / specs).
 | 7 | ~~**RGB GeoTIFF save helper.**~~ ✅ DONE — `raster.save_geotiff` / `stack_bands` / `save_rgb_geotiff` added + tested; used by `tests/manual/realdata.md` (TCC/FCC/NDVI verified in QGIS). | raster | — |
 | 8 | **Validate the geospatial nit-picks.** Design tests to confirm the user's assumptions are real — e.g. does `rasterio` resample actually misalign pixels vs. resampling to a known reference image? | testing | some nit-picks may prove unnecessary; worth measuring |
 | 9 | **At-scale download + benchmarking.** On a university connection: run a real multi-tile/multi-band `download` with live catalog updates, benchmark throughput across concurrency settings, and probe the actual **CDSE S3 quota limits** (the report cited 4 connections; the resilience report ran ~6). Feeds the circuit-breaker/concurrency tuning left open in BUGS.md BUG-001. | sources/cdse | needs good bandwidth; only a 1-file smoke test done so far (2026-07-01) |
+| 11 | **Additional data sources (MPC, CHIRPS, ERA5, …).** Beyond CDSE S2 L2A, add other sources — Microsoft Planetary Computer, CHIRPS (precip), ERA5 (climate reanalysis), etc. This is the trigger to promote the source contract from a documented function signature to the `sources/base.py: Source` ABC (OQ-3). Each source keeps CDSE's split: source owns discovery + product-specific file-selection; bytes go through the provider-agnostic `fsd.storage` transport. Note non-optical sources (CHIRPS/ERA5) are gridded climate rasters, not tiled `.SAFE`, so the catalog/datacube contracts may need generalizing. | sources/* | future; keep the seams clean now so it stays additive |
+| 12 | **Benchmark against other libraries (e.g. `rslearn`).** Compare fsd's download→datacube→flatten pipeline against existing RS/ML data libraries such as `rslearn` — on correctness, throughput, ergonomics, and scale-out. Informs whether fsd's abstractions carry their weight. | testing / project | future; do after the core pipeline + at-scale runs (TODO #9) exist |
 | 10 | **Honor STAC `raster:offset` / `raster:scale` per asset.** The CDSE STAC catalog exposes `raster:offset` and `raster:scale` at the same level as each asset's `href`. Read them during discovery/build and apply the correct scale/offset per band so downstream values are physically consistent **across the Sentinel-2 processing-baseline change** (pre- vs post-baseline images carry different radiometric offsets). This is a CDSE advantage over e.g. **Microsoft Planetary Computer**, whose thinner STAC forces the developer to track baseline processing by hand — a known source of silent errors where models trained on one baseline fail on images from another because the offset mismatch went unnoticed. Capture the offset/scale in the catalog and/or apply in the raster/datacube pipeline. | sources/cdse + raster/datacube | correctness across baselines; not blocking the single-baseline demo path but high-value before mixing acquisition eras |
