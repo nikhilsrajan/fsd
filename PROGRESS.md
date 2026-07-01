@@ -15,7 +15,7 @@ Spec phase **complete and signed off**; package **scaffolded**; `storage` and
 |---|--------|--------|
 | 0 | `config.py` | ✅ done (constants) |
 | 1 | `storage/fs.py` | ✅ implemented · ✅ verified (`tests/test_storage.py` + manual `storage.md` Section A all pass; Section B = S3, needs creds, still manual) |
-| 4 | `sources/cdse.py` | 🟡 `CdseCredentials` done + tested (`tests/test_cdse.py`, 8 tests: from_json/to_json/from_env, masked repr, s3_storage_options, require_complete, is_expired). **NEXT: `query_catalog` + `download`.** |
+| 4 | `sources/cdse.py` | 🟡 `CdseCredentials` ✅ + `query_catalog` ✅ (13 tests; live-verified on Ethiopia ROI: 579 tiles/2018, 4 MGRS tiles across UTM 36+37, ids unique). **NEXT: `download`.** |
 | 2 | `catalog/catalog.py` | ✅ implemented · ✅ verified (`tests/test_catalog.py`, 6 tests) |
 | 3 | `raster/images.py` | ✅ implemented · ✅ verified (`tests/test_raster.py`, 24 tests; + RGB/GeoTIFF save helpers) |
 | 3 | `bands/modify.py` | ✅ implemented · ✅ verified (`tests/test_bands.py`, 12 tests) |

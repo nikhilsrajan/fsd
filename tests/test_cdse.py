@@ -7,7 +7,21 @@ secrets/cdse_credentials.json.
 import datetime
 import json
 
+import geopandas as gpd
+import shapely.geometry as sg
+
+from fsd.sources import cdse
 from fsd.sources.cdse import CdseCredentials
+
+
+def _stac_item(id, dt, lon, lat, cloud, safe=None):
+    """A minimal STAC item shaped like a SH catalog search result."""
+    return {
+        "id": id,
+        "properties": {"datetime": dt, "eo:cloud_cover": cloud},
+        "assets": {"data": {"href": safe or f"s3://eodata/{id}.SAFE"}},
+        "geometry": sg.mapping(sg.box(lon, lat, lon + 1, lat + 1)),
+    }
 
 # DUMMY = legacy JSON-key form; DUMMY_FIELDS = the dataclass field form of the same.
 DUMMY = {
@@ -104,3 +118,69 @@ def test_is_expired():
     ref = datetime.date(2026, 7, 1)
     assert past.is_expired(as_of=ref) is True
     assert future.is_expired(as_of=ref) is False
+
+
+# --- query_catalog pure helpers (no network) ---------------------------------
+
+
+def test_items_to_gdf_parses_stac():
+    items = [
+        _stac_item("t1", "2018-06-30T09:57:22Z", 16.0, 48.0, 12.5),
+        _stac_item("t2", "2018-07-05T09:57:22Z", 17.0, 48.0, 80.0),
+    ]
+    gdf = cdse._items_to_gdf(items)
+    assert list(gdf["id"]) == ["t1", "t2"]
+    assert list(gdf.columns) == ["id", "satellite", "timestamp", "s3url",
+                                 "cloud_cover", "geometry"]
+    assert gdf.crs.to_epsg() == 4326
+    assert str(gdf["timestamp"].dt.tz) == "UTC"
+    assert gdf["s3url"].iloc[0].startswith("s3://eodata/")
+    assert gdf["satellite"].iloc[0] == "sentinel-2-l2a"
+
+
+def test_finalize_filters_cloud_and_roi():
+    items = [
+        _stac_item("hit", "2018-06-30T00:00:00Z", 0.0, 0.0, 10.0),   # overlaps, clear
+        _stac_item("cloudy", "2018-06-30T00:00:00Z", 0.0, 0.0, 90.0),  # overlaps, cloudy
+        _stac_item("far", "2018-06-30T00:00:00Z", 50.0, 50.0, 5.0),  # no overlap
+    ]
+    gdf = cdse._items_to_gdf(items)
+    roi = gpd.GeoDataFrame(geometry=[sg.box(0.2, 0.2, 0.5, 0.5)], crs="EPSG:4326")
+    out = cdse._finalize_catalog_gdf(gdf, roi, max_cloudcover=50.0)
+    assert list(out["id"]) == ["hit"]
+
+
+def test_finalize_raises_on_duplicate_ids():
+    items = [
+        _stac_item("dup", "2018-06-30T00:00:00Z", 0.0, 0.0, 10.0),
+        _stac_item("dup", "2018-07-01T00:00:00Z", 0.0, 0.0, 10.0),
+    ]
+    gdf = cdse._items_to_gdf(items)
+    roi = gpd.GeoDataFrame(geometry=[sg.box(0.2, 0.2, 0.5, 0.5)], crs="EPSG:4326")
+    import pytest
+
+    with pytest.raises(ValueError):
+        cdse._finalize_catalog_gdf(gdf, roi, max_cloudcover=None)
+
+
+def test_roi_to_bbox_reprojects_to_wgs84():
+    # a UTM (metres) ROI should come back as a WGS84 bbox
+    roi = gpd.GeoDataFrame(
+        geometry=[sg.box(500000, 5300000, 510000, 5310000)], crs="EPSG:32633"
+    )
+    bbox = cdse._roi_to_bbox(roi)
+    import sentinelhub
+
+    assert bbox.crs == sentinelhub.CRS.WGS84
+    # zone-33 easting ~500000 is around 15°E
+    assert 14 < bbox.min_x < 16
+
+
+def test_query_catalog_requires_sh_creds():
+    import pytest
+
+    roi = gpd.GeoDataFrame(geometry=[sg.box(0, 0, 1, 1)], crs="EPSG:4326")
+    with pytest.raises(ValueError):
+        cdse.query_catalog(roi, datetime.datetime(2018, 1, 1),
+                           datetime.datetime(2018, 12, 31),
+                           CdseCredentials(s3_access_key="only-s3"))

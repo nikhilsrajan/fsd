@@ -15,6 +15,10 @@ import datetime
 import json
 import os
 
+import geopandas as gpd
+import pandas as pd
+import shapely
+
 from fsd import config
 from fsd.storage import fs
 
@@ -141,6 +145,84 @@ class DownloadResult:
     total_count: int
 
 
+# --- catalog discovery -------------------------------------------------------
+
+
+def _roi_gdf(roi) -> gpd.GeoDataFrame:
+    """Accept a GeoDataFrame or a path to one."""
+    if isinstance(roi, str):
+        return gpd.read_file(roi)
+    return roi
+
+
+def _roi_to_bbox(roi_gdf: gpd.GeoDataFrame):
+    """ROI → convex-hull union → EPSG:4326 → sentinelhub BBox for the query.
+
+    Convex hull keeps the query a single simple bbox (faster); the precise ROI
+    intersection is applied afterwards in `_finalize_catalog_gdf`.
+    """
+    import sentinelhub
+
+    union = shapely.unary_union(roi_gdf["geometry"]).convex_hull
+    wgs84 = gpd.GeoSeries([union], crs=roi_gdf.crs).to_crs("EPSG:4326").iloc[0]
+    return sentinelhub.BBox(wgs84.bounds, crs=sentinelhub.CRS.WGS84)
+
+
+def _sh_config(creds: CdseCredentials):
+    """Build a Sentinel Hub config pointed at CDSE."""
+    import sentinelhub
+
+    cfg = sentinelhub.SHConfig()
+    cfg.sh_client_id = creds.sh_client_id
+    cfg.sh_client_secret = creds.sh_client_secret
+    cfg.sh_token_url = config.SH_TOKEN_URL
+    cfg.sh_base_url = config.SH_BASE_URL
+    return cfg
+
+
+def _items_to_gdf(items: list[dict]) -> gpd.GeoDataFrame:
+    """Parse STAC items (from the SH catalog search) into a catalog GeoDataFrame.
+
+    Pure — no network — so it is unit-testable with hand-built STAC dicts.
+    """
+    rows = [
+        {
+            "id": it["id"],
+            "satellite": config.SATELLITE_S2L2A,
+            "timestamp": it["properties"]["datetime"],
+            "s3url": it["assets"]["data"]["href"],
+            "cloud_cover": it["properties"].get("eo:cloud_cover"),
+            "geometry": shapely.geometry.shape(it["geometry"]),
+        }
+        for it in items
+    ]
+    gdf = gpd.GeoDataFrame(
+        rows, columns=["id", "satellite", "timestamp", "s3url", "cloud_cover",
+                       "geometry"], geometry="geometry", crs="EPSG:4326",
+    )
+    gdf["timestamp"] = pd.to_datetime(gdf["timestamp"], utc=True)
+    return gdf
+
+
+def _finalize_catalog_gdf(
+    gdf: gpd.GeoDataFrame, roi_gdf: gpd.GeoDataFrame, max_cloudcover: float | None
+) -> gpd.GeoDataFrame:
+    """Apply the cloud filter, keep only tiles intersecting the real ROI (not just
+    the query bbox), and assert tile-id uniqueness."""
+    if max_cloudcover is not None:
+        gdf = gdf[gdf["cloud_cover"] <= max_cloudcover]
+
+    roi_union = shapely.unary_union(roi_gdf.to_crs(gdf.crs)["geometry"])
+    gdf = gdf[gdf.intersects(roi_union)].reset_index(drop=True)
+
+    if len(gdf) and gdf["id"].value_counts().max() > 1:
+        raise ValueError(
+            "CDSE returned non-unique tile ids; the local folder layout assumes "
+            "tile id is unique. This needs handling before proceeding."
+        )
+    return gdf
+
+
 def query_catalog(
     roi,
     startdate: datetime.datetime,
@@ -148,13 +230,27 @@ def query_catalog(
     creds: CdseCredentials,
     *,
     max_cloudcover: float | None = None,
-):
+) -> gpd.GeoDataFrame:
     """Discover S2 L2A tiles intersecting `roi` within the date range.
 
-    Returns a GeoDataFrame: id, timestamp, geometry, s3url, cloud_cover.
-    Asserts tile id uniqueness. No disk cache (decision).
+    Returns a GeoDataFrame: id, satellite, timestamp, s3url, cloud_cover, geometry
+    (EPSG:4326). Asserts tile id uniqueness. No disk cache (decision).
     """
-    raise NotImplementedError
+    import sentinelhub
+
+    if not creds.sh_client_id or not creds.sh_client_secret:
+        raise ValueError("query_catalog needs Sentinel Hub credentials (sh_client_*).")
+
+    roi_gdf = _roi_gdf(roi)
+    bbox = _roi_to_bbox(roi_gdf)
+    catalog = sentinelhub.SentinelHubCatalog(config=_sh_config(creds))
+    search = catalog.search(
+        collection=sentinelhub.DataCollection.SENTINEL2_L2A,
+        bbox=bbox,
+        time=(startdate, enddate),
+    )
+    gdf = _items_to_gdf(list(search))
+    return _finalize_catalog_gdf(gdf, roi_gdf, max_cloudcover)
 
 
 def download(
