@@ -15,6 +15,7 @@ Spec phase **complete and signed off**; package **scaffolded**; `storage` and
 |---|--------|--------|
 | 0 | `config.py` | ✅ done (constants) |
 | 1 | `storage/fs.py` | ✅ implemented · ✅ verified (`tests/test_storage.py` + manual `storage.md` Section A all pass; Section B = S3, needs creds, still manual) |
+| 4 | `sources/cdse.py` | ⬜ **NEXT** (reprioritized before datacube — download is step 1 of the pipeline) |
 | 2 | `catalog/catalog.py` | ✅ implemented · ✅ verified (`tests/test_catalog.py`, 6 tests) |
 | 3 | `raster/images.py` | ✅ implemented · ✅ verified (`tests/test_raster.py`, 24 tests; + RGB/GeoTIFF save helpers) |
 | 3 | `bands/modify.py` | ✅ implemented · ✅ verified (`tests/test_bands.py`, 12 tests) |
@@ -24,14 +25,42 @@ Spec phase **complete and signed off**; package **scaffolded**; `storage` and
 | 6 | `workflows/task.py · runners.py · create_datacube.py` + Snakefile | ⬜ scaffolded stubs |
 | — | `notebooks/01_data_prep.ipynb` | ⬜ later |
 
-## Next step (when resuming)
+## Next step (when resuming) — REPRIORITIZED: download before datacube
 
-1. Module #5: `datacube/ops.py` (apply_cloud_mask_scl, drop_bands, median_mosaic over
-   mosaic_days, run_datacube_ops) → `datacube/builder.py` (the in-memory S2 L2A builder:
-   filter catalog → load+crop → pick dst_crs → ref profile from B08 merge → resample →
-   stack → SCL-mask → median-mosaic → save datacube.npy + metadata.pickle.npy) →
-   `datacube/flatten.py`. These consume `raster.images` + `bands.modify`.
-2. (when creds handy) Run `tests/manual/storage.md` Section B against CDSE S3.
+Build **`sources/cdse.py` (module #4)** first and test it, *then* the datacube
+(module #5). Rationale (user, 2026-07-01): download is the actual first pipeline step.
+
+CDSE implementation plan (grounded in legacy `cdseutils/{utils,sentinel2}.py` +
+`fetch_satdata/.../sentinel2_via_s3.py`, all re-read):
+1. `CdseCredentials.from_json/to_json` — JSON round-trip (2 pairs: SH id/secret +
+   S3 access/secret).
+2. `query_catalog(roi, start, end, creds, max_cloudcover)`: ROI → convex-hull bbox in
+   WGS84 → `sentinelhub.SentinelHubCatalog.search(collection=S2L2A, bbox, time)` →
+   gdf `{id, timestamp, geometry, s3url=res['assets']['data']['href'],
+   cloud_cover=res['properties']['eo:cloud_cover']}` → `sjoin` keep intersecting →
+   **assert id uniqueness**. No cache (decision).
+3. Port the **file-selection** logic from `cdseutils/sentinel2.py` (pure, testable):
+   `parse_s3url`, `sentinel2_id_parser`, `parse_band_filename`,
+   `select_s3paths_to_download` (L2A: pick **highest-res per band** + `MTD_TL.xml`),
+   `s3url_to_download_folderpath`. Replace legacy `boto3` object-listing with
+   `fsd.storage.ls` (s3fs, CDSE endpoint); the byte copy is `fsd.storage.transfer`.
+4. `download(...)`: query → `max_tiles` guard (raise, est ~0.725 GB/tile) → per tile
+   `ls` the `.SAFE`, select files, `transfer` to `root_folderpath` (skip existing =
+   idempotent), **chunked** catalog append, **cap concurrency at 4** (CDSE quota).
+
+Confirmed: legacy's on-disk layout (`s3url_to_download_folderpath` → strip `.SAFE`,
+save bands as short `B02.jp2` etc.) is EXACTLY the `satellite/` folder layout already
+present — so fsd downloads should reproduce that tree.
+
+**Testing needs CDSE creds** (SH id/secret + S3 keys) — ask user. Real test = tiny
+1-file/1-tile download (not 700 MB); this also covers `storage.md` Section B.
+Then: datacube module #5, then augment `realdata.md` with the time-series datacube test.
+
+**Test geometries** (`shapefiles/`, EPSG:4326): `s2grid=476da24.geojson` = Austria tile
+T33UWP, single-tile (used for raster/bands realdata.md, done). `s2grid=165bca4.geojson`
+= Ethiopia ROI (lon ~36.2/lat ~11.6) straddling the **36°E UTM zone boundary** → pulls
+S2 tiles in **both EPSG:32636 & 32637** = THE multi-tile/multi-CRS test for CDSE download
++ datacube creation (its tiles aren't in `satellite/` yet, so download must run first).
 
 ## Decisions log (all locked unless noted)
 
