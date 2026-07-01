@@ -15,7 +15,7 @@ Spec phase **complete and signed off**; package **scaffolded**; `storage` and
 |---|--------|--------|
 | 0 | `config.py` | ✅ done (constants) |
 | 1 | `storage/fs.py` | ✅ implemented · ✅ verified (`tests/test_storage.py` + manual `storage.md` Section A all pass; Section B = S3, needs creds, still manual) |
-| 4 | `sources/cdse.py` | ⬜ **NEXT** (reprioritized before datacube — download is step 1 of the pipeline) |
+| 4 | `sources/cdse.py` | 🟡 `CdseCredentials` done + tested (`tests/test_cdse.py`, 8 tests: from_json/to_json/from_env, masked repr, s3_storage_options, require_complete, is_expired). **NEXT: `query_catalog` + `download`.** |
 | 2 | `catalog/catalog.py` | ✅ implemented · ✅ verified (`tests/test_catalog.py`, 6 tests) |
 | 3 | `raster/images.py` | ✅ implemented · ✅ verified (`tests/test_raster.py`, 24 tests; + RGB/GeoTIFF save helpers) |
 | 3 | `bands/modify.py` | ✅ implemented · ✅ verified (`tests/test_bands.py`, 12 tests) |
@@ -32,8 +32,11 @@ Build **`sources/cdse.py` (module #4)** first and test it, *then* the datacube
 
 CDSE implementation plan (grounded in legacy `cdseutils/{utils,sentinel2}.py` +
 `fetch_satdata/.../sentinel2_via_s3.py`, all re-read):
-1. `CdseCredentials.from_json/to_json` — JSON round-trip (2 pairs: SH id/secret +
-   S3 access/secret).
+1. ✅ **DONE** — `CdseCredentials`: `from_json` (reads legacy `cdse_credentials.json`
+   keys), `to_json`, `from_env` (cloud/Batch path), `s3_storage_options`,
+   `require_complete`, `is_expired`, secret-masking `__repr__`. Canonical local format
+   = gitignored `secrets/cdse_credentials.json` (NOT mysecrets.py; agreed + spec 01
+   updated). User's real file verified to load (values never printed).
 2. `query_catalog(roi, start, end, creds, max_cloudcover)`: ROI → convex-hull bbox in
    WGS84 → `sentinelhub.SentinelHubCatalog.search(collection=S2L2A, bbox, time)` →
    gdf `{id, timestamp, geometry, s3url=res['assets']['data']['href'],

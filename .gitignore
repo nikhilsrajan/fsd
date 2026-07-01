@@ -26,6 +26,8 @@ data/
 # Secrets
 *credentials*.json
 .env
+secrets/
+mysecrets.py
 
 # macOS
 .DS_Store

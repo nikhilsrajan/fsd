@@ -65,13 +65,40 @@ Two CDSE subsystems, two credential pairs (both required), stored in one JSON:
 
 ## Credentials
 
+Two credential pairs, both required for `download`: SH client id/secret (catalog
+search) + S3 access/secret keys (tile bytes).
+
 ```python
 @dataclass
 class CdseCredentials:
     sh_client_id, sh_client_secret      # catalog
     s3_access_key, s3_secret_key        # download
-# load_from_json(path) / to_json(path)
+    s3_keys_expire: str | None = None   # optional ISO date, informational
+    note: str | None = None             # optional free text
+
+    @classmethod
+    def from_json(path) -> CdseCredentials   # reads the legacy cdse_credentials.json keys
+    def to_json(path) -> None
+    @classmethod
+    def from_env() -> CdseCredentials        # CDSE_SH_CLIENT_ID / _SECRET / CDSE_S3_ACCESS_KEY / _SECRET
+    def s3_storage_options() -> dict         # {key, secret, client_kwargs:{endpoint_url}} for fsd.storage
+    def require_complete() -> None           # raise if any of the 4 core fields is missing
+    def is_expired(as_of=None) -> bool | None
 ```
+
+Decisions (2026-07-01, agreed with user):
+- **Canonical local format = a gitignored JSON file** (`secrets/cdse_credentials.json`),
+  not a `mysecrets.py`. Data, not importable code; matches the user's existing file.
+  `from_json` reads the **legacy JSON keys** (`sh_clientid`, `sh_clientsecret`,
+  `s3_access_key`, `s3_secret_key`) so the current file works unchanged, tolerates
+  extra keys, and picks up optional `s3_keys_expire` / `note`.
+- **`from_env` for the cloud/Batch path** — inject secrets as env vars (or a secret
+  manager) rather than shipping a file to a node. Local dev → JSON; cloud → env; same
+  object. Serves the "Azure Batch, no lock-in" goal.
+- **Never log/print secret values.** Custom `__repr__` masks them (shows set/unset +
+  expiry/note only). Credential-file reads go through `fsd.storage` like all file I/O.
+- Optional expiry: `download` warns if `is_expired()` (keys on CDSE do expire) — this
+  replaces the "expiry comment" the legacy `mysecrets.py` carried.
 
 ## Drops vs legacy (record in DROPPED.md)
 
