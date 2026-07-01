@@ -20,6 +20,8 @@ Status: `dropped` (no plan) · `deferred` (intended later) · `superseded` (repl
 | CDSE catalog-query **disk cache** | cdseutils | dropped | decision: always query live | API rate/cost becomes a problem |
 | Direct **boto3** S3 client | cdseutils | superseded | replaced by generic fsspec/`s3fs` transport (any endpoint) | s3fs hits a CDSE edge case → boto3 `transfer` backend |
 | CDSE username/password creds | cdseutils | dropped | already unused (SH + S3 keys suffice) | — |
+| `sentinelhub` dependency (catalog search via `SentinelHubCatalog` + SH OAuth creds + SH base/token URLs) | cdseutils | dropped | replaced by anonymous CDSE STAC API (`pystac-client`); STAC items also give per-band S3 hrefs, removing the flaky `.SAFE` S3 listing (BUG-001) | a CDSE service needs SH OAuth |
+| S3 recursive `.SAFE` listing (`fs.glob`/boto3 `filter(Prefix=)`) for file-selection | cdseutils/fetch_satdata | dropped | STAC item `assets` provide the band hrefs directly; avoids the intermittent S3 auth failures (BUG-001) | STAC stops exposing per-band assets |
 | `rsutils` grab-bag: plotting, `rich_data_filter`, `utils_preprocess`, `esa_download`, `s2`/`s2cell` helpers | rsutils | dropped | not on the data-prep path; plotting belongs in notebooks | per-need |
 | `scripts_tobedeleted/*`, `*_old.py` | fetch_satdata | dropped | dead code | — |
 | Unused snakefiles (planet, malawi mask, demo_model_deploy, legacy s2l2a) | fetch_satdata | dropped | keep only in-memory S2 datacube snakefile | — |

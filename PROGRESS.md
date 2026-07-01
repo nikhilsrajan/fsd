@@ -2,7 +2,7 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-06-30_
+_Last updated: 2026-07-01_
 
 ## Where we are
 
@@ -15,49 +15,34 @@ Spec phase **complete and signed off**; package **scaffolded**; `storage` and
 |---|--------|--------|
 | 0 | `config.py` | ✅ done (constants) |
 | 1 | `storage/fs.py` | ✅ implemented · ✅ verified (`tests/test_storage.py` + manual `storage.md` Section A all pass; Section B = S3, needs creds, still manual) |
-| 4 | `sources/cdse.py` | 🟡 `CdseCredentials` ✅ + `query_catalog` ✅ (13 tests; live-verified on Ethiopia ROI: 579 tiles/2018, 4 MGRS tiles across UTM 36+37, ids unique). **NEXT: `download`.** |
+| 4 | `sources/cdse.py` | ✅ `CdseCredentials` + `query_catalog` + `download` implemented (18 tests, ruff clean). **Discovery pivoted to the CDSE STAC API (`pystac-client`, anonymous) — drops `sentinelhub` and the flaky S3 `.SAFE` listing (BUG-001)**; band S3 hrefs come from STAC `assets`. Metadata path live-verified (Ethiopia ROI, 138 tiles Jan–Mar 2018, highest-res selection + MTD_TL.xml). Byte `transfer` has fail-fast retry; **1-file smoke test DONE** (2026-07-01): B08_10m of T37PBP via `_download_one` → 45 MB, valid JP2 10980² uint16 EPSG:32637. Observed BUG-001 intermittency live (OTC endpoint `eodata.ams` worked for ls+GET while the GSLB alias failed; a bad window 403'd 5× then cleared) — validates the OTC pin. At-scale download + benchmarking = TODO #9. |
 | 2 | `catalog/catalog.py` | ✅ implemented · ✅ verified (`tests/test_catalog.py`, 6 tests) |
 | 3 | `raster/images.py` | ✅ implemented · ✅ verified (`tests/test_raster.py`, 24 tests; + RGB/GeoTIFF save helpers) |
 | 3 | `bands/modify.py` | ✅ implemented · ✅ verified (`tests/test_bands.py`, 12 tests) |
 | — | **real-data validation** (raster+bands) | ✅ `tests/manual/realdata.md` — TCC/FCC/NDVI on tile T33UWP confirmed in QGIS by user |
-| 4 | `sources/cdse.py` | ⬜ scaffolded stub |
 | 5 | `datacube/ops.py → builder.py → flatten.py` | ⬜ scaffolded stubs |
 | 6 | `workflows/task.py · runners.py · create_datacube.py` + Snakefile | ⬜ scaffolded stubs |
 | — | `notebooks/01_data_prep.ipynb` | ⬜ later |
 
-## Next step (when resuming) — REPRIORITIZED: download before datacube
+## Next step (when resuming)
 
-Build **`sources/cdse.py` (module #4)** first and test it, *then* the datacube
-(module #5). Rationale (user, 2026-07-01): download is the actual first pipeline step.
+`sources/cdse.py` (module #4) is **implemented + tested** (STAC-based discovery, see
+the status table). Remaining before moving on:
 
-CDSE implementation plan (grounded in legacy `cdseutils/{utils,sentinel2}.py` +
-`fetch_satdata/.../sentinel2_via_s3.py`, all re-read):
-1. ✅ **DONE** — `CdseCredentials`: `from_json` (reads legacy `cdse_credentials.json`
-   keys), `to_json`, `from_env` (cloud/Batch path), `s3_storage_options`,
-   `require_complete`, `is_expired`, secret-masking `__repr__`. Canonical local format
-   = gitignored `secrets/cdse_credentials.json` (NOT mysecrets.py; agreed + spec 01
-   updated). User's real file verified to load (values never printed).
-2. `query_catalog(roi, start, end, creds, max_cloudcover)`: ROI → convex-hull bbox in
-   WGS84 → `sentinelhub.SentinelHubCatalog.search(collection=S2L2A, bbox, time)` →
-   gdf `{id, timestamp, geometry, s3url=res['assets']['data']['href'],
-   cloud_cover=res['properties']['eo:cloud_cover']}` → `sjoin` keep intersecting →
-   **assert id uniqueness**. No cache (decision).
-3. Port the **file-selection** logic from `cdseutils/sentinel2.py` (pure, testable):
-   `parse_s3url`, `sentinel2_id_parser`, `parse_band_filename`,
-   `select_s3paths_to_download` (L2A: pick **highest-res per band** + `MTD_TL.xml`),
-   `s3url_to_download_folderpath`. Replace legacy `boto3` object-listing with
-   `fsd.storage.ls` (s3fs, CDSE endpoint); the byte copy is `fsd.storage.transfer`.
-4. `download(...)`: query → `max_tiles` guard (raise, est ~0.725 GB/tile) → per tile
-   `ls` the `.SAFE`, select files, `transfer` to `root_folderpath` (skip existing =
-   idempotent), **chunked** catalog append, **cap concurrency at 4** (CDSE quota).
+1. **Real download smoke test** — deferred: user is on limited hotspot data
+   (2026-07-01). When on good bandwidth, run a **1-file/1-tile** download to confirm
+   the byte `transfer` + retry path end-to-end (also covers `storage.md` Section B).
+   Everything up to the bytes (STAC query, asset selection, catalog write) is already
+   verified live / by mocked tests.
+2. **Datacube module #5** (`datacube/ops.py → builder.py → flatten.py`) — the next
+   build target; then augment `realdata.md` with the time-series datacube QGIS test.
 
-Confirmed: legacy's on-disk layout (`s3url_to_download_folderpath` → strip `.SAFE`,
-save bands as short `B02.jp2` etc.) is EXACTLY the `satellite/` folder layout already
-present — so fsd downloads should reproduce that tree.
-
-**Testing needs CDSE creds** (SH id/secret + S3 keys) — ask user. Real test = tiny
-1-file/1-tile download (not 700 MB); this also covers `storage.md` Section B.
-Then: datacube module #5, then augment `realdata.md` with the time-series datacube test.
+CDSE discovery pivot (2026-07-01): dropped `sentinelhub` + the S3 `.SAFE` listing for
+the **CDSE STAC API** (`pystac-client`, anonymous). STAC item `assets` give per-band
+S3 hrefs directly → no recursive S3 listing (the BUG-001 failure). Only the byte
+`transfer` touches S3 auth, wrapped in fail-fast retry. On-disk layout unchanged
+(strip `.SAFE`, short `B02.jp2` names) = the `satellite/` folder layout.
+Residual resilience items (circuit breaker, per-tile restructure) tracked in BUGS.md.
 
 **Test geometries** (`shapefiles/`, EPSG:4326): `s2grid=476da24.geojson` = Austria tile
 T33UWP, single-tile (used for raster/bands realdata.md, done). `s2grid=165bca4.geojson`

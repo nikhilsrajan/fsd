@@ -17,7 +17,7 @@ dependencies = [
     "pyarrow",        # GeoParquet catalog
     "fsspec",         # storage seam (specs/10)
     "s3fs",           # S3-compatible transport (any endpoint: AWS, CDSE EODATA, MinIO)
-    "sentinelhub",    # CDSE catalog (STAC) discovery
+    "pystac-client",  # CDSE STAC catalog discovery (anonymous; replaces sentinelhub)
     "numba",          # median-mosaic kernel
     "snakemake",      # local runner only (specs/08)
     "tqdm",

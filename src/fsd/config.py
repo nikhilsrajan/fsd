@@ -32,14 +32,13 @@ NODATA = 0
 MAX_TIMEDELTA_DAYS = 5   # acceptable gap when checking for missing acquisitions
 
 # --- CDSE endpoints ----------------------------------------------------------
-# Sentinel Hub (catalog/STAC discovery)
-SH_BASE_URL = "https://sh.dataspace.copernicus.eu"
-SH_TOKEN_URL = (
-    "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/"
-    "openid-connect/token"
-)
-# S3-compatible object store (tile bytes). Just an endpoint to s3fs.
-CDSE_S3_ENDPOINT_URL = "https://eodata.dataspace.copernicus.eu"
+# STAC catalog (discovery). Anonymous — no credentials needed. Queried via
+# pystac-client. Each item's `assets` give the per-band S3 hrefs directly, so we
+# never list the .SAFE over S3 (see BUGS.md BUG-001).
+CDSE_STAC_URL = "https://stac.dataspace.copernicus.eu/v1/"
+# S3-compatible object store (tile bytes). Just an endpoint to s3fs. The OTC-pinned
+# host reduces load-balancer routing variance vs the GSLB alias (BUG-001).
+CDSE_S3_ENDPOINT_URL = "https://eodata.ams.dataspace.copernicus.eu"
 CDSE_S3_REGION = "default"
 
 # CDSE caps concurrent S3 connections at 4.

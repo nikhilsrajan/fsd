@@ -4,6 +4,20 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## Discovery: STAC API instead of Sentinel Hub (2026-07-01)
+- Legacy discovered tiles via `sentinelhub.SentinelHubCatalog` (SH OAuth creds) and
+  then listed each `.SAFE` over **S3** to find band files. `fsd` instead queries the
+  **CDSE STAC API** (`pystac-client`, anonymous) and reads each item's `assets` to
+  get the **per-band S3 hrefs directly** — no SH creds, no S3 listing.
+- **Why:** the S3 `.SAFE` listing failed intermittently (`SignatureDoesNotMatch` /
+  `InvalidAccessKeyId`) — a CDSE server-side issue (BUG-001). STAC sidesteps it; the
+  only remaining S3-auth op is the per-file byte `transfer`, wrapped in fail-fast
+  retry. Discovery no longer needs credentials at all.
+- **Behavioral parity:** same catalog columns (`id, timestamp, geometry, s3url,
+  cloud_cover`), same highest-res-per-band + `MTD_TL.xml` selection, same flattened
+  on-disk layout. Note: STAC `item.id` has **no `.SAFE` suffix** (SH ids did); the
+  `s3url` still carries `.SAFE`.
+
 ## Structure
 - Three repos (`fetch_satdata` + `rsutils` + `cdseutils`) → one `src`-layout
   package `fsd` with functional modules: `sources/ catalog/ datacube/ bands/

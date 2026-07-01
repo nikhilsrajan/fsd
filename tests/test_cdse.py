@@ -6,6 +6,7 @@ secrets/cdse_credentials.json.
 
 import datetime
 import json
+import types
 
 import geopandas as gpd
 import shapely.geometry as sg
@@ -14,14 +15,24 @@ from fsd.sources import cdse
 from fsd.sources.cdse import CdseCredentials
 
 
-def _stac_item(id, dt, lon, lat, cloud, safe=None):
-    """A minimal STAC item shaped like a SH catalog search result."""
-    return {
-        "id": id,
-        "properties": {"datetime": dt, "eo:cloud_cover": cloud},
-        "assets": {"data": {"href": safe or f"s3://eodata/{id}.SAFE"}},
-        "geometry": sg.mapping(sg.box(lon, lat, lon + 1, lat + 1)),
-    }
+class _FakeItem:
+    """Duck-typed stand-in for a pystac `Item` (no network)."""
+
+    def __init__(self, id, dt, geom, cloud, assets):
+        self.id = id
+        self.datetime = dt
+        self.geometry = sg.mapping(geom)
+        self.properties = {"eo:cloud_cover": cloud}
+        self.assets = {k: types.SimpleNamespace(href=v) for k, v in assets.items()}
+
+
+def _fake_item(id, dt, lon, lat, cloud, safe=None, assets=None):
+    """A STAC item over box (lon,lat)-(lon+1,lat+1); default asset is one B02 href."""
+    safe = safe or f"s3://eodata/{id}.SAFE"
+    if assets is None:
+        assets = {"B02_10m": f"{safe}/GRANULE/G/IMG_DATA/R10m/T_D_B02_10m.jp2"}
+    dt = datetime.datetime.fromisoformat(dt.replace("Z", "+00:00"))
+    return _FakeItem(id, dt, sg.box(lon, lat, lon + 1, lat + 1), cloud, assets)
 
 # DUMMY = legacy JSON-key form; DUMMY_FIELDS = the dataclass field form of the same.
 DUMMY = {
@@ -125,8 +136,8 @@ def test_is_expired():
 
 def test_items_to_gdf_parses_stac():
     items = [
-        _stac_item("t1", "2018-06-30T09:57:22Z", 16.0, 48.0, 12.5),
-        _stac_item("t2", "2018-07-05T09:57:22Z", 17.0, 48.0, 80.0),
+        _fake_item("t1", "2018-06-30T09:57:22Z", 16.0, 48.0, 12.5),
+        _fake_item("t2", "2018-07-05T09:57:22Z", 17.0, 48.0, 80.0),
     ]
     gdf = cdse._items_to_gdf(items)
     assert list(gdf["id"]) == ["t1", "t2"]
@@ -135,14 +146,25 @@ def test_items_to_gdf_parses_stac():
     assert gdf.crs.to_epsg() == 4326
     assert str(gdf["timestamp"].dt.tz) == "UTC"
     assert gdf["s3url"].iloc[0].startswith("s3://eodata/")
+    assert gdf["s3url"].iloc[0].endswith(".SAFE")  # derived from an asset href
     assert gdf["satellite"].iloc[0] == "sentinel-2-l2a"
+
+
+def test_safe_root_from_item_derives_from_asset_href():
+    it = _fake_item(
+        "x", "2018-06-30T00:00:00Z", 0, 0, 1.0,
+        safe="s3://eodata/Sentinel-2/MSI/L2A_N0500/2018/01/30/S2A_X.SAFE",
+    )
+    assert cdse._safe_root_from_item(it) == (
+        "s3://eodata/Sentinel-2/MSI/L2A_N0500/2018/01/30/S2A_X.SAFE"
+    )
 
 
 def test_finalize_filters_cloud_and_roi():
     items = [
-        _stac_item("hit", "2018-06-30T00:00:00Z", 0.0, 0.0, 10.0),   # overlaps, clear
-        _stac_item("cloudy", "2018-06-30T00:00:00Z", 0.0, 0.0, 90.0),  # overlaps, cloudy
-        _stac_item("far", "2018-06-30T00:00:00Z", 50.0, 50.0, 5.0),  # no overlap
+        _fake_item("hit", "2018-06-30T00:00:00Z", 0.0, 0.0, 10.0),   # overlaps, clear
+        _fake_item("cloudy", "2018-06-30T00:00:00Z", 0.0, 0.0, 90.0),  # overlaps, cloudy
+        _fake_item("far", "2018-06-30T00:00:00Z", 50.0, 50.0, 5.0),  # no overlap
     ]
     gdf = cdse._items_to_gdf(items)
     roi = gpd.GeoDataFrame(geometry=[sg.box(0.2, 0.2, 0.5, 0.5)], crs="EPSG:4326")
@@ -152,8 +174,8 @@ def test_finalize_filters_cloud_and_roi():
 
 def test_finalize_raises_on_duplicate_ids():
     items = [
-        _stac_item("dup", "2018-06-30T00:00:00Z", 0.0, 0.0, 10.0),
-        _stac_item("dup", "2018-07-01T00:00:00Z", 0.0, 0.0, 10.0),
+        _fake_item("dup", "2018-06-30T00:00:00Z", 0.0, 0.0, 10.0),
+        _fake_item("dup", "2018-07-01T00:00:00Z", 0.0, 0.0, 10.0),
     ]
     gdf = cdse._items_to_gdf(items)
     roi = gpd.GeoDataFrame(geometry=[sg.box(0.2, 0.2, 0.5, 0.5)], crs="EPSG:4326")
@@ -163,24 +185,103 @@ def test_finalize_raises_on_duplicate_ids():
         cdse._finalize_catalog_gdf(gdf, roi, max_cloudcover=None)
 
 
-def test_roi_to_bbox_reprojects_to_wgs84():
-    # a UTM (metres) ROI should come back as a WGS84 bbox
-    roi = gpd.GeoDataFrame(
-        geometry=[sg.box(500000, 5300000, 510000, 5310000)], crs="EPSG:32633"
-    )
-    bbox = cdse._roi_to_bbox(roi)
-    import sentinelhub
-
-    assert bbox.crs == sentinelhub.CRS.WGS84
-    # zone-33 easting ~500000 is around 15°E
-    assert 14 < bbox.min_x < 16
-
-
-def test_query_catalog_requires_sh_creds():
+def test_require_s3():
     import pytest
 
-    roi = gpd.GeoDataFrame(geometry=[sg.box(0, 0, 1, 1)], crs="EPSG:4326")
+    CdseCredentials(**DUMMY_FIELDS).require_s3()  # no raise
+    # SH-only creds are fine for discovery but must fail the download S3 check
     with pytest.raises(ValueError):
-        cdse.query_catalog(roi, datetime.datetime(2018, 1, 1),
-                           datetime.datetime(2018, 12, 31),
-                           CdseCredentials(s3_access_key="only-s3"))
+        CdseCredentials(sh_client_id="only-sh").require_s3()
+
+
+# --- download helpers --------------------------------------------------------
+
+SAFE = ("s3://eodata/Sentinel-2/MSI/L2A_N0500/2018/01/30/"
+        "S2A_MSIL2A_20180130T080151_N0500_R035_T36PZT_20230915T000622.SAFE")
+
+
+def test_download_folderpath_strips_prefix_and_safe():
+    out = cdse._download_folderpath(SAFE, "/data/root")
+    assert out == ("/data/root/Sentinel-2/MSI/L2A_N0500/2018/01/30/"
+                   "S2A_MSIL2A_20180130T080151_N0500_R035_T36PZT_20230915T000622")
+
+
+def test_download_folderpath_rejects_bad_url():
+    import pytest
+
+    with pytest.raises(ValueError):
+        cdse._download_folderpath("s3://other-bucket/x.SAFE", "/data")
+
+
+def test_select_item_files_picks_highest_res_and_xml():
+    granule = f"{SAFE}/GRANULE/L2A_T36PZT_A013_20180130T080151"
+    it = _fake_item(
+        "S2A_T36PZT", "2018-01-30T08:00:00Z", 36.0, 11.0, 5.0, safe=SAFE,
+        assets={
+            # B02 only at 10m; B05 at both 20m and 60m -> keep 20m
+            "B02_10m": f"{granule}/IMG_DATA/R10m/T36PZT_20180130T080151_B02_10m.jp2",
+            "B05_20m": f"{granule}/IMG_DATA/R20m/T36PZT_20180130T080151_B05_20m.jp2",
+            "B05_60m": f"{granule}/IMG_DATA/R60m/T36PZT_20180130T080151_B05_60m.jp2",
+            # a band we didn't request
+            "B03_10m": f"{granule}/IMG_DATA/R10m/T36PZT_20180130T080151_B03_10m.jp2",
+            "granule_metadata": f"{granule}/MTD_TL.xml",
+        },
+    )
+
+    selected = cdse._select_item_files(it, ["B02", "B05"], "/root")
+    dsts = {dst for _, dst in selected}
+    folder = ("/root/Sentinel-2/MSI/L2A_N0500/2018/01/30/"
+              "S2A_MSIL2A_20180130T080151_N0500_R035_T36PZT_20230915T000622")
+    assert dsts == {f"{folder}/B02.jp2", f"{folder}/B05.jp2", f"{folder}/MTD_TL.xml"}
+    # highest-res B05 is the 20m source, not 60m
+    b05_src = next(src for src, dst in selected if dst.endswith("B05.jp2"))
+    assert "R20m" in b05_src and b05_src.startswith("s3://")
+
+
+def test_download_raises_when_over_max_tiles(monkeypatch, tmp_path):
+    import pytest
+
+    from fsd.catalog.catalog import TileCatalog
+
+    # 3 fake items overlapping the ROI, max_tiles=2 -> raise before any download
+    items = [_fake_item(i, "2018-01-01T00:00:00Z", 0.0, 0.0, 0.0) for i in "abc"]
+    monkeypatch.setattr(cdse, "_search_items", lambda *a, **k: items)
+    roi = gpd.GeoDataFrame(geometry=[sg.box(0.2, 0.2, 0.5, 0.5)], crs="EPSG:4326")
+    cat = TileCatalog(str(tmp_path / "c.parquet"))
+    with pytest.raises(ValueError, match="exceed max_tiles"):
+        cdse.download(roi, datetime.datetime(2018, 1, 1),
+                      datetime.datetime(2018, 2, 1), ["B02"], str(tmp_path),
+                      cat, CdseCredentials(**DUMMY_FIELDS), max_tiles=2)
+
+
+def test_download_end_to_end_mocked(monkeypatch, tmp_path):
+    """Full download flow with storage mocked — no network, real catalog write."""
+    from fsd.catalog.catalog import TileCatalog
+
+    item = _fake_item("S2A_T36PZT", "2018-01-30T08:00:00Z", 36.0, 11.0, 5.0, safe=SAFE)
+    monkeypatch.setattr(cdse, "_search_items", lambda *a, **k: [item])
+    monkeypatch.setattr(
+        cdse, "_select_item_files",
+        lambda it, bands, root: [
+            (f"{cdse._safe_root_from_item(it)}/B02.jp2", str(tmp_path / "tile/B02.jp2")),
+            (f"{cdse._safe_root_from_item(it)}/SCL.jp2", str(tmp_path / "tile/SCL.jp2")),
+        ],
+    )
+    # "transfer" just creates the destination file
+    def fake_transfer(src, dst, **kw):
+        import os
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        open(dst, "wb").close()
+    monkeypatch.setattr(cdse.fs, "transfer", fake_transfer)
+    monkeypatch.setattr(cdse.fs, "exists", lambda p, **k: __import__("os").path.exists(p))
+
+    roi = gpd.GeoDataFrame(geometry=[sg.box(36.0, 11.0, 37.0, 12.0)], crs="EPSG:4326")
+    cat = TileCatalog(str(tmp_path / "c.parquet"))
+    result = cdse.download(roi, datetime.datetime(2018, 1, 1),
+                           datetime.datetime(2018, 2, 1), ["B02", "SCL"],
+                           str(tmp_path), cat, CdseCredentials(**DUMMY_FIELDS),
+                           max_tiles=10)
+    assert (result.successful_count, result.total_count) == (2, 2)
+    gdf = cat.read()
+    assert len(gdf) == 1
+    assert gdf["files"].iloc[0] == "B02.jp2,SCL.jp2"  # unioned + sorted

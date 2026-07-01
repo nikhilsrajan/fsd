@@ -33,24 +33,29 @@ def download(
 
 ## CDSE implementation (`sources/cdse.py`)
 
-Two CDSE subsystems, two credential pairs (both required), stored in one JSON:
+Two CDSE subsystems. Discovery is **anonymous**; only download needs credentials:
 
-- **Catalog search** — `sentinelhub.SentinelHubCatalog` (SH client id/secret).
-  Base/token URLs in `config.py`. Returns per-tile: `id, timestamp, geometry,
-  s3url, cloud_cover`. **No disk cache** (decision: always query live; the legacy
-  cache is dropped).
+- **Catalog search** — the **CDSE STAC API** (`pystac-client`,
+  `config.CDSE_STAC_URL`), **anonymous — no credentials**. Returns per-tile:
+  `id, timestamp, geometry, s3url, cloud_cover`. Crucially, each STAC item's
+  `assets` already carry the **per-band S3 `href`s**, so file-selection reads them
+  directly — we **never list a `.SAFE` over S3** (that recursive listing was the
+  flaky path; see `../BUGS.md` BUG-001). **No disk cache** (always query live).
+  _(Replaces the legacy `sentinelhub.SentinelHubCatalog`, which needed SH OAuth
+  creds and the SH base/token URLs — all dropped.)_
 - **Tile download** — via the **generic S3 transport** in `fsd.storage`
-  (fsspec/`s3fs`), configured with the CDSE endpoint
-  (`endpoint_url=https://eodata.dataspace.copernicus.eu`) + S3 keys. For each tile
-  `.SAFE` s3url: `ls` the objects, select the requested band `.jp2` files
-  (highest-res per band for L2A) + `MTD_TL.xml`, then `transfer(...)` them under
-  `root_folderpath` (local in v1, blob/S3 later). **CDSE owns only discovery +
+  (fsspec/`s3fs`), configured with the CDSE endpoint (`config.CDSE_S3_ENDPOINT_URL`,
+  OTC-pinned) + S3 keys. For each STAC item: pick the requested bands' highest-res
+  asset hrefs (+ the `granule_metadata` asset = `MTD_TL.xml`), then `transfer(...)`
+  them under `root_folderpath` (local in v1, blob/S3 later), each with **fail-fast
+  retry** on CDSE's transient S3 auth errors (BUG-001). **CDSE owns only discovery +
   S2 file-selection + endpoint config; the byte-transfer is provider-agnostic and
   reusable** (see `10-storage-and-scale.md`). No direct `boto3`.
 
 ### Behavior to preserve
 
-- ROI → bbox via convex-hull union, reprojected to EPSG:4326 for the query.
+- ROI → union geometry, reprojected to EPSG:4326, passed as STAC `intersects`
+  (precise ROI intersection re-applied after the query).
 - Download is the embarrassingly-parallel-over-tiles step but is **quota-bound**
   (CDSE caps concurrency at 4), so it stays one coordinated job — it is *not* the
   thing Azure Batch fans out (that's datacube creation; see `10-storage-and-scale.md`).
@@ -65,14 +70,16 @@ Two CDSE subsystems, two credential pairs (both required), stored in one JSON:
 
 ## Credentials
 
-Two credential pairs, both required for `download`: SH client id/secret (catalog
-search) + S3 access/secret keys (tile bytes).
+Discovery (STAC) is **anonymous**; only `download` needs credentials — just the
+**S3 access/secret keys** (tile bytes). The `sh_client_*` fields are retained
+(loaded from the legacy JSON, not required for discovery) in case another CDSE
+service needs them later.
 
 ```python
 @dataclass
 class CdseCredentials:
-    sh_client_id, sh_client_secret      # catalog
-    s3_access_key, s3_secret_key        # download
+    sh_client_id, sh_client_secret      # retained; NOT needed for STAC discovery
+    s3_access_key, s3_secret_key        # download (the only creds actually used)
     s3_keys_expire: str | None = None   # optional ISO date, informational
     note: str | None = None             # optional free text
 
@@ -82,7 +89,8 @@ class CdseCredentials:
     @classmethod
     def from_env() -> CdseCredentials        # CDSE_SH_CLIENT_ID / _SECRET / CDSE_S3_ACCESS_KEY / _SECRET
     def s3_storage_options() -> dict         # {key, secret, client_kwargs:{endpoint_url}} for fsd.storage
-    def require_complete() -> None           # raise if any of the 4 core fields is missing
+    def require_s3() -> None                  # raise if S3 keys missing (download's check)
+    def require_complete() -> None            # raise if any of the 4 core fields is missing
     def is_expired(as_of=None) -> bool | None
 ```
 
