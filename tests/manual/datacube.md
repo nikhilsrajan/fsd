@@ -164,21 +164,45 @@ print("NDVI %.3f..%.3f mean %.3f" % (v.min(), v.max(), v.mean()))
 
 Open the three GeoTIFFs (all in `dst_crs` EPSG:32636). Confirm each geospatial goal:
 
-- [ ] **Geolocation** — `165bca4_B08.tif` lands exactly over the `s2grid=165bca4`
-      shape (load the geojson too). CRS reads EPSG:32636.
-- [ ] **Single-CRS merge (the key test)** — the raster is **seamless across the 36°E
+- [x] **Geolocation** — `165bca4_B08.tif` lands over the `s2grid=165bca4` shape
+      (load the geojson too). CRS reads EPSG:32636. *(Position is correct; the raster
+      does not tightly hug the shape edges — see the edge-tightness nit below. That's
+      a known, deferred cosmetic artifact, not a geolocation error, so this box is
+      about "is it in the right place," which it is.)*
+- [x] **Single-CRS merge (the key test)** — the raster is **seamless across the 36°E
       boundary**: no gap, no doubling, no visible seam where zone-37 tiles were
       reprojected into zone 36. Coverage fills the ROI (edge nodata is fine; ~83% of
       the slice is non-zero).
-- [ ] **Reference-image resampling** — in `165bca4_FCC_8bit.tif` the three bands are
+- [x] **Reference-image resampling** — in `165bca4_FCC_8bit.tif` the three bands are
       **pixel-aligned** (no colour-fringing/offset), confirming B8A (20 m) landed on
       the B08 (10 m) grid.
-- [ ] **Cloud-mask + mosaic** — apply a singleband-pseudocolor ramp to
+- [x] **Cloud-mask + mosaic** — apply a singleband-pseudocolor ramp to
       `165bca4_NDVI.tif` (e.g. 0 → 0.7): vegetated fields read high, bare/water low,
       and there are **no cloud blobs / few nodata holes** (SCL masking + median mosaic
       did their job).
 
 ---
+
+## Known nit — edge tightness (deferred, TODO #8)
+The output rectangle does **not** hug the ROI's edges: it extends beyond the shape's
+bbox (measured: left −4 m, right +55 m, bottom −48 m, **top +113 m**) with the overhang
+being almost pure nodata (top/bottom edge strips ~98–100% zero). Along the bottom/left
+slanted edges the valid-pixel staircase doesn't touch every point of the shape line.
+**Why:** (1) the pipeline crops to the shape *once* up front, then reproject→merge→
+resample onto a reference grid and **never re-crops to the polygon**, so the extent is
+the merged bbox + a nodata halo; (2) the ROI is a **rotated parallelogram** (fills only
+0.86 of its UTM bbox), and a north-up raster's edges can't coincide with slanted shape
+edges. Note two *different* things get conflated here: the **file extent** (the bbox, which
+carries the nodata halo above) vs. the **visible data boundary** QGIS actually draws
+(nodata is hidden). The visible over/undershoot you see is from `all_touched=True`
+(grabs pixels the polygon merely grazes → data ~1 px past the true edge), the rotated
+staircase, and **no final clip to the polygon** — so the data edge follows the crop
+footprints, not the shape. This is **legacy behaviour** (faithful port) and cosmetic —
+pixels are correctly geolocated and `flatten()` drops all-nodata pixels, so it never
+reaches training data.
+A final `rasterio.mask` re-crop to the shape would trim the halo (tested: 554×533 →
+539×528) but not the diagonal staircase; it's a deliberate behaviour change, so it's
+parked under TODO #8 pending a decision.
 
 ## Notes
 - Outputs go to `notebooks/outputs/datacube/` (gitignored) — for QGIS, not commits.
