@@ -20,7 +20,7 @@ Spec phase **complete and signed off**; package **scaffolded**; `storage` and
 | 3 | `raster/images.py` | ✅ implemented · ✅ verified (`tests/test_raster.py`, 24 tests; + RGB/GeoTIFF save helpers) |
 | 3 | `bands/modify.py` | ✅ implemented · ✅ verified (`tests/test_bands.py`, 12 tests) |
 | — | **real-data validation** (raster+bands) | ✅ `tests/manual/realdata.md` — TCC/FCC/NDVI on tile T33UWP confirmed in QGIS by user |
-| 5 | `datacube/ops.py → builder.py → flatten.py` | ⬜ scaffolded stubs |
+| 5 | `datacube/ops.py → builder.py → flatten.py` | ✅ implemented · ✅ unit-tested (14 tests: `test_datacube_ops.py` 7, `test_datacube_builder.py` 4 incl. end-to-end synthetic-GeoTIFF cube, `test_datacube_flatten.py` 3). ⬜ real-data QGIS validation on `satellite_benchmark` still to do. |
 | 6 | `workflows/task.py · runners.py · create_datacube.py` + Snakefile | ⬜ scaffolded stubs |
 | — | `notebooks/01_data_prep.ipynb` | ⬜ later |
 
@@ -38,10 +38,23 @@ set is now **`satellite_benchmark/`** (Ethiopia `s2grid=165bca4`, EPSG:32636+326
 bands B04/B08/B8A/SCL). `realdata.md` TCC/FCC examples are stale (no B02/B03); only
 NDVI applies there.
 
-**NEXT: Datacube module #5** (`datacube/ops.py → builder.py → flatten.py`) — spec-first,
-then implement; validate the single-CRS-merge + reference-image-resampling against the
-real multi-CRS `satellite_benchmark` tiles (new QGIS runbook). Deferred: concurrency/
-quota benchmarking (TODO #9).
+**Datacube module #5 DONE (2026-07-02):** `ops.py` (run_ops, apply_cloud_mask_scl,
+drop_bands, median_mosaic [numba], area_median), `builder.py` (build_datacube seam +
+flatten_catalog helper: missing-check → load/crop → dst_crs by max-mean area →
+merged-B08 reference → resample-to-ref → stack → SCL mask → drop → median mosaic →
+save via storage), `flatten.py` (per-pixel training arrays + coords). 14 unit tests
+(89→92 total). One legacy bug fixed: missing-band nodata fill shape (CHANGES.md).
+Two design rationales captured from the user (memory): `_dt2ts` UTC localization,
+`metadata.pickle.npy` cross-platform pickling.
+
+**NEXT (two tracks, no more downloads needed — data is local in `satellite_benchmark`):**
+1. **Real-data QGIS validation** of the builder on the multi-CRS Ethiopia tiles
+   (`s2grid=165bca4`, EPSG:32636+32637) — the single-CRS-merge + reference-image
+   resampling on genuine bytes. Needs a new manual runbook. Bands available: B04/B08/
+   B8A/SCL (B08 = reference).
+2. **Module #6 workflows** (`workflows/task.py · runners.py · create_datacube.py` +
+   Snakefile) — run build_datacube over many geometries (local Snakemake runner).
+Deferred: concurrency/quota benchmarking (TODO #9).
 
 CDSE discovery pivot (2026-07-01): dropped `sentinelhub` + the S3 `.SAFE` listing for
 the **CDSE STAC API** (`pystac-client`, anonymous). STAC item `assets` give per-band

@@ -4,6 +4,17 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## Datacube builder: missing-band nodata fill shape (2026-07-02)
+- Legacy `create_datacube_inmemory_single` filled a missing `(timestamp, band)` with
+  `np.full((height, width), 0)` — a **2-D** array, while present bands are **3-D**
+  `(1, H, W)` (rasterio single-band read). `np.stack`-ing them together would raise a
+  shape error, and the fill defaulted to `float64` (promoting the whole cube). `fsd`
+  fills with `(1, H, W)` in the present bands' dtype so the stack actually works.
+- **Why it never bit legacy:** with `if_missing_files='raise_error'` (the default),
+  any partially-missing band raises *before* stacking, so the buggy branch was
+  unreachable. `fsd` fixes it so `warn`/`None` modes produce a valid cube. Same
+  `datacube.npy` output on the complete-data path.
+
 ## Discovery: STAC API instead of Sentinel Hub (2026-07-01)
 - Legacy discovered tiles via `sentinelhub.SentinelHubCatalog` (SH OAuth creds) and
   then listed each `.SAFE` over **S3** to find band files. `fsd` instead queries the
