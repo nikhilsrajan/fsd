@@ -114,6 +114,13 @@ def glob(pattern: str, **storage_options: Any) -> list[str]:
     return fs.glob(p)
 
 
+def size(url: str, **storage_options: Any) -> int:
+    """Byte size of a file (0 if empty). Used to distinguish a real download from a
+    zero-byte "touched" leftover."""
+    fs, p = _fs_and_path(url, storage_options)
+    return fs.size(p)
+
+
 # --- typed helpers -----------------------------------------------------------
 
 
@@ -178,9 +185,23 @@ def transfer(
 
     Streams bytes, so it works across different backends (e.g. CDSE S3 -> Azure
     Blob) without a common-filesystem assumption.
+
+    **Atomic:** bytes are streamed to a `.part` sidecar and renamed onto `dst_url`
+    only after the copy fully succeeds. A failed/timed-out/killed transfer therefore
+    never leaves a 0-byte or truncated file at the destination path — so an
+    existence check is a safe "already downloaded" signal on resume.
     """
     src_fs, spath = _fs_and_path(src_url, src_options)
     dst_fs, dpath = _fs_and_path(dst_url, dst_options)
     _ensure_parent(dst_fs, dpath)
-    with src_fs.open(spath, "rb") as fsrc, dst_fs.open(dpath, "wb") as fdst:
-        shutil.copyfileobj(fsrc, fdst)
+    tmp = f"{dpath}.part"
+    try:
+        with src_fs.open(spath, "rb") as fsrc, dst_fs.open(tmp, "wb") as fdst:
+            shutil.copyfileobj(fsrc, fdst)
+        dst_fs.mv(tmp, dpath)  # atomic on a local fs (os.rename)
+    except BaseException:
+        try:
+            dst_fs.rm(tmp)
+        except Exception:
+            pass
+        raise

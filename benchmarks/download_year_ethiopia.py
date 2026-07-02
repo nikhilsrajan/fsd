@@ -73,7 +73,7 @@ def main():
     results = cdse.download_resume(
         ROI, START, END, BANDS, ROOT, catalog, creds,
         max_tiles=600, chunksize=100, progress=True,
-        max_consecutive_failures=15, max_passes=20, cooldown_s=60.0, on_pass=on_pass,
+        max_consecutive_failures=15, max_passes=50, cooldown_s=60.0, on_pass=on_pass,
     )
     print("DONE passes:", len(results), "final gb:", round(dir_bytes(ROOT) / 1e9, 2))
 

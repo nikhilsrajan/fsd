@@ -111,11 +111,21 @@ class CdseCredentials:
         )
 
     def s3_storage_options(self) -> dict:
-        """`storage_options` for the CDSE S3 endpoint, for `fsd.storage` calls."""
+        """`storage_options` for the CDSE S3 endpoint, for `fsd.storage` calls.
+
+        Includes connect/read timeouts so a stalled connection (common during CDSE's
+        flaky windows, BUG-001) raises instead of hanging a worker forever; botocore's
+        own retries are disabled so our `_download_one` layer owns retry/labeling.
+        """
         return {
             "key": self.s3_access_key,
             "secret": self.s3_secret_key,
             "client_kwargs": {"endpoint_url": config.CDSE_S3_ENDPOINT_URL},
+            "config_kwargs": {
+                "connect_timeout": config.S3_CONNECT_TIMEOUT,
+                "read_timeout": config.S3_READ_TIMEOUT,
+                "retries": {"max_attempts": 1},
+            },
         }
 
     def require_complete(self) -> None:
@@ -323,6 +333,12 @@ _RETRYABLE_S3 = (
     "SlowDown",
     "AccessDenied",
     "Forbidden",
+    # transient connection/timeout errors (a stalled transfer that hit the timeout)
+    "ReadTimeout",
+    "ConnectTimeout",
+    "ConnectionError",
+    "EndpointConnection",
+    "timed out",
 )
 
 
@@ -360,7 +376,9 @@ def _download_one(
     import random
     import time
 
-    if fs.exists(dst_path):
+    # Skip only a *real* (non-empty) file — never a 0-byte "touched" leftover, which
+    # would otherwise be treated as done and never re-fetched.
+    if fs.exists(dst_path) and fs.size(dst_path) > 0:
         return True, "skipped"
     last: Exception | None = None
     for attempt in range(tries):

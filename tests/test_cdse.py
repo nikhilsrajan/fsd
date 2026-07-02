@@ -264,6 +264,26 @@ def test_download_one_skips_and_reports_reason(monkeypatch, tmp_path):
     assert "Forbidden" in cdse._RETRYABLE_S3  # 403 is transient on CDSE (BUG-001)
 
 
+def test_download_one_redownloads_zero_byte_file(monkeypatch, tmp_path):
+    """A 0-byte 'touched' leftover must NOT be treated as done — it re-downloads."""
+    import os
+
+    dst = tmp_path / "z.jp2"
+    dst.write_bytes(b"")  # 0-byte leftover from a prior failed transfer
+    monkeypatch.setattr(cdse.fs, "exists", lambda p, **k: os.path.exists(p))
+    monkeypatch.setattr(cdse.fs, "size", lambda p, **k: os.path.getsize(p))
+    calls = []
+
+    def good_transfer(src, d, **kw):
+        calls.append(d)
+        with open(d, "wb") as f:
+            f.write(b"realbytes")
+
+    monkeypatch.setattr(cdse.fs, "transfer", good_transfer)
+    assert cdse._download_one("s3://eodata/z.jp2", str(dst), {}) == (True, "ok")
+    assert calls == [str(dst)]  # actually re-downloaded, not skipped
+
+
 def test_download_raises_when_over_max_tiles(monkeypatch, tmp_path):
     import pytest
 

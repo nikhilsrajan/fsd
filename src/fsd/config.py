@@ -45,5 +45,11 @@ CDSE_S3_REGION = "default"
 # https://documentation.dataspace.copernicus.eu/Quotas.html
 MAX_CONCURRENT_S3 = 4
 
+# S3 transport timeouts (seconds). Without these a stalled connection hangs a worker
+# forever during a flaky CDSE window (BUG-001); with them it raises and our retry
+# layer handles it. read_timeout is per-socket-read, not total transfer time.
+S3_CONNECT_TIMEOUT = 10
+S3_READ_TIMEOUT = 30
+
 # Rough size guard for the download safety check (~GB per tile).
 APPROX_GB_PER_TILE = 0.725

@@ -96,3 +96,34 @@ def test_put_get_transfer(tmp_path):
     p_xfer = str(tmp_path / "transferred/arr_t.npy")
     fs.transfer(p_arr, p_xfer)
     assert np.array_equal(fs.load_npy(p_xfer), arr)
+
+
+def test_transfer_is_atomic_on_failure(tmp_path, monkeypatch):
+    """A transfer that fails mid-copy leaves NO file at the destination (no 0-byte or
+    truncated leftover) and cleans up its .part sidecar."""
+    import pytest
+
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"x" * 100)
+    dst = tmp_path / "out" / "dst.bin"
+
+    class _Boom:
+        @staticmethod
+        def copyfileobj(a, b):
+            raise OSError("connection reset mid-copy")
+
+    monkeypatch.setattr(fs, "shutil", _Boom)
+    with pytest.raises(OSError):
+        fs.transfer(str(src), str(dst))
+    assert not dst.exists()
+    assert not (tmp_path / "out" / "dst.bin.part").exists()
+
+
+def test_size(tmp_path):
+    p = str(tmp_path / "f.bin")
+    with open(p, "wb") as f:
+        f.write(b"abc")
+    assert fs.size(p) == 3
+    empty = str(tmp_path / "e.bin")
+    open(empty, "wb").close()
+    assert fs.size(empty) == 0
