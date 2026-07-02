@@ -160,6 +160,7 @@ class DownloadResult:
     elapsed_s: float = 0.0
     failures: list = dataclasses.field(default_factory=list)   # (src_url, reason)
     reason_counts: dict = dataclasses.field(default_factory=dict)  # {reason: count}
+    circuit_tripped: bool = False  # stopped early: too many consecutive failures
 
 
 # --- catalog discovery -------------------------------------------------------
@@ -419,6 +420,7 @@ def download(
     chunksize: int = 100,
     max_cloudcover: float | None = None,
     progress: bool = False,
+    max_consecutive_failures: int | None = None,
 ) -> DownloadResult:
     """THE SOURCE CONTRACT (documented signature; see specs/01-sources.md).
 
@@ -428,6 +430,12 @@ def download(
     and upserts the catalog after each chunk so a crash doesn't lose progress;
     refuses if matched tiles exceed `max_tiles`. S3 concurrency is capped at CDSE's
     limit.
+
+    `max_consecutive_failures` is the **circuit breaker**: if that many files fail
+    back-to-back (a bad CDSE window, BUG-001), the pass stops early (finishing the
+    current chunk) and returns with `circuit_tripped=True` instead of grinding. Pair
+    with `download_resume` to retry the remainder later — the catalog makes it a clean
+    resume.
     """
     import concurrent.futures
 
@@ -469,6 +477,8 @@ def download(
         from tqdm import tqdm
         bar = tqdm(total=total, unit="file", desc="download", smoothing=0.1)
 
+    consecutive = 0
+    tripped = False
     for i in range(0, total, chunksize):
         chunk = work[i : i + chunksize]
         results = []
@@ -486,8 +496,14 @@ def download(
                 reason_counts[reason] += 1
                 if reason == "skipped":
                     skipped += 1
-                if not ok:
+                if ok:
+                    consecutive = 0
+                else:
                     failures.append((src, reason))
+                    consecutive += 1
+                    if (max_consecutive_failures is not None
+                            and consecutive >= max_consecutive_failures):
+                        tripped = True
                 if bar is not None:
                     bar.update(1)
                     bar.set_postfix(
@@ -495,16 +511,67 @@ def download(
                         refresh=False,
                     )
         successful += _append_downloaded(catalog, tile_meta, results)
+        if tripped:
+            break
 
     if bar is not None:
         bar.close()
 
     return DownloadResult(
         successful_count=successful,
-        total_count=total,
+        total_count=successful + len(failures),   # files actually attempted
         skipped_count=skipped,
         failed_count=len(failures),
         elapsed_s=time.time() - start,
         failures=failures,
         reason_counts=dict(reason_counts),
+        circuit_tripped=tripped,
     )
+
+
+def download_resume(
+    roi,
+    startdate: datetime.datetime,
+    enddate: datetime.datetime,
+    bands: list[str],
+    root_folderpath: str,
+    catalog,
+    creds: CdseCredentials,
+    *,
+    max_tiles: int,
+    chunksize: int = 100,
+    max_cloudcover: float | None = None,
+    progress: bool = False,
+    max_consecutive_failures: int = 15,
+    max_passes: int = 10,
+    cooldown_s: float = 60.0,
+    on_pass=None,
+) -> list[DownloadResult]:
+    """Resume-loop: run `download` repeatedly until every file is present (a full pass
+    with no failures) or `max_passes` is reached.
+
+    Each pass is idempotent (skips files already on disk) and trips the circuit breaker
+    on a bad CDSE window (`max_consecutive_failures`); on a trip we wait `cooldown_s`
+    then try again — the *fail-fast + resume-later* strategy (BUG-001). A partial
+    window (scattered fast-fails, no trip) loops immediately to retry the remainder.
+
+    `on_pass(pass_index, DownloadResult)` is called after each pass (e.g. to persist
+    stats), keeping file I/O out of the library. Returns the per-pass results.
+    """
+    import time
+
+    results: list[DownloadResult] = []
+    for p in range(max_passes):
+        r = download(
+            roi, startdate, enddate, bands, root_folderpath, catalog, creds,
+            max_tiles=max_tiles, chunksize=chunksize, max_cloudcover=max_cloudcover,
+            progress=progress, max_consecutive_failures=max_consecutive_failures,
+        )
+        results.append(r)
+        if on_pass is not None:
+            on_pass(p, r)
+        if r.failed_count == 0 and not r.circuit_tripped:
+            break  # complete: a full pass attempted everything and nothing failed
+        if r.circuit_tripped and cooldown_s:
+            time.sleep(cooldown_s)  # bad window — back off, then resume
+    return results

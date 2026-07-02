@@ -313,3 +313,52 @@ def test_download_end_to_end_mocked(monkeypatch, tmp_path):
     gdf = cat.read()
     assert len(gdf) == 1
     assert gdf["files"].iloc[0] == "B02.jp2,SCL.jp2"  # unioned + sorted
+    assert result.circuit_tripped is False
+
+
+def test_circuit_breaker_trips_and_stops_early(monkeypatch, tmp_path):
+    from fsd.catalog.catalog import TileCatalog
+
+    # 6 tiles, 1 file each; every transfer fails; breaker at 3 consecutive.
+    items = [_fake_item(f"t{i}", "2018-01-01T00:00:00Z", 0.0, 0.0, 0.0) for i in range(6)]
+    monkeypatch.setattr(cdse, "_search_items", lambda *a, **k: items)
+    monkeypatch.setattr(cdse, "_download_one", lambda *a, **k: (False, "Forbidden"))
+    monkeypatch.setattr(cdse.fs, "exists", lambda p, **k: False)
+
+    roi = gpd.GeoDataFrame(geometry=[sg.box(-0.5, -0.5, 1.5, 1.5)], crs="EPSG:4326")
+    cat = TileCatalog(str(tmp_path / "c.parquet"))
+    result = cdse.download(
+        roi, datetime.datetime(2018, 1, 1), datetime.datetime(2018, 2, 1),
+        ["B02"], str(tmp_path), cat, CdseCredentials(**DUMMY_FIELDS),
+        max_tiles=10, chunksize=2, max_consecutive_failures=3,
+    )
+    assert result.circuit_tripped is True
+    # stopped after the chunk that crossed the threshold (4 of 6 attempted), not all 6
+    assert result.total_count == 4 and result.failed_count == 4
+
+
+def test_download_resume_loops_until_complete(monkeypatch):
+    from fsd.sources.cdse import DownloadResult
+
+    seq = [
+        DownloadResult(1, 6, failed_count=5, circuit_tripped=True),   # bad window
+        DownloadResult(4, 4, failed_count=2),                         # partial, retry
+        DownloadResult(6, 6, failed_count=0),                         # complete
+    ]
+    calls = {"n": 0}
+    seen = []
+
+    def fake_download(*a, **k):
+        r = seq[calls["n"]]
+        calls["n"] += 1
+        return r
+
+    monkeypatch.setattr(cdse, "download", fake_download)
+    roi = gpd.GeoDataFrame(geometry=[sg.box(0, 0, 1, 1)], crs="EPSG:4326")
+    out = cdse.download_resume(
+        roi, datetime.datetime(2018, 1, 1), datetime.datetime(2018, 2, 1),
+        ["B02"], "/root", object(), CdseCredentials(**DUMMY_FIELDS),
+        max_tiles=10, cooldown_s=0, max_passes=5, on_pass=lambda p, r: seen.append(p),
+    )
+    assert len(out) == 3 and out[-1].failed_count == 0
+    assert seen == [0, 1, 2]  # on_pass fired each pass

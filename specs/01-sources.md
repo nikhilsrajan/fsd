@@ -24,15 +24,27 @@ def download(
     *,
     max_tiles: int,                  # safety guard (~700MB/tile)
     chunksize: int = 100,            # files per download+catalog-update batch
+    progress: bool = False,          # opt-in tqdm bar (live ok/fail + ETA)
+    max_consecutive_failures=None,   # circuit breaker (see below)
 ) -> DownloadResult                  # see below
 ```
 
 `DownloadResult` carries success + **failure visibility** (CDSE's S3 endpoint fails
-intermittently — BUG-001): `successful_count`, `total_count`, `skipped_count`
-(idempotent skips), `failed_count` (fast-fails after retries), `elapsed_s`,
-`failures` (`[(src_url, reason)]`), and `reason_counts` (`{reason: count}`, e.g.
-`{"ok": .., "skipped": .., "Forbidden": .., "SignatureDoesNotMatch": ..}`). This is
-what the download-run report is built from.
+intermittently — BUG-001): `successful_count`, `total_count` (attempted),
+`skipped_count` (idempotent skips), `failed_count` (fast-fails after retries),
+`elapsed_s`, `failures` (`[(src_url, reason)]`), `reason_counts` (`{reason: count}`,
+e.g. `{"ok": .., "skipped": .., "Forbidden": .., "SignatureDoesNotMatch": ..}`), and
+`circuit_tripped`. This is what the download-run report is built from.
+
+**Resilience for CDSE's windowed failures (BUG-001), fail-fast + resume-later:**
+- **Circuit breaker** — `max_consecutive_failures`: if that many files fail
+  back-to-back (a bad window), the pass stops early (`circuit_tripped=True`) instead
+  of grinding thousands of doomed requests.
+- **Resume-loop** — `download_resume(..., max_consecutive_failures=15, max_passes,
+  cooldown_s, on_pass)`: re-runs `download` until a full pass has no failures. Each
+  pass is idempotent (skips landed files via the catalog); a trip → wait `cooldown_s`
+  and retry; a partial window loops immediately. `on_pass(i, result)` lets the caller
+  persist per-pass stats (keeps file I/O out of the library). Returns per-pass results.
 
 > OQ-3: implement as an ABC (`sources/base.py: Source`) or just this documented
 > function signature. Recommendation: documented signature now; promote to ABC

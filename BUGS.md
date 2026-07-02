@@ -83,9 +83,11 @@ in-run retries can't beat a bad window — confirms **fail-fast + resume-later**
 grinding. Idempotent per-chunk catalog made the killed run fully resumable.
 
 ### Still open (revisit if downloads prove flaky at scale)
-- **Circuit breaker**: after ~N consecutive failures, stop (local) vs back-off-and-retry
-  the window (unattended Azure Batch). Not yet implemented — behavior should be
-  configurable by runner.
+- ✅ **Circuit breaker + resume-loop DONE (2026-07-02).** `download(max_consecutive_failures=N)`
+  trips (`circuit_tripped`) on a bad window; `download_resume(...)` re-runs idempotently
+  until a clean pass (trip → `cooldown_s` back-off, partial → immediate retry), with an
+  `on_pass` hook to persist per-pass stats. Needs a real at-scale re-run in a good window
+  to confirm convergence.
 - **Concurrency**: currently `config.MAX_CONCURRENT_S3 = 4` (CDSE's documented quota);
   the report ran `≈6` fine. Keep configurable; tune with real runs.
 - **Retryable set**: bad windows also surface a bare `Forbidden`/`403` (seen

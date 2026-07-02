@@ -8,7 +8,6 @@ Writes a stats JSON next to this file; the .md report is composed from it.
 import datetime
 import json
 import os
-import time
 
 from fsd.catalog.catalog import TileCatalog
 from fsd.sources import cdse
@@ -36,45 +35,47 @@ def dir_bytes(path):
 
 
 def main():
+    from fsd import config
+
     creds = cdse.CdseCredentials.from_json(f"{WS}/secrets/cdse_credentials.json")
     catalog = TileCatalog(CATALOG)
 
-    t0 = time.time()
-    result = cdse.download(
+    passes = []
+
+    def on_pass(i, r):
+        # Persist cumulative stats after each pass — survives a kill (BUG-001).
+        passes.append({
+            "pass": i,
+            "elapsed_s": round(r.elapsed_s, 1),
+            "attempted": r.total_count,
+            "ok": r.successful_count,
+            "skipped": r.skipped_count,
+            "failed": r.failed_count,
+            "reason_counts": r.reason_counts,
+            "circuit_tripped": r.circuit_tripped,
+        })
+        nbytes = dir_bytes(ROOT)
+        with open(STATS_JSON, "w") as f:
+            json.dump({
+                "run_utc": datetime.datetime.utcnow().isoformat() + "Z",
+                "roi": os.path.basename(ROI),
+                "window": [START.isoformat(), END.isoformat()],
+                "bands": BANDS,
+                "concurrency": config.MAX_CONCURRENT_S3,
+                "chunksize": 100,
+                "gb_on_disk": round(nbytes / 1e9, 2),
+                "catalog_rows": len(catalog.read()) if os.path.exists(CATALOG) else 0,
+                "passes": passes,
+            }, f, indent=2, default=str)
+        print(f"[pass {i}] ok={r.successful_count} fail={r.failed_count} "
+              f"tripped={r.circuit_tripped} gb={round(nbytes / 1e9, 2)}")
+
+    results = cdse.download_resume(
         ROI, START, END, BANDS, ROOT, catalog, creds,
         max_tiles=600, chunksize=100, progress=True,
+        max_consecutive_failures=15, max_passes=20, cooldown_s=60.0, on_pass=on_pass,
     )
-    wall = time.time() - t0
-
-    nbytes = dir_bytes(ROOT)
-    stats = {
-        "run_utc": datetime.datetime.utcnow().isoformat() + "Z",
-        "roi": os.path.basename(ROI),
-        "window": [START.isoformat(), END.isoformat()],
-        "bands": BANDS,
-        "concurrency": None,  # filled from config below
-        "chunksize": 100,
-        "wall_s": round(wall, 1),
-        "download_elapsed_s": round(result.elapsed_s, 1),
-        "total_files": result.total_count,
-        "successful": result.successful_count,
-        "skipped": result.skipped_count,
-        "failed": result.failed_count,
-        "reason_counts": result.reason_counts,
-        "bytes_on_disk": nbytes,
-        "gb_on_disk": round(nbytes / 1e9, 2),
-        "catalog_rows": (len(catalog.read()) if os.path.exists(CATALOG) else 0),
-        # keep only a sample of failures to stay small
-        "failures_sample": result.failures[:40],
-    }
-    from fsd import config
-    stats["concurrency"] = config.MAX_CONCURRENT_S3
-
-    with open(STATS_JSON, "w") as f:
-        json.dump(stats, f, indent=2, default=str)
-    print("DONE", json.dumps({k: stats[k] for k in
-          ("total_files", "successful", "skipped", "failed", "gb_on_disk",
-           "wall_s", "reason_counts")}, default=str))
+    print("DONE passes:", len(results), "final gb:", round(dir_bytes(ROOT) / 1e9, 2))
 
 
 if __name__ == "__main__":
