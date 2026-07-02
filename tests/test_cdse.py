@@ -284,6 +284,13 @@ def test_download_one_redownloads_zero_byte_file(monkeypatch, tmp_path):
     assert calls == [str(dst)]  # actually re-downloaded, not skipped
 
 
+def test_fmt_progress_line():
+    s = cdse._fmt_progress(50, 200, ok_n=45, fail_n=5, skipped=10, elapsed_s=100.0)
+    for token in ("50/200", "25%", "ok=45", "fail=5", "skip=10", "file/s", "ETA"):
+        assert token in s
+    assert "\r" not in s  # newline-terminated line, not a carriage-return bar
+
+
 def test_download_raises_when_over_max_tiles(monkeypatch, tmp_path):
     import pytest
 

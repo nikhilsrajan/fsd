@@ -425,6 +425,18 @@ def _append_downloaded(catalog, tile_meta: dict, results: list[tuple]) -> int:
     return sum(len(f) for f in files_by_tile.values())
 
 
+def _fmt_progress(done, total, ok_n, fail_n, skipped, elapsed_s) -> str:
+    """A single newline-terminated progress line (log-friendly, with ETA)."""
+    rate = done / elapsed_s if elapsed_s > 0 else 0.0
+    eta_s = (total - done) / rate if rate > 0 else 0.0
+    pct = 100 * done // max(1, total)
+    return (
+        f"[{int(elapsed_s // 60):3d}m{int(elapsed_s % 60):02d}s] "
+        f"{done}/{total} ({pct:2d}%) ok={ok_n} fail={fail_n} skip={skipped} | "
+        f"{rate:.1f} file/s | ETA {int(eta_s // 60)}m"
+    )
+
+
 def download(
     roi,
     startdate: datetime.datetime,
@@ -490,11 +502,16 @@ def download(
     reason_counts: collections.Counter = collections.Counter()
     start = time.time()
 
-    bar = None
-    if progress:
-        from tqdm import tqdm
-        bar = tqdm(total=total, unit="file", desc="download", smoothing=0.1)
+    def _emit():
+        if progress:
+            print(
+                _fmt_progress(done, total, reason_counts["ok"] + skipped,
+                              len(failures), skipped, time.time() - start),
+                flush=True,
+            )
 
+    done = 0
+    last_print = 0.0
     consecutive = 0
     tripped = False
     for i in range(0, total, chunksize):
@@ -522,18 +539,17 @@ def download(
                     if (max_consecutive_failures is not None
                             and consecutive >= max_consecutive_failures):
                         tripped = True
-                if bar is not None:
-                    bar.update(1)
-                    bar.set_postfix(
-                        ok=reason_counts["ok"] + skipped, fail=len(failures),
-                        refresh=False,
-                    )
+                done += 1
+                # Log-friendly newline progress line (a \r tqdm bar looks frozen in a
+                # redirected log). Emit at most every PROGRESS_EVERY_S.
+                if progress and time.time() - last_print >= config.PROGRESS_EVERY_S:
+                    last_print = time.time()
+                    _emit()
         successful += _append_downloaded(catalog, tile_meta, results)
         if tripped:
             break
 
-    if bar is not None:
-        bar.close()
+    _emit()  # final line
 
     return DownloadResult(
         successful_count=successful,

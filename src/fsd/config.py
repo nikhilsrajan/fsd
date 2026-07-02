@@ -51,5 +51,8 @@ MAX_CONCURRENT_S3 = 4
 S3_CONNECT_TIMEOUT = 10
 S3_READ_TIMEOUT = 30
 
+# How often download(progress=True) prints a newline progress line (seconds).
+PROGRESS_EVERY_S = 5
+
 # Rough size guard for the download safety check (~GB per tile).
 APPROX_GB_PER_TILE = 0.725
