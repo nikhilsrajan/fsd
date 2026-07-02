@@ -2,7 +2,7 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-01_
+_Last updated: 2026-07-02_
 
 ## Where we are
 
@@ -15,7 +15,7 @@ Spec phase **complete and signed off**; package **scaffolded**; `storage` and
 |---|--------|--------|
 | 0 | `config.py` | ✅ done (constants) |
 | 1 | `storage/fs.py` | ✅ implemented · ✅ verified (`tests/test_storage.py` + manual `storage.md` Section A all pass; Section B = S3, needs creds, still manual) |
-| 4 | `sources/cdse.py` | ✅ `CdseCredentials` + `query_catalog` + `download` implemented (18 tests, ruff clean). **Discovery pivoted to the CDSE STAC API (`pystac-client`, anonymous) — drops `sentinelhub` and the flaky S3 `.SAFE` listing (BUG-001)**; band S3 hrefs come from STAC `assets`. Metadata path live-verified (Ethiopia ROI, 138 tiles Jan–Mar 2018, highest-res selection + MTD_TL.xml). Byte `transfer` has fail-fast retry; **1-file smoke test DONE** (2026-07-01): B08_10m of T37PBP via `_download_one` → 45 MB, valid JP2 10980² uint16 EPSG:32637. Observed BUG-001 intermittency live (OTC endpoint `eodata.ams` worked for ls+GET while the GSLB alias failed; a bad window 403'd 5× then cleared) — validates the OTC pin. At-scale download + benchmarking = TODO #9. |
+| 4 | `sources/cdse.py` | ✅ `CdseCredentials` + `query_catalog` + `download` implemented (18 tests, ruff clean). **Discovery pivoted to the CDSE STAC API (`pystac-client`, anonymous) — drops `sentinelhub` and the flaky S3 `.SAFE` listing (BUG-001)**; band S3 hrefs come from STAC `assets`. Metadata path live-verified (Ethiopia ROI, 138 tiles Jan–Mar 2018, highest-res selection + MTD_TL.xml). **At-scale download DONE + hardened (2026-07-02):** 1-year Ethiopia multi-CRS download completed — 579/579 tiles, 94 GiB in `satellite_benchmark/`, verified integrity. Resilience: atomic `.part`+rename transfer, S3 timeouts, circuit-breaker + `download_resume`, newline progress. Concurrency/quota sweep = TODO #9. |
 | 2 | `catalog/catalog.py` | ✅ implemented · ✅ verified (`tests/test_catalog.py`, 6 tests) |
 | 3 | `raster/images.py` | ✅ implemented · ✅ verified (`tests/test_raster.py`, 24 tests; + RGB/GeoTIFF save helpers) |
 | 3 | `bands/modify.py` | ✅ implemented · ✅ verified (`tests/test_bands.py`, 12 tests) |
@@ -26,16 +26,22 @@ Spec phase **complete and signed off**; package **scaffolded**; `storage` and
 
 ## Next step (when resuming)
 
-`sources/cdse.py` (module #4) is **implemented + tested** (STAC-based discovery, see
-the status table). Remaining before moving on:
+`sources/cdse.py` (module #4) is **complete + hardened + proven at scale**: the
+1-year Ethiopia multi-CRS download finished cleanly — **579/579 tiles, 94 GiB, in
+`satellite_benchmark/`**, integrity verified (0 zero-byte/truncated/`.part`). Along
+the way the download got production-grade resilience: atomic `.part`+rename transfer,
+S3 connect/read timeouts, circuit-breaker + `download_resume` loop, and log-friendly
+newline progress. See `benchmarks/download_report_2018_ethiopia.md`.
 
-1. **Real download smoke test** — deferred: user is on limited hotspot data
-   (2026-07-01). When on good bandwidth, run a **1-file/1-tile** download to confirm
-   the byte `transfer` + retry path end-to-end (also covers `storage.md` Section B).
-   Everything up to the bytes (STAC query, asset selection, catalog write) is already
-   verified live / by mocked tests.
-2. **Datacube module #5** (`datacube/ops.py → builder.py → flatten.py`) — the next
-   build target; then augment `realdata.md` with the time-series datacube QGIS test.
+**Dataset change:** the old `satellite/` (T33UWP) was **deleted**; the real-data test
+set is now **`satellite_benchmark/`** (Ethiopia `s2grid=165bca4`, EPSG:32636+32637,
+bands B04/B08/B8A/SCL). `realdata.md` TCC/FCC examples are stale (no B02/B03); only
+NDVI applies there.
+
+**NEXT: Datacube module #5** (`datacube/ops.py → builder.py → flatten.py`) — spec-first,
+then implement; validate the single-CRS-merge + reference-image-resampling against the
+real multi-CRS `satellite_benchmark` tiles (new QGIS runbook). Deferred: concurrency/
+quota benchmarking (TODO #9).
 
 CDSE discovery pivot (2026-07-01): dropped `sentinelhub` + the S3 `.SAFE` listing for
 the **CDSE STAC API** (`pystac-client`, anonymous). STAC item `assets` give per-band

@@ -7,10 +7,19 @@ downloaded Sentinel-2 L2A tile, with the outputs inspected **visually in QGIS**
 cover the logic; this guide proves it works on genuine tile bytes, real CRS, real
 nodata.
 
-Data: tile **T33UWP**, all 2018 dates, flattened EODATA layout under
-`satellite/` (editable — not one of the read-only legacy repos). Crop geometry:
-`shapefiles/s2grid=476da24.geojson` (EPSG:4326; the rasters are EPSG:32633, so this
-also exercises CRS-mismatch handling).
+> **DATASET MOVED (2026-07-02).** The `satellite/` folder (tile **T33UWP**, all 13
+> bands) has been **deleted**. The current real dataset is **`satellite_benchmark/`**
+> — the 1-year Ethiopia multi-CRS download (ROI `s2grid=165bca4`, 579 tiles across
+> EPSG:32636 & 32637, bands **B04/B08/B8A/SCL** + `MTD_TL.xml`; see
+> `benchmarks/download_report_2018_ethiopia.md`). The raster+bands ops below were
+> already validated in QGIS on T33UWP and are kept as reference, but the **paths and
+> the TCC/FCC examples are stale**: `satellite_benchmark` has no B02/B03, so only
+> **NDVI** (B04/B08) applies here. A fresh runbook against `satellite_benchmark`
+> (single-tile crop + the **multi-CRS datacube** build) comes with datacube module #5.
+
+Data (historical): tile **T33UWP**, all 2018 dates, flattened EODATA layout under
+`satellite/`. Crop geometry: `shapefiles/s2grid=476da24.geojson` (EPSG:4326; the
+rasters are EPSG:32633, so this also exercises CRS-mismatch handling).
 
 Work top-to-bottom in one Python session. Tick a box when QGIS confirms the result.
 

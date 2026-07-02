@@ -4,6 +4,25 @@ First real batch-download run of `fsd.sources.cdse.download` (TODO #9). Purpose:
 how the STAC-discovery + S3-transfer pipeline behaves at scale and **measure the
 fast-fail rate** against CDSE's flaky S3 endpoint (BUG-001).
 
+## Outcome — COMPLETED 2026-07-02 ✅
+**579/579 tiles fully downloaded** (2,316 `.jp2` + 579 `MTD_TL.xml`), balanced across
+both UTM zones (289× EPSG:32637, 290× EPSG:32636), ~94 GiB in `satellite_benchmark/`.
+Integrity verified: **0 zero-byte, 0 truncated, 0 leftover `.part`**. The final pass
+was clean: `attempted=2895, ok=2895, failed=0` in 66 min (924 new + 1971 skips).
+
+Getting there took several sessions across good/bad CDSE windows and surfaced four
+real production bugs — each fixed with tests:
+
+| Symptom | Root cause | Fix |
+|---|---|---|
+| Infinite hang (bar frozen, workers stuck) | no S3 read/connect timeout | timeouts via `config_kwargs`; timeout/conn errors retryable |
+| 1,822 zero-byte + 27 truncated files | non-atomic write; lazy `open("rb")` created a 0-byte dst before the failing GET | atomic `.part`+rename; `_download_one` skips only if size>0 |
+| "Frozen" progress (twice — not actually stuck) | tqdm `\r` bar doesn't animate in a redirected log | flushed newline progress lines (with ETA) |
+| Killed at ~70 min, no traceback | memory pressure / jetsam (disk was 97% full → no swap) | freed disk; fresh-process resume loop + disk guard |
+
+Everything below is the **first-pass (bad-window) measurement** that motivated the
+resilience work — kept for the record.
+
 ## Configuration
 | | |
 |---|---|

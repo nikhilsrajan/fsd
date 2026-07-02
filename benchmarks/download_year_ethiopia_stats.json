@@ -1,0 +1,33 @@
+{
+  "run_utc": "2026-07-02T15:36:59.403590Z",
+  "roi": "s2grid=165bca4.geojson",
+  "window": [
+    "2018-01-01T00:00:00",
+    "2019-01-01T00:00:00"
+  ],
+  "bands": [
+    "B04",
+    "B08",
+    "B8A",
+    "SCL"
+  ],
+  "concurrency": 4,
+  "chunksize": 100,
+  "gb_on_disk": 100.85,
+  "catalog_rows": 579,
+  "passes": [
+    {
+      "pass": 0,
+      "elapsed_s": 3965.1,
+      "attempted": 2895,
+      "ok": 2895,
+      "skipped": 1971,
+      "failed": 0,
+      "reason_counts": {
+        "skipped": 1971,
+        "ok": 924
+      },
+      "circuit_tripped": false
+    }
+  ]
+}
