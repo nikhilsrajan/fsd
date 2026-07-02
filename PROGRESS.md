@@ -20,7 +20,7 @@ Spec phase **complete and signed off**; package **scaffolded**; `storage` and
 | 3 | `raster/images.py` | ✅ implemented · ✅ verified (`tests/test_raster.py`, 24 tests; + RGB/GeoTIFF save helpers) |
 | 3 | `bands/modify.py` | ✅ implemented · ✅ verified (`tests/test_bands.py`, 12 tests) |
 | — | **real-data validation** (raster+bands) | ✅ `tests/manual/realdata.md` — TCC/FCC/NDVI on tile T33UWP confirmed in QGIS by user |
-| 5 | `datacube/ops.py → builder.py → flatten.py` | ✅ implemented · ✅ unit-tested (14 tests: `test_datacube_ops.py` 7, `test_datacube_builder.py` 4 incl. end-to-end synthetic-GeoTIFF cube, `test_datacube_flatten.py` 3) · ✅ real multi-CRS build verified programmatically + runbook `tests/manual/datacube.md` written (dst_crs=32636, 2-zone merge, B8A→10 m; QGIS visual boxes pending user). |
+| 5 | `datacube/ops.py → builder.py → flatten.py` | ✅ implemented · ✅ unit-tested (14 tests) · ✅ real multi-CRS build verified + runbook `tests/manual/datacube.md` (user QGIS-confirmed geolocation/merge/resample/mask; edge-tightness nit → TODO #8) · ✅ **heavy 1-yr benchmark + NDVI report** (`benchmarks/datacube_report_2018_ethiopia.md`). |
 | 6 | `workflows/task.py · runners.py · create_datacube.py` + Snakefile | ⬜ scaffolded stubs |
 | — | `notebooks/01_data_prep.ipynb` | ⬜ later |
 
@@ -47,14 +47,23 @@ save via storage), `flatten.py` (per-pixel training arrays + coords). 14 unit te
 Two design rationales captured from the user (memory): `_dt2ts` UTC localization,
 `metadata.pickle.npy` cross-platform pickling.
 
-**NEXT (two tracks, no more downloads needed — data is local in `satellite_benchmark`):**
-1. **Real-data QGIS validation** of the builder on the multi-CRS Ethiopia tiles
-   (`s2grid=165bca4`, EPSG:32636+32637) — the single-CRS-merge + reference-image
-   resampling on genuine bytes. Needs a new manual runbook. Bands available: B04/B08/
-   B8A/SCL (B08 = reference).
-2. **Module #6 workflows** (`workflows/task.py · runners.py · create_datacube.py` +
-   Snakefile) — run build_datacube over many geometries (local Snakemake runner).
-Deferred: concurrency/quota benchmarking (TODO #9).
+**Module #5 fully validated (2026-07-03):** unit tests + user QGIS pass + a **heavy
+full-year (2018) benchmark** on the real multi-CRS ROI. Findings: build is **I/O-bound**
+(load_images 70–75% of time; cold 238 s vs warm 72 s per ROI; peak ~4 GB), output
+`(19,554,533,3)` correct — the masked-mosaic NDVI traces real phenology (peak ~0.53 in
+Sep) and cloud masking lifts growing-season NDVI up to +0.36. Report + 3 figures +
+reproduce scripts in `benchmarks/` (matplotlib was `pip install`ed into `.venv`; it's
+already declared in the `notebooks` extra).
+
+**⚠️ UNCOMMITTED (paused mid-session, all on disk):** `benchmarks/datacube_report_2018_ethiopia.md`,
+`benchmarks/datacube_2018_figures/` (3 PNGs), `benchmarks/datacube_year_ethiopia.py`,
+`_plots.py`, `_stats.json`, and the PROGRESS edits above. Keep the 2 notebooks OUT.
+Commit these when resuming (user hadn't given the commit word before the pause).
+
+**NEXT: Module #6 workflows** (`workflows/task.py · runners.py · create_datacube.py` +
+Snakefile) — run `build_datacube` over many geometries via the local Snakemake runner.
+No downloads needed. Deferred: concurrency/quota benchmarking (TODO #9); the
+`reference_profile` grid-from-bounds optimisation surfaced by the benchmark.
 
 CDSE discovery pivot (2026-07-01): dropped `sentinelhub` + the S3 `.SAFE` listing for
 the **CDSE STAC API** (`pystac-client`, anonymous). STAC item `assets` give per-band

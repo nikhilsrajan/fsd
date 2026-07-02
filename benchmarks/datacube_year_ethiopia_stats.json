@@ -1,0 +1,62 @@
+{
+  "run_utc": "2026-07-02T23:11:11.855117Z",
+  "platform": "macOS-15.6.1-arm64-arm-64bit",
+  "cpu_count": 10,
+  "roi": "s2grid=165bca4.geojson",
+  "window": [
+    "2018-01-01",
+    "2019-01-01"
+  ],
+  "bands": [
+    "B04",
+    "B08",
+    "B8A",
+    "SCL"
+  ],
+  "mosaic_days": 20,
+  "njobs_load": 4,
+  "njobs": 4,
+  "n_tiles": 579,
+  "n_acquisition_dates": 144,
+  "n_band_rows": 2316,
+  "n_images_resampled": 2316,
+  "stacked_shape": [
+    144,
+    554,
+    533,
+    4
+  ],
+  "datacube_shape": [
+    19,
+    554,
+    533,
+    3
+  ],
+  "n_mosaic_timestamps": 19,
+  "dst_crs": "EPSG:32636",
+  "valid_ndvi_pixels": 244629,
+  "map_selection": {
+    "bucket": 8,
+    "bucket_date": "2018-06-11 07:46:09.024000+00:00",
+    "ndvi_gain": 0.364,
+    "raw_idx": 65,
+    "raw_date": "2018-06-14 07:56:09.024000+00:00",
+    "raw_cloud_px": 295282
+  },
+  "peak_rss_gb": 4.04,
+  "total_seconds": 71.6,
+  "phase_seconds": {
+    "catalog_filter": 0.3,
+    "flatten_catalog": 0.0,
+    "missing_files_check": 0.1,
+    "load_images": 49.2,
+    "dst_crs": 0.0,
+    "reference_profile": 7.1,
+    "resample_to_ref": 4.1,
+    "stack": 0.2,
+    "variant_raw": 0.9,
+    "variant_mosaic_nomask": 4.7,
+    "variant_mosaic_mask": 5.0,
+    "spaghetti_interp": 4.5
+  }
+}
