@@ -24,8 +24,15 @@ def download(
     *,
     max_tiles: int,                  # safety guard (~700MB/tile)
     chunksize: int = 100,            # files per download+catalog-update batch
-) -> DownloadResult                  # (successful_count, total_count)
+) -> DownloadResult                  # see below
 ```
+
+`DownloadResult` carries success + **failure visibility** (CDSE's S3 endpoint fails
+intermittently — BUG-001): `successful_count`, `total_count`, `skipped_count`
+(idempotent skips), `failed_count` (fast-fails after retries), `elapsed_s`,
+`failures` (`[(src_url, reason)]`), and `reason_counts` (`{reason: count}`, e.g.
+`{"ok": .., "skipped": .., "Forbidden": .., "SignatureDoesNotMatch": ..}`). This is
+what the download-run report is built from.
 
 > OQ-3: implement as an ABC (`sources/base.py: Source`) or just this documented
 > function signature. Recommendation: documented signature now; promote to ABC

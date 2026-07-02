@@ -238,6 +238,32 @@ def test_select_item_files_picks_highest_res_and_xml():
     assert "R20m" in b05_src and b05_src.startswith("s3://")
 
 
+def test_error_reason_maps_known_codes():
+    assert cdse._error_reason(Exception("boom SignatureDoesNotMatch x")) == \
+        "SignatureDoesNotMatch"
+    assert cdse._error_reason(PermissionError("Forbidden")) == "Forbidden"
+    assert cdse._error_reason(ValueError("weird")) == "ValueError"
+
+
+def test_download_one_skips_and_reports_reason(monkeypatch, tmp_path):
+    import os
+
+    monkeypatch.setattr(cdse.fs, "exists", lambda p, **k: os.path.exists(p))
+    existing = tmp_path / "x.jp2"
+    existing.write_bytes(b"data")
+    assert cdse._download_one("s3://eodata/a.jp2", str(existing), {}) == (True, "skipped")
+
+    def boom(src, dst, **kw):
+        raise PermissionError("An error occurred (Forbidden) ...")
+
+    monkeypatch.setattr(cdse.fs, "transfer", boom)
+    ok, reason = cdse._download_one(
+        "s3://eodata/b.jp2", str(tmp_path / "nope.jp2"), {}, tries=1
+    )
+    assert (ok, reason) == (False, "Forbidden")
+    assert "Forbidden" in cdse._RETRYABLE_S3  # 403 is transient on CDSE (BUG-001)
+
+
 def test_download_raises_when_over_max_tiles(monkeypatch, tmp_path):
     import pytest
 
@@ -282,6 +308,8 @@ def test_download_end_to_end_mocked(monkeypatch, tmp_path):
                            str(tmp_path), cat, CdseCredentials(**DUMMY_FIELDS),
                            max_tiles=10)
     assert (result.successful_count, result.total_count) == (2, 2)
+    assert (result.failed_count, result.skipped_count) == (0, 0)
+    assert result.reason_counts == {"ok": 2}
     gdf = cat.read()
     assert len(gdf) == 1
     assert gdf["files"].iloc[0] == "B02.jp2,SCL.jp2"  # unioned + sorted

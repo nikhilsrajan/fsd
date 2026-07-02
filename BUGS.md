@@ -75,6 +75,13 @@ eliminate them:
 - ✅ **Catalog is the checkpoint** — chunked, `files`-unioning append; idempotent
    (skips files already on disk).
 
+### Measured at scale (2026-07-02) — see `benchmarks/download_report_2018_ethiopia.md`
+First 1-year batch (579 tiles, 4 bands): during a **sustained bad window**, file-level
+success was only **~22.5%** (623 ok / 2152 fail of 2776), **80/579 tiles complete** in
+one pass. Making `Forbidden` retryable moved an earlier **0%** pass to ~22.5%, but
+in-run retries can't beat a bad window — confirms **fail-fast + resume-later** over
+grinding. Idempotent per-chunk catalog made the killed run fully resumable.
+
 ### Still open (revisit if downloads prove flaky at scale)
 - **Circuit breaker**: after ~N consecutive failures, stop (local) vs back-off-and-retry
   the window (unattended Azure Batch). Not yet implemented — behavior should be

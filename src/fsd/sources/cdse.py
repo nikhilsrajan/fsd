@@ -153,8 +153,13 @@ class CdseCredentials:
 
 @dataclasses.dataclass
 class DownloadResult:
-    successful_count: int
-    total_count: int
+    successful_count: int          # files on disk after the run (new + already-present)
+    total_count: int              # files attempted
+    skipped_count: int = 0        # already on disk (idempotent skip)
+    failed_count: int = 0         # files that failed after retries (fast-fails)
+    elapsed_s: float = 0.0
+    failures: list = dataclasses.field(default_factory=list)   # (src_url, reason)
+    reason_counts: dict = dataclasses.field(default_factory=dict)  # {reason: count}
 
 
 # --- catalog discovery -------------------------------------------------------
@@ -307,12 +312,16 @@ def _select_item_files(
 
 
 # CDSE S3 auth errors that are transient (permanent on real AWS) — see BUGS.md
-# BUG-001. Retryable ONLY because this is the CDSE-specific source.
+# BUG-001. Retryable ONLY because this is the CDSE-specific source: on CDSE these are
+# transient (node-inconsistency roulette), whereas on real AWS they'd be permanent.
+# `Forbidden`/403 and `InvalidAccessKeyId` were both observed at scale 2026-07-02 —
+# retrying re-rolls onto a (possibly good) node, so include them.
 _RETRYABLE_S3 = (
     "InvalidAccessKeyId",
     "SignatureDoesNotMatch",
     "SlowDown",
     "AccessDenied",
+    "Forbidden",
 )
 
 
@@ -320,25 +329,49 @@ def _is_retryable_s3(exc: Exception) -> bool:
     return any(code in str(exc) for code in _RETRYABLE_S3)
 
 
+# Short reason labels for the failure report.
+_S3_ERROR_CODES = _RETRYABLE_S3 + ("NoSuchKey",)
+
+
+def _error_reason(exc: Exception) -> str:
+    s = str(exc)
+    for code in _S3_ERROR_CODES:
+        if code in s:
+            return code
+    if isinstance(exc, PermissionError):
+        return "Forbidden"  # s3fs raises bare PermissionError for 403s
+    return type(exc).__name__
+
+
 def _download_one(
-    src_url: str, dst_path: str, s3opts: dict, *, tries: int = 3, base_delay: float = 2.0
-) -> bool:
-    """Transfer one file (idempotent: skip if already on disk), with fail-fast retry
-    on CDSE's transient S3 auth errors (jittered backoff). Returns success."""
+    src_url: str, dst_path: str, s3opts: dict, *, tries: int = 3, base_delay: float = 0.5
+) -> tuple[bool, str]:
+    """Transfer one file (idempotent: skip if already on disk), with **fail-fast**
+    retry on CDSE's transient S3 auth errors. Those errors are per-request node
+    roulette (BUG-001): a few quick re-rolls (short capped backoff + jitter) recover
+    files during a *partial* window, but a *sustained* bad window is not worth
+    grinding — the resume path is re-running `download` later (idempotent), not many
+    in-run retries. Measured 2026-07-02: 6 retries barely beat 1 during a bad window.
+
+    Returns `(ok, reason)` where reason is ``"skipped"`` / ``"ok"`` on success, or a
+    short error label (e.g. ``"Forbidden"``, ``"SignatureDoesNotMatch"``) on failure.
+    """
     import random
     import time
 
     if fs.exists(dst_path):
-        return True
+        return True, "skipped"
+    last: Exception | None = None
     for attempt in range(tries):
         try:
             fs.transfer(src_url, dst_path, src_options=s3opts)
-            return True
+            return True, "ok"
         except Exception as e:
+            last = e
             if attempt == tries - 1 or not _is_retryable_s3(e):
-                return False
-            time.sleep(base_delay * (2**attempt) + random.uniform(0, 1))
-    return False
+                break
+            time.sleep(min(base_delay * (2**attempt), 4.0) + random.uniform(0, 0.5))
+    return False, _error_reason(last) if last else "unknown"
 
 
 def _append_downloaded(catalog, tile_meta: dict, results: list[tuple]) -> int:
@@ -385,6 +418,7 @@ def download(
     max_tiles: int,
     chunksize: int = 100,
     max_cloudcover: float | None = None,
+    progress: bool = False,
 ) -> DownloadResult:
     """THE SOURCE CONTRACT (documented signature; see specs/01-sources.md).
 
@@ -420,15 +454,57 @@ def download(
         for src, dst in _select_item_files(it, bands, root_folderpath):
             work.append((src, dst, it.id))
 
+    import collections
+    import time
+
     total = len(work)
     successful = 0
+    skipped = 0
+    failures: list[tuple[str, str]] = []
+    reason_counts: collections.Counter = collections.Counter()
+    start = time.time()
+
+    bar = None
+    if progress:
+        from tqdm import tqdm
+        bar = tqdm(total=total, unit="file", desc="download", smoothing=0.1)
+
     for i in range(0, total, chunksize):
         chunk = work[i : i + chunksize]
+        results = []
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=config.MAX_CONCURRENT_S3
         ) as pool:
-            oks = list(pool.map(lambda w: _download_one(w[0], w[1], s3opts), chunk))
-        results = [(tid, dst, ok) for (_, dst, tid), ok in zip(chunk, oks)]
+            fut_to_w = {
+                pool.submit(_download_one, src, dst, s3opts): (src, dst, tid)
+                for (src, dst, tid) in chunk
+            }
+            for fut in concurrent.futures.as_completed(fut_to_w):
+                src, dst, tid = fut_to_w[fut]
+                ok, reason = fut.result()
+                results.append((tid, dst, ok))
+                reason_counts[reason] += 1
+                if reason == "skipped":
+                    skipped += 1
+                if not ok:
+                    failures.append((src, reason))
+                if bar is not None:
+                    bar.update(1)
+                    bar.set_postfix(
+                        ok=reason_counts["ok"] + skipped, fail=len(failures),
+                        refresh=False,
+                    )
         successful += _append_downloaded(catalog, tile_meta, results)
 
-    return DownloadResult(successful_count=successful, total_count=total)
+    if bar is not None:
+        bar.close()
+
+    return DownloadResult(
+        successful_count=successful,
+        total_count=total,
+        skipped_count=skipped,
+        failed_count=len(failures),
+        elapsed_s=time.time() - start,
+        failures=failures,
+        reason_counts=dict(reason_counts),
+    )
