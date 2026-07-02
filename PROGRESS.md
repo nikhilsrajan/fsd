@@ -20,7 +20,7 @@ Spec phase **complete and signed off**; package **scaffolded**; `storage` and
 | 3 | `raster/images.py` | ✅ implemented · ✅ verified (`tests/test_raster.py`, 24 tests; + RGB/GeoTIFF save helpers) |
 | 3 | `bands/modify.py` | ✅ implemented · ✅ verified (`tests/test_bands.py`, 12 tests) |
 | — | **real-data validation** (raster+bands) | ✅ `tests/manual/realdata.md` — TCC/FCC/NDVI on tile T33UWP confirmed in QGIS by user |
-| 5 | `datacube/ops.py → builder.py → flatten.py` | ✅ implemented · ✅ unit-tested (14 tests: `test_datacube_ops.py` 7, `test_datacube_builder.py` 4 incl. end-to-end synthetic-GeoTIFF cube, `test_datacube_flatten.py` 3). ⬜ real-data QGIS validation on `satellite_benchmark` still to do. |
+| 5 | `datacube/ops.py → builder.py → flatten.py` | ✅ implemented · ✅ unit-tested (14 tests: `test_datacube_ops.py` 7, `test_datacube_builder.py` 4 incl. end-to-end synthetic-GeoTIFF cube, `test_datacube_flatten.py` 3) · ✅ real multi-CRS build verified programmatically + runbook `tests/manual/datacube.md` written (dst_crs=32636, 2-zone merge, B8A→10 m; QGIS visual boxes pending user). |
 | 6 | `workflows/task.py · runners.py · create_datacube.py` + Snakefile | ⬜ scaffolded stubs |
 | — | `notebooks/01_data_prep.ipynb` | ⬜ later |
 

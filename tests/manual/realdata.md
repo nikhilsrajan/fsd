@@ -14,8 +14,8 @@ nodata.
 > `benchmarks/download_report_2018_ethiopia.md`). The raster+bands ops below were
 > already validated in QGIS on T33UWP and are kept as reference, but the **paths and
 > the TCC/FCC examples are stale**: `satellite_benchmark` has no B02/B03, so only
-> **NDVI** (B04/B08) applies here. A fresh runbook against `satellite_benchmark`
-> (single-tile crop + the **multi-CRS datacube** build) comes with datacube module #5.
+> **NDVI** (B04/B08) applies here. The **multi-CRS datacube** build against
+> `satellite_benchmark` now has its own runbook: **`datacube.md`**.
 
 Data (historical): tile **T33UWP**, all 2018 dates, flattened EODATA layout under
 `satellite/`. Crop geometry: `shapefiles/s2grid=476da24.geojson` (EPSG:4326; the
@@ -158,6 +158,5 @@ print(f"NDVI range {v.min():.3f}..{v.max():.3f}, mean {v.mean():.3f}")
   (earthdatascience.org), L. Lucchese (QGIS warp/clip).
 
 ## To extend
-Ask to **augment realdata.md** once the datacube builder lands: crop a *time series*
-of dates → SCL cloud-mask → median-mosaic → save input vs. mosaiced composites for
-side-by-side QGIS comparison (the user's main visual test).
+The datacube time-series test (crop a *time series* → SCL cloud-mask → median-mosaic
+→ QGIS) now lives in its own runbook: **`datacube.md`** (real multi-CRS build).
