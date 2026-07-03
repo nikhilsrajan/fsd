@@ -33,3 +33,6 @@ mysecrets.py
 
 # macOS
 .DS_Store
+
+# Snakemake working dir (from local runner / dry-runs)
+.snakemake/

@@ -21,7 +21,7 @@ Spec phase **complete and signed off**; package **scaffolded**; `storage` and
 | 3 | `bands/modify.py` | ✅ implemented · ✅ verified (`tests/test_bands.py`, 12 tests) |
 | — | **real-data validation** (raster+bands) | ✅ `tests/manual/realdata.md` — TCC/FCC/NDVI on tile T33UWP confirmed in QGIS by user |
 | 5 | `datacube/ops.py → builder.py → flatten.py` | ✅ implemented · ✅ unit-tested (14 tests) · ✅ real multi-CRS build verified + runbook `tests/manual/datacube.md` (user QGIS-confirmed geolocation/merge/resample/mask; edge-tightness nit → TODO #8) · ✅ **heavy 1-yr benchmark + NDVI report** (`benchmarks/datacube_report_2018_ethiopia.md`). |
-| 6 | `workflows/task.py · runners.py · create_datacube.py` + Snakefile | ⬜ scaffolded stubs |
+| 6 | `workflows/task.py · runners.py · create_datacube.py` + Snakefile | ✅ implemented · ✅ tested (`tests/test_workflows.py`, 5 tests incl. a real Snakemake dry-run: setup work-units, task end-to-end build, dry-run job planning). Real full e2e on `satellite_benchmark` not yet run. |
 | — | `notebooks/01_data_prep.ipynb` | ⬜ later |
 
 ## Next step (when resuming)
@@ -60,10 +60,25 @@ already declared in the `notebooks` extra).
 `_plots.py`, `_stats.json`, and the PROGRESS edits above. Keep the 2 notebooks OUT.
 Commit these when resuming (user hadn't given the commit word before the pause).
 
-**NEXT: Module #6 workflows** (`workflows/task.py · runners.py · create_datacube.py` +
-Snakefile) — run `build_datacube` over many geometries via the local Snakemake runner.
-No downloads needed. Deferred: concurrency/quota benchmarking (TODO #9); the
-`reference_profile` grid-from-bounds optimisation surfaced by the benchmark.
+**Module #6 workflows DONE (2026-07-03):** task/runner/entrypoint split + bundled
+Snakefile (`fsd.workflows`), 5 tests incl. a real Snakemake dry-run. This **completes the
+v1 core pipeline: download → catalog → datacube → flatten → workflows.** Adaptations in
+CHANGES.md (parquet subset via `TileCatalog.filter`, `if_missing_files="warn"` default,
+`sys.executable -m` invocation, `fs.rm`).
+
+**⚠️ PAUSED 2026-07-03 with UNCOMMITTED module #6 (all on disk):**
+`src/fsd/workflows/{task,runners,create_datacube}.py`, `src/fsd/workflows/_snakefiles/create_datacube/Snakefile`,
+`src/fsd/storage/fs.py` (added `rm`), `tests/test_workflows.py`, `CHANGES.md`, `PROGRESS.md`.
+Keep the 2 notebooks OUT. Commit on resume.
+
+**NEXT options (v1 core is now feature-complete):**
+1. **Real full e2e smoke** of `run_create_datacube` on `satellite_benchmark` (ROI
+   `id=165bca4`, short window) — proves setup → Snakemake → task CLI → build → datacube.npy
+   + done.txt on real bytes. Quick, no downloads.
+2. **Azure/Batch** (spec 10) — the cloud-agnostic scale-out (roadmap step 2), and/or the
+   **datacube throughput track (TODO #15)**.
+3. Source extension (TODO #11), rslearn benchmark (#12).
+Deferred: TODO #9 concurrency sweep; `reference_profile` grid-from-bounds optimisation.
 
 CDSE discovery pivot (2026-07-01): dropped `sentinelhub` + the S3 `.SAFE` listing for
 the **CDSE STAC API** (`pystac-client`, anonymous). STAC item `assets` give per-band

@@ -84,6 +84,11 @@ def makedirs(path: str, exist_ok: bool = True, **storage_options: Any) -> None:
     fs.makedirs(p, exist_ok=exist_ok)
 
 
+def rm(path: str, recursive: bool = False, **storage_options: Any) -> None:
+    fs, p = _fs_and_path(path, storage_options)
+    fs.rm(p, recursive=recursive)
+
+
 def put(local_path: str, remote_path: str, **storage_options: Any) -> None:
     """Upload a local file to a (possibly remote) destination."""
     fs, rpath = _fs_and_path(remote_path, storage_options)

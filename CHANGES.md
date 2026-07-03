@@ -4,6 +4,24 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## Workflows: task/runner split + fsd seams (2026-07-03)
+- `workflows/create_datacube.py` + `setup_datacube_run.py` + the in-memory Snakefile →
+  `fsd.workflows` as **task** (`task.py`, build one datacube, CLI `python -m
+  fsd.workflows.task`) + **runner** (`runners.run_local`, drives the bundled Snakefile) +
+  **entrypoint** (`create_datacube.run_create_datacube`: setup → runner). Same
+  start.txt/done.txt sentinels + deterministic jitter.
+- **Subset catalog is GeoParquet** (`catalog.parquet`) written via `TileCatalog.filter`
+  (which already persists `area_contribution`), not legacy `catalog.geojson` + a separate
+  `calculate_area_contribution` — the builder consumes the slice directly.
+- **Task defaults `if_missing_files="warn"`** (legacy builder defaulted `raise_error`): at
+  batch scale one partial-coverage shape shouldn't abort its job.
+- **Snakemake and the task are invoked via `sys.executable -m …`** (not bare `snakemake`
+  / `python`), so the workflow runs regardless of PATH / venv activation and the task
+  always runs in the same interpreter as the runner.
+- CLI passes `--bands` / `--scl-mask-classes` as **comma-strings** (single tokens) rather
+  than legacy space-separated `nargs` (simpler Snakemake shell quoting).
+- Added `storage.fs.rm` (delete through the seam; used to overwrite `input.csv`).
+
 ## Datacube builder: missing-band nodata fill shape (2026-07-02)
 - Legacy `create_datacube_inmemory_single` filled a missing `(timestamp, band)` with
   `np.full((height, width), 0)` — a **2-D** array, while present bands are **3-D**
