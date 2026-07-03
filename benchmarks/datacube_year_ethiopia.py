@@ -22,7 +22,7 @@ from fsd.datacube import builder, ops
 ROOT = "/Users/nikhilsrajan/NASA-Harvest/project/fetch_satdata_claude"
 CATALOG = f"{ROOT}/satellite_benchmark/sentinel-2-l2a/catalog.parquet"
 ROI = f"{ROOT}/shapefiles/s2grid=165bca4.geojson"
-OUT = f"{ROOT}/fsd/notebooks/outputs/datacube_fullyear"
+OUT = f"{ROOT}/fsd/tests/outputs/datacube_fullyear"
 
 BANDS = ["B04", "B08", "B8A", "SCL"]
 START, END = datetime.datetime(2018, 1, 1), datetime.datetime(2019, 1, 1)

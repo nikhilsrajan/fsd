@@ -11,7 +11,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 ROOT = "/Users/nikhilsrajan/NASA-Harvest/project/fetch_satdata_claude"
-OUT = f"{ROOT}/fsd/notebooks/outputs/datacube_fullyear"
+OUT = f"{ROOT}/fsd/tests/outputs/datacube_fullyear"
 
 
 def load(name):

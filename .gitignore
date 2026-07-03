@@ -16,8 +16,8 @@ env/
 
 # Data / artifacts (never commit downloaded tiles or datacubes)
 data/
-# QGIS scratch: downloaded tiles, RGB/composite exports
-notebooks/outputs/
+# QGIS scratch: downloaded tiles, RGB/composite exports (manual-test outputs)
+tests/outputs/
 *.npy
 *.parquet
 *.geojson

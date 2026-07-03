@@ -44,7 +44,7 @@ PRODUCT = os.path.join(
     "S2B_MSIL2A_20180630T100029_N0500_R122_T33UWP_20230804T104527",
 )
 SHAPEFILE = os.path.join(ROOT, "shapefiles/s2grid=476da24.geojson")
-OUT = os.path.join(os.getcwd(), "notebooks/outputs/realdata")
+OUT = os.path.join(os.getcwd(), "tests/outputs/realdata")
 os.makedirs(OUT, exist_ok=True)
 
 roi = gpd.read_file(SHAPEFILE)

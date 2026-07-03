@@ -38,7 +38,7 @@ from fsd.storage import fs
 ROOT = os.path.abspath(os.path.join(os.getcwd(), ".."))   # holds satellite_benchmark/
 CATALOG = os.path.join(ROOT, "satellite_benchmark/sentinel-2-l2a/catalog.parquet")
 ROI = os.path.join(ROOT, "shapefiles/s2grid=165bca4.geojson")
-OUT = os.path.join(os.getcwd(), "notebooks/outputs/datacube")
+OUT = os.path.join(os.getcwd(), "tests/outputs/datacube")
 os.makedirs(OUT, exist_ok=True)
 
 roi = gpd.read_file(ROI)
@@ -205,7 +205,7 @@ A final `rasterio.mask` re-crop to the shape would trim the halo (tested: 554×5
 parked under TODO #8 pending a decision.
 
 ## Notes
-- Outputs go to `notebooks/outputs/datacube/` (gitignored) — for QGIS, not commits.
+- Outputs go to `tests/outputs/datacube/` (gitignored) — for QGIS, not commits.
 - The **whole cube is built in memory** per geometry. Fine for a short window on this
   ROI; a full year / large ROI is where the future `xarray+zarr` chunked artifact
   (TODO #13) and the Snakemake `workflows` layer (module #6) come in.
