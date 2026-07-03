@@ -72,13 +72,23 @@ CHANGES.md (parquet subset via `TileCatalog.filter`, `if_missing_files="warn"` d
 Keep the 2 notebooks OUT. Commit on resume.
 
 **v1 core pipeline is COMPLETE and end-to-end verified** (download → catalog → datacube →
-flatten → workflows), on real multi-CRS data, incl. Snakemake resumability. **NEXT options:**
-1. **Azure/Batch** (spec 10) — the cloud-agnostic scale-out (roadmap step 2), and/or the
-   **datacube throughput track (TODO #15)**.
-2. Source extension (TODO #11), rslearn benchmark (#12).
-3. Polish: a real-data workflow runbook (`tests/manual`); the `flatten` module has unit
-   tests but no real-data run yet.
-Deferred: TODO #9 concurrency sweep; `reference_profile` grid-from-bounds optimisation.
+flatten → workflows), on real multi-CRS data, incl. Snakemake resumability.
+
+**Datacube-speed track (TODO #15) started — 3-part, benchmark-first:**
+- **Part 1 — spec 11 DONE + committed (2026-07-03):** reusable parallelism-sweep harness
+  (`benchmarks/datacube_throughput_sweep.py`) + baseline report. Finding: throughput knees at
+  **cores=4** (2.39×); per-grid `load_images` slows **2.41s→9.07s (3.76×)** with parallelism
+  → **I/O read contention is the bottleneck** (~60% of build). `build_datacube(write_timings=)`
+  flag added (env-gated via `FSD_WRITE_TIMINGS`). Runbook: `tests/manual/throughput_benchmark.md`.
+- **Part 2 — spec 12 (NEXT: write the spec):** per-read instrumentation — log `(id, tile,
+  start, end, duration)` per cropped read → parallel-reads count + read-duration-vs-concurrency
+  curve + same-vs-different-tile split. **Interview locked decisions:** goal = reusable harness;
+  cache = measure-don't-force; read-log lives in Part 2 not Part 1. Spec-first: write spec 12,
+  get sign-off, then implement.
+- **Part 3 — spec 13 (later):** tile-splitting experiment (smaller res≈11 files → disjoint reads).
+
+**Other NEXT options:** Azure/Batch (spec 10, roadmap step 2); source extension (#11) / rslearn
+benchmark (#12); `flatten` real-data run. Deferred: TODO #9; `reference_profile` grid-from-bounds.
 
 CDSE discovery pivot (2026-07-01): dropped `sentinelhub` + the S3 `.SAFE` listing for
 the **CDSE STAC API** (`pystac-client`, anonymous). STAC item `assets` give per-band
