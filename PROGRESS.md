@@ -21,7 +21,7 @@ Spec phase **complete and signed off**; package **scaffolded**; `storage` and
 | 3 | `bands/modify.py` | ✅ implemented · ✅ verified (`tests/test_bands.py`, 12 tests) |
 | — | **real-data validation** (raster+bands) | ✅ `tests/manual/realdata.md` — TCC/FCC/NDVI on tile T33UWP confirmed in QGIS by user |
 | 5 | `datacube/ops.py → builder.py → flatten.py` | ✅ implemented · ✅ unit-tested (14 tests) · ✅ real multi-CRS build verified + runbook `tests/manual/datacube.md` (user QGIS-confirmed geolocation/merge/resample/mask; edge-tightness nit → TODO #8) · ✅ **heavy 1-yr benchmark + NDVI report** (`benchmarks/datacube_report_2018_ethiopia.md`). |
-| 6 | `workflows/task.py · runners.py · create_datacube.py` + Snakefile | ✅ implemented · ✅ tested (`tests/test_workflows.py`, 5 tests incl. a real Snakemake dry-run: setup work-units, task end-to-end build, dry-run job planning). Real full e2e on `satellite_benchmark` not yet run. |
+| 6 | `workflows/task.py · runners.py · create_datacube.py` + Snakefile | ✅ implemented · ✅ tested (`tests/test_workflows.py`, 5 tests incl. real Snakemake dry-run) · ✅ **real full e2e verified** on `satellite_benchmark` (ROI 165bca4): setup→Snakemake→`task` CLI→build→`datacube.npy (2,554,533,3)` + `done.txt`; **resumability confirmed** (re-run = "Nothing to be done"). |
 | — | `notebooks/01_data_prep.ipynb` | ⬜ later |
 
 ## Next step (when resuming)
@@ -71,13 +71,13 @@ CHANGES.md (parquet subset via `TileCatalog.filter`, `if_missing_files="warn"` d
 `src/fsd/storage/fs.py` (added `rm`), `tests/test_workflows.py`, `CHANGES.md`, `PROGRESS.md`.
 Keep the 2 notebooks OUT. Commit on resume.
 
-**NEXT options (v1 core is now feature-complete):**
-1. **Real full e2e smoke** of `run_create_datacube` on `satellite_benchmark` (ROI
-   `id=165bca4`, short window) — proves setup → Snakemake → task CLI → build → datacube.npy
-   + done.txt on real bytes. Quick, no downloads.
-2. **Azure/Batch** (spec 10) — the cloud-agnostic scale-out (roadmap step 2), and/or the
+**v1 core pipeline is COMPLETE and end-to-end verified** (download → catalog → datacube →
+flatten → workflows), on real multi-CRS data, incl. Snakemake resumability. **NEXT options:**
+1. **Azure/Batch** (spec 10) — the cloud-agnostic scale-out (roadmap step 2), and/or the
    **datacube throughput track (TODO #15)**.
-3. Source extension (TODO #11), rslearn benchmark (#12).
+2. Source extension (TODO #11), rslearn benchmark (#12).
+3. Polish: a real-data workflow runbook (`tests/manual`); the `flatten` module has unit
+   tests but no real-data run yet.
 Deferred: TODO #9 concurrency sweep; `reference_profile` grid-from-bounds optimisation.
 
 CDSE discovery pivot (2026-07-01): dropped `sentinelhub` + the S3 `.SAFE` listing for
