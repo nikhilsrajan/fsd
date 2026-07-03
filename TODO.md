@@ -20,8 +20,16 @@ the big efforts:
 
 **Cross-cutting perf track:** _datacube-creation speed at scale_ (item #15) — a dedicated
 effort to make building **many** datacubes as fast as possible. Not a one-off tweak; an
-ongoing design thread to scope with the user (interview pending). Closely tied to step 2
-(Azure Batch) since the bottleneck is I/O, not CPU.
+ongoing design thread. Closely tied to step 2 (Azure Batch) since the bottleneck is I/O,
+not CPU. **Now scoped into a 3-part benchmark-first plan (interviewed 2026-07-03):**
+- **Part 1 — spec 11 (DONE):** reusable parallelism-sweep harness + baseline report
+  (`benchmarks/datacube_throughput_sweep.py`) — throughput vs `cores`, per-step timing,
+  static grid×tile overlap. Answers *how much does parallelism help before I/O contention?*
+- **Part 2 — spec 12 (next):** per-read instrumentation — log `(id, tile, start, end,
+  duration)` per cropped read → parallel-reads count + read-duration-vs-concurrency curve
+  (tests the "processes wait on each other" hypothesis) + same-vs-different-tile split.
+- **Part 3 — spec 13 (later):** tile-splitting experiment — pre-split tiles into smaller
+  (res≈11) files so inference/training grids read disjoint files → little/no read conflict.
 
 | # | Item | Area | Why deferred / note |
 |---|------|------|---------------------|

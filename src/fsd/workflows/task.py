@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import os
 
 import geopandas as gpd
 import pandas as pd
@@ -39,12 +40,17 @@ def run_task(
     if_missing_files: str | None = "warn",
     njobs: int = 1,
     njobs_load_images: int = 1,
+    write_timings: bool = False,
 ) -> None:
     """Build one datacube from a setup work-unit and save it to export_folderpath.
 
     `catalog_filepath` is the per-shape GeoParquet slice written by setup
     (`TileCatalog.filter` output — already date+overlap filtered, carries
     `area_contribution`); we band-flatten it and hand it to the builder.
+
+    `write_timings` asks the builder to drop a `timings.json` sidecar (benchmark
+    seam, spec 11); `main()` sets it from the `FSD_WRITE_TIMINGS` env var so the
+    harness can enable it without any runner/Snakefile plumbing.
     """
     shape_gdf = gpd.read_file(shapefilepath)
     subset_gdf = fs.read_parquet(catalog_filepath)
@@ -62,6 +68,7 @@ def run_task(
         njobs=njobs,
         njobs_load_images=njobs_load_images,
         if_missing_files=if_missing_files,
+        write_timings=write_timings,
     )
 
 
@@ -101,6 +108,7 @@ def main(argv=None) -> None:
         if_missing_files=None if args.if_missing_files == "none" else args.if_missing_files,
         njobs=args.njobs,
         njobs_load_images=args.njobs_load_images,
+        write_timings=os.environ.get("FSD_WRITE_TIMINGS") == "1",
     )
 
 

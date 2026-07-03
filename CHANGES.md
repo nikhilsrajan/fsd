@@ -4,6 +4,19 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## Datacube throughput benchmark, Part 1 + `write_timings` seam (2026-07-03)
+- **New (no legacy equivalent):** `benchmarks/datacube_throughput_sweep.py` — a reusable
+  harness (spec 11 · Part 1) that sweeps build parallelism (`cores`) over the 100-grid ROI
+  set and reports throughput + per-step timing + static grid×tile overlap. Baseline lives
+  in `benchmarks/datacube_throughput_report.md` (+ `*_stats.json` for cross-run diffing).
+- `datacube.builder.build_datacube` gained a **`write_timings: bool = False`** flag (off by
+  default → no extra file in normal runs): when set, it writes a `timings.json` sidecar
+  (per-phase wall-seconds + sizing counts) next to `datacube.npy`. The workflow enables it
+  via the **`FSD_WRITE_TIMINGS=1`** env var (read in `workflows.task.main`), so the harness
+  toggles it with zero runner/Snakefile plumbing. Phases are wrapped in a `_timed` ctx mgr.
+- Read-path instrumentation (per-read parallel-reads / duration-vs-concurrency) is **not**
+  here — deferred to Part 2 (spec 12); tile-splitting to Part 3 (spec 13).
+
 ## Workflows: task/runner split + fsd seams (2026-07-03)
 - `workflows/create_datacube.py` + `setup_datacube_run.py` + the in-memory Snakefile →
   `fsd.workflows` as **task** (`task.py`, build one datacube, CLI `python -m

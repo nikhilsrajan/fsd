@@ -1,6 +1,7 @@
 """Tests for fsd.datacube.builder (spec 03). Synthetic GeoTIFF tiles on disk."""
 
 import datetime
+import json
 
 import geopandas as gpd
 import numpy as np
@@ -73,6 +74,28 @@ def test_build_datacube_end_to_end(tmp_path):
     # ts2: clear, values preserved
     assert dc[1, 0, 0, 0] == 110 and dc[1, 2, 2, 1] == 210
     assert md["geotiff_metadata"]["height"] == 4
+
+
+def test_build_datacube_writes_timings_only_when_flagged(tmp_path):
+    catalog, shape = _make_catalog(tmp_path)
+    kw = dict(
+        catalog_subset=catalog, shape_gdf=shape,
+        startdate=datetime.datetime(2018, 5, 31), enddate=datetime.datetime(2018, 7, 2),
+        bands=["B04", "B08", "SCL"], mosaic_days=20, scl_mask_classes=[8, 9],
+        if_missing_files=None,
+    )
+    off = tmp_path / "off"
+    builder.build_datacube(export_folderpath=str(off), **kw)
+    assert not (off / builder.TIMINGS_FILENAME).exists()   # off by default
+
+    on = tmp_path / "on"
+    builder.build_datacube(export_folderpath=str(on), write_timings=True, **kw)
+    payload = json.loads((on / builder.TIMINGS_FILENAME).read_text())
+    assert set(payload["phase_seconds"]) == {
+        "missing_check", "load_images", "dst_crs", "reference_profile",
+        "resample", "stack", "ops", "save"}
+    assert payload["total_seconds"] >= 0
+    assert payload["n_band_rows"] == 6 and payload["datacube_shape"] == [2, 4, 4, 2]
 
 
 def test_flatten_catalog_skips_non_raster(tmp_path):

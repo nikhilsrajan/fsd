@@ -13,8 +13,11 @@ Artifact contract (specs/00 §6):
 from __future__ import annotations
 
 import datetime
+import json
 import os
+import time
 import warnings
+from contextlib import contextmanager
 
 import geopandas as gpd
 import numpy as np
@@ -28,6 +31,15 @@ from fsd.storage import fs
 
 _RASTER_EXTS = (".jp2", ".tif", ".tiff")
 _VALID_IF_MISSING = ("raise_error", "warn", None)
+TIMINGS_FILENAME = "timings.json"
+
+
+@contextmanager
+def _timed(store: dict, name: str):
+    """Record wall-seconds for a build phase into `store` (benchmark seam, spec 11)."""
+    t0 = time.perf_counter()
+    yield
+    store[name] = round(time.perf_counter() - t0, 4)
 
 
 # --- caller helper: TileCatalog rows -> band-flattened rows -------------------
@@ -74,6 +86,7 @@ def build_datacube(
     njobs_load_images: int = 1,
     if_missing_files: str | None = "raise_error",   # raise_error | warn | None
     max_timedelta_days: int = config.MAX_TIMEDELTA_DAYS,
+    write_timings: bool = False,
 ) -> None:
     """Assemble one cloud-masked, time-mosaicked datacube and save it.
 
@@ -84,66 +97,108 @@ def build_datacube(
     `startdate` must be on/before the first acquisition and `enddate` on/after the
     last (median_mosaic requirement); the workflow layer threads the actual first
     acquisition date in for `startdate` (anchor caveat, spec 04 / TODO #2).
+
+    `write_timings=True` writes a `timings.json` sidecar (per-phase wall-seconds +
+    counts) next to the artifact — the benchmark seam for spec 11. Off by default so
+    normal builds leave no extra file; the workflow path enables it via the
+    `FSD_WRITE_TIMINGS` env var (see workflows.task).
     """
     if scl_mask_classes is None:
         scl_mask_classes = config.SCL_MASK_CLASSES
     nodata = config.NODATA
+    timings: dict[str, float] = {}
+    t_all = time.perf_counter()
 
-    _missing_files_action(
-        catalog_gdf=catalog_subset, shape_gdf=shape_gdf, startdate=startdate,
-        enddate=enddate, bands=bands, if_missing_files=if_missing_files,
-        max_timedelta_days=max_timedelta_days,
-    )
+    with _timed(timings, "missing_check"):
+        _missing_files_action(
+            catalog_gdf=catalog_subset, shape_gdf=shape_gdf, startdate=startdate,
+            enddate=enddate, bands=bands, if_missing_files=if_missing_files,
+            max_timedelta_days=max_timedelta_days,
+        )
 
     # Load + crop each (tile, band) to the shape; adds crs/image_index, drops
     # unreadable rows. Raster pixel reads use rasterio directly (documented seam
-    # exception in CLAUDE.md).
-    catalog_gdf, data_profile_list = _load_images(
-        catalog_gdf=catalog_subset, shape_gdf=shape_gdf, nodata=nodata,
-        njobs=njobs_load_images,
-    )
+    # exception in CLAUDE.md). This is the read phase spec 11/12 scrutinise.
+    with _timed(timings, "load_images"):
+        catalog_gdf, data_profile_list = _load_images(
+            catalog_gdf=catalog_subset, shape_gdf=shape_gdf, nodata=nodata,
+            njobs=njobs_load_images,
+        )
 
     # Collapse into a single UTM zone so rasterio.merge (single-CRS) can run.
-    dst_crs = _get_dst_crs(catalog_gdf)
+    with _timed(timings, "dst_crs"):
+        dst_crs = _get_dst_crs(catalog_gdf)
 
     # Reference grid = the merged reference-band (B08, 10 m) profile. Everything is
     # resampled TO this real known-10 m image, not to an abstract target grid.
-    ref_indices = catalog_gdf.loc[catalog_gdf["band"] == reference_band, "image_index"]
-    reference_profile = _get_merged_profile(
-        indices=ref_indices, data_profile_list=data_profile_list, dst_crs=dst_crs,
-        nodata=nodata, njobs=njobs,
-    )
+    with _timed(timings, "reference_profile"):
+        ref_indices = catalog_gdf.loc[catalog_gdf["band"] == reference_band, "image_index"]
+        reference_profile = _get_merged_profile(
+            indices=ref_indices, data_profile_list=data_profile_list, dst_crs=dst_crs,
+            nodata=nodata, njobs=njobs,
+        )
 
-    resample_indices = _get_indices_to_resample(
-        indices=catalog_gdf["image_index"], data_profile_list=data_profile_list,
-        reference_profile=reference_profile,
-    )
-    _resample_by_indices(
-        indices=resample_indices, data_profile_list=data_profile_list,
-        reference_profile=reference_profile, njobs=njobs,
-    )
+    with _timed(timings, "resample"):
+        resample_indices = _get_indices_to_resample(
+            indices=catalog_gdf["image_index"], data_profile_list=data_profile_list,
+            reference_profile=reference_profile,
+        )
+        _resample_by_indices(
+            indices=resample_indices, data_profile_list=data_profile_list,
+            reference_profile=reference_profile, njobs=njobs,
+        )
 
-    datacube, metadata = _stack_datacube(
-        catalog_gdf=catalog_gdf, data_profile_list=data_profile_list, bands=bands,
-        reference_profile=reference_profile, shape_gdf=shape_gdf, nodata=nodata,
-    )
+    with _timed(timings, "stack"):
+        datacube, metadata = _stack_datacube(
+            catalog_gdf=catalog_gdf, data_profile_list=data_profile_list, bands=bands,
+            reference_profile=reference_profile, shape_gdf=shape_gdf, nodata=nodata,
+        )
 
-    datacube, metadata = ops.run_ops(datacube, metadata, sequence=[
-        (ops.apply_cloud_mask_scl, dict(mask_classes=scl_mask_classes)),
-        (ops.drop_bands, dict(bands_to_drop=["SCL"])),
-        (ops.median_mosaic, dict(startdate=startdate, enddate=enddate,
-                                 mosaic_days=mosaic_days)),
-    ])
+    with _timed(timings, "ops"):
+        datacube, metadata = ops.run_ops(datacube, metadata, sequence=[
+            (ops.apply_cloud_mask_scl, dict(mask_classes=scl_mask_classes)),
+            (ops.drop_bands, dict(bands_to_drop=["SCL"])),
+            (ops.median_mosaic, dict(startdate=startdate, enddate=enddate,
+                                     mosaic_days=mosaic_days)),
+        ])
 
-    fs.makedirs(export_folderpath)
-    fs.save_npy(os.path.join(export_folderpath, "datacube.npy"), datacube)
-    # Metadata is a dict (geometry, per-timestamp mapping, dim names) — things that
-    # don't fit in the numpy array. It's pickled via np.save (allow_pickle) rather
-    # than raw pickle because a raw pickle written on macOS could not be read on
-    # Ubuntu (and vice versa) — np.save's pickling proved cross-platform stable.
-    # (xarray is a possible future alternative; see TODO.)
-    fs.save_npy(os.path.join(export_folderpath, "metadata.pickle.npy"),
-                metadata, allow_pickle=True)
+    with _timed(timings, "save"):
+        fs.makedirs(export_folderpath)
+        fs.save_npy(os.path.join(export_folderpath, "datacube.npy"), datacube)
+        # Metadata is a dict (geometry, per-timestamp mapping, dim names) — things that
+        # don't fit in the numpy array. It's pickled via np.save (allow_pickle) rather
+        # than raw pickle because a raw pickle written on macOS could not be read on
+        # Ubuntu (and vice versa) — np.save's pickling proved cross-platform stable.
+        # (xarray is a possible future alternative; see TODO.)
+        fs.save_npy(os.path.join(export_folderpath, "metadata.pickle.npy"),
+                    metadata, allow_pickle=True)
+
+    if write_timings:
+        _write_timings_sidecar(
+            export_folderpath, timings, round(time.perf_counter() - t_all, 4),
+            shape_gdf=shape_gdf, catalog_subset=catalog_subset, catalog_gdf=catalog_gdf,
+            n_resampled=len(resample_indices), datacube=datacube, metadata=metadata,
+            dst_crs=dst_crs,
+        )
+
+
+def _write_timings_sidecar(export_folderpath, timings, total_seconds, *, shape_gdf,
+                           catalog_subset, catalog_gdf, n_resampled, datacube, metadata,
+                           dst_crs):
+    """Dump per-phase timings + a few sizing counts as `timings.json` (spec 11)."""
+    payload = {
+        "id": (str(shape_gdf["id"].iloc[0]) if "id" in shape_gdf.columns else None),
+        "total_seconds": total_seconds,
+        "phase_seconds": timings,
+        "n_band_rows": int(len(catalog_subset)),
+        "n_images_loaded": int(len(catalog_gdf)),
+        "n_images_resampled": int(n_resampled),
+        "n_mosaic_timestamps": int(len(metadata["timestamps"])),
+        "datacube_shape": list(datacube.shape),
+        "dst_crs": str(dst_crs),
+    }
+    with fs.open(os.path.join(export_folderpath, TIMINGS_FILENAME), "w") as f:
+        json.dump(payload, f, indent=2)
 
 
 # --- missing-files check -----------------------------------------------------
