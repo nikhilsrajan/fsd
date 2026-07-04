@@ -107,6 +107,17 @@ flatten → workflows), on real multi-CRS data, incl. Snakemake resumability.
   cores≈4-6 knee, since the decode bottleneck is gone.)
 - **Tile-centric batching + other levers — PARKED (2026-07-04):** target the bandwidth/decode
   costs, not same-file conflicts. Revisit only if build speed becomes a priority again. See TODO #15.
+- **COG-on-download — spec 14 DONE + implemented (2026-07-04):** FIRST production `src/fsd/` change
+  out of the COG track. `sources.cdse.download(cog=True, default)` converts each fetched JP2 band →
+  lossless COG (`Bxx.tif`, catalog records `.tif`) **with overviews** (TiTiler-ready); `cog=False`
+  keeps native JP2. New `src/fsd/raster/cog.py::to_cog` (lossless, atomic `.part`+replace, NBITS=16
+  for uint16, optional verify) — the single COG-profile home (config constants); `prep_cog_dataset`
+  refactored to share it. Fetch→local staging sibling→`to_cog`→remove-staging; idempotency keys on
+  the final `.tif`. **Local-dst only in v1** (remote raises; stage→convert→upload deferred to
+  Azure). Read/build path untouched (rasterio reads `.tif`). 119 tests, ruff clean. **Real smoke:**
+  10980² B04 JP2 → COG bit-identical, overviews [2,4,8,16], 15.5 s, ~1.86× size (w/ overviews).
+  Follow-ups in TODO #15: remote-dst COG, conversion process pool, bulk-migrate the existing
+  `satellite_benchmark` archive.
 
 **Other NEXT options:** Azure/Batch (spec 10, roadmap step 2); source extension (#11) / rslearn
 benchmark (#12); `flatten` real-data run. Deferred: TODO #9; `reference_profile` grid-from-bounds.

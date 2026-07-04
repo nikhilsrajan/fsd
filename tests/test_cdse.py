@@ -228,7 +228,7 @@ def test_select_item_files_picks_highest_res_and_xml():
         },
     )
 
-    selected = cdse._select_item_files(it, ["B02", "B05"], "/root")
+    selected = cdse._select_item_files(it, ["B02", "B05"], "/root", cog=False)
     dsts = {dst for _, dst in selected}
     folder = ("/root/Sentinel-2/MSI/L2A_N0500/2018/01/30/"
               "S2A_MSIL2A_20180130T080151_N0500_R035_T36PZT_20230915T000622")
@@ -236,6 +236,24 @@ def test_select_item_files_picks_highest_res_and_xml():
     # highest-res B05 is the 20m source, not 60m
     b05_src = next(src for src, dst in selected if dst.endswith("B05.jp2"))
     assert "R20m" in b05_src and b05_src.startswith("s3://")
+
+
+def test_select_item_files_cog_uses_tif_dst_but_jp2_src():
+    """cog=True (default): band dst is Bxx.tif (converted on arrival), but the source
+    href is still the .jp2 asset; the sidecar is unchanged."""
+    granule = f"{SAFE}/GRANULE/L2A_T36PZT_A013_20180130T080151"
+    it = _fake_item(
+        "S2A_T36PZT", "2018-01-30T08:00:00Z", 36.0, 11.0, 5.0, safe=SAFE,
+        assets={
+            "B02_10m": f"{granule}/IMG_DATA/R10m/T36PZT_20180130T080151_B02_10m.jp2",
+            "granule_metadata": f"{granule}/MTD_TL.xml",
+        },
+    )
+    selected = cdse._select_item_files(it, ["B02"], "/root")  # cog defaults True
+    by_dst = {dst.rsplit("/", 1)[1]: src for src, dst in selected}
+    assert set(by_dst) == {"B02.tif", "MTD_TL.xml"}
+    assert by_dst["B02.tif"].endswith("B02_10m.jp2")  # source stays JP2
+    assert by_dst["B02.tif"].startswith("s3://")
 
 
 def test_error_reason_maps_known_codes():
@@ -251,14 +269,16 @@ def test_download_one_skips_and_reports_reason(monkeypatch, tmp_path):
     monkeypatch.setattr(cdse.fs, "exists", lambda p, **k: os.path.exists(p))
     existing = tmp_path / "x.jp2"
     existing.write_bytes(b"data")
-    assert cdse._download_one("s3://eodata/a.jp2", str(existing), {}) == (True, "skipped")
+    assert cdse._download_one(
+        "s3://eodata/a.jp2", str(existing), {}, cog=False
+    ) == (True, "skipped")
 
     def boom(src, dst, **kw):
         raise PermissionError("An error occurred (Forbidden) ...")
 
     monkeypatch.setattr(cdse.fs, "transfer", boom)
     ok, reason = cdse._download_one(
-        "s3://eodata/b.jp2", str(tmp_path / "nope.jp2"), {}, tries=1
+        "s3://eodata/b.jp2", str(tmp_path / "nope.jp2"), {}, cog=False, tries=1
     )
     assert (ok, reason) == (False, "Forbidden")
     assert "Forbidden" in cdse._RETRYABLE_S3  # 403 is transient on CDSE (BUG-001)
@@ -280,7 +300,9 @@ def test_download_one_redownloads_zero_byte_file(monkeypatch, tmp_path):
             f.write(b"realbytes")
 
     monkeypatch.setattr(cdse.fs, "transfer", good_transfer)
-    assert cdse._download_one("s3://eodata/z.jp2", str(dst), {}) == (True, "ok")
+    assert cdse._download_one(
+        "s3://eodata/z.jp2", str(dst), {}, cog=False
+    ) == (True, "ok")
     assert calls == [str(dst)]  # actually re-downloaded, not skipped
 
 
@@ -315,7 +337,7 @@ def test_download_end_to_end_mocked(monkeypatch, tmp_path):
     monkeypatch.setattr(cdse, "_search_items", lambda *a, **k: [item])
     monkeypatch.setattr(
         cdse, "_select_item_files",
-        lambda it, bands, root: [
+        lambda it, bands, root, cog=True: [
             (f"{cdse._safe_root_from_item(it)}/B02.jp2", str(tmp_path / "tile/B02.jp2")),
             (f"{cdse._safe_root_from_item(it)}/SCL.jp2", str(tmp_path / "tile/SCL.jp2")),
         ],
@@ -333,7 +355,7 @@ def test_download_end_to_end_mocked(monkeypatch, tmp_path):
     result = cdse.download(roi, datetime.datetime(2018, 1, 1),
                            datetime.datetime(2018, 2, 1), ["B02", "SCL"],
                            str(tmp_path), cat, CdseCredentials(**DUMMY_FIELDS),
-                           max_tiles=10)
+                           max_tiles=10, cog=False)
     assert (result.successful_count, result.total_count) == (2, 2)
     assert (result.failed_count, result.skipped_count) == (0, 0)
     assert result.reason_counts == {"ok": 2}
@@ -362,6 +384,72 @@ def test_circuit_breaker_trips_and_stops_early(monkeypatch, tmp_path):
     assert result.circuit_tripped is True
     # stopped after the chunk that crossed the threshold (4 of 6 attempted), not all 6
     assert result.total_count == 4 and result.failed_count == 4
+
+
+# --- COG-on-download (spec 14) -----------------------------------------------
+
+
+def _write_raster(path, width=32, height=32):
+    """A tiny uint16 GeoTIFF used as a stand-in for a downloaded JP2 band."""
+    import numpy as np
+    import rasterio
+    import rasterio.transform
+
+    data = (np.arange(width * height).reshape(1, height, width) % 4096).astype("uint16")
+    with rasterio.open(
+        path, "w", driver="GTiff", height=height, width=width, count=1,
+        dtype="uint16", crs="EPSG:32637",
+        transform=rasterio.transform.from_origin(0, height * 10, 10, 10),
+    ) as dst:
+        dst.write(data)
+    return data
+
+
+def test_download_one_cog_converts_and_is_idempotent(monkeypatch, tmp_path):
+    """cog=True: a fetched JP2 band is converted to a COG .tif, the staging file is
+    removed, and a second call skips the existing .tif."""
+    import os
+
+    import rasterio
+
+    dst = str(tmp_path / "tile" / "B04.tif")
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    src_data = _write_raster(tmp_path / "ref.tif")
+
+    calls = []
+
+    def fake_transfer(src, staging, **kw):
+        # storage.transfer would fetch the JP2 to the local staging sibling;
+        # here we just drop a synthetic raster there (content, not extension, matters).
+        calls.append(staging)
+        _write_raster(staging)
+
+    monkeypatch.setattr(cdse.fs, "transfer", fake_transfer)
+
+    ok, reason = cdse._download_one("s3://eodata/x/B04.jp2", dst, {}, cog=True)
+    assert (ok, reason) == (True, "ok")
+    assert os.path.exists(dst) and not os.path.exists(dst + ".src.jp2")  # staging gone
+    with rasterio.open(dst) as d:
+        assert d.driver == "GTiff"  # a COG is a GeoTIFF on disk
+        assert (d.read() == src_data).all()  # lossless
+
+    # second call: final .tif present -> skip, no further transfer
+    calls.clear()
+    assert cdse._download_one("s3://eodata/x/B04.jp2", dst, {}, cog=True) == (
+        True, "skipped")
+    assert calls == []
+
+
+def test_download_cog_rejects_remote_root():
+    import pytest
+
+    roi = gpd.GeoDataFrame(geometry=[sg.box(0, 0, 1, 1)], crs="EPSG:4326")
+    with pytest.raises(ValueError, match="local root_folderpath"):
+        cdse.download(
+            roi, datetime.datetime(2018, 1, 1), datetime.datetime(2018, 2, 1),
+            ["B02"], "s3://some-bucket/out", object(),
+            CdseCredentials(**DUMMY_FIELDS), max_tiles=10, cog=True,
+        )
 
 
 def test_download_resume_loops_until_complete(monkeypatch):

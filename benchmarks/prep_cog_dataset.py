@@ -26,8 +26,8 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import rasterio
-import rasterio.shutil
 
+from fsd.raster.cog import to_cog
 from fsd.storage import fs
 
 ROOT = "/Users/nikhilsrajan/NASA-Harvest/project/fetch_satdata_claude"
@@ -96,26 +96,15 @@ def summarize_storage(by_band: dict) -> dict:
 
 
 # --- conversion (raster I/O — the documented rasterio exception) --------------
-
-def _cog_opts(src_filepath: str, overviews: str) -> dict:
-    """COG creation opts. NBITS=16 only for uint16 sources (S2 reflectance declares
-    NBITS=15, which PREDICTOR=2 rejects) — lossless promotion of the declared depth."""
-    with rasterio.open(src_filepath) as s:
-        dtype = s.dtypes[0]
-    opts = dict(driver="COG", COMPRESS="DEFLATE", PREDICTOR=2, BLOCKSIZE=512,
-                OVERVIEWS=overviews)
-    if dtype == "uint16":
-        opts["NBITS"] = 16
-    return opts
-
+# The COG creation profile lives in fsd.raster.cog.to_cog (spec 14); this benchmark
+# just pins OVERVIEWS="NONE" (base COG — the build never reads overviews).
 
 def _convert_file(src: str, dst: str, overviews: str = "NONE") -> int:
     """JP2 -> COG (or copy a non-raster sidecar). Returns bytes written."""
-    os.makedirs(os.path.dirname(dst), exist_ok=True)
     if src.endswith(".jp2"):
-        rasterio.shutil.copy(src, dst, **_cog_opts(src, overviews))
-    else:
-        shutil.copy2(src, dst)
+        return to_cog(src, dst, overviews=overviews)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copy2(src, dst)
     return os.path.getsize(dst)
 
 
@@ -163,7 +152,7 @@ def _sample_ratios(sub: gpd.GeoDataFrame, tmpdir: str, n_products: int):
             b = os.path.join(tmpdir, f"{band}_{r['id']}.tif")
             o = os.path.join(tmpdir, f"{band}_{r['id']}_o.tif")
             _convert_file(src, b, overviews="NONE")
-            rasterio.shutil.copy(src, o, **_cog_opts(src, "AUTO"))
+            to_cog(src, o, overviews="AUTO")
             jp2[band] = jp2.get(band, 0) + os.path.getsize(src)
             cog[band] = cog.get(band, 0) + os.path.getsize(b)
             ovr[band] = ovr.get(band, 0) + os.path.getsize(o)

@@ -267,3 +267,60 @@ def test_add_epochs_prefix_changes_basename():
     assert out.startswith("/a/b/")
     assert out.endswith("c.tif")
     assert out != "/a/b/c.tif"
+
+
+# --- COG conversion (spec 14) ------------------------------------------------
+
+
+def _write_gtiff(path, width, height, dtype="uint16"):
+    """A synthetic single-band GeoTIFF to feed to to_cog."""
+    data = (np.arange(width * height).reshape(1, height, width) % 4096).astype(dtype)
+    with rasterio.open(
+        str(path), "w", driver="GTiff", height=height, width=width, count=1,
+        dtype=dtype, crs=UTM,
+        transform=rasterio.transform.from_origin(0, height * 10, 10, 10),
+    ) as dst:
+        dst.write(data)
+    return data
+
+
+def test_to_cog_lossless_with_overviews(tmp_path):
+    from fsd.raster.cog import to_cog
+
+    src = tmp_path / "src.tif"
+    src_data = _write_gtiff(src, 1024, 1024)  # > blocksize so an overview is built
+    dst = tmp_path / "out.tif"
+    nbytes = to_cog(str(src), str(dst), overviews="AUTO", verify=True)
+
+    assert nbytes == dst.stat().st_size
+    assert not (tmp_path / "out.tif.part").exists()  # atomic: no leftover
+    with rasterio.open(str(dst)) as d:
+        assert d.driver == "GTiff"
+        assert d.overviews(1)  # AUTO built at least one overview level
+        assert (d.read() == src_data).all()  # bit-identical (lossless)
+        # tiled, deflate-compressed, and NBITS=16 promotion for uint16
+        assert d.profile["compress"] == "deflate"
+        assert d.profile["tiled"] is True
+
+
+def test_to_cog_no_overviews(tmp_path):
+    from fsd.raster.cog import to_cog
+
+    src = tmp_path / "src.tif"
+    _write_gtiff(src, 1024, 1024)
+    dst = tmp_path / "out.tif"
+    to_cog(str(src), str(dst), overviews="NONE")
+    with rasterio.open(str(dst)) as d:
+        assert d.overviews(1) == []  # none materialized
+
+
+def test_to_cog_verify_is_a_noop_on_lossless(tmp_path):
+    """uint8 (SCL-like) source: no NBITS promotion, still bit-identical."""
+    from fsd.raster.cog import to_cog
+
+    src = tmp_path / "scl.tif"
+    src_data = _write_gtiff(src, 64, 64, dtype="uint8")
+    dst = tmp_path / "scl_cog.tif"
+    to_cog(str(src), str(dst), overviews="NONE", verify=True)
+    with rasterio.open(str(dst)) as d:
+        assert (d.read() == src_data).all()

@@ -295,16 +295,19 @@ def _download_folderpath(safe_s3url: str, root_folderpath: str) -> str:
 
 
 def _select_item_files(
-    item, bands: list[str], root_folderpath: str
+    item, bands: list[str], root_folderpath: str, *, cog: bool = True
 ) -> list[tuple[str, str]]:
     """Select download files from a STAC item's `assets` (no S3 listing).
 
     For each requested band, pick the highest-resolution asset (`{band}_{res}`,
     smallest `_NNm`) and take its S3 `href`; add `MTD_TL.xml` from the
     `granule_metadata` asset. Returns `[(src_s3_url, local_filepath), ...]` with
-    short band filenames (`B02.jp2`), matching the on-disk layout.
+    short band filenames, matching the on-disk layout. The band source href is always
+    the `.jp2` asset; when `cog` the local destination is `Bxx.tif` (converted on
+    arrival, spec 14), else `Bxx.jp2`.
     """
     dst_folder = _download_folderpath(_safe_root_from_item(item), root_folderpath)
+    band_ext = "tif" if cog else "jp2"
 
     selected = []
     for band in bands:
@@ -313,7 +316,7 @@ def _select_item_files(
         if not keys:
             continue  # band not available for this item
         selected.append(
-            (item.assets[keys[0]].href, os.path.join(dst_folder, f"{band}.jp2"))
+            (item.assets[keys[0]].href, os.path.join(dst_folder, f"{band}.{band_ext}"))
         )
 
     granule = item.assets.get("granule_metadata")
@@ -360,8 +363,40 @@ def _error_reason(exc: Exception) -> str:
     return type(exc).__name__
 
 
+def _is_local_path(path: str) -> bool:
+    """True if `path` resolves to the local filesystem (vs an `s3://`/`az://` URL)."""
+    import fsspec.utils
+
+    return fsspec.utils.get_protocol(path) in ("file", "local")
+
+
+def _transfer_and_convert(src_url: str, dst_path: str, s3opts: dict) -> None:
+    """Fetch a JP2 band to a **local** staging sibling, convert it to a COG at
+    `dst_path` (spec 14), and remove the staging file. `to_cog` is atomic, so a
+    crash leaves at most the staging JP2 (no half-written `.tif`) — the next resume
+    pass re-fetches and re-converts."""
+    from fsd.raster.cog import to_cog
+
+    staging = dst_path + ".src.jp2"
+    try:
+        fs.transfer(src_url, staging, src_options=s3opts)
+        to_cog(staging, dst_path)
+    finally:
+        if fs.exists(staging):
+            try:
+                fs.rm(staging)
+            except Exception:
+                pass
+
+
 def _download_one(
-    src_url: str, dst_path: str, s3opts: dict, *, tries: int = 3, base_delay: float = 0.5
+    src_url: str,
+    dst_path: str,
+    s3opts: dict,
+    *,
+    cog: bool = True,
+    tries: int = 3,
+    base_delay: float = 0.5,
 ) -> tuple[bool, str]:
     """Transfer one file (idempotent: skip if already on disk), with **fail-fast**
     retry on CDSE's transient S3 auth errors. Those errors are per-request node
@@ -369,6 +404,10 @@ def _download_one(
     files during a *partial* window, but a *sustained* bad window is not worth
     grinding — the resume path is re-running `download` later (idempotent), not many
     in-run retries. Measured 2026-07-02: 6 retries barely beat 1 during a bad window.
+
+    When `cog` and the source is a `.jp2` band, the byte transfer is followed by a
+    lossless COG conversion (`dst_path` is the `.tif`, spec 14); non-raster sidecars
+    (`MTD_TL.xml`) transfer as-is. Idempotency keys on the **final** path.
 
     Returns `(ok, reason)` where reason is ``"skipped"`` / ``"ok"`` on success, or a
     short error label (e.g. ``"Forbidden"``, ``"SignatureDoesNotMatch"``) on failure.
@@ -383,7 +422,10 @@ def _download_one(
     last: Exception | None = None
     for attempt in range(tries):
         try:
-            fs.transfer(src_url, dst_path, src_options=s3opts)
+            if cog and src_url.endswith(".jp2"):
+                _transfer_and_convert(src_url, dst_path, s3opts)
+            else:
+                fs.transfer(src_url, dst_path, src_options=s3opts)
             return True, "ok"
         except Exception as e:
             last = e
@@ -451,6 +493,7 @@ def download(
     max_cloudcover: float | None = None,
     progress: bool = False,
     max_consecutive_failures: int | None = None,
+    cog: bool = True,
 ) -> DownloadResult:
     """THE SOURCE CONTRACT (documented signature; see specs/01-sources.md).
 
@@ -461,6 +504,12 @@ def download(
     refuses if matched tiles exceed `max_tiles`. S3 concurrency is capped at CDSE's
     limit.
 
+    `cog` (default True, spec 14): convert each fetched JP2 band to a lossless COG
+    (`Bxx.tif`, with overviews) on arrival — the native ingest format, which the
+    datacube build reads far faster (spec 13). `cog=False` keeps the native `.jp2`.
+    Conversion needs a **local** `root_folderpath`; a remote (`s3://`/`az://`) dst
+    with `cog=True` raises (the stage-local→convert→upload path is deferred).
+
     `max_consecutive_failures` is the **circuit breaker**: if that many files fail
     back-to-back (a bad CDSE window, BUG-001), the pass stops early (finishing the
     current chunk) and returns with `circuit_tripped=True` instead of grinding. Pair
@@ -470,6 +519,13 @@ def download(
     import concurrent.futures
 
     creds.require_s3()  # discovery (STAC) is anonymous; only download needs S3 keys
+
+    if cog and not _is_local_path(root_folderpath):
+        raise ValueError(
+            "COG-on-download (cog=True) needs a local root_folderpath in v1; got "
+            f"{root_folderpath!r}. Use cog=False to keep native JP2, or wait for the "
+            "stage-local->convert->upload path (Azure milestone)."
+        )
 
     roi_gdf = _roi_gdf(roi)
     items = _search_items(roi_gdf, startdate, enddate)
@@ -489,7 +545,7 @@ def download(
     # Flat work list (src, dst, tile_id) built from STAC assets — no S3 listing.
     work: list[tuple[str, str, str]] = []
     for it in kept_items:
-        for src, dst in _select_item_files(it, bands, root_folderpath):
+        for src, dst in _select_item_files(it, bands, root_folderpath, cog=cog):
             work.append((src, dst, it.id))
 
     import collections
@@ -521,7 +577,7 @@ def download(
             max_workers=config.MAX_CONCURRENT_S3
         ) as pool:
             fut_to_w = {
-                pool.submit(_download_one, src, dst, s3opts): (src, dst, tid)
+                pool.submit(_download_one, src, dst, s3opts, cog=cog): (src, dst, tid)
                 for (src, dst, tid) in chunk
             }
             for fut in concurrent.futures.as_completed(fut_to_w):
@@ -580,6 +636,7 @@ def download_resume(
     max_passes: int = 10,
     cooldown_s: float = 60.0,
     on_pass=None,
+    cog: bool = True,
 ) -> list[DownloadResult]:
     """Resume-loop: run `download` repeatedly until every file is present (a full pass
     with no failures) or `max_passes` is reached.
@@ -600,6 +657,7 @@ def download_resume(
             roi, startdate, enddate, bands, root_folderpath, catalog, creds,
             max_tiles=max_tiles, chunksize=chunksize, max_cloudcover=max_cloudcover,
             progress=progress, max_consecutive_failures=max_consecutive_failures,
+            cog=cog,
         )
         results.append(r)
         if on_pass is not None:

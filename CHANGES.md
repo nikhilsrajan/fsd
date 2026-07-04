@@ -4,6 +4,30 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## COG-on-download — native ingest format (spec 14, 2026-07-04)
+- **Behavior change (kept-but-changed): `sources.cdse.download` now converts each fetched JP2
+  band to a lossless COG by default** (`cog: bool = True`). On-disk band files are `Bxx.tif`
+  (was `Bxx.jp2`) and the catalog `files` column records `.tif`. `cog=False` restores the exact
+  prior behavior (native `Bxx.jp2`). Turns the spec-13 finding (COG builds 1.58×–3.46× faster,
+  lossless) into the ingest default so downloads are build-fast from the start.
+- **COGs carry overviews** (`OVERVIEWS="AUTO"`) for the future TiTiler XYZ/WMTS goal (TODO #14).
+  The datacube build reads full-res and never uses them; they cost ~+38% on top of base COG (so
+  ingest COGs are ~1.7× JP2 storage — a deliberate tiling-readiness cost, not a build cost).
+- **New `src/fsd/raster/cog.py::to_cog`** — one canonical local raster → COG primitive: lossless
+  (DEFLATE + PREDICTOR=2; `NBITS=16` promotes S2's declared 15-bit depth so PREDICTOR=2 is legal —
+  pixels unchanged), **atomic** (`.part` + `os.replace`, mirroring `storage.transfer`), optional
+  overviews, optional `verify` (bit-identical read-back). COG profile constants live in `config`.
+- **Download flow:** a band is fetched to a local staging sibling (`Bxx.tif.src.jp2`) via
+  `storage.transfer`, converted with `to_cog`, staging removed; `MTD_TL.xml` transfers as-is.
+  Idempotency keys on the final `.tif`; a crash leaves at most the staging JP2 (atomic convert),
+  so resume re-fetches cleanly. Conversion runs inline in the existing S3 worker threads (GDAL
+  releases the GIL) — a dedicated conversion process pool is a noted future optimization.
+- **Seam boundary:** `cog=True` requires a **local** `root_folderpath`; a remote (`s3://`/`az://`)
+  dst raises a clear error (the stage-local→convert→upload path is deferred to the Azure milestone).
+- **`benchmarks/prep_cog_dataset.py` refactored** to delegate its conversion to `to_cog` (one
+  source of truth for the COG profile); behavior identical (it still pins `OVERVIEWS="NONE"`).
+- The read/build/datacube/workflow path is untouched — rasterio reads `.tif` transparently (spec 13).
+
 ## COG vs JP2 storage/time experiment (spec 13, 2026-07-04)
 - **New (no legacy equivalent), no `src/fsd/` change:** measures what storing S2 tiles as
   **COG** vs native **JP2** buys in build time and costs in disk. Three additive benchmark

@@ -56,3 +56,15 @@ PROGRESS_EVERY_S = 5
 
 # Rough size guard for the download safety check (~GB per tile).
 APPROX_GB_PER_TILE = 0.725
+
+# --- COG conversion (convert-on-download; spec 14) ---------------------------
+# Native on-disk format at ingest. DEFLATE + PREDICTOR=2 is fully lossless
+# (reversible integer differencing); uint16 S2 reflectance declares NBITS=15, which
+# PREDICTOR=2 rejects, so to_cog promotes the *declared* depth to NBITS=16 (pixels
+# unchanged) — see specs/13, specs/14. Overviews are materialized at ingest for the
+# downstream XYZ/WMTS (TiTiler) goal; the datacube build reads full-res and never
+# uses them (they cost ~+38% on top of base COG).
+COG_COMPRESS = "DEFLATE"
+COG_PREDICTOR = 2
+COG_BLOCKSIZE = 512
+COG_OVERVIEWS = "AUTO"   # "AUTO" builds overviews; "NONE" skips them
