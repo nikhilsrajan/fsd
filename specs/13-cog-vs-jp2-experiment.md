@@ -4,8 +4,10 @@
 > (JP2→base COG, DEFLATE+PREDICTOR=2 lossless via NBITS=16, disk pre-flight, storage report),
 > harness `--catalog/--start/--end/--tag`, `benchmarks/compare_cog_jp2.py` (team report +
 > duration-vs-concurrency overlay). No `src/fsd/` change. Runbook `tests/manual/cog_experiment.md`;
-> pure logic unit-tested; whole chain smoke-validated. Base COG ≈ 1.23× JP2 (lossless). Full
-> 4-month A/B run still to be run for the real time verdict. See `CHANGES.md`.
+> pure logic unit-tested. **Full 4-month A/B DONE (2026-07-04):** COG 1.58×→3.46× faster wall,
+> up to 9.42× faster `load_images`, COG read cost FLAT vs concurrency (1.01× vs JP2 3.45×) →
+> decode-bound confirmed (corrects Part-2). Cost: base COG 1.225× JP2 storage (+23%), lossless.
+> Report `benchmarks/cog_vs_jp2_report.md`. See `CHANGES.md`.
 
 
 A **measurement experiment** (not a production change) to give the team the numbers for a

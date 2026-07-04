@@ -39,8 +39,11 @@ not CPU. **Now scoped into a 3-part benchmark-first plan (interviewed 2026-07-03
   sharing. Measures build-time gain + storage cost of storing tiles as COG vs native JP2, via a
   parallel COG dataset/catalog (no `src/fsd/` change) A/B'd on the Part-1/2 harness. Scripts:
   `prep_cog_dataset.py`, `compare_cog_jp2.py` + harness `--catalog/--tag`; runbook
-  `cog_experiment.md`. Base COG ≈ 1.23× JP2 storage (lossless). **Full 4-month run pending** for
-  the real time verdict (does COG flatten the duration-vs-concurrency curve → decode-bound?).
+  `cog_experiment.md`. **Full 4-month A/B DONE (2026-07-04):** COG **1.58×→3.46× faster wall**,
+  up to **9.42× faster load_images**, COG read cost **flat vs concurrency (1.01×)** → decode-bound
+  confirmed (corrects Part-2's "disk-bandwidth" framing). Cost: base COG **1.225× JP2 (+23%)**,
+  lossless — a clear win. **Next lever if pursued: adopt COG in the ingest/download path** (convert
+  on download, or source AWS `sentinel-2-l2a-cogs`); that's a production change, separate spec.
 - **Other candidates — PARKED (2026-07-04, not scheduled):** the benchmark-first track (Parts 1–2)
   is complete; **parked candidate optimizations** (revisit only if datacube-build speed becomes a
   priority again), all pointing at the measured *bandwidth/decode* costs rather than same-file

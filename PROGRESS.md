@@ -99,8 +99,12 @@ flatten → workflows), on real multi-CRS data, incl. Snakemake resumability.
   DEFLATE+PREDICTOR=2, lossless via NBITS=16, disk pre-flight, storage report) + harness
   `--catalog/--start/--end/--tag` + `benchmarks/compare_cog_jp2.py` (team report + duration-vs-
   concurrency overlay). No `src/fsd/` change. Runbook `tests/manual/cog_experiment.md`. 113 tests,
-  ruff clean, whole chain smoke-validated. Base COG ≈ 1.23× JP2 (lossless). **Full 4-month run
-  pending** for the real time verdict (does COG flatten the concurrency curve → decode-bound?).
+  ruff clean. **Full 4-month A/B DONE (2026-07-04)** — `benchmarks/cog_vs_jp2_report.md`.
+  **RESULT:** COG **1.58×→3.46× faster wall** (cores 1→10), **up to 9.42× faster load_images**;
+  COG mean read is **FLAT vs concurrency (1.01×)** while JP2 rises 3.45× → the slowdown was JP2
+  wavelet **DECODE** contention, **not** disk bandwidth (**corrects the Part-2 framing**). Cost:
+  base COG **1.225× JP2 storage (+23%)**, lossless. Clear win. (COG also scales past the JP2
+  cores≈4-6 knee, since the decode bottleneck is gone.)
 - **Tile-centric batching + other levers — PARKED (2026-07-04):** target the bandwidth/decode
   costs, not same-file conflicts. Revisit only if build speed becomes a priority again. See TODO #15.
 
