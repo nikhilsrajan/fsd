@@ -38,11 +38,14 @@ From `fsd/` (the repo root):
 
 # custom: e.g. 40 grids, only 1/2/4 cores, 2 repeats (min wall kept per setting)
 .venv/bin/python benchmarks/datacube_throughput_sweep.py --n-grids 40 --cores 1,2,4 --repeats 2
+
+# Part 2 (spec 12): also log every windowed read + analyse read conflicts
+.venv/bin/python benchmarks/datacube_throughput_sweep.py --read-log
 ```
 
 Flags: `--cores` (comma list), `--n-grids N` (first N grids), `--repeats R`, `--smoke`,
-and `--report-only` (rebuild `report.md` from the saved `stats.json`, reusing the figures —
-no sweep; handy after tweaking the report text).
+`--read-log` (Part 2 — see §7), and `--report-only` (rebuild `report.md` from the saved
+`stats.json`, reusing the figures — no sweep; handy after tweaking the report text).
 
 The harness prints a **live progress line every ~10 s** while each setting builds, plus a
 running sweep-wide ETA, e.g.:
@@ -96,6 +99,8 @@ subprocesses), so nothing else in the workflow needs to change.
 | `benchmarks/datacube_throughput_stats.json` | machine-readable — **diff this across runs** |
 | `benchmarks/datacube_throughput_figures/*.png` | throughput, phase-breakdown, load_images, wall-vs-tiles |
 | `tests/outputs/throughput_sweep/` | gitignored scratch (per-grid slices, sentinels, cubes) |
+| `.../<grid>/reads.jsonl` | *(--read-log only)* one JSON row per windowed read (see §7) |
+| `benchmarks/datacube_throughput_figures/read_*.png` | *(--read-log only)* the 4 read-contention plots |
 
 ---
 
@@ -141,3 +146,57 @@ subprocesses), so nothing else in the workflow needs to change.
 - Lower-level pieces are importable if you want to poke by hand:
   `from benchmarks.datacube_throughput_sweep import characterize, overlap_stats, run_sweep`
   (or drive `create_datacube.setup` + `runners.run_local` directly).
+
+---
+
+## 7. Part 2 — read-contention instrumentation (`--read-log`, spec 12)
+
+Adding `--read-log` turns on the builder's per-read log and enriches the same report with a
+**Read contention** section — the direct measurement behind the Part-1 inference that
+`load_images` slows under parallelism.
+
+**What it logs.** With `--read-log`, `build_datacube(write_read_log=True)` (enabled per-task
+via the `FSD_WRITE_READ_LOG=1` env var, same mechanism as `FSD_WRITE_TIMINGS`) writes a
+`reads.jsonl` next to each grid's `datacube.npy`. One row per windowed read:
+
+```json
+{"id": "<grid>", "mgrs_tile": "37PBN", "product_id": "S2A_..._T37PBN_...",
+ "band": "B08", "filepath": ".../<product>/B08.jp2",
+ "start": 1783147061.845, "end": 1783147061.904, "duration": 0.0588}
+```
+
+Times are **wall-clock `time.time()`** (comparable across grid processes). The *only* disk reads
+in a build are these `load_images` reads, so `sum(duration) ≈ the load_images phase`.
+
+> **Requires `njobs_load_images == 1`** (the reads must run in the grid's own process to be
+> timed). The sweep always uses 1 (parallelism is at the grid/process level), so this is fine;
+> if you set it >1 with `--read-log`, the log is skipped with a warning.
+
+**Three identifiers, don't conflate them:**
+- `mgrs_tile` (`37PBN`) — geographic tile, **same across acquisition dates**. *Not* a file.
+- `product_id` — one SAFE product = one (tile × datetime) folder.
+- `filepath` — `<product>/B08.jp2` = **one physical file** (product × band). The same-file key.
+
+**How to read the Read-contention section:**
+- **conflicts table** (`cores → reads, conflicts, same-file / same-tile / diff-tile, max/mean
+  concur`): a *conflict* = two reads from **different grids** whose intervals overlap. `max concur`
+  = peak reads in flight at once (bounded by `cores`). Only **same-file** conflicts are what
+  Part-3 tile-splitting can remove.
+- **`read_duration_vs_concurrency.png`** (the money plot): mean read duration vs how many reads
+  were in flight. Rising with concurrency = reads block each other = hypothesis **confirmed**.
+- **`read_conflicts_vs_cores.png`**: conflict pairs stacked by class — is the contention on the
+  same file or just general disk bandwidth?
+- **`read_class_split.png`**: duration-vs-concurrency for all reads vs same-file reads only (a
+  first cut at cache-vs-contention: a same-file read that gets *faster* hints cache reuse).
+- **`read_concurrency_timeline.png`**: reads in flight over time, busiest `cores`.
+- **Verdict paragraph**: states whether the slowdown is confirmed and whether conflicts are
+  **same-file** (→ Part-3 tile-splitting helps) or **different-file/tile** disk-bandwidth (→ it
+  won't — reconsider before building Part 3). *This is the go/no-go signal for Part 3.*
+
+**Self-check:** compare a run's `sum_read_seconds` against the summed `load_images` phase in
+`timings.json` — they should track (reads are the only I/O in a build).
+
+**Note on smoke vs full:** a 3-grid `--smoke --read-log` can show *all different-tile* conflicts
+simply because 3 random grids rarely share a tile; the full 100-grid run (where one tile is shared
+by ~48 grids) is what surfaces same-file conflicts. Judge the same-file/different-file split from
+the **full** run, not the smoke.

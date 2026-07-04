@@ -25,11 +25,23 @@ not CPU. **Now scoped into a 3-part benchmark-first plan (interviewed 2026-07-03
 - **Part 1 — spec 11 (DONE):** reusable parallelism-sweep harness + baseline report
   (`benchmarks/datacube_throughput_sweep.py`) — throughput vs `cores`, per-step timing,
   static grid×tile overlap. Answers *how much does parallelism help before I/O contention?*
-- **Part 2 — spec 12 (next):** per-read instrumentation — log `(id, tile, start, end,
-  duration)` per cropped read → parallel-reads count + read-duration-vs-concurrency curve
-  (tests the "processes wait on each other" hypothesis) + same-vs-different-tile split.
-- **Part 3 — spec 13 (later):** tile-splitting experiment — pre-split tiles into smaller
-  (res≈11) files so inference/training grids read disjoint files → little/no read conflict.
+- **Part 2 — spec 12 (DONE, implemented 2026-07-04):** per-read instrumentation — builder
+  `write_read_log` → `reads.jsonl` per grid (id, mgrs_tile, product_id, band, filepath, epoch
+  start/end, duration); harness `--read-log` computes read conflicts + read-duration-vs-
+  concurrency (tests "processes wait on each other") + **same-file / same-tile / different-tile**
+  split. **Only same-file conflicts are what Part 3 removes** — the report's verdict is the
+  go/no-go for Part 3. Smoke-validated; a full 100-grid `--read-log` run gives the real numbers.
+  **Full run finding (2026-07-04):** hypothesis confirmed (read duration 4.87× at concurrency
+  1→10; total load_images 3.27× for identical read count) = **disk-bandwidth ceiling**; but
+  conflicts are **only 0.6% same-file** → splitting-to-avoid-same-file-conflicts is NOT the win.
+- **Part 3 — spec 13 (RE-SCOPE — gated by Part-2):** the original "pre-split tiles so grids read
+  disjoint files → no read conflict" is **not** supported for the scattered-grids-on-shared-tiles
+  workload (same-file simultaneous conflict is negligible). Redirect to the real bandwidth levers:
+  **tile-centric batching** (read a tile's window once, crop to every intersecting grid — kills
+  *redundant* reads, which Part 2 does NOT measure), cap parallelism at the throughput knee,
+  faster/independent storage (per-node disk on Batch), COG+overviews vs windowed JP2 decode.
+  Splitting may still help the distinct *inference* workload (one region → disjoint sub-grids,
+  1 grid ↔ 1 pre-split file); scope that separately if pursued.
 
 | # | Item | Area | Why deferred / note |
 |---|------|------|---------------------|

@@ -80,12 +80,24 @@ flatten → workflows), on real multi-CRS data, incl. Snakemake resumability.
   **cores=4** (2.39×); per-grid `load_images` slows **2.41s→9.07s (3.76×)** with parallelism
   → **I/O read contention is the bottleneck** (~60% of build). `build_datacube(write_timings=)`
   flag added (env-gated via `FSD_WRITE_TIMINGS`). Runbook: `tests/manual/throughput_benchmark.md`.
-- **Part 2 — spec 12 (NEXT: write the spec):** per-read instrumentation — log `(id, tile,
-  start, end, duration)` per cropped read → parallel-reads count + read-duration-vs-concurrency
-  curve + same-vs-different-tile split. **Interview locked decisions:** goal = reusable harness;
-  cache = measure-don't-force; read-log lives in Part 2 not Part 1. Spec-first: write spec 12,
-  get sign-off, then implement.
-- **Part 3 — spec 13 (later):** tile-splitting experiment (smaller res≈11 files → disjoint reads).
+- **Part 2 — spec 12 DONE + implemented (2026-07-04):** per-read instrumentation. Builder
+  `write_read_log` → `reads.jsonl` per grid (id, mgrs_tile, product_id, band, filepath, wall-clock
+  start/end, duration; env-gated `FSD_WRITE_READ_LOG`, requires `njobs_load_images==1`). Harness
+  `--read-log`: **read conflicts** (overlapping read pairs, different grids) + **read-duration-vs-
+  concurrency** curve (instantaneous peak-in-flight; the hypothesis test) + **same-file / same-tile
+  / different-tile** split. Pure analysis unit-tested (107 tests). **Full 100-grid `--read-log`
+  run DONE (2026-07-04)** — report `benchmarks/datacube_throughput_report.md`.
+  **FINDING:** hypothesis **confirmed** — read duration 0.056s→0.274s (**4.87×**) as concurrency
+  1→10; all `cores` lines collapse onto ONE duration-vs-concurrency curve; total `load_images`
+  work 279s→912s (**3.27×**) for the *same* 6284 reads → **shared disk-bandwidth ceiling**, wall
+  plateaus past the cores=4 knee. **Conflicts are only 0.6% same-file** (372 / 15457 same-tile /
+  43082 diff-tile) — so **Part-3 tile-splitting-to-kill-same-file-conflicts targets a negligible
+  slice.** Self-check passes (sum_read_seconds ≈ load_images phase). Nuance in the report verdict:
+  it measures *simultaneous* conflicts not *redundant* reads; the inference workload isn't covered.
+- **Part 3 — spec 13 (RE-SCOPE before building):** original "split to avoid same-file conflicts"
+  is **not** supported by Part-2. Real levers = reduce concurrent bytes (**tile-centric
+  read-once-crop-many**), cap parallelism at knee, faster/independent storage, COG+overviews.
+  Splitting may still help the *inference* workload (region→disjoint sub-grids, 1 grid↔1 file).
 
 **Other NEXT options:** Azure/Batch (spec 10, roadmap step 2); source extension (#11) / rslearn
 benchmark (#12); `flatten` real-data run. Deferred: TODO #9; `reference_profile` grid-from-bounds.

@@ -32,6 +32,7 @@ from fsd.storage import fs
 _RASTER_EXTS = (".jp2", ".tif", ".tiff")
 _VALID_IF_MISSING = ("raise_error", "warn", None)
 TIMINGS_FILENAME = "timings.json"
+READ_LOG_FILENAME = "reads.jsonl"
 
 
 @contextmanager
@@ -87,6 +88,7 @@ def build_datacube(
     if_missing_files: str | None = "raise_error",   # raise_error | warn | None
     max_timedelta_days: int = config.MAX_TIMEDELTA_DAYS,
     write_timings: bool = False,
+    write_read_log: bool = False,
 ) -> None:
     """Assemble one cloud-masked, time-mosaicked datacube and save it.
 
@@ -102,6 +104,13 @@ def build_datacube(
     counts) next to the artifact — the benchmark seam for spec 11. Off by default so
     normal builds leave no extra file; the workflow path enables it via the
     `FSD_WRITE_TIMINGS` env var (see workflows.task).
+
+    `write_read_log=True` writes a `reads.jsonl` sidecar (one row per windowed read:
+    grid id, mgrs_tile, product_id, band, filepath, epoch start/end, duration) — the
+    Part-2 read-instrumentation seam (spec 12). Requires `njobs_load_images == 1` (the
+    reads must run in this process to be timed); a no-op with a warning otherwise. Uses
+    wall-clock `time.time()` so intervals are comparable across grid processes. The
+    workflow path enables it via the `FSD_WRITE_READ_LOG` env var (see workflows.task).
     """
     if scl_mask_classes is None:
         scl_mask_classes = config.SCL_MASK_CLASSES
@@ -120,9 +129,9 @@ def build_datacube(
     # unreadable rows. Raster pixel reads use rasterio directly (documented seam
     # exception in CLAUDE.md). This is the read phase spec 11/12 scrutinise.
     with _timed(timings, "load_images"):
-        catalog_gdf, data_profile_list = _load_images(
+        catalog_gdf, data_profile_list, reads = _load_images(
             catalog_gdf=catalog_subset, shape_gdf=shape_gdf, nodata=nodata,
-            njobs=njobs_load_images,
+            njobs=njobs_load_images, write_read_log=write_read_log,
         )
 
     # Collapse into a single UTM zone so rasterio.merge (single-CRS) can run.
@@ -173,6 +182,8 @@ def build_datacube(
         fs.save_npy(os.path.join(export_folderpath, "metadata.pickle.npy"),
                     metadata, allow_pickle=True)
 
+    if reads is not None:
+        _write_read_log(export_folderpath, reads)
     if write_timings:
         _write_timings_sidecar(
             export_folderpath, timings, round(time.perf_counter() - t_all, 4),
@@ -199,6 +210,27 @@ def _write_timings_sidecar(export_folderpath, timings, total_seconds, *, shape_g
     }
     with fs.open(os.path.join(export_folderpath, TIMINGS_FILENAME), "w") as f:
         json.dump(payload, f, indent=2)
+
+
+def _write_read_log(export_folderpath, reads):
+    """Dump one JSON row per windowed read as `reads.jsonl` (spec 12)."""
+    fs.makedirs(export_folderpath)
+    with fs.open(os.path.join(export_folderpath, READ_LOG_FILENAME), "w") as f:
+        for r in reads:
+            f.write(json.dumps(r) + "\n")
+
+
+def _mgrs_tile(product_id, filepath) -> str | None:
+    """Parse the MGRS tile (`..._T36NXF_...`) from the product id or the parent
+    folder name. Returns None if neither carries the `_T<tile>` marker (e.g. the
+    synthetic tiles in tests) — the same-file key is `filepath`, not this."""
+    for s in (product_id, os.path.basename(os.path.dirname(filepath))):
+        s = str(s)
+        if "_T" in s:
+            cand = s.split("_T", 1)[1][:5]
+            if len(cand) == 5:
+                return cand
+    return None
 
 
 # --- missing-files check -----------------------------------------------------
@@ -288,16 +320,33 @@ def _missing_files_action(catalog_gdf, shape_gdf, startdate, enddate, bands,
 
 # --- load / dst_crs / reference / resample -----------------------------------
 
-def _load_images(catalog_gdf, shape_gdf, nodata, njobs=1):
-    """Crop every (tile, band) to the shape; return (kept rows, data_profile_list).
-    Adds `image_index` (position in the list) and `crs` (str, for grouping); drops
-    rows that failed to read. `image_index` still indexes the full list."""
+def _load_images(catalog_gdf, shape_gdf, nodata, njobs=1, write_read_log=False):
+    """Crop every (tile, band) to the shape; return (kept rows, data_profile_list,
+    reads). Adds `image_index` (position in the list) and `crs` (str, for grouping);
+    drops rows that failed to read. `image_index` still indexes the full list.
+
+    `reads` is None unless `write_read_log` (spec 12): a per-read timing log built by
+    reading each file serially in-process (so `njobs == 1` is required)."""
     catalog_gdf = catalog_gdf.copy()
-    data_profile_list = images.load_images(
-        src_filepaths=catalog_gdf["filepath"].tolist(), shapes_gdf=shape_gdf,
-        raise_error=False, nodata=nodata, all_touched=True, njobs=njobs,
-        print_messages=False,
-    )
+    filepaths = catalog_gdf["filepath"].tolist()
+
+    reads = None
+    if write_read_log and njobs != 1:
+        warnings.warn(
+            "write_read_log requires njobs_load_images == 1; skipping read log.",
+            RuntimeWarning, stacklevel=2,
+        )
+    if write_read_log and njobs == 1:
+        data_profile_list, reads = _load_images_logged(
+            filepaths=filepaths, shape_gdf=shape_gdf, nodata=nodata,
+            product_ids=catalog_gdf["id"].tolist(), bands=catalog_gdf["band"].tolist(),
+        )
+    else:
+        data_profile_list = images.load_images(
+            src_filepaths=filepaths, shapes_gdf=shape_gdf,
+            raise_error=False, nodata=nodata, all_touched=True, njobs=njobs,
+            print_messages=False,
+        )
 
     idx = [i if dp[0] is not None else -1 for i, dp in enumerate(data_profile_list)]
     if all(i == -1 for i in idx):
@@ -307,7 +356,33 @@ def _load_images(catalog_gdf, shape_gdf, nodata, njobs=1):
     catalog_gdf["crs"] = [str(p["crs"]) if p is not None else None
                           for _, p in data_profile_list]
     catalog_gdf = catalog_gdf[catalog_gdf["image_index"] != -1]
-    return catalog_gdf, data_profile_list
+    return catalog_gdf, data_profile_list, reads
+
+
+def _load_images_logged(filepaths, shape_gdf, nodata, product_ids, bands):
+    """Serial load+crop, timing each windowed read with wall-clock `time.time()`
+    (comparable across processes). Returns (data_profile_list, reads)."""
+    grid_id = (str(shape_gdf["id"].iloc[0]) if "id" in shape_gdf.columns else None)
+    data_profile_list, reads = [], []
+    for fp, pid, band in zip(filepaths, product_ids, bands):
+        t0 = time.time()
+        dp = images.load_image(
+            src_filepath=fp, shapes_gdf=shape_gdf, nodata=nodata,
+            all_touched=True, raise_error=False,
+        )
+        t1 = time.time()
+        data_profile_list.append(dp)
+        reads.append({
+            "id": grid_id,
+            "mgrs_tile": _mgrs_tile(pid, fp),
+            "product_id": str(pid),
+            "band": str(band),
+            "filepath": fp,
+            "start": round(t0, 6),
+            "end": round(t1, 6),
+            "duration": round(t1 - t0, 6),
+        })
+    return data_profile_list, reads
 
 
 def _get_dst_crs(catalog_gdf) -> CRS:

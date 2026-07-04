@@ -41,6 +41,7 @@ def run_task(
     njobs: int = 1,
     njobs_load_images: int = 1,
     write_timings: bool = False,
+    write_read_log: bool = False,
 ) -> None:
     """Build one datacube from a setup work-unit and save it to export_folderpath.
 
@@ -49,8 +50,9 @@ def run_task(
     `area_contribution`); we band-flatten it and hand it to the builder.
 
     `write_timings` asks the builder to drop a `timings.json` sidecar (benchmark
-    seam, spec 11); `main()` sets it from the `FSD_WRITE_TIMINGS` env var so the
-    harness can enable it without any runner/Snakefile plumbing.
+    seam, spec 11); `write_read_log` asks for a `reads.jsonl` per-read log (spec 12).
+    `main()` sets both from the `FSD_WRITE_TIMINGS` / `FSD_WRITE_READ_LOG` env vars so
+    the harness can enable them without any runner/Snakefile plumbing.
     """
     shape_gdf = gpd.read_file(shapefilepath)
     subset_gdf = fs.read_parquet(catalog_filepath)
@@ -69,6 +71,7 @@ def run_task(
         njobs_load_images=njobs_load_images,
         if_missing_files=if_missing_files,
         write_timings=write_timings,
+        write_read_log=write_read_log,
     )
 
 
@@ -109,6 +112,7 @@ def main(argv=None) -> None:
         njobs=args.njobs,
         njobs_load_images=args.njobs_load_images,
         write_timings=os.environ.get("FSD_WRITE_TIMINGS") == "1",
+        write_read_log=os.environ.get("FSD_WRITE_READ_LOG") == "1",
     )
 
 

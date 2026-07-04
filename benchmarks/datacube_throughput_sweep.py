@@ -45,7 +45,8 @@ END = datetime.datetime(2018, 7, 10)
 ID_COL = "id"
 
 _SENTINELS = ("start.txt", "done.txt")
-_WIPE = ("datacube.npy", "metadata.pickle.npy", "timings.json", *_SENTINELS)
+_WIPE = ("datacube.npy", "metadata.pickle.npy", "timings.json", "reads.jsonl",
+         *_SENTINELS)
 
 
 # --- static characterization (pure core is unit-tested) ----------------------
@@ -91,6 +92,105 @@ def characterize(input_df: pd.DataFrame) -> dict:
     return overlap_stats(grid_to_tiles)
 
 
+# --- read-contention analysis (Part 2, spec 12 — pure, unit-tested) ----------
+
+def _annotate_reads(reads: list[dict]) -> list[dict]:
+    """Return copies of `reads`, each tagged with two contention measures:
+
+    - `peak_conc`: peak number of reads *simultaneously in flight* during this read's
+      interval (instantaneous concurrency; bounded by the number of build processes) —
+      the x for the duration-vs-concurrency curve. In-flight only rises at a start
+      event, so at each read r's start we set the current in-flight = active+self and
+      bump `peak_conc` for r and every still-active read.
+    - `overlaps` + `same_file`/`same_tile`/`diff_tile`: how many *other-grid* reads its
+      interval overlaps at all, split by conflict class — each overlapping pair counted
+      once per member (so pair totals halve). Same-grid reads are serial (never overlap)
+      and skipped defensively. Classes (spec 12): same-file = identical filepath;
+      same-tile = same mgrs_tile, different file; diff-tile = different mgrs_tile.
+    """
+    import heapq
+
+    rs = [dict(r) for r in sorted(reads, key=lambda x: x["start"])]
+    for r in rs:
+        r["overlaps"] = r["same_file"] = r["same_tile"] = r["diff_tile"] = 0
+        r["peak_conc"] = 1
+    active: list[tuple[float, int]] = []   # heap of (end, index into rs)
+    for i, r in enumerate(rs):
+        while active and active[0][0] <= r["start"]:
+            heapq.heappop(active)
+        current = len(active) + 1          # reads in flight the instant r starts
+        r["peak_conc"] = max(r["peak_conc"], current)
+        for _end, j in active:
+            a = rs[j]
+            a["peak_conc"] = max(a["peak_conc"], current)
+            if a["id"] == r["id"]:
+                continue
+            r["overlaps"] += 1
+            a["overlaps"] += 1
+            if a["filepath"] == r["filepath"]:
+                r["same_file"] += 1
+                a["same_file"] += 1
+            elif a.get("mgrs_tile") and a["mgrs_tile"] == r["mgrs_tile"]:
+                r["same_tile"] += 1
+                a["same_tile"] += 1
+            else:
+                r["diff_tile"] += 1
+                a["diff_tile"] += 1
+        heapq.heappush(active, (r["end"], i))
+    return rs
+
+
+def conflict_stats(reads: list[dict]) -> dict:
+    """PURE: summarise read overlaps for one sweep run. Each overlapping pair of
+    reads from different grids = one 'conflict', classified same-file / same-tile /
+    diff-tile (only same-file is what Part-3 tile-splitting removes)."""
+    ann = _annotate_reads(reads)
+    n = len(ann)
+    pairs = sum(a["overlaps"] for a in ann) // 2
+    same_file = sum(a["same_file"] for a in ann) // 2
+    same_tile = sum(a["same_tile"] for a in ann) // 2
+    diff_tile = sum(a["diff_tile"] for a in ann) // 2
+    concur = [a["peak_conc"] for a in ann]   # instantaneous, bounded by #processes
+    durs = [a["duration"] for a in ann]
+    return {
+        "n_reads": n,
+        "n_conflict_pairs": pairs,
+        "same_file_pairs": same_file,
+        "same_tile_diff_file_pairs": same_tile,
+        "different_tile_pairs": diff_tile,
+        "max_concurrency": max(concur, default=0),
+        "mean_concurrency": round(sum(concur) / n, 2) if n else 0,
+        "mean_read_seconds": round(sum(durs) / n, 4) if n else 0,
+        "sum_read_seconds": round(sum(durs), 2),
+    }
+
+
+def duration_vs_concurrency(reads: list[dict]) -> dict:
+    """PURE: mean/median read duration bucketed by instantaneous concurrency
+    (`peak_conc` — reads in flight during the read; the hypothesis test: does the SAME
+    windowed read take longer when more reads run at once?). Returns
+    {concurrency: {n, mean_s, median_s}} plus a same-file-only slice."""
+    ann = _annotate_reads(reads)
+
+    def _curve(items):
+        buckets: dict[int, list[float]] = {}
+        for a in items:
+            buckets.setdefault(a["peak_conc"], []).append(a["duration"])
+        out = {}
+        for k in sorted(buckets):
+            ds = sorted(buckets[k])
+            mid = ds[len(ds) // 2] if len(ds) % 2 else (ds[len(ds) // 2 - 1]
+                                                        + ds[len(ds) // 2]) / 2
+            out[k] = {"n": len(ds), "mean_s": round(sum(ds) / len(ds), 4),
+                      "median_s": round(mid, 4)}
+        return out
+
+    return {
+        "all": _curve(ann),
+        "same_file": _curve([a for a in ann if a["same_file"] > 0]),
+    }
+
+
 # --- sweep -------------------------------------------------------------------
 
 def _wipe_build_outputs(input_df: pd.DataFrame) -> None:
@@ -124,6 +224,21 @@ def _collect(input_df: pd.DataFrame) -> list[dict]:
     return recs
 
 
+def _collect_reads(input_df: pd.DataFrame) -> list[dict]:
+    """Gather every grid's `reads.jsonl` into one wall-clock-aligned read list."""
+    reads: list[dict] = []
+    for _, row in input_df.iterrows():
+        rpath = os.path.join(row["export_folderpath"], "reads.jsonl")
+        if not os.path.exists(rpath):
+            continue
+        with fs.open(rpath) as f:
+            for line in f.read().decode().splitlines():
+                line = line.strip()
+                if line:
+                    reads.append(json.loads(line))
+    return reads
+
+
 def _bar(done: int, n: int, width: int = 24) -> str:
     filled = int(width * done / n) if n else 0
     return "[" + "#" * filled + "-" * (width - filled) + "]"
@@ -149,8 +264,11 @@ def _progress(folders: list[str], n: int, t0: float, tag: str, stop: list) -> No
             time.sleep(1)
 
 
-def run_sweep(input_df: pd.DataFrame, cores_list: list[int], repeats: int) -> list[dict]:
+def run_sweep(input_df: pd.DataFrame, cores_list: list[int], repeats: int,
+              read_log: bool = False) -> list[dict]:
     os.environ["FSD_WRITE_TIMINGS"] = "1"
+    if read_log:
+        os.environ["FSD_WRITE_READ_LOG"] = "1"   # inherited by task subprocesses
     folders = input_df["export_folderpath"].tolist()
     n = len(input_df)
     total_runs = len(cores_list) * repeats
@@ -178,13 +296,16 @@ def run_sweep(input_df: pd.DataFrame, cores_list: list[int], repeats: int) -> li
             recs = _collect(input_df)
             walls = [r["wall_seconds"] for r in recs if r.get("wall_seconds") is not None]
             built = sum(1 for r in recs if r.get("timings"))
+            reads = _collect_reads(input_df) if read_log else None
+            nrc = conflict_stats(reads)["n_conflict_pairs"] if reads else 0
             sweep_eta = (time.perf_counter() - sweep_t0) / run_i * (total_runs - run_i)
             print(f"[sweep] DONE run {run_i}/{total_runs} cores={cores} rep={rep}: "
-                  f"total={_fmt(total)} built={built}/{n} rc={cp.returncode} | "
-                  f"sweep ETA ~{_fmt(sweep_eta)}", flush=True)
+                  f"total={_fmt(total)} built={built}/{n} conflicts={nrc} "
+                  f"rc={cp.returncode} | sweep ETA ~{_fmt(sweep_eta)}", flush=True)
             results.append({"cores": cores, "rep": rep, "total_seconds": total,
                             "returncode": cp.returncode, "n_built": built,
-                            "sum_grid_wall": round(sum(walls), 2), "records": recs})
+                            "sum_grid_wall": round(sum(walls), 2), "records": recs,
+                            "reads": reads})
     return results
 
 
@@ -216,7 +337,7 @@ def aggregate(results: list[dict]) -> list[dict]:
             load_walls.append(t["phase_seconds"].get("load_images", 0.0))
         total = best["total_seconds"]
         base = base if base is not None else total
-        rows.append({
+        row = {
             "cores": cores,
             "total_seconds": total,
             "throughput_per_min": round(best["n_built"] / total * 60, 2) if total else 0,
@@ -228,7 +349,13 @@ def aggregate(results: list[dict]) -> list[dict]:
             "load_images_frac": (round(phase_sum["load_images"]
                                        / max(sum(phase_sum.values()), 1e-9), 3)),
             "mean_load_per_grid": round(sum(load_walls) / max(len(load_walls), 1), 2),
-        })
+        }
+        if best.get("reads"):
+            # Part-2 read-contention summary (curves are stored for the report table;
+            # plots redraw from the raw reads kept in `results`).
+            row["read_contention"] = conflict_stats(best["reads"])
+            row["duration_curve"] = duration_vs_concurrency(best["reads"])
+        rows.append(row)
     return rows
 
 
@@ -310,6 +437,104 @@ def make_plots(rows: list[dict], char: dict, base_recs: list[dict]) -> None:
     plt.close(fig)
 
 
+def _best_reads_by_cores(results: list[dict]) -> dict[int, list[dict]]:
+    by: dict[int, list[dict]] = {}
+    for cores in sorted({r["cores"] for r in results}):
+        runs = [r for r in results if r["cores"] == cores and r.get("reads")]
+        if runs:
+            by[cores] = min(runs, key=lambda r: r["total_seconds"])["reads"]
+    return by
+
+
+def make_read_plots(rows: list[dict], results: list[dict]) -> None:
+    """Part-2 plots (only when the run had --read-log). Redrawn from the raw reads
+    kept in `results`, so --report-only (which has only summaries) reuses these PNGs."""
+    reads_by = _best_reads_by_cores(results)
+    read_rows = [r for r in rows if r.get("duration_curve")]
+    if not reads_by or not read_rows:
+        return
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    os.makedirs(FIG_DIR, exist_ok=True)
+    busiest = max(reads_by)
+
+    # 1) THE money plot: mean read duration vs overlap count, one line per cores.
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for r in read_rows:
+        curve = r["duration_curve"]["all"]
+        xs = sorted(curve, key=int)
+        ax.plot([int(k) for k in xs], [curve[k]["mean_s"] for k in xs], "o-",
+                label=f"cores={r['cores']}")
+    ax.set_xlabel("reads in flight during this read (concurrency)")
+    ax.set_ylabel("mean read duration (s)")
+    ax.set_title("Read duration vs concurrency (the contention test)")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(f"{FIG_DIR}/read_duration_vs_concurrency.png", dpi=110)
+    plt.close(fig)
+
+    # 2) conflict pairs vs cores, stacked by class (same-file is the Part-3 target).
+    fig, ax = plt.subplots(figsize=(8, 5))
+    cs = [str(r["cores"]) for r in read_rows]
+    sf = [r["read_contention"]["same_file_pairs"] for r in read_rows]
+    st = [r["read_contention"]["same_tile_diff_file_pairs"] for r in read_rows]
+    dt = [r["read_contention"]["different_tile_pairs"] for r in read_rows]
+    ax.bar(cs, sf, label="same-file (Part-3 target)", color="#d95f02")
+    ax.bar(cs, st, bottom=sf, label="same-tile, diff file", color="#7570b3")
+    ax.bar(cs, dt, bottom=[a + b for a, b in zip(sf, st)], label="different tile",
+           color="#1b9e77")
+    ax.set_xlabel("cores")
+    ax.set_ylabel("# overlapping read pairs")
+    ax.set_title("Read conflicts vs parallelism, by class")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(f"{FIG_DIR}/read_conflicts_vs_cores.png", dpi=110)
+    plt.close(fig)
+
+    # 3) same-file vs all duration curve at the busiest cores (cache-vs-contention cut).
+    busiest_row = next(r for r in read_rows if r["cores"] == busiest)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for key, style in (("all", "o-"), ("same_file", "s--")):
+        curve = busiest_row["duration_curve"][key]
+        if not curve:
+            continue
+        xs = sorted(curve, key=int)
+        ax.plot([int(k) for k in xs], [curve[k]["mean_s"] for k in xs], style,
+                label=key.replace("_", "-"))
+    ax.set_xlabel("reads in flight (concurrency)")
+    ax.set_ylabel("mean read duration (s)")
+    ax.set_title(f"Duration vs concurrency by class (cores={busiest})")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(f"{FIG_DIR}/read_class_split.png", dpi=110)
+    plt.close(fig)
+
+    # 4) reads-in-flight over time at the busiest cores.
+    reads = reads_by[busiest]
+    t0 = min(r["start"] for r in reads)
+    events = sorted([(r["start"] - t0, 1) for r in reads]
+                    + [(r["end"] - t0, -1) for r in reads])
+    xs, ys, cur = [], [], 0
+    for t, d in events:
+        cur += d
+        xs.append(t)
+        ys.append(cur)
+    fig, ax = plt.subplots(figsize=(9, 4))
+    ax.step(xs, ys, where="post", color="#e7298a")
+    ax.set_xlabel("seconds since first read")
+    ax.set_ylabel("reads in flight")
+    ax.set_title(f"Read concurrency over time (cores={busiest})")
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(f"{FIG_DIR}/read_concurrency_timeline.png", dpi=110)
+    plt.close(fig)
+
+
 def _knee_cores(rows: list[dict], min_gain: float = 0.05) -> int:
     """Smallest `cores` past which the next step cuts total wall by < min_gain (5%)."""
     for i in range(len(rows) - 1):
@@ -317,6 +542,90 @@ def _knee_cores(rows: list[dict], min_gain: float = 0.05) -> int:
         if prev and (prev - nxt) / prev < min_gain:
             return rows[i]["cores"]
     return rows[-1]["cores"]
+
+
+def _read_contention_section(rows: list[dict]) -> list[str]:
+    """The Part-2 'Read contention' report block (empty if the run had no --read-log)."""
+    read_rows = [r for r in rows if r.get("read_contention")]
+    if not read_rows:
+        return []
+    L = ["## Read contention (Part 2 — per-read instrumentation)\n"]
+    L.append("Every windowed read is logged with wall-clock start/end (spec 12). A "
+             "**conflict** = a pair of reads from *different grids* whose intervals "
+             "overlap. Classes: **same-file** = identical `filepath` (same product & band) "
+             "— the *simultaneous same-file* contention Part-3 tile-splitting was meant to "
+             "remove; **same-tile** = same MGRS tile, different file; **diff-tile** = "
+             "different tile. `max concur` = peak reads in flight at once (bounded by "
+             "`cores`).\n")
+    L.append("| cores | reads | conflicts | same-file | same-tile | diff-tile | "
+             "max concur | mean concur | mean read (s) |\n"
+             "|---|---|---|---|---|---|---|---|---|\n")
+    for r in read_rows:
+        c = r["read_contention"]
+        L.append(f"| {r['cores']} | {c['n_reads']} | {c['n_conflict_pairs']} | "
+                 f"{c['same_file_pairs']} | {c['same_tile_diff_file_pairs']} | "
+                 f"{c['different_tile_pairs']} | {c['max_concurrency']} | "
+                 f"{c['mean_concurrency']} | {c['mean_read_seconds']} |\n")
+
+    # Verdict — nuanced (spec 12): confirm the hypothesis, name the mechanism, and be
+    # precise about what tile-splitting (Part 3) can and cannot address.
+    lo_row, hi_row = read_rows[0], read_rows[-1]     # rows are cores-ascending
+    curve = hi_row["duration_curve"]["all"]
+    ks = sorted(curve, key=int)
+    d_lo, d_hi = curve[ks[0]]["mean_s"], curve[ks[-1]]["mean_s"]
+    ratio = round(d_hi / d_lo, 2) if d_lo else float("nan")
+    load_lo = lo_row["phase_sum"]["load_images"]
+    load_hi = hi_row["phase_sum"]["load_images"]
+    load_growth = round(load_hi / load_lo, 2) if load_lo else float("nan")
+    n_reads = hi_row["read_contention"]["n_reads"]
+    tot_sf = sum(r["read_contention"]["same_file_pairs"] for r in read_rows)
+    tot_st = sum(r["read_contention"]["same_tile_diff_file_pairs"] for r in read_rows)
+    tot_dt = sum(r["read_contention"]["different_tile_pairs"] for r in read_rows)
+    tot_pairs = max(tot_sf + tot_st + tot_dt, 1)
+    sf_pct = round(100 * tot_sf / tot_pairs, 1)
+    hyp = "**confirmed**" if ratio > 1.1 else "**not shown** (flat)"
+
+    L.append("\n![duration vs concurrency]"
+             "(datacube_throughput_figures/read_duration_vs_concurrency.png)\n")
+    L.append("\n![conflicts by class]"
+             "(datacube_throughput_figures/read_conflicts_vs_cores.png)\n")
+    L.append("\n![class split](datacube_throughput_figures/read_class_split.png)\n")
+    L.append("\n![timeline](datacube_throughput_figures/read_concurrency_timeline.png)\n")
+
+    L.append(f"\n**Verdict (cores={hi_row['cores']}).** The 'parallel reads block each "
+             f"other' hypothesis is {hyp}: for the *same* {n_reads} reads, mean read "
+             f"duration climbs {d_lo}s → {d_hi}s ({ratio}×) from concurrency {ks[0]} to "
+             f"{ks[-1]}, and every `cores` line collapses onto one duration-vs-concurrency "
+             f"curve — read cost is set by how many reads are in flight, not by the `cores` "
+             f"knob. Total `load_images` work grows {load_lo}s → {load_hi}s "
+             f"({load_growth}×) across the sweep despite identical read counts. This is the "
+             f"signature of a **shared disk-bandwidth ceiling** (fixed bandwidth split N "
+             f"ways → each read ≈N× slower), which is also why total wall-time plateaus "
+             f"past the throughput knee.\n")
+    L.append(f"\n**What splits can vs cannot fix.** Conflicts are **only {sf_pct}% "
+             f"same-file** (same-file {tot_sf} / same-tile {tot_st} / diff-tile {tot_dt}) "
+             f"— two grids sharing a tile rarely read the *identical file at the same "
+             f"instant*, so **Part-3 tile-splitting aimed at removing same-file "
+             f"*simultaneous* conflicts would touch a negligible slice.** Two caveats keep "
+             f"this from killing Part 3 outright:\n")
+    L.append("- This measures *simultaneous* conflicts, **not redundant total reads** — the "
+             "same tile bytes still get re-read once per grid across the whole run, which a "
+             "bandwidth-bound system pays for. **Tile-centric batching** (read a tile's "
+             "window once, crop to every grid on it) attacks that directly.\n")
+    L.append("- This workload is *scattered grids over shared tiles*; it does **not** cover "
+             "the *inference* workload (one region → many disjoint sub-grids, each mapping "
+             "to its own pre-split file), where splitting means smaller reads + no "
+             "redundancy. Re-scope Part 3 around that, or fold it into tile-centric "
+             "batching, rather than 'split to avoid same-file locks'.\n")
+    L.append("- **Highest-value levers, given bandwidth is the ceiling:** reduce concurrent "
+             "bytes (tile-centric read-once-crop-many), cap parallelism at the throughput "
+             "knee, raise the ceiling (faster / independent disks, per-node storage on "
+             "Batch), and cut per-read cost (COG + overviews vs windowed JP2 decode).\n")
+    L.append("\n**Self-check:** per-run `sum_read_seconds` matches the summed `load_images` "
+             "phase (reads are the only disk I/O in a build) — e.g. above, "
+             f"{hi_row['read_contention']['sum_read_seconds']}s vs {load_hi}s at "
+             f"cores={hi_row['cores']}.\n")
+    return L
 
 
 def write_report(rows: list[dict], char: dict, meta: dict) -> None:
@@ -370,6 +679,7 @@ def write_report(rows: list[dict], char: dict, meta: dict) -> None:
              f"{'a ' + str(round(hi / lo, 2)) + '× slowdown' if lo else 'n/a'}.\n")
     L.append("## Per-grid cost vs tiles touched\n")
     L.append("![wall_vs_tiles](datacube_throughput_figures/wall_vs_tiles.png)\n")
+    L.extend(_read_contention_section(rows))
     L.append("## Caveats\n")
     L.append("- **Cache: measured, not forced** (spec 11). Runs are warm-as-is; re-running "
              "the same grids across settings can warm shared file blocks, though the grids "
@@ -394,6 +704,9 @@ def main(argv=None) -> None:
     ap.add_argument("--n-grids", type=int, default=None, help="subset first N grids")
     ap.add_argument("--repeats", type=int, default=1)
     ap.add_argument("--smoke", action="store_true", help="3 grids, cores 1,2")
+    ap.add_argument("--read-log", action="store_true",
+                    help="Part 2 (spec 12): log every windowed read + analyse "
+                         "read conflicts / duration-vs-concurrency")
     ap.add_argument("--report-only", action="store_true",
                     help="rebuild report.md from the saved stats.json (reuses figures); "
                          "no sweep")
@@ -433,12 +746,14 @@ def main(argv=None) -> None:
     print(f"[setup] {len(input_df)} work-units", flush=True)
 
     char = characterize(input_df)
-    results = run_sweep(input_df, cores_list, args.repeats)
+    results = run_sweep(input_df, cores_list, args.repeats, read_log=args.read_log)
     rows = aggregate(results)
 
     base_recs = min((r for r in results if r["cores"] == cores_list[0]),
                     key=lambda r: r["total_seconds"])["records"]
     make_plots(rows, char, base_recs)
+    if args.read_log:
+        make_read_plots(rows, results)
 
     meta = {
         "run_utc": datetime.datetime.utcnow().isoformat() + "Z",

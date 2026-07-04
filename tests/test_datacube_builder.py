@@ -98,6 +98,52 @@ def test_build_datacube_writes_timings_only_when_flagged(tmp_path):
     assert payload["n_band_rows"] == 6 and payload["datacube_shape"] == [2, 4, 4, 2]
 
 
+def test_build_datacube_writes_read_log_only_when_flagged(tmp_path):
+    catalog, shape = _make_catalog(tmp_path)
+    shape = shape.copy()
+    shape["id"] = "grid_007"
+    kw = dict(
+        catalog_subset=catalog, shape_gdf=shape,
+        startdate=datetime.datetime(2018, 5, 31), enddate=datetime.datetime(2018, 7, 2),
+        bands=["B04", "B08", "SCL"], mosaic_days=20, scl_mask_classes=[8, 9],
+        if_missing_files=None,
+    )
+    off = tmp_path / "off"
+    builder.build_datacube(export_folderpath=str(off), **kw)
+    assert not (off / builder.READ_LOG_FILENAME).exists()   # off by default
+
+    on = tmp_path / "on"
+    builder.build_datacube(export_folderpath=str(on), write_read_log=True, **kw)
+    lines = (on / builder.READ_LOG_FILENAME).read_text().strip().splitlines()
+    rows = [json.loads(ln) for ln in lines]
+    assert len(rows) == len(catalog)          # one row per band file read (6)
+    r = rows[0]
+    assert set(r) == {"id", "mgrs_tile", "product_id", "band", "filepath",
+                      "start", "end", "duration"}
+    assert r["id"] == "grid_007"              # grid id from shape_gdf
+    assert r["product_id"].startswith("tile_")
+    assert r["mgrs_tile"] is None             # synthetic ids carry no _T marker
+    assert all(row["duration"] >= 0 for row in rows)
+    assert all(row["end"] >= row["start"] for row in rows)
+
+
+def test_load_images_read_log_noop_when_parallel(tmp_path):
+    catalog, shape = _make_catalog(tmp_path)
+    shape = shape.copy()
+    shape["id"] = "g"
+    out = tmp_path / "par"
+    with pytest.warns(RuntimeWarning, match="njobs_load_images == 1"):
+        builder.build_datacube(
+            catalog_subset=catalog, shape_gdf=shape,
+            startdate=datetime.datetime(2018, 5, 31),
+            enddate=datetime.datetime(2018, 7, 2),
+            bands=["B04", "B08", "SCL"], mosaic_days=20, scl_mask_classes=[8, 9],
+            export_folderpath=str(out), if_missing_files=None,
+            njobs_load_images=2, write_read_log=True,
+        )
+    assert not (out / builder.READ_LOG_FILENAME).exists()   # skipped, not written
+
+
 def test_flatten_catalog_skips_non_raster(tmp_path):
     gdf = gpd.GeoDataFrame(
         [{"id": "x", "local_folderpath": str(tmp_path), "timestamp": 0,

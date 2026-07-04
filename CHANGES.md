@@ -17,6 +17,27 @@ carried over (renames, restructures, behavioral tweaks). Pure removals go in
 - Read-path instrumentation (per-read parallel-reads / duration-vs-concurrency) is **not**
   here — deferred to Part 2 (spec 12); tile-splitting to Part 3 (spec 13).
 
+## Datacube throughput benchmark, Part 2 — per-read instrumentation (2026-07-04)
+- `datacube.builder.build_datacube` gained a **`write_read_log: bool = False`** flag (off by
+  default → no extra file), mirroring `write_timings`. When set (and `njobs_load_images == 1`)
+  it times each windowed read with **wall-clock `time.time()`** (comparable across grid
+  processes) and writes a **`reads.jsonl`** sidecar next to `datacube.npy` — one row per read:
+  `id` (grid), `mgrs_tile`, `product_id`, `band`, `filepath`, epoch `start`/`end`, `duration`.
+  The workflow enables it via **`FSD_WRITE_READ_LOG=1`** (read in `workflows.task.main`). With
+  `njobs_load_images > 1` the log is skipped with a `RuntimeWarning` (reads fan out to a Pool).
+  The load loop was refactored: `_load_images` returns `(catalog_gdf, data_profile_list, reads)`
+  and, on the logging path, reads each file serially via new `_load_images_logged`.
+- `benchmarks/datacube_throughput_sweep.py` gained a **`--read-log`** flag (spec 12): it sets
+  the env var, collects every grid's `reads.jsonl`, and computes **read conflicts** (overlapping
+  read pairs from different grids), a **read-duration-vs-concurrency** curve (the direct test of
+  the "parallel reads block each other" hypothesis), and a **same-file / same-tile / different-
+  tile** classification — only *same-file* conflicts are what Part-3 tile-splitting can remove.
+  Adds a "Read contention" section + 4 plots to the same living report and a `read_contention`
+  block per `cores` to `stats.json`. Pure analysis (`conflict_stats`, `duration_vs_concurrency`,
+  `_annotate_reads`) is unit-tested; `--read-log` is off by default so the baseline is unchanged.
+- Concurrency is **instantaneous peak-in-flight** (bounded by `cores`), not overlap-degree — the
+  metric the hypothesis needs. Tile-splitting itself stays deferred to Part 3 (spec 13).
+
 ## Workflows: task/runner split + fsd seams (2026-07-03)
 - `workflows/create_datacube.py` + `setup_datacube_run.py` + the in-memory Snakefile →
   `fsd.workflows` as **task** (`task.py`, build one datacube, CLI `python -m
