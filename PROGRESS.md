@@ -36,7 +36,8 @@ newline progress. See `benchmarks/download_report_2018_ethiopia.md`.
 **Dataset change:** the old `satellite/` (T33UWP) was **deleted**; the real-data test
 set is now **`satellite_benchmark/`** (Ethiopia `s2grid=165bca4`, EPSG:32636+32637,
 bands B04/B08/B8A/SCL). `realdata.md` TCC/FCC examples are stale (no B02/B03); only
-NDVI applies there.
+NDVI applies there. **As of 2026-07-04 this archive is COG** (`Bxx.tif` + overviews;
+migrated in place from JP2, catalog updated — see spec-14 bullet below).
 
 **Datacube module #5 DONE (2026-07-02):** `ops.py` (run_ops, apply_cloud_mask_scl,
 drop_bands, median_mosaic [numba], area_median), `builder.py` (build_datacube seam +
@@ -118,6 +119,13 @@ flatten → workflows), on real multi-CRS data, incl. Snakemake resumability.
   10980² B04 JP2 → COG bit-identical, overviews [2,4,8,16], 15.5 s, ~1.86× size (w/ overviews).
   Follow-ups in TODO #15: remote-dst COG, conversion process pool, bulk-migrate the existing
   `satellite_benchmark` archive.
+- **satellite_benchmark migrated JP2→COG in place — DONE (2026-07-04):**
+  `benchmarks/migrate_jp2_to_cog.py` converted all **2316 band files** to COG+overviews (lossless,
+  0 failed), **deleted the JP2s** (no duplicate copies), and rewrote `catalog.parquet` to `.tif`
+  (fully consistent, 0 missing). 72 min at 8 workers; archive **94→159 GiB**, ~10 GiB free. Tool is
+  resumable, disk-floor-guarded, progress-bar + ETA, `--verify {full,quick,none}` (default quick).
+  Conversion is **memory-bandwidth-bound** → 8 workers (perf cores) is the knee (10 gave no gain).
+  The Part-1/2 throughput/read findings were on the *pre-migration JP2*; re-running now reads COG.
 
 **Other NEXT options:** Azure/Batch (spec 10, roadmap step 2); source extension (#11) / rslearn
 benchmark (#12); `flatten` real-data run. Deferred: TODO #9; `reference_profile` grid-from-bounds.

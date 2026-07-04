@@ -4,6 +4,20 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## satellite_benchmark migrated JP2 → COG in place (spec 14 follow-up, 2026-07-04)
+- **Data change (not code):** the real test archive `satellite_benchmark/` was converted from
+  native JP2 to **COG (+ overviews), in place** — every `Bxx.jp2` → `Bxx.tif`, the `.jp2` deleted
+  (no duplicate copies), and its `catalog.parquet` `files` column rewritten to `.tif`. 2316 band
+  files, 0 failed, lossless (bit-identical verified); archive grew 94 → 159 GiB (COG+overviews ≈
+  1.70× JP2). Downstream is unaffected — rasterio reads `.tif` transparently, so datacube builds /
+  throughput runs work unchanged (they now read COG, i.e. faster; see the throughput runbook note).
+- **New tool `benchmarks/migrate_jp2_to_cog.py`** (reusable): in-place JP2→COG migrator built on
+  `fsd.raster.cog.to_cog`. Resumable (skips already-`.tif`), disk-safety floor (aborts before free
+  space hits `--floor-gib`), live progress bar + ETA, catalog resynced from actual on-disk state,
+  and a `--verify {full,quick,none}` pre-delete gate (default `quick` = readback + shape/dtype +
+  overviews check; `full` re-decodes for bit-identical). Conversion is memory-bandwidth-bound → 8
+  workers (the perf cores) is the knee; 10 gave no gain.
+
 ## COG-on-download — native ingest format (spec 14, 2026-07-04)
 - **Behavior change (kept-but-changed): `sources.cdse.download` now converts each fetched JP2
   band to a lossless COG by default** (`cog: bool = True`). On-disk band files are `Bxx.tif`

@@ -16,6 +16,11 @@ nodata.
 > the TCC/FCC examples are stale**: `satellite_benchmark` has no B02/B03, so only
 > **NDVI** (B04/B08) applies here. The **multi-CRS datacube** build against
 > `satellite_benchmark` now has its own runbook: **`datacube.md`**.
+>
+> **COG archive (2026-07-04, spec 14).** `satellite_benchmark` band files are now
+> `Bxx.tif` (lossless COG + overviews), not `.jp2` — the `{band}.jp2` in the historical
+> code below refers to the deleted `satellite/` layout. Adapt to `.tif` if you point any
+> of these ops at `satellite_benchmark`. Tool: `benchmarks/migrate_jp2_to_cog.py`.
 
 Data (historical): tile **T33UWP**, all 2018 dates, flattened EODATA layout under
 `satellite/`. Crop geometry: `shapefiles/s2grid=476da24.geojson` (EPSG:4326; the

@@ -15,6 +15,12 @@ catalog `satellite_benchmark/sentinel-2-l2a/catalog.parquet` (579 tiles), ROI
 exists. Bands present: **B04, B08, B8A, SCL** (B08 = 10 m reference; B8A native 20 m
 exercises resampling; no B02/B03, so no true-color — we use B08 / FCC / NDVI).
 
+> **Archive is now COG (2026-07-04, spec 14 migration).** `satellite_benchmark` band
+> files are `Bxx.tif` (lossless COG + overviews), not `.jp2`, and the catalog `files`
+> column reflects that. The build is format-agnostic (rasterio reads either), so every
+> step below is unchanged — this just documents what you'll see on disk. Tool:
+> `benchmarks/migrate_jp2_to_cog.py`.
+
 Work top-to-bottom in one Python session. Tick a box when the result is confirmed.
 Expected values below are from the reference run (window 2018-06-01 → 2018-07-10).
 

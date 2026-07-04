@@ -10,6 +10,13 @@ set of geometries against the real `satellite_benchmark/` tiles — no synthetic
 no downloads. Read-conflict logging is **not** here (that's Part 2 / spec 12); this
 measures throughput + per-step timing + static grid×tile overlap.
 
+> **NOTE — the archive is now COG (2026-07-04, spec 14 migration).**
+> `satellite_benchmark` tiles are `Bxx.tif` (COG + overviews), not `.jp2`. **The
+> Part-1/Part-2 findings in the specs/reports were measured on the *pre-migration
+> JP2* archive** — re-running the sweep now reads COG, so expect the decode-bound
+> slowdown to be largely gone (this is exactly the spec-13 result). The examples below
+> still show `.jp2` filepaths as they appeared then.
+
 ---
 
 ## 0. Prerequisites

@@ -48,8 +48,12 @@ not CPU. **Now scoped into a 3-part benchmark-first plan (interviewed 2026-07-03
   (not scheduled): (a) **remote-dst COG** — stage-local→convert→upload, needed for the Azure/Blob
   ingest path; (b) a **dedicated conversion process pool** to decouple CPU fan-out from the S3
   network fan-out (conversion currently runs inline in the download threads); (c) **bulk-migrate
-  the existing `satellite_benchmark` JP2 archive to COG** if we want the already-downloaded data to
-  benefit (this change only affects *new* ingest); (d) alternative: source AWS
+  the existing `satellite_benchmark` JP2 archive to COG → DONE (2026-07-04):**
+  `benchmarks/migrate_jp2_to_cog.py` converted all 2316 band files in place (COG + overviews,
+  lossless), deleted the JP2s, and rewrote `catalog.parquet` to `.tif` (0 failed, 72 min at 8
+  workers; archive 94→159 GiB). Tool is resumable, has a disk-safety floor + progress bar, and a
+  `--verify {full,quick,none}` pre-delete gate (default quick; conversion is memory-bandwidth-bound
+  so 8 workers = the knee, 10 gave no gain); (d) alternative: source AWS
   `sentinel-2-l2a-cogs` directly instead of converting CDSE JP2 (a different discovery source,
   TODO #11 territory).
 - **Other candidates — PARKED (2026-07-04, not scheduled):** the benchmark-first track (Parts 1–2)
