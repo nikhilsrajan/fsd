@@ -94,10 +94,15 @@ flatten → workflows), on real multi-CRS data, incl. Snakemake resumability.
   43082 diff-tile) — so **Part-3 tile-splitting-to-kill-same-file-conflicts targets a negligible
   slice.** Self-check passes (sum_read_seconds ≈ load_images phase). Nuance in the report verdict:
   it measures *simultaneous* conflicts not *redundant* reads; the inference workload isn't covered.
-- **Part 3 — spec 13 (RE-SCOPE before building):** original "split to avoid same-file conflicts"
-  is **not** supported by Part-2. Real levers = reduce concurrent bytes (**tile-centric
-  read-once-crop-many**), cap parallelism at knee, faster/independent storage, COG+overviews.
-  Splitting may still help the *inference* workload (region→disjoint sub-grids, 1 grid↔1 file).
+- **COG vs JP2 experiment — spec 13 DONE + implemented (2026-07-04):** first speed lever pursued
+  (Part 2 pointed at JP2 wavelet *decode* cost). `benchmarks/prep_cog_dataset.py` (JP2→base COG,
+  DEFLATE+PREDICTOR=2, lossless via NBITS=16, disk pre-flight, storage report) + harness
+  `--catalog/--start/--end/--tag` + `benchmarks/compare_cog_jp2.py` (team report + duration-vs-
+  concurrency overlay). No `src/fsd/` change. Runbook `tests/manual/cog_experiment.md`. 113 tests,
+  ruff clean, whole chain smoke-validated. Base COG ≈ 1.23× JP2 (lossless). **Full 4-month run
+  pending** for the real time verdict (does COG flatten the concurrency curve → decode-bound?).
+- **Tile-centric batching + other levers — PARKED (2026-07-04):** target the bandwidth/decode
+  costs, not same-file conflicts. Revisit only if build speed becomes a priority again. See TODO #15.
 
 **Other NEXT options:** Azure/Batch (spec 10, roadmap step 2); source extension (#11) / rslearn
 benchmark (#12); `flatten` real-data run. Deferred: TODO #9; `reference_profile` grid-from-bounds.

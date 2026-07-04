@@ -34,14 +34,27 @@ not CPU. **Now scoped into a 3-part benchmark-first plan (interviewed 2026-07-03
   **Full run finding (2026-07-04):** hypothesis confirmed (read duration 4.87× at concurrency
   1→10; total load_images 3.27× for identical read count) = **disk-bandwidth ceiling**; but
   conflicts are **only 0.6% same-file** → splitting-to-avoid-same-file-conflicts is NOT the win.
-- **Part 3 — spec 13 (RE-SCOPE — gated by Part-2):** the original "pre-split tiles so grids read
-  disjoint files → no read conflict" is **not** supported for the scattered-grids-on-shared-tiles
-  workload (same-file simultaneous conflict is negligible). Redirect to the real bandwidth levers:
-  **tile-centric batching** (read a tile's window once, crop to every intersecting grid — kills
-  *redundant* reads, which Part 2 does NOT measure), cap parallelism at the throughput knee,
-  faster/independent storage (per-node disk on Batch), COG+overviews vs windowed JP2 decode.
-  Splitting may still help the distinct *inference* workload (one region → disjoint sub-grids,
-  1 grid ↔ 1 pre-split file); scope that separately if pursued.
+- **COG vs JP2 experiment — spec 13 (implemented 2026-07-04):** the *first* speed lever actually
+  pursued, because Part 2 pointed at per-read *decode* cost (JP2 wavelet) more than same-file
+  sharing. Measures build-time gain + storage cost of storing tiles as COG vs native JP2, via a
+  parallel COG dataset/catalog (no `src/fsd/` change) A/B'd on the Part-1/2 harness. Scripts:
+  `prep_cog_dataset.py`, `compare_cog_jp2.py` + harness `--catalog/--tag`; runbook
+  `cog_experiment.md`. Base COG ≈ 1.23× JP2 storage (lossless). **Full 4-month run pending** for
+  the real time verdict (does COG flatten the duration-vs-concurrency curve → decode-bound?).
+- **Other candidates — PARKED (2026-07-04, not scheduled):** the benchmark-first track (Parts 1–2)
+  is complete; **parked candidate optimizations** (revisit only if datacube-build speed becomes a
+  priority again), all pointing at the measured *bandwidth/decode* costs rather than same-file
+  conflicts (which are negligible, 0.6%):
+  - **tile-centric batching** — read each tile's region once, crop to every intersecting grid
+    (kills *redundant* reads, which Part 2 does NOT measure). Two-phase fit: a tile-crop pass →
+    chips → the existing per-grid builder. Density-dependent (wins when grids densely cover a tile;
+    can *lose* on scattered grids where the union ≈ whole tile). Would need a dense/inference-like
+    grid set to test, measured on the Part-1/2 harness. *(Interview was started then deferred.)*
+  - cap parallelism at the throughput knee (~cores=4 on the test machine);
+  - raise the bandwidth ceiling (faster / independent disks, per-node storage on Batch);
+  - cheaper per-read format (COG + overviews vs windowed JP2 decode);
+  - tile pre-splitting may still fit the distinct *inference* workload (one region → disjoint
+    sub-grids, 1 grid ↔ 1 pre-split file); scope separately if ever pursued.
 
 | # | Item | Area | Why deferred / note |
 |---|------|------|---------------------|

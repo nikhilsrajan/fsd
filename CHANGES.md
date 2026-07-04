@@ -4,6 +4,28 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## COG vs JP2 storage/time experiment (spec 13, 2026-07-04)
+- **New (no legacy equivalent), no `src/fsd/` change:** measures what storing S2 tiles as
+  **COG** vs native **JP2** buys in build time and costs in disk. Three additive benchmark
+  scripts + harness CLI knobs; the read path is already format-agnostic (rasterio detects
+  JP2/GTiff), so the switch is pure data + catalog.
+  - `benchmarks/prep_cog_dataset.py` — converts the first N months of `satellite_benchmark`
+    JP2 → **base COG** (DEFLATE + PREDICTOR=2, tiled 512, **no overviews**) into a mirror tree
+    `satellite_benchmark_cog/` + a parallel `catalog.parquet`. Lossless: `NBITS=16` promotes S2's
+    declared 15-bit depth (in a uint16 container) so PREDICTOR=2 is legal — pixel values
+    unchanged; a bit-identical assert guards it. Includes a **disk pre-flight** (sample-estimate +
+    free-space check, aborts before writing) and live progress/ETA. Emits `cog_vs_jp2_storage.md`
+    (JP2 → base COG → COG+overviews, overview row estimated from a sample).
+  - `datacube_throughput_sweep.py` gained **`--catalog` / `--start` / `--end` / `--tag`** so the
+    Part-1/2 harness A/Bs JP2 vs COG with non-clobbering tagged outputs (report/stats/figures).
+    Report image links now derive from `FIG_DIR` (tag-aware); added a `STATS` constant (replaces
+    the fragile `FIG_DIR.replace("_figures", …)` derivation).
+  - `benchmarks/compare_cog_jp2.py` — merges the two tagged `stats.json` + storage json into the
+    team report `cog_vs_jp2_report.md`: time table, the **JP2-vs-COG duration-vs-concurrency
+    overlay** (the decode-bound test), storage table, verdict.
+  - Runbook `tests/manual/cog_experiment.md`. Measured on this data: base COG ≈ **1.23× JP2**
+    (S2 JP2 barely out-compresses DEFLATE), overview delta ~+38%.
+
 ## Datacube throughput benchmark, Part 1 + `write_timings` seam (2026-07-03)
 - **New (no legacy equivalent):** `benchmarks/datacube_throughput_sweep.py` — a reusable
   harness (spec 11 · Part 1) that sweeps build parallelism (`cores`) over the 100-grid ROI

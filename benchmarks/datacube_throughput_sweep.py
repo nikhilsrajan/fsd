@@ -35,6 +35,7 @@ GRIDS = f"{ROOT}/shapefiles/100_random_grids.geojson"
 OUT = f"{ROOT}/fsd/tests/outputs/throughput_sweep"
 FIG_DIR = f"{ROOT}/fsd/benchmarks/datacube_throughput_figures"
 REPORT = f"{ROOT}/fsd/benchmarks/datacube_throughput_report.md"
+STATS = f"{ROOT}/fsd/benchmarks/datacube_throughput_stats.json"
 
 BANDS = ["B04", "B08", "B8A", "SCL"]
 SCL = [0, 1, 3, 7, 8, 9, 10]
@@ -585,12 +586,11 @@ def _read_contention_section(rows: list[dict]) -> list[str]:
     sf_pct = round(100 * tot_sf / tot_pairs, 1)
     hyp = "**confirmed**" if ratio > 1.1 else "**not shown** (flat)"
 
-    L.append("\n![duration vs concurrency]"
-             "(datacube_throughput_figures/read_duration_vs_concurrency.png)\n")
-    L.append("\n![conflicts by class]"
-             "(datacube_throughput_figures/read_conflicts_vs_cores.png)\n")
-    L.append("\n![class split](datacube_throughput_figures/read_class_split.png)\n")
-    L.append("\n![timeline](datacube_throughput_figures/read_concurrency_timeline.png)\n")
+    fd = os.path.basename(FIG_DIR)
+    L.append(f"\n![duration vs concurrency]({fd}/read_duration_vs_concurrency.png)\n")
+    L.append(f"\n![conflicts by class]({fd}/read_conflicts_vs_cores.png)\n")
+    L.append(f"\n![class split]({fd}/read_class_split.png)\n")
+    L.append(f"\n![timeline]({fd}/read_concurrency_timeline.png)\n")
 
     L.append(f"\n**Verdict (cores={hi_row['cores']}).** The 'parallel reads block each "
              f"other' hypothesis is {hyp}: for the *same* {n_reads} reads, mean read "
@@ -666,19 +666,20 @@ def write_report(rows: list[dict], char: dict, meta: dict) -> None:
              f"{rows[0]['efficiency']}→{rows[-1]['efficiency']}). **Recommended ≈ {knee} "
              f"parallel builds** on this machine; the real win is cutting read contention "
              f"(Parts 2–3), not more processes.\n")
-    L.append("\n![throughput](datacube_throughput_figures/throughput_vs_cores.png)\n")
+    fd = os.path.basename(FIG_DIR)
+    L.append(f"\n![throughput]({fd}/throughput_vs_cores.png)\n")
     L.append("## Where the time goes\n")
     L.append("Summed per-grid phase seconds at each parallelism. If `load_images` swells "
              "with `cores` while other phases stay flat, that is the read-contention "
              "signal Part 2 (spec 12) will instrument per-read.\n")
-    L.append("\n![phases](datacube_throughput_figures/phase_breakdown.png)\n")
-    L.append("\n![load_images](datacube_throughput_figures/load_images_vs_cores.png)\n")
+    L.append(f"\n![phases]({fd}/phase_breakdown.png)\n")
+    L.append(f"\n![load_images]({fd}/load_images_vs_cores.png)\n")
     lo, hi = rows[0]["mean_load_per_grid"], rows[-1]["mean_load_per_grid"]
     L.append(f"\nMean per-grid `load_images` went {lo}s (cores={rows[0]['cores']}) → "
              f"{hi}s (cores={rows[-1]['cores']}) — "
              f"{'a ' + str(round(hi / lo, 2)) + '× slowdown' if lo else 'n/a'}.\n")
     L.append("## Per-grid cost vs tiles touched\n")
-    L.append("![wall_vs_tiles](datacube_throughput_figures/wall_vs_tiles.png)\n")
+    L.append(f"![wall_vs_tiles]({fd}/wall_vs_tiles.png)\n")
     L.extend(_read_contention_section(rows))
     L.append("## Caveats\n")
     L.append("- **Cache: measured, not forced** (spec 11). Runs are warm-as-is; re-running "
@@ -696,8 +697,16 @@ def write_report(rows: list[dict], char: dict, meta: dict) -> None:
 OUT_CSV = None  # set in main (module-level so run_sweep can reach it)
 
 
+def _tagged(path: str, tag: str) -> str:
+    """Insert `_tag` before the extension (files) or at the end (dirs)."""
+    if not tag:
+        return path
+    root, ext = os.path.splitext(path)
+    return f"{root}_{tag}{ext}"
+
+
 def main(argv=None) -> None:
-    global OUT_CSV
+    global OUT_CSV, CATALOG, START, END, OUT, FIG_DIR, REPORT, STATS
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--cores", default="1,2,4,6,8,10",
                     help="comma-separated parallelism settings")
@@ -707,13 +716,33 @@ def main(argv=None) -> None:
     ap.add_argument("--read-log", action="store_true",
                     help="Part 2 (spec 12): log every windowed read + analyse "
                          "read conflicts / duration-vs-concurrency")
+    ap.add_argument("--catalog", default=None,
+                    help="override catalog.parquet (spec 13: point at the COG catalog)")
+    ap.add_argument("--start", default=None, help="window start YYYY-MM-DD (override)")
+    ap.add_argument("--end", default=None, help="window end YYYY-MM-DD (override)")
+    ap.add_argument("--tag", default=None,
+                    help="suffix outputs (OUT/report/figures/stats), e.g. jp2 / cog, "
+                         "so A/B runs don't clobber each other")
     ap.add_argument("--report-only", action="store_true",
                     help="rebuild report.md from the saved stats.json (reuses figures); "
                          "no sweep")
     args = ap.parse_args(argv)
 
+    # spec-13 overrides: switch dataset/window and tag outputs (no core-code change)
+    if args.catalog:
+        CATALOG = args.catalog
+    if args.start:
+        START = datetime.datetime.fromisoformat(args.start)
+    if args.end:
+        END = datetime.datetime.fromisoformat(args.end)
+    if args.tag:
+        OUT = _tagged(OUT, args.tag)
+        FIG_DIR = _tagged(FIG_DIR, args.tag)
+        REPORT = _tagged(REPORT, args.tag)
+        STATS = _tagged(STATS, args.tag)
+
     if args.report_only:
-        stats_path = FIG_DIR.replace("_figures", "_stats.json")
+        stats_path = STATS
         with fs.open(stats_path) as f:
             saved = json.load(f)
         write_report(saved["sweep"], saved["characterization"], saved["meta"])
@@ -762,7 +791,7 @@ def main(argv=None) -> None:
         "repeats": args.repeats, "catalog_tiles": int(len(fs.read_parquet(CATALOG))),
     }
     stats = {"meta": meta, "characterization": char, "sweep": rows}
-    with fs.open(os.path.join(FIG_DIR.replace("_figures", "_stats.json")), "w") as f:
+    with fs.open(STATS, "w") as f:
         json.dump(stats, f, indent=2, default=str)
     write_report(rows, char, meta)
 

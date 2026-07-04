@@ -1,0 +1,40 @@
+{
+  "meta": {
+    "run_utc": "2026-07-04T12:07:34.991758Z",
+    "months": 4,
+    "n_products": 192,
+    "window_start": "2018-01-02",
+    "window_cutoff": "2018-05-02",
+    "cog_catalog": "/Users/nikhilsrajan/NASA-Harvest/project/fetch_satdata_claude/satellite_benchmark_cog/sentinel-2-l2a/catalog.parquet"
+  },
+  "storage": {
+    "per_band": {
+      "B04": {
+        "jp2": 14736860100,
+        "cog": 18348068199,
+        "cog_ovr": 25403725164
+      },
+      "B08": {
+        "jp2": 15372066198,
+        "cog": 18602557187,
+        "cog_ovr": 25864889183
+      },
+      "B8A": {
+        "jp2": 4190568942,
+        "cog": 5171918147,
+        "cog_ovr": 7008818640
+      },
+      "SCL": {
+        "jp2": 196943055,
+        "cog": 150158281,
+        "cog_ovr": 229396128
+      }
+    },
+    "total_jp2": 34496438295,
+    "total_cog": 42272701814,
+    "total_cog_ovr": 58506829115,
+    "cog_ratio": 1.225,
+    "cog_ovr_ratio": 1.696,
+    "overview_delta_pct": 38.4
+  }
+}
