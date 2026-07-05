@@ -27,6 +27,24 @@ fsd/.venv/bin/python -m pytest -q            # fast synthetic tests
 fsd/.venv/bin/ruff check src/ tests/         # lint (add --fix to autofix)
 ```
 
+## High-level API (spec 16 / P0)
+
+The user-facing verbs. `import fsd` then:
+
+```python
+import fsd
+catalog = fsd.download(roi, startdate, enddate, bands, dst_folderpath, creds, max_tiles=600)
+training = fsd.create_training_data(
+    label_polygons, catalog_filepath=catalog, startdate=..., enddate=..., mosaic_days=20,
+    bands=[...], id_col="fid", label_col="crop", export_folderpath=..., cores=8,
+)
+arrays = training.load()   # {"data" (px,T,b), "ids", "labels", "coords", "metadata"}
+```
+
+`fsd.compute_n_timestamps(start, end, mosaic_days)` = the calendar `T` (preflight uses it).
+`run_inference` / `deploy` are stubs (P4 / P6). Install: `pip install
+"git+ssh://git@github.com/nikhilsrajan/fsd.git"`. Module = `src/fsd/api.py`.
+
 ## Download (CDSE → local COG archive)
 
 Full-year, multi-CRS Sentinel-2 L2A download (the `satellite_benchmark/` archive).

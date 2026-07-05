@@ -4,6 +4,23 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## High-level API façade — `fsd.*` verbs (spec 16 / P0, 2026-07-06)
+- **New (additive), no behavior change to existing modules:** `src/fsd/api.py` adds the
+  user-facing verbs `fsd.download`, `fsd.create_training_data` (+ `run_inference` / `deploy`
+  stubs, `compute_n_timestamps`, `TrainingData`, `PreflightError`), re-exported at top level so
+  `import fsd; fsd.create_training_data(...)` works. It is a **façade** over
+  `sources.cdse` / `workflows.create_datacube` / `datacube.flatten` — the legacy-derived
+  entrypoints (`run_create_datacube`, `flatten`) are unchanged and still public.
+- **Scope raised (ROADMAP §2.5):** `create_training_data` hides `input.csv` + the word
+  "flatten"; the user provides label polygons + a catalog and gets back
+  `data/ids/labels/coords/metadata`.
+- **Seams present from day one:** every verb takes `runner="local"` / `storage=None`; non-local
+  values raise (Azure Batch / blob land in P1/P2 as config, not API changes).
+- **Preflight (ROADMAP §2.6):** cheap checks (window/`T`/bands/columns/catalog) run *before*
+  any download or build and raise `PreflightError`, aggregating all failures.
+- **`feature_sequence` / `aggregate`** are pinned in the `create_training_data` signature but
+  raise `NotImplementedError` until P0.5 (ModelAdapter). Version bumped `0.0.1 → 0.1.0`.
+
 ## Calendar-interval median mosaic — new default (spec 15, 2026-07-05)
 - **Behavior change (kept-but-changed): `median_mosaic` now buckets acquisitions into fixed
   calendar windows by default** (`mosaic_scheme="calendar"`, `config.MOSAIC_SCHEME`). Windows are

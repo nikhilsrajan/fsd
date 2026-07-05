@@ -206,6 +206,19 @@ fsd.deploy(model_bundle, ...)               # register a bundle for scaled infer
 `runner=` and `storage=` are the seams: the **same call** runs Mode A (local, local disk) or
 Mode B/C (Batch, blob) by config alone — no code change.
 
+**ROI → S2-grid tiling** (inside `run_inference`, P4) is a **port, not an invention** — the
+legacy `rsutils.s2_grid_utils.get_s2_grids_gdf` already does it, and
+`fetch_satdata/notebooks/demo_preparation.ipynb` pins the intended recipe:
+1. `get_s2_grids_gdf(roi_geojson_4326, grid_size_km=5, scale_fact=1.1, res=None)` — map
+   `grid_size_km`→S2 level (**5 km → res 11**, as in the legacy `100_random_grids`),
+   `s2.polyfill` the ROI's **convex hull** at that level, keep cells that **intersect** the
+   ROI, then **scale each cell by `scale_fact` (1.1 → 10 % overlap per side)** so adjacent
+   inference tiles don't leave seams at mosaic time.
+2. `gpd.overlay(grids_gdf, roi_gdf)` — clip the scaled grids to the ROI → the per-grid
+   geometries that feed datacube creation (each grid = one inference datacube = one task).
+3. Deps: `s2` (`from s2 import s2`, gives `polyfill`) + `s2cell`. Port into e.g. `fsd/grid.py`
+   (its own small spec) when P4 lands; not needed for P0's `create_training_data`.
+
 ---
 
 ## 5. Roadmap — small, demoable releases
@@ -220,7 +233,7 @@ a `raapid-infra` change to the admin (we never edit it ourselves).
 | **P1** | Storage seam on Azure: adlfs/MSI read+write to `st<proj>`; GDAL-VSI auth proven | build a datacube locally but I/O against `rise` blob (over VPN) | none (uses existing) |
 | **P2** | Azure Batch runner for datacube fan-out (the runner seam) | N datacubes built across autoscaled `<proj>-pool` nodes | **quota bump; likely `max_tasks_per_node`** |
 | **P3** | Thin control plane ("trigger from laptop"): submit-a-job UX + config files | Mode B: laptop triggers cloud build, pulls flattened arrays | none new |
-| **P4** | Inference at scale: ROI → S2 tiles → model → COG outputs on Batch | Mode C first light | maybe scale `max_nodes` |
+| **P4** | Inference at scale: ROI → S2 tiles (port `s2_grid_utils`, §4) → model → COG outputs on Batch | Mode C first light | maybe scale `max_nodes` |
 | **P5** | Output STAC + hosted TiTiler / XYZ | outputs viewable as web tiles | TiTiler hosting (infra) |
 | **P6** | Deploy/registration UX; model-bundle push/register | one-command deploy of a bundle | model store (infra) |
 

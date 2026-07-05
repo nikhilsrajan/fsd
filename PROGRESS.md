@@ -2,7 +2,25 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-05_
+_Last updated: 2026-07-06_
+
+## LATEST (2026-07-06) — strategy docs + P0 (spec 16) implemented
+
+The v1 core pipeline (download → catalog → datacube → flatten → workflows) is **complete +
+real-data-validated** (see history below). We have since set the **forward direction**:
+- **Strategy docs (on `main`):** `ROADMAP.md` (north-star, 3 usage modes, control/data-plane,
+  ModelAdapter contract F1–F5 + same-`T`/bands + preflight, phased **P0–P6**),
+  `AZURE_INFRA.md` (the read-only `rise` project in `raapid-infra` we scale onto via Batch),
+  `RSLEARN_COMPARISON.md` (build-vs-borrow vs AllenAI's rslearn — **open decision**, evaluated on
+  branch **`spike/rslearn`** with an isolated venv; scale-out is ours regardless). Repo pushed to
+  `git@github.com:nikhilsrajan/fsd.git` (MIT).
+- **Spec 16 = P0 DONE (2026-07-06):** high-level API façade `src/fsd/api.py` re-exported at top
+  level — `fsd.download`, `fsd.create_training_data` (hides flatten; preflighted; `runner`/
+  `storage` seams local-only), `run_inference`/`deploy` **stubs** (P4/P6), `compute_n_timestamps`,
+  `TrainingData`, `PreflightError`. Version `0.1.0`. README quickstart rewritten. **133 tests,
+  ruff clean** (`tests/test_api.py`, 9 new). STAC split to **spec 17**; ModelAdapter to **P0.5**.
+- **Next:** spec 17 (STAC-thin catalog) or P0.5 (ModelAdapter + local train/deploy). NB the
+  Azure-Batch spec is a *future* number (not spec 10 — that's "storage-and-scale", already used).
 
 ## Where we are
 
