@@ -1,7 +1,10 @@
 # Spec 16 — Packaging + high-level API surface (P0)
 
-> **Status: SIGNED OFF (2026-07-06) — implementing.** SO-1..SO-6 approved as drafted
-> (SO-2: `download` is its own verb). First spec of the north-star roadmap
+> **Status: SIGNED OFF + IMPLEMENTED + VERIFIED (2026-07-06).** SO-1..SO-6 approved as drafted
+> (SO-2: `download` is its own verb). `src/fsd/api.py` + top-level re-export + `tests/test_api.py`
+> (9 tests; 133 total, ruff clean); version 0.1.0; README quickstart. Committed `decb64a` +
+> pushed; a clean `pip install git+ssh://…github.com/nikhilsrajan/fsd.git` installs 0.1.0 and
+> exposes the verbs. First spec of the north-star roadmap
 > (`ROADMAP.md`), phase **P0** — *minus* STAC, which is split into spec 17. Goal: make fsd
 > **pip-installable from GitHub** and give it the **high-level verb surface** users will call,
 > with **`create_training_data` fully working locally** and `run_inference` / `deploy` as
@@ -155,14 +158,14 @@ failures) on any miss:
   exposes `fsd.create_training_data`.
 
 ## Sign-off checklist
-- [ ] **[SO-1]** `fsd/api.py` façade, re-exported at top level (`fsd.create_training_data`).
-- [ ] **[SO-2]** `download` is its own verb (vs folded into `create_training_data`).
-- [ ] **[SO-3]** `runner`/`storage` seam params present on every verb, local-only wired.
-- [ ] **[SO-4]** Preflight runs before any download/build; raises `PreflightError` with the
+- [x] **[SO-1]** `fsd/api.py` façade, re-exported at top level (`fsd.create_training_data`).
+- [x] **[SO-2]** `download` is its own verb (vs folded into `create_training_data`).
+- [x] **[SO-3]** `runner`/`storage` seam params present on every verb, local-only wired.
+- [x] **[SO-4]** Preflight runs before any download/build; raises `PreflightError` with the
       §2.6 checks (incl. the `T` computation).
-- [ ] **[SO-5]** Packaging: README quickstart + version 0.1.0 + install-from-GitHub verified;
+- [x] **[SO-5]** Packaging: README quickstart + version 0.1.0 + install-from-GitHub verified;
       **no** console CLI in P0.
-- [ ] **[SO-6]** `feature_sequence`/`aggregate` params **pinned in the signature** but raise
+- [x] **[SO-6]** `feature_sequence`/`aggregate` params **pinned in the signature** but raise
       `NotImplementedError` (behavior deferred to P0.5).
-- [ ] `run_inference`/`deploy` are contract-pinning stubs; STAC untouched (spec 17).
-- [ ] Existing modules/entrypoints unchanged and still public.
+- [x] `run_inference`/`deploy` are contract-pinning stubs; STAC untouched (spec 17).
+- [x] Existing modules/entrypoints unchanged and still public.
