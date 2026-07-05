@@ -46,6 +46,7 @@ for _, row in input_df.iterrows():
         "enddate": row["enddate"],
         "export_folderpath": export_folderpath,
         "mosaic_days": row["mosaic_days"],
+        "mosaic_scheme": row["mosaic_scheme"],
         "scl_mask_classes": row["scl_mask_classes"],
         "bands": row["bands"],
     }
@@ -78,6 +79,7 @@ rule run:
             "{params._r[export_folderpath]} "
             "--bands {params._r[bands]} "
             "--mosaic-days {params._r[mosaic_days]} "
+            "--mosaic-scheme {params._r[mosaic_scheme]} "
             "--scl-mask-classes {params._r[scl_mask_classes]} "
             "--njobs {params._njobs} "
             "--njobs-load-images {params._njobs_load_images}"

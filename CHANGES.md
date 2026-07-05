@@ -4,6 +4,31 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## Calendar-interval median mosaic — new default (spec 15, 2026-07-05)
+- **Behavior change (kept-but-changed): `median_mosaic` now buckets acquisitions into fixed
+  calendar windows by default** (`mosaic_scheme="calendar"`, `config.MOSAIC_SCHEME`). Windows are
+  `[startdate + k·mosaic_days, …)` over `[startdate, enddate)`; **labels are window-start
+  boundaries** (not the first acquisition date); **empty windows are emitted as all-nodata slices**.
+  So every datacube built over the same `startdate`/`enddate`/`mosaic_days` has an **identical
+  `timestamps` axis regardless of tile/orbit/UTM zone** — which is what lets `flatten` (spec 05)
+  concatenate cubes across a multi-tile training set. `mosaic_scheme="acquisition"` restores the
+  exact legacy labeling (first-acquisition labels, occupied buckets only, gap-opens-interval quirk).
+- **Resolves the TODO #2 anchor caveat.** The workflow `create_datacube.setup` now threads the
+  **caller's calendar `startdate`/`enddate`** into each work-unit's mosaic anchor (the per-shape
+  actual acquisition min/max is kept only for the run-folder name). Previously it threaded the
+  actual first/last acquisition, so windows shifted shape-to-shape.
+- **Threading:** `mosaic_scheme` added to `build_datacube`, `workflows.task` (`--mosaic-scheme`
+  CLI, default from config), `create_datacube.setup`/`run_create_datacube` (+ an `input.csv`
+  column), and the bundled Snakefile. Boundary rule is half-open `[lo, hi)` (a timestamp on a
+  boundary lands in the later window; the final window is upper-inclusive so a timestamp exactly at
+  `enddate` isn't dropped) — differs from legacy's `<=` walk only for an on-boundary timestamp.
+- **Ripple:** mosaic timestamp *labels* change (calendar boundaries), but the pixel groupings /
+  medians for a dense window are unchanged, so `datacube.md`'s numeric NDVI references still hold;
+  the runbook carries a note. Legacy outputs are reproducible via `mosaic_scheme="acquisition"`.
+- **Known limitation logged (TODO #16):** `flatten` concatenates per-cube `coords.npy` but a
+  multi-zone training set mixes eastings/northings from different UTM zones (west→32636, east→32637)
+  — fine as pixel identifiers, wrong if used spatially. Not fixed here.
+
 ## satellite_benchmark migrated JP2 → COG in place (spec 14 follow-up, 2026-07-04)
 - **Data change (not code):** the real test archive `satellite_benchmark/` was converted from
   native JP2 to **COG (+ overviews), in place** — every `Bxx.jp2` → `Bxx.tif`, the `.jp2` deleted

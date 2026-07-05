@@ -2,7 +2,7 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-02_
+_Last updated: 2026-07-05_
 
 ## Where we are
 
@@ -127,8 +127,27 @@ flatten → workflows), on real multi-CRS data, incl. Snakemake resumability.
   Conversion is **memory-bandwidth-bound** → 8 workers (perf cores) is the knee (10 gave no gain).
   The Part-1/2 throughput/read findings were on the *pre-migration JP2*; re-running now reads COG.
 
+**Calendar-interval mosaic = spec 15 DONE + implemented (2026-07-05):** resolves TODO #2 and
+unblocks `flatten` across a multi-tile/multi-zone training set. `median_mosaic` gained
+`mosaic_scheme` (default `config.MOSAIC_SCHEME="calendar"`): fixed calendar windows off the
+caller's `startdate`, labels = window-start boundaries, **empty windows emitted as all-nodata**
+→ every cube over the same start/end/mosaic_days shares an **identical `timestamps` axis** whatever
+tiles/orbits/zones it hit. Legacy via `mosaic_scheme="acquisition"`. Threaded through `build_datacube`,
+`workflows.task` (`--mosaic-scheme`), `create_datacube.setup` (now anchors at caller dates, not
+per-shape actual) + Snakefile. Sub-cadence behavior documented in `median_mosaic` docstring (window <
+revisit → raw series padded with nodata slices). 124 tests, ruff clean. Real smoke: west (EPSG:32636)
++ east (EPSG:32637) fields → identical `[06-01, 06-21]` axis. New TODO #16 = multi-zone `coords.npy`.
+
+**`flatten` real-data run DONE + validated (2026-07-05):** the last v1-pipeline stage to get a real
+run. Built 1 datacube per EuroCrops field via the workflow (33-field class-stratified subset of
+`shapefiles/austria_eurocrops_sampled_ethiopia_translated.geojson`, id=`fid`, label=`EC_hcat_n`, 11
+classes, both zones), then `flatten` over the workflow `input.csv` → `data.npy (6502,2,3)` +
+coords/ids/labels/metadata. **Consistency gate passed across both UTM zones** (spec-15 payoff),
+total/per-field pixel counts match, round-trip exact. Runbook `tests/manual/flatten.md`. Full 1015-field
+run = same commands (serial cube build ≈ 9 min). **v1 pipeline now fully real-data-validated end to end.**
+
 **Other NEXT options:** Azure/Batch (spec 10, roadmap step 2); source extension (#11) / rslearn
-benchmark (#12); `flatten` real-data run. Deferred: TODO #9; `reference_profile` grid-from-bounds.
+benchmark (#12). Deferred: TODO #9; TODO #16 (multi-zone coords); `reference_profile` grid-from-bounds.
 
 CDSE discovery pivot (2026-07-01): dropped `sentinelhub` + the S3 `.SAFE` listing for
 the **CDSE STAC API** (`pystac-client`, anonymous). STAC item `assets` give per-band

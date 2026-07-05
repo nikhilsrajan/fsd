@@ -23,7 +23,7 @@ import geopandas as gpd
 import pandas as pd
 
 from fsd import config
-from fsd.datacube import builder
+from fsd.datacube import builder, ops
 from fsd.storage import fs
 
 
@@ -37,6 +37,7 @@ def run_task(
     bands: list[str],
     mosaic_days: int,
     scl_mask_classes: list[int],
+    mosaic_scheme: str = config.MOSAIC_SCHEME,
     if_missing_files: str | None = "warn",
     njobs: int = 1,
     njobs_load_images: int = 1,
@@ -66,6 +67,7 @@ def run_task(
         bands=bands,
         mosaic_days=mosaic_days,
         scl_mask_classes=scl_mask_classes,
+        mosaic_scheme=mosaic_scheme,
         export_folderpath=export_folderpath,
         njobs=njobs,
         njobs_load_images=njobs_load_images,
@@ -82,11 +84,13 @@ def _parse_args(argv=None) -> argparse.Namespace:
     )
     p.add_argument("shapefilepath", help="geometry.geojson for this shape")
     p.add_argument("catalog_filepath", help="per-shape catalog.parquet slice")
-    p.add_argument("startdate", help="actual (tile-derived) start; ISO or 'YYYY-MM-DD'")
-    p.add_argument("enddate", help="actual (tile-derived) end")
+    p.add_argument("startdate", help="calendar-window start; ISO or 'YYYY-MM-DD'")
+    p.add_argument("enddate", help="calendar-window end")
     p.add_argument("export_folderpath", help="where datacube.npy + metadata go")
     p.add_argument("--bands", required=True, help="comma-separated, e.g. B04,B08,B8A,SCL")
     p.add_argument("--mosaic-days", type=int, default=config.MOSAIC_DAYS)
+    p.add_argument("--mosaic-scheme", default=config.MOSAIC_SCHEME,
+                   choices=list(ops.MOSAIC_SCHEMES))
     p.add_argument("--scl-mask-classes",
                    default=",".join(map(str, config.SCL_MASK_CLASSES)),
                    help="comma-separated SCL classes to mask")
@@ -107,6 +111,7 @@ def main(argv=None) -> None:
         export_folderpath=args.export_folderpath,
         bands=args.bands.split(","),
         mosaic_days=args.mosaic_days,
+        mosaic_scheme=args.mosaic_scheme,
         scl_mask_classes=[int(v) for v in args.scl_mask_classes.split(",")],
         if_missing_files=None if args.if_missing_files == "none" else args.if_missing_files,
         njobs=args.njobs,

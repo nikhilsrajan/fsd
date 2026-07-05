@@ -27,6 +27,14 @@ SCL_MASK_CLASSES = [
     10,  # Thin cirrus
 ]
 MOSAIC_DAYS = 20
+# Mosaic window scheme (spec 15). "calendar" buckets acquisitions into fixed calendar
+# windows anchored at the caller's startdate — so every datacube built over the same
+# startdate/enddate/mosaic_days shares an identical `timestamps` axis regardless of
+# which tiles/orbits/zones a shape hits (required to `flatten` across shapes). Empty
+# windows are emitted as all-nodata slices, labels are window-start boundaries.
+# "acquisition" = legacy behavior (windows track actual acquisition dates; labels =
+# first acquisition per window; empty windows skipped).
+MOSAIC_SCHEME = "calendar"
 REFERENCE_BAND = "B08"   # 10 m; used for resampling/merge reference
 NODATA = 0
 MAX_TIMEDELTA_DAYS = 5   # acceptable gap when checking for missing acquisitions

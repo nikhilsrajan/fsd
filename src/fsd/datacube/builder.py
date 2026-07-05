@@ -83,6 +83,7 @@ def build_datacube(
     scl_mask_classes: list[int] | None = None,
     reference_band: str = config.REFERENCE_BAND,
     export_folderpath: str,
+    mosaic_scheme: str = config.MOSAIC_SCHEME,
     njobs: int = 1,
     njobs_load_images: int = 1,
     if_missing_files: str | None = "raise_error",   # raise_error | warn | None
@@ -97,8 +98,11 @@ def build_datacube(
     by timestamp x band -> SCL mask -> drop SCL -> median mosaic -> save.
 
     `startdate` must be on/before the first acquisition and `enddate` on/after the
-    last (median_mosaic requirement); the workflow layer threads the actual first
-    acquisition date in for `startdate` (anchor caveat, spec 04 / TODO #2).
+    last (median_mosaic requirement). `mosaic_scheme` (spec 15) controls how the
+    mosaic windows are anchored/labeled — the default "calendar" uses fixed calendar
+    windows off `startdate`, so cubes built over the same startdate/enddate/mosaic_days
+    share an identical `timestamps` axis (the workflow now threads the caller's
+    calendar dates, not per-shape actual acquisition; "acquisition" keeps legacy).
 
     `write_timings=True` writes a `timings.json` sidecar (per-phase wall-seconds +
     counts) next to the artifact — the benchmark seam for spec 11. Off by default so
@@ -168,7 +172,8 @@ def build_datacube(
             (ops.apply_cloud_mask_scl, dict(mask_classes=scl_mask_classes)),
             (ops.drop_bands, dict(bands_to_drop=["SCL"])),
             (ops.median_mosaic, dict(startdate=startdate, enddate=enddate,
-                                     mosaic_days=mosaic_days)),
+                                     mosaic_days=mosaic_days,
+                                     mosaic_scheme=mosaic_scheme)),
         ])
 
     with _timed(timings, "save"):

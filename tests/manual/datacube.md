@@ -211,6 +211,11 @@ A final `rasterio.mask` re-crop to the shape would trim the halo (tested: 554×5
 parked under TODO #8 pending a decision.
 
 ## Notes
+- **Mosaic timestamps are calendar boundaries (spec 15, 2026-07-05).** `median_mosaic`
+  now defaults to `mosaic_scheme="calendar"`: the 2 output timestamps here are the
+  **window-start dates** `2018-06-01` and `2018-06-21` (not the first-acquisition dates).
+  The pixel groupings/medians for this dense window are unchanged, so the NDVI reference
+  values above still hold. Pass `mosaic_scheme="acquisition"` for the legacy labeling.
 - Outputs go to `tests/outputs/datacube/` (gitignored) — for QGIS, not commits.
 - The **whole cube is built in memory** per geometry. Fine for a short window on this
   ROI; a full year / large ROI is where the future `xarray+zarr` chunked artifact

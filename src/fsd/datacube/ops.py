@@ -17,6 +17,10 @@ import numba
 import numpy as np
 import pandas as pd
 
+from fsd import config
+
+MOSAIC_SCHEMES = ("calendar", "acquisition")
+
 
 def run_ops(datacube, metadata, sequence):
     """Run a sequence of (func, kwargs) ops, threading (datacube, metadata)."""
@@ -56,34 +60,64 @@ def drop_bands(datacube, metadata, *, bands_to_drop):
 
 
 def median_mosaic(datacube, metadata, *, startdate: datetime.datetime,
-                  enddate: datetime.datetime, mosaic_days=20, mask_value=0):
-    """Bucket timestamps into `mosaic_days` windows from `startdate`; per-bucket
-    nanmedian (treating `mask_value` as NaN). Numba-accelerated core.
+                  enddate: datetime.datetime, mosaic_days=20, mask_value=0,
+                  mosaic_scheme: str | None = None):
+    """Bucket timestamps into `mosaic_days` windows; per-bucket nanmedian (treating
+    `mask_value` as NaN). Numba-accelerated core.
 
-    Anchor caveat (legacy, TODO #2): the builder threads in the *actual first
-    acquisition date*, not the user startdate, so windows shift ROI-to-ROI.
+    `mosaic_scheme` (spec 15; default `config.MOSAIC_SCHEME` = "calendar"):
+
+    - **"calendar"** — fixed calendar windows `[startdate + k*mosaic_days, ...)` over
+      `[startdate, enddate)`; label = the window-start boundary; **every** window is
+      emitted (an empty window → an all-`mask_value` slice). The output `timestamps`
+      are thus a pure function of `(startdate, enddate, mosaic_days)`, identical across
+      any two datacubes built with those inputs — so `flatten` can concatenate cubes
+      from different tiles/orbits/zones (spec 05).
+
+      How the window vs the revisit cadence interact:
+        * `mosaic_days` > cadence  → several acquisitions per window get composited
+          (`nanmedian`) into one slice — the normal temporal-mosaic case.
+        * `mosaic_days` ≈ cadence  → ~one acquisition per window (median of one = itself).
+        * `mosaic_days` < cadence  → each acquisition still lands alone in its window
+          (unchanged, nothing lost), but the windows *between* acquisitions have no data
+          and are emitted as all-`mask_value` slices. The cube degenerates to the raw
+          time series laid on a fixed calendar grid, padded with empty slices — correct
+          and cross-shape-consistent, but larger. Choose `mosaic_days` ≥ the revisit.
+    - **"acquisition"** — legacy behavior: windows track the actual acquisition dates
+      (a gap opens a new interval), labels = first acquisition per window, empty windows
+      skipped. Anchor shifts ROI-to-ROI; kept for reproducing pre-spec-15 outputs.
     """
+    if mosaic_scheme is None:
+        mosaic_scheme = config.MOSAIC_SCHEME
+    if mosaic_scheme not in MOSAIC_SCHEMES:
+        raise ValueError(f"mosaic_scheme must be one of {MOSAIC_SCHEMES}")
     if mosaic_days < 1:
         return datacube, metadata
 
-    ts_index_ranges = _get_mosaic_ts_index_ranges(
-        timestamps=metadata["timestamps"], startdate=startdate, enddate=enddate,
-        mosaic_days=mosaic_days,
-    )
+    timestamps = metadata["timestamps"]
+    if mosaic_scheme == "calendar":
+        labels, index_intervals = _calendar_windows(
+            timestamps=timestamps, startdate=startdate, enddate=enddate,
+            mosaic_days=mosaic_days,
+        )
+    else:  # "acquisition"
+        index_intervals = _get_mosaic_ts_index_ranges(
+            timestamps=timestamps, startdate=startdate, enddate=enddate,
+            mosaic_days=mosaic_days,
+        )
+        labels = [timestamps[r[0]] for r in index_intervals]
 
     dtype = datacube.dtype
     datacube = datacube.astype(float)
     datacube[np.where(datacube == mask_value)] = np.nan
 
-    mosaiced = _median_mosaic_core(datacube, np.array(ts_index_ranges))
-
-    mosaiced[np.isnan(mosaiced)] = mask_value
+    mosaiced = _mosaic_from_intervals(datacube, index_intervals, mask_value)
     mosaiced = mosaiced.astype(dtype)
 
     md = copy.deepcopy(metadata)
-    md["mosaic_index_intervals"] = ts_index_ranges
-    md["previous_timestamps"] = metadata["timestamps"]
-    md["timestamps"] = [metadata["timestamps"][r[0]] for r in ts_index_ranges]
+    md["mosaic_index_intervals"] = index_intervals
+    md["previous_timestamps"] = timestamps
+    md["timestamps"] = labels
     md["data_shape_desc"] = ("timestamps", "height", "width", "bands")
     return mosaiced, md
 
@@ -159,6 +193,64 @@ def _get_mosaic_ts_index_ranges(timestamps, startdate, enddate, mosaic_days=20):
             cur += 1
 
     return [(min(g), max(g)) for g in ts_indexes if len(g) > 0]
+
+
+def _calendar_windows(timestamps, startdate, enddate, mosaic_days=20):
+    """Fixed calendar windows `[lo, lo+mosaic_days)` tiling `[startdate, enddate)`
+    (spec 15). Returns `(labels, index_intervals)`:
+
+    - `labels[k]` = the window-start `pd.Timestamp` (tz-aware UTC).
+    - `index_intervals[k]` = `(min_i, max_i)` of the sorted `timestamps` falling in
+      window k, or `None` when the window is empty.
+
+    Windows are half-open `[lo, hi)` so a timestamp on a boundary lands in the *later*
+    window; the final window is upper-inclusive so a timestamp exactly at `enddate`
+    (allowed by the guard) is not dropped. Data-independent: the labels/count depend
+    only on `(startdate, enddate, mosaic_days)`."""
+    startdate = _dt2ts(startdate)
+    enddate = _dt2ts(enddate)
+
+    if not _is_sorted(timestamps):
+        raise ValueError("timestamps is not sorted.")
+    if startdate > timestamps[0]:
+        raise ValueError("startdate must be before or on the first timestamp")
+    if enddate < timestamps[-1]:
+        raise ValueError("enddate must be after or on the last timestamp")
+
+    windows = []
+    lo = startdate
+    while lo < enddate:
+        windows.append((lo, lo + datetime.timedelta(days=mosaic_days)))
+        lo = windows[-1][1]
+
+    labels, intervals = [], []
+    for k, (lo, hi) in enumerate(windows):
+        last = k == len(windows) - 1
+        members = [i for i, ts in enumerate(timestamps)
+                   if lo <= ts and (ts <= hi if last else ts < hi)]
+        labels.append(lo)
+        intervals.append((min(members), max(members)) if members else None)
+    return labels, intervals
+
+
+def _mosaic_from_intervals(datacube, index_intervals, mask_value):
+    """Median-mosaic each interval into one slice, in order. A `None` interval (an
+    empty calendar window) becomes an all-`mask_value` slice, so the output timestamp
+    axis has one slot per interval. `datacube` already has `mask_value` set to NaN;
+    an all-NaN result (fully-masked pixel or empty window) is restored to `mask_value`.
+    Non-empty intervals go through the single numba core call (legacy path)."""
+    n_out = len(index_intervals)
+    _, height, width, n_bands = datacube.shape
+    out = np.full((n_out, height, width, n_bands), np.nan)
+
+    nonempty = [(k, iv) for k, iv in enumerate(index_intervals) if iv is not None]
+    if nonempty:
+        positions = np.array([k for k, _ in nonempty])
+        ranges = np.array([iv for _, iv in nonempty])
+        out[positions] = _median_mosaic_core(datacube, ranges)
+
+    out[np.isnan(out)] = mask_value
+    return out
 
 
 @numba.njit()

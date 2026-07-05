@@ -32,8 +32,8 @@ def test_drop_bands():
     assert np.array_equal(out[..., 0], dc[..., 0])  # B04 preserved
 
 
-def test_median_mosaic_buckets_and_mask():
-    # 3 acquisitions: days 1, 6 (bucket 0: [01-01,01-21)) and 26 (bucket 1)
+def test_median_mosaic_calendar_default_labels_by_window_start():
+    # 3 acquisitions: days 1, 6 (window 0: [01-01,01-21)) and 26 (window 1: [01-21,02-10])
     ts = [_ts(1), _ts(6), _ts(26)]
     dc = np.array([10, 0, 30], dtype=np.int32).reshape(3, 1, 1, 1)  # day6 masked (0)
     md = {"bands": ["B04"], "timestamps": ts}
@@ -41,12 +41,69 @@ def test_median_mosaic_buckets_and_mask():
         dc, md, startdate=datetime.datetime(2018, 1, 1),
         enddate=datetime.datetime(2018, 2, 1), mosaic_days=20, mask_value=0,
     )
-    assert out.shape == (2, 1, 1, 1)                 # 2 non-empty buckets
+    assert out.shape == (2, 1, 1, 1)                 # 2 calendar windows
     assert out[0, 0, 0, 0] == 10                     # nanmedian(10, masked) = 10
     assert out[1, 0, 0, 0] == 30
-    assert md2["timestamps"] == [ts[0], ts[2]]       # first ts of each bucket
+    # calendar default (spec 15): labels are window-start boundaries, not acquisitions
+    assert md2["timestamps"] == [_ts(1), _ts(21)]
     assert md2["mosaic_index_intervals"] == [(0, 1), (2, 2)]
     assert md2["previous_timestamps"] == ts
+
+
+def test_median_mosaic_acquisition_legacy_labels_by_first_acquisition():
+    ts = [_ts(1), _ts(6), _ts(26)]
+    dc = np.array([10, 0, 30], dtype=np.int32).reshape(3, 1, 1, 1)
+    md = {"bands": ["B04"], "timestamps": ts}
+    out, md2 = ops.median_mosaic(
+        dc, md, startdate=datetime.datetime(2018, 1, 1),
+        enddate=datetime.datetime(2018, 2, 1), mosaic_days=20, mask_value=0,
+        mosaic_scheme="acquisition",
+    )
+    assert out.shape == (2, 1, 1, 1)
+    assert out[0, 0, 0, 0] == 10 and out[1, 0, 0, 0] == 30
+    assert md2["timestamps"] == [ts[0], ts[2]]       # first ts of each bucket (legacy)
+    assert md2["mosaic_index_intervals"] == [(0, 1), (2, 2)]
+
+
+def test_median_mosaic_calendar_cross_shape_identical_timestamps():
+    """Two cubes with *different* acquisition dates but the same window inputs get an
+    identical timestamps axis — the property flatten (spec 05) relies on."""
+    kw = dict(startdate=datetime.datetime(2018, 1, 1),
+              enddate=datetime.datetime(2018, 2, 10), mosaic_days=20)
+    dc = np.ones((2, 1, 1, 1), dtype=np.int32)
+    # cube A samples days 2 & 25; cube B days 8 & 30 — different orbits/tiles
+    _, mdA = ops.median_mosaic(dc, {"bands": ["B04"], "timestamps": [_ts(2), _ts(25)]}, **kw)
+    _, mdB = ops.median_mosaic(dc, {"bands": ["B04"], "timestamps": [_ts(8), _ts(30)]}, **kw)
+    assert mdA["timestamps"] == mdB["timestamps"] == [_ts(1), _ts(21)]
+
+
+def test_median_mosaic_calendar_emits_empty_window_as_nodata():
+    """A calendar window with no acquisitions is still emitted (all-nodata), so the
+    timestamps axis length is fixed by the calendar, not the data."""
+    ts = [_ts(2), pd.Timestamp("2018-02-15", tz="UTC")]   # nothing in [01-21,02-10)
+    dc = np.array([10, 40], dtype=np.int32).reshape(2, 1, 1, 1)
+    md = {"bands": ["B04"], "timestamps": ts}
+    out, md2 = ops.median_mosaic(
+        dc, md, startdate=datetime.datetime(2018, 1, 1),
+        enddate=datetime.datetime(2018, 3, 1), mosaic_days=20, mask_value=0,
+    )
+    # windows: [01-01,01-21) has day2; [01-21,02-10) empty; [02-10,03-02] has 02-15
+    assert out.shape == (3, 1, 1, 1)
+    assert [int(o[0, 0, 0]) for o in out] == [10, 0, 40]   # middle window = nodata
+    assert md2["timestamps"] == [_ts(1), _ts(21), pd.Timestamp("2018-02-10", tz="UTC")]
+    assert md2["mosaic_index_intervals"] == [(0, 0), None, (1, 1)]
+
+
+def test_median_mosaic_calendar_boundary_goes_to_later_window():
+    # a timestamp exactly on a window boundary (day 21) lands in the *later* window
+    ts = [_ts(5), _ts(21)]
+    dc = np.array([10, 20], dtype=np.int32).reshape(2, 1, 1, 1)
+    md = {"bands": ["B04"], "timestamps": ts}
+    _, md2 = ops.median_mosaic(
+        dc, md, startdate=datetime.datetime(2018, 1, 1),
+        enddate=datetime.datetime(2018, 2, 10), mosaic_days=20,
+    )
+    assert md2["mosaic_index_intervals"] == [(0, 0), (1, 1)]  # day21 -> window 1, not 0
 
 
 def test_median_mosaic_noop_when_days_lt_1():
@@ -66,6 +123,18 @@ def test_mosaic_ranges_validation():
         ops._get_mosaic_ts_index_ranges([_ts(10), _ts(5)],
                                         datetime.datetime(2018, 1, 1),
                                         datetime.datetime(2018, 2, 1), 20)
+    # calendar path shares the same guards
+    with pytest.raises(ValueError, match="startdate must be"):
+        ops._calendar_windows([_ts(5)], datetime.datetime(2018, 1, 8),
+                              datetime.datetime(2018, 2, 1), 20)
+
+
+def test_median_mosaic_rejects_unknown_scheme():
+    md = {"bands": ["B04"], "timestamps": [_ts(1), _ts(2)]}
+    with pytest.raises(ValueError, match="mosaic_scheme must be one of"):
+        ops.median_mosaic(np.ones((2, 1, 1, 1), dtype=np.int32), md,
+                          startdate=datetime.datetime(2018, 1, 1),
+                          enddate=datetime.datetime(2018, 2, 1), mosaic_scheme="nope")
 
 
 def test_run_ops_threads_sequence():

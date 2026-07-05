@@ -17,6 +17,7 @@ import os
 import geopandas as gpd
 import pandas as pd
 
+from fsd import config
 from fsd.catalog.catalog import TileCatalog
 from fsd.storage import fs
 from fsd.workflows import runners
@@ -38,11 +39,18 @@ def setup(
     mosaic_days: int,
     csv_filepath: str,
     label_col: str | None,
+    mosaic_scheme: str = config.MOSAIC_SCHEME,
 ) -> None:
     """Per geometry: write geometry.geojson + catalog.parquet slice + input.csv row.
 
     Reuses `TileCatalog.filter` for the date+overlap slice (which also persists
     `area_contribution`). Shapes with no intersecting tiles are skipped with a note.
+
+    The mosaic anchor written to each row is the caller's `startdate`/`enddate` (not
+    the per-shape actual acquisition min/max), so every shape mosaics on the same
+    calendar grid and the resulting cubes share a `timestamps` axis that `flatten` can
+    concatenate (spec 15). The per-shape actual dates are still used for the run-folder
+    name only.
     """
     startdate = pd.to_datetime(startdate, utc=True)
     enddate = pd.to_datetime(enddate, utc=True)
@@ -80,8 +88,11 @@ def setup(
 
         row = {
             "shapefilepath": shape_path,
-            "startdate": actual_start,
-            "enddate": actual_end,
+            # Calendar anchor = the caller's window (spec 15), not per-shape actual
+            # acquisition min/max — so all shapes mosaic on the same grid. actual_start/
+            # actual_end are used above for the run-folder name only.
+            "startdate": startdate,
+            "enddate": enddate,
             "catalog_filepath": catalog_path,
             "export_folderpath": export_folderpath,
             "datacube_filepath": os.path.join(export_folderpath, "datacube.npy"),
@@ -98,6 +109,7 @@ def setup(
     input_df = pd.DataFrame(rows)
     input_df["added_on"] = pd.Timestamp.now(tz="UTC")
     input_df["mosaic_days"] = mosaic_days
+    input_df["mosaic_scheme"] = mosaic_scheme
     input_df["scl_mask_classes"] = ",".join(str(v) for v in scl_mask_classes)
     input_df["bands"] = ",".join(bands)
 
@@ -123,6 +135,7 @@ def run_create_datacube(
     label_col: str | None,
     cores: int,
     *,
+    mosaic_scheme: str = config.MOSAIC_SCHEME,
     dry_run: bool = False,
     unlock: bool = False,
     overwrite_setup_csv: bool = True,
@@ -138,7 +151,7 @@ def run_create_datacube(
             shapefilepath=shapefilepath, id_col=id_col, run_folderpath=run_folderpath,
             startdate=startdate, enddate=enddate, bands=bands,
             scl_mask_classes=scl_mask_classes, mosaic_days=mosaic_days,
-            csv_filepath=csv_filepath, label_col=label_col,
+            csv_filepath=csv_filepath, label_col=label_col, mosaic_scheme=mosaic_scheme,
         )
 
     if runner != "local":
