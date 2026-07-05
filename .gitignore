@@ -40,3 +40,4 @@ mysecrets.py
 # tagged A/B intermediates (spec 13) — regenerable; deliverable is cog_vs_jp2_*
 benchmarks/datacube_throughput_report_*.md
 benchmarks/datacube_throughput_figures_*/
+.venv-rslearn/
