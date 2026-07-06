@@ -230,8 +230,8 @@ a `raapid-infra` change to the admin (we never edit it ourselves).
 |---|---|---|---|
 | **P0** | fsd pip-installable (GitHub); high-level verb *skeletons*; STAC-aligned catalog (§6) | `pip install fsd`, local download→datacube→flatten via `create_training_data` | none |
 | **P0.5** | **ModelAdapter contract** + reimplement legacy train/deploy on it, **fully local** | Mode A end-to-end: EuroCrops RF train → inference → COG + STAC, one plug-in adapter | none |
-| **P1** | Storage seam on Azure: adlfs/MSI read+write to `st<proj>`; GDAL-VSI auth proven | build a datacube locally but I/O against `rise` blob (over VPN) | none (uses existing) |
-| **P2** | Azure Batch runner for datacube fan-out (the runner seam) | N datacubes built across autoscaled `<proj>-pool` nodes | **quota bump; likely `max_tasks_per_node`** |
+| **P1** | Storage seam on Azure: adlfs/MSI read+write to the `rise` project storage; GDAL-VSI auth proven | build a datacube locally but I/O against `rise` blob (over VPN) | none (uses existing) |
+| **P2** | Azure Batch runner for datacube fan-out (the runner seam) | N datacubes built across the autoscaled `rise` Batch pool | **quota bump; likely `max_tasks_per_node`** |
 | **P3** | Thin control plane ("trigger from laptop"): submit-a-job UX + config files | Mode B: laptop triggers cloud build, pulls flattened arrays | none new |
 | **P4** | Inference at scale: ROI → S2 tiles (port `s2_grid_utils`, §4) → model → COG outputs on Batch | Mode C first light | maybe scale `max_nodes` |
 | **P5** | Output STAC + hosted TiTiler / XYZ | outputs viewable as web tiles | TiTiler hosting (infra) |

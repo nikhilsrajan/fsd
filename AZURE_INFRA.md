@@ -10,7 +10,15 @@
 > infra change (max_nodes, max_tasks_per_node, warm-cache image, adding `vms`, etc.) is a
 > `main/terraform.tfvars` edit + gated `deploy.sh` run by a **platform admin** (a colleague;
 > possibly the user later). We only *propose* infra changes. When we start specing, this is
-> the file to re-read for the ground truth about names, identities, network, and gotchas.
+> the file to re-read for the ground truth about identities, network, and gotchas.
+>
+> **Redaction note.** `raapid-infra/` is a **private** repo; this file is in the **public**
+> `fsd` repo. So concrete resource **names/endpoints**, directory/group **object IDs**, the
+> **VNet CIDR**, budget figures, and alert emails are **deliberately omitted** here — they
+> live only in `raapid-infra/main/terraform.tfvars` and the Azure Portal. This doc keeps the
+> *architecture and seam mapping* (which is the reusable value) and refers to resources by
+> **role** with placeholder short-names (`st<proj>`, `kv<proj>`, `ba<proj>`, `acr<proj>`, …).
+> Look up the concrete names/URLs in the tfvars or via `az` when actually wiring things.
 >
 > Source of truth in `raapid-infra/`: `main/terraform.tfvars` (the `rise` entry),
 > `modules/project-capabilities/azure-batch/`, `modules/project-core/`,
@@ -21,11 +29,11 @@
 ## 1. The big picture (how RAAPID/Azure is organized)
 
 RAAPID is a shared Azure platform managed as **Terraform IaC** (`azurerm ~> 4.17`) in
-`raapid-infra/`. One Azure subscription, one shared VNet (`<vnet-cidr>`), many
-**projects**. Projects are *pure data*: each is an entry in the `projects` map in
-`main/terraform.tfvars`. Adding capabilities to a project = editing that map + a gated
-`terraform apply` (`main/deploy.sh`) run by a **platform admin**. We (fsd) are consumers,
-not admins — we don't run Terraform; we ask for config changes and then use the resources.
+`raapid-infra/`. One Azure subscription, one shared VNet, many **projects**. Projects are
+*pure data*: each is an entry in the `projects` map in `main/terraform.tfvars`. Adding
+capabilities to a project = editing that map + a gated `terraform apply` (`main/deploy.sh`)
+run by a **platform admin**. We (fsd) are consumers, not admins — we don't run Terraform; we
+ask for config changes and then use the resources.
 
 Each project gets, from the **`project-core`** module (always):
 - a **resource group**, a **storage account** (ADLS Gen2), a **Key Vault**, a **budget**,
@@ -37,22 +45,24 @@ Then **opt-in capabilities** (per project's `capabilities` list) layer on top:
 An **ACR** (container registry) is auto-added whenever a project has `aml`,
 `container-apps`, or `azure-batch`.
 
-**Naming convention:** `{resource-type}-{project}-{env}-{location}`; storage/registry/batch
-names strip hyphens and truncate. `rise` has no `legacy_name_suffix`, so there's no `-prod`
-env infix in its names.
+**Naming convention:** resource names follow the platform's
+`{resource-type}-{project}-{env}-{location}` pattern (storage/registry/batch names strip
+hyphens and truncate). The **concrete names are omitted here** (see the redaction note) —
+resolve them from tfvars or `az` when wiring. `rise` has no `legacy_name_suffix`, so there's
+no `-prod` env infix in its names.
 
 ---
 
 ## 2. The `rise` project — exactly what we get
 
-From `main/terraform.tfvars` (the `rise` block):
+From `main/terraform.tfvars` (the `rise` block; identifiers/budget/group-IDs redacted):
 
 ```hcl
 "rise" = {
-  subnet_index = 7
-  budget_amount = <redacted>                 # USD/month, with alert emails
-  team_group_object_id         = "REDACTED-..."
-  project_lead_group_object_id = "REDACTED-..."
+  subnet_index = <n>
+  budget_amount       = <redacted>            # USD/month, with alert emails
+  team_group_object_id         = "<redacted>" # Entra group object IDs — see tfvars
+  project_lead_group_object_id = "<redacted>"
   capabilities = ["aml", "azure-batch"]
   capability_config = {
     aml = {
@@ -70,11 +80,11 @@ From `main/terraform.tfvars` (the `rise` block):
 }
 ```
 
-### 2.1 Resources this provisions (with their real names)
+### 2.1 Resources this provisions (by role — concrete names in tfvars)
 
-`location = <loc>`, no env suffix → names are:
+`location = <loc>`, no env suffix. Referred to by role + placeholder short-name:
 
-| Kind | Name | Notes |
+| Kind | Placeholder | Notes |
 |---|---|---|
 | Resource group | `rg<proj>` | `prevent_destroy` + delete-lock |
 | **Project storage** | `st<proj>` | **ADLS Gen2** (HNS on), LRS, `data` container, firewalled |
@@ -106,16 +116,16 @@ crux of the whole auth story.
 
 - Project storage & Key Vault are **deny-by-default firewalled**: reachable only from the
   VPN IP ranges *and* the project's own subnets (via VNet **service endpoints**). Pool
-  nodes live in `snet<proj>-compute`, so they're allowed. A laptop must be on
-  the **VPN + `az login`** to touch storage directly.
+  nodes live in the project compute subnet, so they're allowed. A laptop must be on the
+  **VPN + `az login`** to touch storage directly.
 - **Account keys are DISABLED** on project storage (`shared_access_key_enabled = false`).
   → **No connection strings / account keys exist.** All access is **Entra ID (MSI / user
   token) or user-delegation SAS.** This directly shapes how the fsspec storage seam must
   authenticate (see §4.1).
 - Outbound: nodes can reach the Internet (`AllowInternetOutbound`) — so **CDSE downloads
   work** from a pool node — and Azure services.
-- NSG opens Batch node-management ports (`29876-29877`, `BatchNodeManagement` service tag)
-  and AML (`44224`).
+- NSG opens the Batch node-management ports (`BatchNodeManagement` service tag) and AML
+  management ports.
 
 ---
 
@@ -127,8 +137,8 @@ an Azure Batch runner dispatches the same task later"). AML is more for training
 (out of fsd core scope) but is available as a driver host.
 
 **Azure Batch mental model** (maps 1:1 onto fsd's existing design):
-- A **pool** = a set of identical VM nodes (`<proj>-pool`, D64ds_v6) that **autoscales 0→N**
-  on pending-task pressure and **back to 0 when idle** (so idle cost ≈ 0).
+- A **pool** = a set of identical VM nodes (the project pool, D64ds_v6) that **autoscales
+  0→N** on pending-task pressure and **back to 0 when idle** (so idle cost ≈ 0).
 - A **job** = a collection of **tasks**; each **task** = one command line run on a node
   (in our case, inside a container).
 - A **driver** submits the job + tasks to the Batch account (via MSI), then Batch schedules
@@ -142,10 +152,10 @@ becomes a **Batch task**, and a Batch runner replaces Snakemake as the dispatche
 ```
                  fsd today (local)                    fsd on rise (Azure Batch)
   unit of work   fsd.workflows.task CLI               SAME CLI, inside a container
-  dispatcher     Snakemake (local cores)              Azure Batch job/tasks → <proj>-pool
+  dispatcher     Snakemake (local cores)              Azure Batch job/tasks → project pool
   parallelism    N processes on 1 machine             N tasks across autoscaled nodes
-  file I/O       fsspec → local disk                  fsspec → adlfs (st<proj>)
-  secrets        secrets/ dir                          Key Vault kv<proj> (via MSI)
+  file I/O       fsspec → local disk                  fsspec → adlfs (project storage)
+  secrets        secrets/ dir                          Key Vault (via MSI)
 ```
 
 ---
@@ -154,9 +164,9 @@ becomes a **Batch task**, and a Batch runner replaces Snakemake as the dispatche
 
 ### 4.1 Storage seam (`fsd.storage`, fsspec) → ADLS Gen2 via MSI
 
-- Project storage `st<proj>` is **ADLS Gen2**. fsspec talks to it through
-  **`adlfs`** (`AzureBlobFileSystem` / `abfs[s]://`). URIs look like
-  `abfss://data@st<proj>.dfs.core.windows.net/<path>` (container `data`).
+- Project storage `st<proj>` is **ADLS Gen2**. fsspec talks to it through **`adlfs`**
+  (`AzureBlobFileSystem` / `abfs[s]://`). URIs look like
+  `abfss://data@<storage-account>.dfs.core.windows.net/<path>` (container `data`).
 - **Auth = `DefaultAzureCredential`**, *not* account keys (keys are disabled). On a pool
   node this resolves to the compute identity's MSI automatically; on a laptop it's `az
   login` + VPN. This is a config change to `fsd.storage`, **not** new code paths — exactly
@@ -178,24 +188,24 @@ is a real design point for the spec.
   builds the same `input.csv` of units, then for each unit creates a Batch **task** whose
   command line is the `fsd.workflows.task` CLI (same args we pass today).
 - Submission uses the **`azure-batch` SDK** authenticated via `DefaultAzureCredential`
-  against `https://ba<proj>.<region>.batch.azure.com` (the account URL is a TF
-  output). The compute identity has Contributor on the account.
+  against the Batch account URL (a TF output). The compute identity has Contributor on the
+  account.
 - Tasks are **containerized** (the pool is `DockerCompatible`): each task runs our fsd
-  image pulled from `acr<proj>`.
+  image pulled from the project ACR.
 
 ### 4.3 Container image → ACR
 
-- Build an fsd Docker image (the fsd package + its deps + GDAL/rasterio) and **push to
-  `acr<proj>`** (compute identity has AcrPush; a human/CI does the push).
+- Build an fsd Docker image (the fsd package + its deps + GDAL/rasterio) and **push to the
+  project ACR `acr<proj>`** (compute identity has AcrPush; a human/CI does the push).
 - The pool pulls it via the compute identity (AcrPull). Optionally list it in the pool's
   `container_image_names` for a **warm cache** on scale-up (avoids first-task pull latency)
   — that's a tfvars change on the pool.
 
 ### 4.4 Secrets → Key Vault
 
-- CDSE S3 credentials (today in `secrets/`) move to **`kv<proj>`**; fsd reads
-  them at runtime via MSI (`azure-keyvault-secrets` + `DefaultAzureCredential`). No secrets
-  in the image or in blob.
+- CDSE S3 credentials (today in `secrets/`) move to **`kv<proj>`**; fsd reads them at
+  runtime via MSI (`azure-keyvault-secrets` + `DefaultAzureCredential`). No secrets in the
+  image or in blob.
 
 ---
 
@@ -204,15 +214,15 @@ is a real design point for the spec.
 ```
   [driver]  (laptop on VPN, or AML compute, or a small VM)
      |  1. reads geometries + builds the unit list (input.csv) — as today
-     |  2. az/MSI: submit Batch job to ba<proj>, one task per unit
+     |  2. az/MSI: submit Batch job to the project Batch account, one task per unit
      v
-  [Batch pool <proj>-pool]  autoscales 0 -> up to 2 x D64ds_v6, pulls fsd image from acr<proj>
-     |  each task = `python -m fsd.workflows.task ...` in the fsd container, running as id-rise-compute
-     |    - reads CDSE creds from kv<proj> (MSI)
-     |    - downloads S2 tiles from CDSE S3 -> writes to abfss://data@st<proj>... (fsspec/adlfs)
+  [Batch pool]  autoscales 0 -> up to 2 x D64ds_v6, pulls fsd image from the project ACR
+     |  each task = `python -m fsd.workflows.task ...` in the fsd container, running as the compute identity
+     |    - reads CDSE creds from Key Vault (MSI)
+     |    - downloads S2 tiles from CDSE S3 -> writes to abfss://data@<storage-account>... (fsspec/adlfs)
      |    - builds datacube (rasterio reads blobs via GDAL VSI), writes datacube.npy + metadata to blob
      v
-  [outputs]  in st<proj>; flatten runs as another job/step; pool scales back to 0 (≈ $0 idle)
+  [outputs]  in project storage; flatten runs as another job/step; pool scales back to 0 (≈ $0 idle)
 ```
 
 ---
@@ -221,7 +231,7 @@ is a real design point for the spec.
 
 1. **Batch quota starts tiny (~6 dedicated vCPUs).** A fresh Batch account can't even run
    one 64-vCPU node. Before any real run we must file a **per-Batch-account quota increase**
-   in the Portal for the D-family in <loc> (need ≥128 vCPU for 2×D64). Quota is
+   in the Portal for the D-family in the region (need ≥128 vCPU for 2×D64). Quota is
    per-account — it does not carry over from other projects. (`common-ops.md` §quota.)
 2. **`max_nodes = 2` today** — deliberately small, and validated at plan time against the
    compute subnet's IP budget. Scaling out = raise `max_nodes` in tfvars (needs subnet IP
@@ -242,7 +252,7 @@ is a real design point for the spec.
    stage→convert→upload). Azure wants remote-dst; this parked TODO becomes in-scope for the
    Batch spec.
 8. **No shared-dataset access** (`allowed_datasets = []`). rise brings its own S2 archive
-   into `st<proj>`; we don't read the platform's Planet/Maxar containers.
+   into project storage; we don't read the platform's Planet/Maxar containers.
 9. **We don't run Terraform.** Any infra change (max_nodes, max_tasks_per_node, warm-cache
    image, adding `vms` for a driver) is a tfvars edit + gated `deploy.sh` by a platform
    admin. We propose; they apply.
@@ -272,19 +282,20 @@ These are the decisions the future spec 10 must settle. Flagged here so we don't
    selects dispatcher without touching the task CLI.
 7. **Idempotency / resume at scale** — today `done.txt` sentinels + skip-if-exists; how that
    behaves with Batch task retries and blob eventual consistency.
-8. **Cost/observability** — budget alerts already exist ($10k/mo); do we want per-run
-   timing/telemetry (the spec-11 `timings.json` seam) written to blob?
+8. **Cost/observability** — budget alerts already exist; do we want per-run timing/telemetry
+   (the spec-11 `timings.json` seam) written to blob?
 
 ## 8. Things to confirm (not yet verified)
 
-- Exact Batch **account URL** output name and the <loc> Batch endpoint host.
+- Exact Batch **account URL** output name and the region's Batch endpoint host.
 - Whether `adlfs` + `DefaultAzureCredential` covers all `fsd.storage` operations we use
   (`transfer`, `size`, `load_npy`, atomic `.part`+rename — rename semantics on ADLS Gen2).
-- Current **quota** actually granted on `ba<proj>` (needs `az batch account show`).
+- Current **quota** actually granted on the Batch account (needs `az batch account show`).
 - Whether the pool image (`microsoft-dsvm/ubuntu-hpc/2204`) + Docker is enough, or we need a
   custom node image.
 
 ---
 
 *Maintenance: update this when the `rise` tfvars change, when we confirm any "to confirm"
-item, or when a design question is resolved (then fold it into the spec).*
+item, or when a design question is resolved (then fold it into the spec). Keep concrete
+names/IDs/CIDR/budget out of this file — it's public; they belong in `raapid-infra` only.*
