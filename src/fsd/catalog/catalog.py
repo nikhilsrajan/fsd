@@ -83,6 +83,17 @@ class TileCatalog:
         gdf["timestamp"] = pd.to_datetime(gdf["timestamp"], utc=True)
         return gdf
 
+    def to_stac(self, dst_folderpath: str, **kwargs) -> str:
+        """Export the catalog as a static, self-contained STAC catalog (spec 17).
+
+        Additive interchange view — the GeoParquet stays the query format. Returns the
+        catalog.json path. See `fsd.catalog.stac`.
+        """
+        from fsd.catalog import stac
+
+        items = stac.tile_catalog_to_items(self.read(), **kwargs)
+        return stac.write_stac_catalog(items, dst_folderpath)
+
     def filter(
         self,
         shapes_gdf: gpd.GeoDataFrame,

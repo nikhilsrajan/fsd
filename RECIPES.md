@@ -45,6 +45,20 @@ arrays = training.load()   # {"data" (px,T,b), "ids", "labels", "coords", "metad
 `run_inference` / `deploy` are stubs (P4 / P6). Install: `pip install
 "git+ssh://git@github.com/nikhilsrajan/fsd.git"`. Module = `src/fsd/api.py`.
 
+## STAC export of the tile catalog (spec 17)
+
+Additive interchange view — the GeoParquet stays the query format. Pure-metadata (no raster
+reads); `proj:code` from the MGRS tile in the product id.
+
+```python
+from fsd.catalog.catalog import TileCatalog
+TileCatalog("data/s2l2a/catalog.parquet").to_stac("data/s2l2a/stac")   # -> catalog.json
+# or: fsd.catalog.stac.tile_catalog_to_items(gdf) / write_stac_catalog(items, dst)
+```
+
+Module = `src/fsd/catalog/stac.py`. `read_proj=True` adds per-asset `proj:shape/transform`
+(opens rasters). `stac-geoparquet` deferred.
+
 ## Download (CDSE → local COG archive)
 
 Full-year, multi-CRS Sentinel-2 L2A download (the `satellite_benchmark/` archive).

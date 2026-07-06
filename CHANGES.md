@@ -4,6 +4,20 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## STAC export view of the tile catalog (spec 17 / P0, 2026-07-06)
+- **New (additive), `TileCatalog` GeoParquet schema unchanged:** `src/fsd/catalog/stac.py` maps
+  catalog rows → **STAC Items** (one Item per tile-product acquisition, one asset per band file)
+  and writes a **static, self-contained STAC catalog (JSON)** via `pystac`, through the
+  `fsd.storage` seam. `TileCatalog.to_stac(dst)` is the convenience entrypoint.
+- **Pure-metadata by default:** `proj:code` (EPSG) is derived from the **MGRS tile in the product
+  id** (e.g. `T37PBP`→`EPSG:32637`), so `to_stac` reads **no rasters** (579-tile benchmark → 579
+  items in 0.06 s, both UTM zones correct). Per-asset `proj:shape`/`proj:transform` are opt-in
+  (`read_proj=True`). Media types by extension (COG for `.tif`); `eo:cloud_cover` from
+  `cloud_cover`; `MTD_TL.xml` as a metadata asset; source `.SAFE` as a `via` link.
+- **Round-trippable:** `stac.items_to_rows(...)` reconstructs the catalog columns losslessly.
+- `pystac` promoted to a **direct** dependency (was transitive via `pystac-client`).
+  `stac-geoparquet` deferred (add when pgstac/TiTiler needs it). Advances TODO #14 (STAC half).
+
 ## High-level API façade — `fsd.*` verbs (spec 16 / P0, 2026-07-06)
 - **New (additive), no behavior change to existing modules:** `src/fsd/api.py` adds the
   user-facing verbs `fsd.download`, `fsd.create_training_data` (+ `run_inference` / `deploy`

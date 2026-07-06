@@ -19,8 +19,15 @@ real-data-validated** (see history below). We have since set the **forward direc
   `storage` seams local-only), `run_inference`/`deploy` **stubs** (P4/P6), `compute_n_timestamps`,
   `TrainingData`, `PreflightError`. Version `0.1.0`. README quickstart rewritten. **133 tests,
   ruff clean** (`tests/test_api.py`, 9 new). STAC split to **spec 17**; ModelAdapter to **P0.5**.
-- **Next:** spec 17 (STAC-thin catalog) or P0.5 (ModelAdapter + local train/deploy). NB the
-  Azure-Batch spec is a *future* number (not spec 10 — that's "storage-and-scale", already used).
+- **Spec 17 = STAC catalog DONE (2026-07-06):** `src/fsd/catalog/stac.py` + `TileCatalog.to_stac`
+  — additive STAC export (GeoParquet schema unchanged); one Item per tile-product, one asset per
+  band; `proj:code` from the MGRS tile (no raster reads); static self-contained STAC JSON via
+  `pystac` (now a direct dep) through the storage seam; round-trippable. Real-data smoke: 579-tile
+  benchmark → 579 items in 0.06 s, both UTM zones. **140 tests, ruff clean** (7 new). `stac-geoparquet`
+  deferred; advances TODO #14 (STAC half; TiTiler serving = P5).
+- **Next:** P0.5 (ModelAdapter + local train/deploy) — the last P0-tier piece before Azure — or
+  run the `spike/rslearn` benchmark. NB the Azure-Batch spec is a *future* number (not spec 10 —
+  that's "storage-and-scale", already used).
 
 ## Where we are
 

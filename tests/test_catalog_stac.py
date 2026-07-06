@@ -1,0 +1,134 @@
+"""Tests for the STAC export view of the tile catalog (spec 17).
+
+Synthetic + pure-metadata: no raster files are read (read_proj defaults False).
+"""
+
+from __future__ import annotations
+
+import pandas as pd
+import pystac
+import pytest
+import shapely.geometry
+from pystac.extensions.projection import ProjectionExtension
+
+from fsd.catalog import stac
+from fsd.catalog.catalog import TileCatalog
+
+
+def _catalog_gdf():
+    import geopandas as gpd
+
+    rows = [
+        {
+            "id": "S2B_MSIL2A_20181231T080329_N0500_R035_T37PBP_20230726T205809",
+            "satellite": "sentinel-2-l2a",
+            "timestamp": pd.Timestamp("2018-12-31T08:03:29", tz="UTC"),
+            "s3url": "s3://eodata/Sentinel-2/MSI/L2A/.../S2B_...T37PBP.SAFE",
+            "local_folderpath": "/data/s2/T37PBP_20181231",
+            "files": "B04.tif,B08.tif,MTD_TL.xml,SCL.tif",
+            "cloud_cover": 1.5,
+            "geometry": shapely.geometry.box(36.6, 12.6, 37.0, 13.0),
+        },
+        {
+            "id": "S2A_MSIL2A_20180601T075611_N0500_R035_T36PZU_20230101T000000",
+            "satellite": "sentinel-2-l2a",
+            "timestamp": pd.Timestamp("2018-06-01T07:56:11", tz="UTC"),
+            "s3url": "s3://eodata/.../T36PZU.SAFE",
+            "local_folderpath": "/data/s2/T36PZU_20180601",
+            "files": "B04.tif,B08.tif,SCL.tif",
+            "cloud_cover": 0.0,
+            "geometry": shapely.geometry.box(35.6, 11.6, 36.0, 12.0),
+        },
+    ]
+    return gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
+
+
+# --- mapping -----------------------------------------------------------------
+
+def test_mgrs_to_epsg_northern_zones():
+    # T37PBP -> zone 37, band P (northern) -> 32637; T36PZU -> 32636.
+    assert stac._parse_mgrs("x_T37PBP_y") == ("37PBP", 32637)
+    assert stac._parse_mgrs("x_T36PZU_y") == ("36PZU", 32636)
+    # a southern-band tile -> 327xx.
+    assert stac._parse_mgrs("x_T36GZU_y") == ("36GZU", 32736)
+    assert stac._parse_mgrs("no_tile_here") is None
+
+
+def test_tile_catalog_to_items_core_and_assets():
+    items = stac.tile_catalog_to_items(_catalog_gdf())
+    assert len(items) == 2
+    it = items[0]
+    assert it.id.endswith("T37PBP_20230726T205809")
+    assert it.collection_id == "sentinel-2-l2a"
+    assert it.datetime.year == 2018
+    assert it.properties["eo:cloud_cover"] == 1.5
+    # pystac proj ext v2.0 serialises EPSG as proj:code="EPSG:32637"; .epsg reads it back.
+    assert ProjectionExtension.ext(it).epsg == 32637
+    assert it.properties["proj:code"] == "EPSG:32637"
+    assert it.properties["grid:code"] == "MGRS-37PBP"
+    # one asset per file, correct media types + roles.
+    assert set(it.assets) == {"B04", "B08", "MTD_TL", "SCL"}
+    assert it.assets["B04"].media_type == pystac.MediaType.COG
+    assert it.assets["B04"].roles == ["data"]
+    assert it.assets["B04"].extra_fields["eo:bands"] == [{"name": "B04"}]
+    assert it.assets["MTD_TL"].media_type == pystac.MediaType.XML
+    assert it.assets["MTD_TL"].roles == ["metadata"]
+    # no per-asset proj without read_proj (I/O-free).
+    assert "proj:shape" not in it.assets["B04"].extra_fields
+    # source link recorded.
+    assert it.get_links("via")[0].get_href().endswith("T37PBP.SAFE")
+
+
+def test_items_are_structurally_valid():
+    for it in stac.tile_catalog_to_items(_catalog_gdf()):
+        assert it.bbox is not None and len(it.bbox) == 4
+        assert it.geometry["type"] == "Polygon"
+        d = it.to_dict()  # serialisable
+        assert d["stac_version"]
+        assert any("projection" in e for e in it.stac_extensions)
+        assert any("/eo/" in e for e in it.stac_extensions)
+
+
+# --- round-trip --------------------------------------------------------------
+
+def test_round_trip_reconstructs_catalog_columns():
+    gdf = _catalog_gdf()
+    back = stac.items_to_rows(stac.tile_catalog_to_items(gdf))
+    for col in ["id", "satellite", "s3url", "files", "cloud_cover"]:
+        assert list(back[col]) == list(gdf[col]), col
+    assert list(back["timestamp"]) == list(gdf["timestamp"])
+    # local_folderpath reconstructed from the (single) asset folder.
+    assert list(back["local_folderpath"]) == list(gdf["local_folderpath"])
+    for a, b in zip(back["geometry"], gdf["geometry"]):
+        assert a.equals(b)
+
+
+# --- static catalog serialization --------------------------------------------
+
+def test_write_stac_catalog_self_contained(tmp_path):
+    items = stac.tile_catalog_to_items(_catalog_gdf())
+    dst = str(tmp_path / "stac")
+    catalog_json = stac.write_stac_catalog(items, dst)
+    assert catalog_json.endswith("catalog.json")
+    # readable back by pystac; has the collection + both items.
+    cat = pystac.Catalog.from_file(catalog_json)
+    all_items = list(cat.get_items(recursive=True))
+    assert len(all_items) == 2
+    assert {i.id for i in all_items} == {it.id for it in items}
+
+
+def test_write_stac_catalog_empty_raises():
+    with pytest.raises(ValueError, match="no items"):
+        stac.write_stac_catalog([], "irrelevant")
+
+
+# --- TileCatalog.to_stac end to end ------------------------------------------
+
+def test_tilecatalog_to_stac(tmp_path):
+    from fsd.storage import fs
+
+    cat_path = str(tmp_path / "catalog.parquet")
+    fs.write_parquet(cat_path, _catalog_gdf())
+    catalog_json = TileCatalog(cat_path).to_stac(str(tmp_path / "stac"))
+    cat = pystac.Catalog.from_file(catalog_json)
+    assert len(list(cat.get_items(recursive=True))) == 2

@@ -63,6 +63,13 @@ reads the subset and uses the stored `area_contribution` to pick `dst_crs` — i
 does *not* re-filter. (Legacy recomputed `area_contribution` inside the builder via
 `calculate_area_contribution`; folding it into `filter` is a small clean-up.)
 
+## STAC export (spec 17)
+
+This GeoParquet stays the **query format**. `specs/17-stac-catalog.md` adds an **additive**
+STAC interchange view (`fsd.catalog.stac`, `TileCatalog.to_stac`) — one STAC Item per row, one
+asset per band file, `proj:code` from the MGRS tile (no raster reads). The schema here is
+unchanged.
+
 ## Real-catalog notes (from `satellite/.../catalog_sentinel-2.geojson`)
 
 The legacy on-disk catalog is **GeoJSON** (fsd writes GeoParquet) and carries a
