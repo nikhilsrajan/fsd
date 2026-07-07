@@ -179,6 +179,12 @@ Open the three GeoTIFFs (all in `dst_crs` EPSG:32636). Confirm each geospatial g
       boundary**: no gap, no doubling, no visible seam where zone-37 tiles were
       reprojected into zone 36. Coverage fills the ROI (edge nodata is fine; ~83% of
       the slice is non-zero).
+- [ ] **Multi-tile same-acquisition merge (spec 20)** — since spec 20, when several tiles
+      of the *same* acquisition cover the shape (it straddles an MGRS tile boundary), **all**
+      are merged onto the reference grid (was: one kept → interior nodata holes; `BUGS.md`
+      BUG-002). Re-run this cube post-fix and confirm coverage did **not** drop and any prior
+      interior holes are gone. The hardest stress case is a **tile-row-boundary corner** (4
+      tiles/acquisition) — exercised by the spec-19 demo (`demos/`, grid `165b09c`: 0.6 % → 82.8 %).
 - [x] **Reference-image resampling** — in `165bca4_FCC_8bit.tif` the three bands are
       **pixel-aligned** (no colour-fringing/offset), confirming B8A (20 m) landed on
       the B08 (10 m) grid.

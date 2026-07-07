@@ -55,7 +55,9 @@ def build_datacube(
    output is uniformly 10 m; other target resolutions would need a different
    known-resolution reference image, not just different resample params (TODO.md #1).
 6. **Stack** per sorted timestamp × band → 4-D `(timestamps|ids, H, W, bands)`;
-   missing `(ts,band)` filled with nodata.
+   missing `(ts,band)` filled with nodata. When several tiles of the **same acquisition**
+   cover the shape (it straddles an MGRS tile boundary), **all** are nodata-fill merged onto
+   the reference grid — not collapsed to one (spec 20 bugfix; tie-break `dst_crs`-native first).
 7. **Ops** (see `04-datacube-ops.md`): `apply_cloud_mask_scl(scl_mask_classes)`
    → `drop_bands(["SCL"])` → `median_mosaic(mosaic_days)`.
 8. **Save** `datacube.npy` + `metadata.pickle.npy` (contract in `00-overview.md §6`).

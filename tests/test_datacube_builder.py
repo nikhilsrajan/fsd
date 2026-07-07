@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import rasterio
+from rasterio.crs import CRS as RioCRS
 from rasterio.transform import from_origin
 from shapely.geometry import box
 
@@ -163,6 +164,45 @@ def test_get_dst_crs_picks_max_mean_area():
     }, crs=CRS)
     # 32637 has the higher *mean* (80 vs 10) despite fewer tiles
     assert builder._get_dst_crs(gdf).to_epsg() == 32637
+
+
+def test_stack_merges_multiple_tiles_same_timestamp():
+    """spec 20: two tiles of the SAME acquisition covering complementary halves of a
+    shape are merged onto the reference grid, not collapsed to one (legacy dict kept the
+    last -> the other half was silently nodata; the exact bug behind the demo gaps)."""
+    ts = pd.Timestamp("2018-06-01", tz="UTC")
+    ref = {"height": 1, "width": 4, "crs": RioCRS.from_epsg(32636)}
+    left = np.array([[[10, 10, 0, 0]]], dtype=np.uint16)   # (1,1,4): valid left half
+    right = np.array([[[0, 0, 20, 20]]], dtype=np.uint16)  #          valid right half
+    dpl = [(left, {}), (right, {})]
+    cat = gpd.GeoDataFrame({
+        "timestamp": [ts, ts], "band": ["B04", "B04"], "image_index": [0, 1],
+        "crs": ["EPSG:32636", "EPSG:32636"], "id": ["p", "p"],
+        "geometry": [TILE_BOX, TILE_BOX]}, crs=CRS)
+    shape = gpd.GeoDataFrame({"geometry": [TILE_BOX]}, crs=CRS)
+    dc, md = builder._stack_datacube(cat, dpl, ["B04"], ref, shape, nodata=0)
+    assert dc.shape == (1, 1, 4, 1)
+    assert (dc[0, 0, :, 0] == [10, 10, 20, 20]).all()   # full coverage (legacy: [0,0,20,20])
+    assert md["timestamps"] == [ts]
+
+
+def test_stack_overlap_tiebreak_prefers_native_crs():
+    """spec 20 SO-1: where two tiles both have valid data (overlap), the dst_crs-native
+    tile wins; a reprojected tile only fills the pixels the native left as nodata."""
+    ts = pd.Timestamp("2018-06-01", tz="UTC")
+    ref = {"height": 1, "width": 2, "crs": RioCRS.from_epsg(32636)}
+    native = np.array([[[0, 5]]], dtype=np.uint16)     # valid only at col 1
+    reproj = np.array([[[7, 7]]], dtype=np.uint16)     # valid at both cols
+    # list the reprojected tile FIRST to prove ordering (not list order) decides the winner
+    dpl = [(reproj, {}), (native, {})]
+    cat = gpd.GeoDataFrame({
+        "timestamp": [ts, ts], "band": ["B04", "B04"], "image_index": [0, 1],
+        "crs": ["EPSG:32637", "EPSG:32636"], "id": ["p", "p"],
+        "geometry": [TILE_BOX, TILE_BOX]}, crs=CRS)
+    shape = gpd.GeoDataFrame({"geometry": [TILE_BOX]}, crs=CRS)
+    dc, _ = builder._stack_datacube(cat, dpl, ["B04"], ref, shape, nodata=0)
+    # col 1 = 5 (native wins the overlap, not 7); col 0 = 7 (reprojected fills the gap)
+    assert (dc[0, 0, :, 0] == [7, 5]).all()
 
 
 def test_missing_files_raises_on_incomplete_area():

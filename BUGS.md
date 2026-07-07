@@ -98,3 +98,36 @@ grinding. Idempotent per-chunk catalog made the killed run fully resumable.
 
 ### Actions outside fsd (user)
 - Report the run log to CDSE (their infra; only they can fix server-side).
+
+---
+
+## BUG-002 — datacube builder dropped tiles when several cover one shape (spec 20)
+
+**Status:** RESOLVED (2026-07-07, spec 20). **Geospatial correctness — eyeball the QGIS
+re-run.**
+
+**Symptom.** In the spec-19 end-to-end demo, 9 of 300 inference grids came out ~nodata
+(worst `165b09c`: 0.6 % valid) while neighbours were 70–90 %. They clustered on an MGRS
+tile-**row** boundary (lat ~11.75).
+
+**Root cause.** `datacube/builder.py::_stack_datacube` built `ts_band_index =
+dict(zip((timestamp, band), image_index))` — a **dict**, so when a shape overlapped several
+tiles of the **same acquisition** (adjacent MGRS tiles from one orbit pass share an identical
+timestamp), only the **last** survived and the rest of the shape became nodata. Grid
+`165b09c` had 4 tiles at 100 % of its 72 timestamps → 1 kept → 0.6 % valid despite ~80 %
+raw coverage; data sat only in rows 525–548 of 549.
+
+**Why it hid.** Training/flatten uses small field polygons that *mostly* sit inside a single
+tile → collisions were rare and the loss small (the demo cold-rebuild recovered only ~6 % more
+training pixels: 217,914 → 230,567), so it never stood out. The 5 km inference grids (spec 19)
+are the first shapes big enough to straddle boundaries badly (up to 4 tiles/acquisition). Almost
+certainly a **faithfully-ported legacy bug** (`fetch_satdata` has the same dict shape).
+
+**Fix.** Group ALL images per `(timestamp, band)` and **nodata-fill merge** them on the
+reference grid (everything is already resampled there); overlap tie-break = `dst_crs`-native
+tiles first, then `image_index`. Confined to `_stack_datacube`; output shape/axes unchanged.
+**Verified:** grid `165b09c` 0.6 % → **82.8 %** valid after the fix. Tests:
+`test_stack_merges_multiple_tiles_same_timestamp`, `test_stack_overlap_tiebreak_prefers_native_crs`.
+
+**To re-eyeball (user).** The spec-19 demo `crop_map.png` / `merged.tif` after the re-run
+(lat-11.75 gaps should be gone) and the multi-CRS `datacube.md` cube in QGIS.

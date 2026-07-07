@@ -36,6 +36,16 @@ real-data-validated** (see history below). We have since set the **forward direc
   `tests/manual/deploy.md`; explainer `specs/18-model-bundle-explainer.md`. **150 tests, ruff
   clean** (`tests/test_model.py`, 9 new). One bug fixed: engine copies `band_indices` (modify_bands
   mutates it). ROI→S2-tiling front-end for `run_inference` stays **P4**.
+- **Spec 20 = datacube-builder tile-merge bugfix (2026-07-07):** the spec-19 demo exposed a
+  **correctness bug** — `_stack_datacube` kept only **one** tile per `(timestamp, band)` (a dict),
+  so shapes straddling an MGRS tile boundary lost the coverage of every other same-acquisition
+  tile (worst demo grid `165b09c`: 0.6 % valid despite ~80 % raw coverage; clustered on the
+  lat-11.75 tile-row boundary). A faithfully-ported legacy bug, hidden until inference grids
+  (spec 19) were the first shapes big enough to straddle tiles. **Fix:** nodata-fill **merge all**
+  same-`(timestamp,band)` images onto the reference grid (tie-break: `dst_crs`-native first),
+  confined to `_stack_datacube`. **Verified:** `165b09c` 0.6 % → 82.8 % valid; 2 new unit tests.
+  Post-fix demo re-run: merged map 90 % → **96 %** valid, **0** dead grids (was 9). Docs:
+  `BUGS.md` BUG-002, `CHANGES.md`, `specs/03`, `specs/20`.
 - **Spec 19 = end-to-end demo + ROI→S2 tiling (2026-07-06):** landed **`src/fsd/grid.py`**
   (`roi_to_s2_grids`, clean-room port of `rsutils.s2_grid_utils`; `s2`+`s2cell` in the optional
   `[grid]` extra — ROADMAP §4 / P4 groundwork, `run_inference(roi=…)` front-end still P4) +

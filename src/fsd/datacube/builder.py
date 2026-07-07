@@ -443,21 +443,48 @@ def _stack_datacube(catalog_gdf, data_profile_list, bands, reference_profile,
                     shape_gdf, nodata):
     """Stack aligned images into (timestamps, H, W, bands). Every present band is
     (1, H, W) on the reference grid; a missing (ts, band) is nodata-filled to the
-    same shape (legacy filled (H, W), which could not stack — fixed, see CHANGES)."""
+    same shape (legacy filled (H, W), which could not stack — fixed, see CHANGES).
+
+    When several tiles of the SAME acquisition cover the shape (it straddles an MGRS
+    tile boundary) they collide on (timestamp, band); spec 20 merges ALL of them onto
+    the reference grid by nodata-fill instead of silently keeping one (which dropped
+    the coverage of every other tile). Overlap tie-break: dst_crs-native tiles win
+    over reprojected ones, then lower image_index (deterministic first-valid-wins).
+    Each band is merged independently — S2 tiles share one valid footprint across
+    bands, so a pixel resolves to the same tile for every band (see spec 20 SO-2)."""
+    dst_crs = reference_profile["crs"]
+    native_crs = {c for c in catalog_gdf["crs"].dropna().unique()
+                  if CRS.from_string(c) == dst_crs}
     timestamps = sorted(catalog_gdf["timestamp"].unique().tolist())
-    ts_band_index = dict(zip(zip(catalog_gdf["timestamp"], catalog_gdf["band"]),
-                             catalog_gdf["image_index"]))
+
+    # group ALL images per (timestamp, band), each tagged (native_first, image_index)
+    ts_band_indices: dict = {}
+    for ts, b, idx, crs in zip(catalog_gdf["timestamp"], catalog_gdf["band"],
+                               catalog_gdf["image_index"], catalog_gdf["crs"]):
+        rank = (0 if crs in native_crs else 1, int(idx))
+        ts_band_indices.setdefault((ts, b), []).append(rank)
     ts_id = dict(zip(catalog_gdf["timestamp"], catalog_gdf["id"]))
 
     ref_h, ref_w = reference_profile["height"], reference_profile["width"]
     fill_dtype = data_profile_list[int(catalog_gdf["image_index"].iloc[0])][0].dtype
     missing = np.full((1, ref_h, ref_w), nodata, dtype=fill_dtype)
 
+    def _merge_on_ref(ranked):
+        """Nodata-fill all images for one (timestamp, band) onto the reference grid."""
+        out = missing.copy()
+        for _, idx in sorted(ranked):          # native (0) before reprojected (1), then idx
+            img = data_profile_list[idx][0]    # (1, ref_h, ref_w), already on the ref grid
+            gap = out == nodata
+            if not gap.any():
+                break
+            np.copyto(out, img, where=gap)     # first-valid-wins over the still-nodata pixels
+        return out
+
     datacube, ids = [], []
     for ts in timestamps:
         stack = [
-            data_profile_list[ts_band_index[(ts, b)]][0]
-            if (ts, b) in ts_band_index else missing
+            _merge_on_ref(ts_band_indices[(ts, b)])
+            if (ts, b) in ts_band_indices else missing
             for b in bands
         ]
         datacube.append(np.stack(stack, axis=-1))   # (1, H, W, bands)

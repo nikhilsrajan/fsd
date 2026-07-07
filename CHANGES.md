@@ -4,6 +4,20 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## Datacube builder: merge multiple tiles per acquisition (spec 20 bugfix, 2026-07-07)
+- **`datacube/builder.py::_stack_datacube`** — when a shape is covered by several tiles of the
+  **same acquisition** (it straddles an MGRS tile boundary), all of them are now **nodata-fill
+  merged** onto the reference grid. Previously `ts_band_index` was a `dict((timestamp, band) ->
+  image_index)`, which silently kept **one** tile and nodata-filled the shape's other portions —
+  a faithfully-ported legacy bug (see `BUGS.md` BUG-002). Overlap tie-break: `dst_crs`-native
+  tiles win over reprojected ones, then lower `image_index`.
+- **Behavior change:** boundary-straddling shapes (e.g. the 5 km inference grids) now get full
+  coverage instead of partial/mostly-nodata (worst spec-19 grid: 0.6 % → 82.8 % valid).
+  Small single-tile shapes are largely unaffected (one image per `(timestamp, band)` → the merge
+  is a no-op), but a **minority of training fields do straddle boundaries** — the spec-19 demo's
+  cold rebuild recovered ~6 % more training pixels (217,914 → 230,567) on top of rescuing the
+  inference grids. Output shape/axes unchanged.
+
 ## ROI→S2-grid tiling + end-to-end demo (spec 19, 2026-07-06)
 - **New `src/fsd/grid.py`** — `roi_to_s2_grids(roi, grid_size_km=5, scale_fact=1.1)`: clean-room
   port of `rsutils.s2_grid_utils.get_s2_grids_gdf` (polyfill the ROI's convex hull at S2 res 11,
