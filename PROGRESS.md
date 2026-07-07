@@ -4,7 +4,7 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-06_
 
-## LATEST (2026-07-06) — P0 (specs 16/17) + P0.5 (spec 18)
+## LATEST (2026-07-06) — P0 (specs 16/17) + P0.5 (spec 18) + e2e demo/tiling (spec 19)
 
 The v1 core pipeline (download → catalog → datacube → flatten → workflows) is **complete +
 real-data-validated** (see history below). We have since set the **forward direction**:
@@ -36,6 +36,18 @@ real-data-validated** (see history below). We have since set the **forward direc
   `tests/manual/deploy.md`; explainer `specs/18-model-bundle-explainer.md`. **150 tests, ruff
   clean** (`tests/test_model.py`, 9 new). One bug fixed: engine copies `band_indices` (modify_bands
   mutates it). ROI→S2-tiling front-end for `run_inference` stays **P4**.
+- **Spec 19 = end-to-end demo + ROI→S2 tiling (2026-07-06):** landed **`src/fsd/grid.py`**
+  (`roi_to_s2_grids`, clean-room port of `rsutils.s2_grid_utils`; `s2`+`s2cell` in the optional
+  `[grid]` extra — ROADMAP §4 / P4 groundwork, `run_inference(roi=…)` front-end still P4) +
+  `tests/test_grid.py` (4 tests, skip without `[grid]`). New **`demos/`** runs demo_01+02+03 as
+  one flow (tiling → `create_training_data` → RF → inference datacubes → `run_inference` →
+  COG/STAC + crop map + NDVI-timeseries/crop-map/grids figures) on the existing Ethiopia data, in
+  an **isolated `.venv-modeldeploy`** (`[dev,grid,model-example]`; keeps fsd's `.venv` lean).
+  **`--fast` validated** (67 s); full run = 300 grids / 1015 fields / T=19. **Finding:** the ROI
+  straddles the S2 zone-36/37 boundary → per-grid datacubes are mixed 32636/32637, so
+  `run_inference(merge=True)` refuses (single-CRS principle) and the demo reproject-merges outputs
+  to the dominant zone for the display map. Model quality is meaningless (Austria labels on
+  Ethiopia pixels) — pipeline validation; real run after the Austria download.
 - **AZURE_INFRA.md scrubbed + git history rewritten (2026-07-06):** private-infra names/IDs/CIDR/
   budget removed from the public repo (placeholders); concrete values live only in the local,
   never-committed `AZURE_INFRA_PRIVATE.md` at the workspace root.

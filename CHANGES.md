@@ -4,6 +4,22 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## ROI→S2-grid tiling + end-to-end demo (spec 19, 2026-07-06)
+- **New `src/fsd/grid.py`** — `roi_to_s2_grids(roi, grid_size_km=5, scale_fact=1.1)`: clean-room
+  port of `rsutils.s2_grid_utils.get_s2_grids_gdf` (polyfill the ROI's convex hull at S2 res 11,
+  keep intersecting cells, scale 1.1 for 10 % overlap, `gpd.overlay` clip to the ROI). `s2`+`s2cell`
+  live in the optional **`[grid]`** extra so fsd core stays lean. This is the ROADMAP §4 / P4
+  groundwork; the `run_inference(roi=…)` front-end that consumes it is still P4.
+- **`demos/`** — `e2e_ethiopia.py` runs demo_01+02+03 as one flow (tiling → `create_training_data`
+  → RF → inference datacubes → `run_inference` → COG/STAC + a crop map) on the existing Ethiopia
+  data; `adapters.py::DemoRF` (NDVI+SAVI, band-limited to what the benchmark has); `README.md` is
+  the report. Runs in an **isolated `.venv-modeldeploy`** (`[dev,grid,model-example]`).
+- **Real finding:** the inference ROI straddles the S2 MGRS zone-36/37 boundary in practice, so
+  per-grid datacubes land in **both** EPSG:32636 and 32637. `run_inference(merge=True)` refuses the
+  cross-CRS merge (the single-CRS-merge principle, spec 18); the demo reprojects outputs to the
+  **dominant** zone and mosaics that for the display map.
+- New extras: `[grid]` (s2, s2cell); `matplotlib`/`seaborn` added to `[model-example]` for the plots.
+
 ## ModelAdapter contract + local train/deploy (spec 18 / P0.5, 2026-07-06)
 - **New `src/fsd/model/`** (`adapter`/`features`/`engine`/`bundle`) generalizes the legacy
   `demo_02_model_train` + `model/demo_model_deploy.py` into a plug-in **ModelAdapter** contract.

@@ -233,7 +233,7 @@ a `raapid-infra` change to the admin (we never edit it ourselves).
 | **P1** | Storage seam on Azure: adlfs/MSI read+write to the `rise` project storage; GDAL-VSI auth proven | build a datacube locally but I/O against `rise` blob (over VPN) | none (uses existing) |
 | **P2** | Azure Batch runner for datacube fan-out (the runner seam) | N datacubes built across the autoscaled `rise` Batch pool | **quota bump; likely `max_tasks_per_node`** |
 | **P3** | Thin control plane ("trigger from laptop"): submit-a-job UX + config files | Mode B: laptop triggers cloud build, pulls flattened arrays | none new |
-| **P4** | Inference at scale: ROI → S2 tiles (port `s2_grid_utils`, §4) → model → COG outputs on Batch | Mode C first light | maybe scale `max_nodes` |
+| **P4** | Inference at scale: ROI → S2 tiles (✅ **tiling ported: `fsd.grid.roi_to_s2_grids`, spec 19**; remaining = the `run_inference(roi=…)` front-end that chains tiling→download→build→infer) → model → COG outputs on Batch | Mode C first light | maybe scale `max_nodes` |
 | **P5** | Output STAC + hosted TiTiler / XYZ | outputs viewable as web tiles | TiTiler hosting (infra) |
 | **P6** | Deploy/registration UX; model-bundle push/register | one-command deploy of a bundle | model store (infra) |
 

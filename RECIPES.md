@@ -146,3 +146,31 @@ res = fsd.run_inference("my_bundle", inference_datacubes="…/input.csv",
   `T == n_timestamps` before any predict.
 - Full Mode-A walkthrough on real data: `tests/manual/deploy.md`. Bundle mechanics explained:
   `specs/18-model-bundle-explainer.md`. Example adapter: `examples/eurocrops_rf.py`.
+
+## ROI → S2-grid tiling (fsd.grid, spec 19)
+
+Split an ROI into overlapping S2 cells (one cell = one inference datacube), clipped to the ROI.
+Needs the `[grid]` extra (`pip install -e ".[grid]"` → s2 + s2cell).
+
+```python
+from fsd import grid
+grids = grid.roi_to_s2_grids("shapefiles/inference_roi.geojson", grid_size_km=5, scale_fact=1.1)
+grids.to_file("inference_s2_grids.geojson", driver="GeoJSON")   # cols: id, geometry (EPSG:4326)
+# feed to workflows.create_datacube as the inference shapes (id_col="id")
+```
+
+## End-to-end demo (demo_01+02+03, spec 19)
+
+Full Mode-A run on the existing Ethiopia data, in an isolated venv (keeps fsd's `.venv` lean):
+
+```bash
+cd fsd
+python3.11 -m venv .venv-modeldeploy
+.venv-modeldeploy/bin/pip install -e ".[dev,grid,model-example]"
+.venv-modeldeploy/bin/python demos/e2e_ethiopia.py --fast     # ~1 min smoke (6 grids)
+.venv-modeldeploy/bin/python demos/e2e_ethiopia.py --cores 8  # full run (300 grids, 1015 fields, T=19)
+```
+
+Outputs: `demos/figures/{s2_grids,ndvi_timeseries,crop_map}.png` (committed) + QGIS artifacts
+(gridded ROI GeoJSON, per-grid COGs, STAC, merged display map) under `tests/outputs/demo_e2e/`
+(gitignored). Report + finding (multi-zone display merge): `demos/README.md`.

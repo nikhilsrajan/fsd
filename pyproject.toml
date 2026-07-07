@@ -38,6 +38,10 @@ model-example = [  # for examples/eurocrops_rf.py + tests/manual/deploy.md + dem
     "matplotlib",
     "seaborn",
 ]
+grid = [           # ROI → S2-grid tiling (fsd.grid); optional so core stays lean (spec 19)
+    "s2",
+    "s2cell",
+]
 azure = [          # Phase 2, not used in v1 code
     "adlfs",       # fsspec Azure Blob backend
 ]
