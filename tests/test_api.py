@@ -100,26 +100,34 @@ def test_seam_guard_local_only(tmp_path, kwargs):
         )
 
 
-# --- pinned-but-deferred params ----------------------------------------------
+# --- feature / aggregate wiring guards (P0.5) --------------------------------
 
-def test_feature_sequence_and_aggregate_not_implemented(tmp_path):
+def test_adapter_and_feature_sequence_conflict(tmp_path):
     cat = _touch(tmp_path / "catalog.parquet")
-    base = dict(
-        label_polygons=_polys(tmp_path), catalog_filepath=cat,
-        startdate=JAN1, enddate=JAN1_NEXT, mosaic_days=20, bands=["B04"],
-        id_col="fid", label_col="crop", export_folderpath=str(tmp_path / "e"),
-    )
-    with pytest.raises(NotImplementedError, match="feature_sequence"):
-        fsd.create_training_data(**base, feature_sequence=[("x", {})])
-    with pytest.raises(NotImplementedError, match="aggregate"):
-        fsd.create_training_data(**base, aggregate="median_per_id")
+    with pytest.raises(api.PreflightError, match="not both"):
+        fsd.create_training_data(
+            label_polygons=_polys(tmp_path), catalog_filepath=cat,
+            startdate=JAN1, enddate=JAN1_NEXT, mosaic_days=20, bands=["B04"],
+            id_col="fid", label_col="crop", export_folderpath=str(tmp_path / "e"),
+            adapter=object(), feature_sequence=[("x", {})],
+        )
+
+
+def test_unknown_aggregate_rejected(tmp_path):
+    cat = _touch(tmp_path / "catalog.parquet")
+    with pytest.raises(api.PreflightError, match="aggregate"):
+        fsd.create_training_data(
+            label_polygons=_polys(tmp_path), catalog_filepath=cat,
+            startdate=JAN1, enddate=JAN1_NEXT, mosaic_days=20, bands=["B04"],
+            id_col="fid", label_col="crop", export_folderpath=str(tmp_path / "e"),
+            aggregate="nope",
+        )
 
 
 # --- stubs -------------------------------------------------------------------
 
-def test_run_inference_and_deploy_are_stubs():
-    with pytest.raises(NotImplementedError, match="run_inference lands in P4"):
-        fsd.run_inference("roi", JAN1, JAN1_NEXT, 20, model_bundle=None)
+def test_deploy_is_stub():
+    # run_inference is no longer a stub (P0.5); its engine is exercised in test_model.py.
     with pytest.raises(NotImplementedError, match="deploy lands in P6"):
         fsd.deploy(model_bundle=None)
 

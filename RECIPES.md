@@ -105,3 +105,44 @@ Script: `fsd/benchmarks/download_year_ethiopia.py`. Report:
 
 - **In-place JP2 → COG migration** (converts a JP2 archive to COG+overviews, resumable,
   disk-safety floor, `--verify`): `fsd/benchmarks/migrate_jp2_to_cog.py`.
+
+## Plug a model in + run local inference (spec 18, P0.5)
+
+Write a small adapter (declarations + `load` + `predict`), let fsd run the feature transform in
+both training and inference (F1 anti-skew), then infer over pre-built datacubes → COG + STAC.
+
+```python
+import fsd
+from fsd.bands import modify
+from fsd.model import BaseModelAdapter, bundle
+
+class MyModel(BaseModelAdapter):
+    required_bands = ["B04", "B08"]
+    n_timestamps = 19
+    output_dtype, output_nodata, output_band_names = "uint8", 255, ["crop_class"]
+    feature_sequence = [                       # the ONE transform, used at train AND inference
+        (modify.mask_invalid_and_interpolate, {}),
+        (modify.compute_bands, dict(bands_to_compute=["NDVI"])),
+        (modify.remove_bands, dict(bands_to_remove=["B04", "B08"])),
+    ]
+    def load(self):    import joblib; self.clf = joblib.load(self.artifacts["model"])
+    def predict(self, X): return self.clf.predict(X).astype("uint8")
+
+# training data with features (writes features.npy additively; raw data.npy kept):
+td = fsd.create_training_data(..., adapter=MyModel(), aggregate=None)   # or "median_per_id"
+d = td.load()                                  # d["features"], d["feature_labels"], ...
+
+# package for travel / cloud (adapter class must be importable by module:attr):
+bundle.save(MyModel(), {"model": "rf.joblib"}, "my_bundle")
+
+# inference over PRE-BUILT inference datacubes -> COG per cube + STAC (+ optional merged map):
+res = fsd.run_inference("my_bundle", inference_datacubes="…/input.csv",
+                        output_folderpath="…/out", merge=True)
+# res.output_filepaths (COGs), res.stac_catalog_filepath, res.merged_filepath
+```
+
+- Model-free preflight: `fsd.model.bundle.read_spec("my_bundle")` reads bands/`T` from
+  `bundle.json` with no import/model-load. `run_inference` asserts bands ⊇ `required_bands` and
+  `T == n_timestamps` before any predict.
+- Full Mode-A walkthrough on real data: `tests/manual/deploy.md`. Bundle mechanics explained:
+  `specs/18-model-bundle-explainer.md`. Example adapter: `examples/eurocrops_rf.py`.

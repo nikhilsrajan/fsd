@@ -23,11 +23,19 @@ import os
 from dataclasses import dataclass
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 
 from fsd import config
+from fsd.bands import modify as _modify
+from fsd.catalog import stac as _stac
 from fsd.catalog.catalog import TileCatalog
 from fsd.datacube import flatten as _flatten
+from fsd.model import bundle as _bundle
+from fsd.model import engine as _engine
+from fsd.model.features import apply_features as _apply_features
+from fsd.model.features import resolve_aggregate as _resolve_aggregate
+from fsd.raster.cog import to_cog as _to_cog
 from fsd.sources.cdse import CdseCredentials
 from fsd.sources.cdse import download as _cdse_download
 from fsd.storage import fs
@@ -36,6 +44,7 @@ from fsd.workflows import create_datacube as _create_datacube
 __all__ = [
     "PreflightError",
     "TrainingData",
+    "InferenceResult",
     "download",
     "create_training_data",
     "run_inference",
@@ -114,9 +123,14 @@ class TrainingData:
     n_pixels: int
     n_timestamps: int
     bands: list[str]
+    feature_bands: list[str] | None = None   # set when a feature transform was applied (P0.5)
 
     def load(self) -> dict:
-        """Load the arrays into memory: data/ids/coords/metadata (+ labels if present)."""
+        """Load the arrays into memory: data/ids/coords/metadata (+ labels if present).
+
+        When a feature transform was applied (via `adapter=`/`feature_sequence=`), also loads
+        `features`/`feature_ids`/`feature_labels` (the model-ready, possibly aggregated arrays).
+        """
         out = {
             "data": fs.load_npy(os.path.join(self.export_folderpath, "data.npy")),
             "ids": fs.load_npy(os.path.join(self.export_folderpath, "ids.npy")),
@@ -128,7 +142,26 @@ class TrainingData:
         labels_path = os.path.join(self.export_folderpath, "labels.npy")
         if fs.exists(labels_path):
             out["labels"] = fs.load_npy(labels_path)
+        features_path = os.path.join(self.export_folderpath, "features.npy")
+        if fs.exists(features_path):
+            out["features"] = fs.load_npy(features_path)
+            out["feature_ids"] = fs.load_npy(
+                os.path.join(self.export_folderpath, "feature_ids.npy")
+            )
+            fl = os.path.join(self.export_folderpath, "feature_labels.npy")
+            if fs.exists(fl):
+                out["feature_labels"] = fs.load_npy(fl)
         return out
+
+
+@dataclass
+class InferenceResult:
+    """Handle to a completed local inference run (spec 18)."""
+
+    output_folderpath: str
+    output_filepaths: list[str]
+    stac_catalog_filepath: str
+    merged_filepath: str | None = None
 
 
 # --- verbs -------------------------------------------------------------------
@@ -183,6 +216,7 @@ def create_training_data(
     export_folderpath: str,
     *,
     scl_mask_classes: list[int] = config.SCL_MASK_CLASSES,
+    adapter=None,
     feature_sequence=None,
     aggregate=None,
     cores: int = 1,
@@ -195,17 +229,37 @@ def create_training_data(
     Orchestrates `workflows.create_datacube` (one datacube per polygon, calendar mosaic) then
     `datacube.flatten` — the user never types "flatten". Returns a `TrainingData` handle.
 
-    `feature_sequence`/`aggregate` are pinned in the signature (stable API) but land in P0.5
-    (ModelAdapter); passing a non-None value raises. `runner`/`storage` are local-only in P0.
+    Feature engineering (P0.5, spec 18): pass an `adapter` (preferred — its `feature_sequence`
+    is the *same* one used at inference, the F1 anti-skew guarantee) **or** a raw
+    `feature_sequence` (adapter-less/exploratory). `aggregate` ∈ {None, "median_per_id",
+    callable} reduces per-pixel samples before the transform. When any is given, fsd writes
+    `features.npy` (+ `feature_ids`/`feature_labels`) additively; the raw `data.npy` is kept.
+    `runner`/`storage` are local-only in P0.
     """
-    if feature_sequence is not None:
-        raise NotImplementedError("feature_sequence lands in P0.5 (ModelAdapter); leave it None.")
-    if aggregate is not None:
-        raise NotImplementedError("aggregate lands in P0.5 (ModelAdapter); leave it None.")
+    if adapter is not None and feature_sequence is not None:
+        raise PreflightError(
+            "pass either `adapter` or `feature_sequence`, not both (ambiguous feature transform)."
+        )
 
     errs = _check_local_seams(runner, storage) + _check_window(
         startdate, enddate, mosaic_days, bands
     )
+    if adapter is not None:
+        req = list(getattr(adapter, "required_bands", []) or [])
+        missing = [b for b in req if b not in bands]
+        if missing:
+            errs.append(f"adapter.required_bands not in requested bands: {missing}")
+        want_t = int(getattr(adapter, "n_timestamps", 0) or 0)
+        if want_t:
+            got_t = compute_n_timestamps(startdate, enddate, mosaic_days)
+            if got_t != want_t:
+                errs.append(
+                    f"dates/mosaic_days give T={got_t} but adapter.n_timestamps={want_t}."
+                )
+    try:
+        _resolve_aggregate(aggregate)
+    except ValueError as exc:
+        errs.append(str(exc))
     if not fs.exists(catalog_filepath):
         errs.append(f"catalog_filepath does not exist: {catalog_filepath}")
     gdf = None
@@ -254,26 +308,216 @@ def create_training_data(
     metadata = fs.load_npy(
         os.path.join(export_folderpath, "metadata.pickle.npy"), allow_pickle=True
     )[()]
+
+    feature_bands = None
+    if adapter is not None or feature_sequence is not None or aggregate is not None:
+        feature_bands = _apply_training_features(
+            export_folderpath, metadata, adapter=adapter,
+            feature_sequence=feature_sequence, aggregate=aggregate,
+        )
+
     return TrainingData(
         export_folderpath=export_folderpath, run_folderpath=run_folderpath,
         n_pixels=int(data.shape[0]), n_timestamps=len(metadata["timestamps"]),
-        bands=list(metadata["bands"]),
+        bands=list(metadata["bands"]), feature_bands=feature_bands,
     )
 
 
-def run_inference(roi, startdate, enddate, mosaic_days, model_bundle,
-                  *, runner="local", storage=None, **kw):
-    """Run a model over an ROI at scale -> COG + STAC. Lands in P4."""
-    raise NotImplementedError(
-        "run_inference lands in P4. Contract: ROI -> S2-grid tiles (ROADMAP §4, port "
-        "s2_grid_utils) -> per-grid inference datacubes -> model_bundle (ModelAdapter, P0.5) "
-        "-> COG + STAC (spec 17). Preflight will assert T == model.n_timestamps and bands."
+def _apply_training_features(export_folderpath, metadata, *, adapter, feature_sequence,
+                             aggregate) -> list[str]:
+    """Apply optional aggregation + the feature transform to flattened arrays (F1/F4).
+
+    Writes `features.npy` (+ `feature_ids`/`feature_labels`) additively, records `feature_bands`
+    + `aggregate` in metadata, and returns the feature band names. The raw `data.npy` is kept.
+    """
+    data = fs.load_npy(os.path.join(export_folderpath, "data.npy"))        # (pixels, T, B)
+    ids = fs.load_npy(os.path.join(export_folderpath, "ids.npy"))
+    labels_path = os.path.join(export_folderpath, "labels.npy")
+    labels = fs.load_npy(labels_path) if fs.exists(labels_path) else None
+
+    reducer = _resolve_aggregate(aggregate)
+    if reducer is not None:
+        ids, data, labels = reducer(ids, data.astype(float), labels)
+
+    band_indices = {b: i for i, b in enumerate(metadata["bands"])}
+    feats5d, feat_bi = _apply_features(
+        _modify.expand_flattened(data.astype(float)), band_indices,
+        adapter=adapter, feature_sequence=feature_sequence,
+    )
+    features = np.squeeze(feats5d, axis=(2, 3))                            # (pixels, T, Bf)
+    feature_bands = [b for b, _ in sorted(feat_bi.items(), key=lambda kv: kv[1])]
+
+    fs.save_npy(os.path.join(export_folderpath, "features.npy"), features)
+    fs.save_npy(os.path.join(export_folderpath, "feature_ids.npy"), np.asarray(ids))
+    if labels is not None:
+        fs.save_npy(os.path.join(export_folderpath, "feature_labels.npy"), np.asarray(labels))
+
+    agg_name = aggregate if isinstance(aggregate, str) else (
+        getattr(aggregate, "__name__", "callable") if aggregate else None
+    )
+    metadata = dict(metadata)
+    metadata["feature_bands"] = feature_bands
+    metadata["aggregate"] = agg_name
+    fs.save_npy(
+        os.path.join(export_folderpath, "metadata.pickle.npy"), metadata, allow_pickle=True
+    )
+    return feature_bands
+
+
+def _model_spec(model) -> dict:
+    """Read the declared spec (required_bands, n_timestamps, output_*) from a live adapter or,
+    for a bundle path, from `bundle.json` alone (model-free — no import, no model load)."""
+    if isinstance(model, str):
+        return _bundle.read_spec(model)
+    return {
+        "required_bands": list(getattr(model, "required_bands", []) or []),
+        "n_timestamps": int(getattr(model, "n_timestamps", 0) or 0),
+        "output_dtype": getattr(model, "output_dtype", None),
+        "output_nodata": getattr(model, "output_nodata", None),
+        "output_band_names": list(getattr(model, "output_band_names", []) or []),
+    }
+
+
+def _resolve_inference_pairs(inference_datacubes, output_folderpath) -> list[tuple[str, str]]:
+    """-> [(datacube_filepath, output_filepath)]. Accepts an input.csv, a folder of datacube
+    subfolders, or an explicit list of `datacube.npy` filepaths."""
+    ids = None
+    if isinstance(inference_datacubes, (list, tuple)):
+        dc_filepaths = [str(p) for p in inference_datacubes]
+    elif isinstance(inference_datacubes, str) and inference_datacubes.endswith(".csv"):
+        with fs.open(inference_datacubes, "r") as f:
+            df = pd.read_csv(f)
+        col = "datacube_filepath" if "datacube_filepath" in df.columns else df.columns[0]
+        dc_filepaths = [str(p) for p in df[col]]
+        if "id" in df.columns:
+            ids = [str(i) for i in df["id"]]
+    else:  # a folder: each subfolder holds a datacube.npy
+        dc_filepaths = sorted(fs.glob(os.path.join(str(inference_datacubes), "*", "datacube.npy")))
+
+    pairs = []
+    for i, dc in enumerate(dc_filepaths):
+        stem = ids[i] if ids is not None else os.path.basename(os.path.dirname(dc))
+        pairs.append((dc, os.path.join(str(output_folderpath), stem, "output.tif")))
+    return pairs
+
+
+def _merge_outputs(filepaths, dst, nodata) -> str:
+    """Merge single-CRS output COGs into one COG (the legacy merged map). Multi-CRS raises —
+    the per-tile COGs + STAC are the multi-zone answer (fsd single-CRS-merge principle)."""
+    import rasterio
+    from rasterio.merge import merge as rio_merge
+
+    srcs = [rasterio.open(fp) for fp in filepaths]
+    try:
+        crs_set = {s.crs.to_string() for s in srcs}
+        if len(crs_set) > 1:
+            raise PreflightError(
+                f"cannot merge outputs across multiple CRS {sorted(crs_set)}; use the per-tile "
+                "COGs + STAC catalog instead (collapse to one zone first for a merged map)."
+            )
+        mosaic, out_transform = rio_merge(srcs, nodata=nodata)
+        profile = srcs[0].profile.copy()
+        profile.update(driver="GTiff", height=mosaic.shape[1], width=mosaic.shape[2],
+                       transform=out_transform, nodata=nodata)
+    finally:
+        for s in srcs:
+            s.close()
+    raw = f"{dst}.raw.tif"
+    try:
+        with rasterio.open(raw, "w", **profile) as d:
+            d.write(mosaic)
+        _to_cog(raw, dst)
+    finally:
+        if os.path.exists(raw):
+            os.remove(raw)
+    return dst
+
+
+def run_inference(
+    model,
+    inference_datacubes,
+    output_folderpath: str,
+    *,
+    predict_batch_size: int | None = None,
+    skip_nan: bool = True,
+    merge: bool = False,
+    cores: int = 1,
+    runner: str = "local",
+    storage=None,
+    collection_id: str = "fsd-inference",
+    dt=None,
+    progress: bool = True,
+) -> InferenceResult:
+    """Run a model over **pre-built inference datacubes** -> one COG per cube + a STAC catalog.
+
+    P0.5 (spec 18): the local inference engine (Mode A deploy). `model` is a live `ModelAdapter`
+    or a **bundle path**. `inference_datacubes` is an `input.csv`, a folder of datacube
+    subfolders, or a list of `datacube.npy` filepaths. Preflight asserts every datacube's bands
+    ⊇ `required_bands` and `len(timestamps) == n_timestamps` **before any predict**. The
+    ROI→S2-tiling→download front-end that *builds* the datacubes lands in P4 and calls this same
+    engine; `runner`/`storage` are local-only here.
+    """
+    errs = _check_local_seams(runner, storage)
+    spec = _model_spec(model)
+    required = set(spec.get("required_bands") or [])
+    want_t = int(spec.get("n_timestamps") or 0)
+
+    pairs = _resolve_inference_pairs(inference_datacubes, output_folderpath)
+    if not pairs:
+        errs.append(f"no inference datacubes found under {inference_datacubes!r}.")
+    for dc_fp, _ in pairs:
+        md_fp = os.path.join(os.path.dirname(dc_fp), "metadata.pickle.npy")
+        if not fs.exists(dc_fp) or not fs.exists(md_fp):
+            errs.append(f"missing datacube/metadata for {dc_fp}.")
+            continue
+        md = fs.load_npy(md_fp, allow_pickle=True)[()]
+        missing = required - set(md["bands"])
+        if missing:
+            errs.append(f"{dc_fp}: datacube lacks required bands {sorted(missing)}.")
+        if want_t and len(md["timestamps"]) != want_t:
+            errs.append(
+                f"{dc_fp}: datacube T={len(md['timestamps'])} but model needs T={want_t}."
+            )
+    _raise_preflight(errs)
+
+    fs.makedirs(output_folderpath)
+    output_filepaths = _engine.run_local(
+        model, pairs, cores=cores,
+        predict_batch_size=predict_batch_size, skip_nan=skip_nan, progress=progress,
+    )
+
+    items = _stac.cog_outputs_to_items(
+        output_filepaths, collection_id=collection_id,
+        band_names=spec.get("output_band_names") or None, dt=dt,
+    )
+    stac_catalog_filepath = _stac.write_stac_catalog(
+        items, os.path.join(output_folderpath, "stac"),
+        catalog_id="fsd-inference", collection_id=collection_id,
+        description="fsd inference outputs (STAC).",
+    )
+
+    merged_filepath = None
+    if merge:
+        merged_filepath = _merge_outputs(
+            output_filepaths, os.path.join(output_folderpath, "merged.tif"),
+            nodata=spec.get("output_nodata"),
+        )
+
+    return InferenceResult(
+        output_folderpath=output_folderpath, output_filepaths=sorted(output_filepaths),
+        stac_catalog_filepath=stac_catalog_filepath, merged_filepath=merged_filepath,
     )
 
 
 def deploy(model_bundle, *, storage=None, **kw):
-    """Register a self-describing model bundle for scaled inference. Lands in P6."""
+    """Register a self-describing model bundle for scaled inference. Lands in P6.
+
+    The bundle format is pinned now (spec 18, F5): a folder with `bundle.json` (adapter
+    `module:attr` ref + relative artifact hrefs + the spec) that `fsd.model.bundle.load` turns
+    back into a live adapter. P6 adds *registration/push* (to ACR/blob/a registry) so cloud
+    workers can fetch it; the format does not change.
+    """
     raise NotImplementedError(
-        "deploy lands in P6. Contract: register a self-describing model bundle "
-        "(adapter code + artifact + spec) for scaled inference (ROADMAP §3.4)."
+        "deploy lands in P6. The bundle format exists now (fsd.model.bundle.save/load); "
+        "deploy adds registration/push of that bundle for scaled inference (ROADMAP §3.4)."
     )

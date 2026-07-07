@@ -229,7 +229,7 @@ a `raapid-infra` change to the admin (we never edit it ourselves).
 | Phase | Ships | Demo | Infra-ask |
 |---|---|---|---|
 | **P0** | fsd pip-installable (GitHub); high-level verb *skeletons*; STAC-aligned catalog (§6) | `pip install fsd`, local download→datacube→flatten via `create_training_data` | none |
-| **P0.5** | **ModelAdapter contract** + reimplement legacy train/deploy on it, **fully local** | Mode A end-to-end: EuroCrops RF train → inference → COG + STAC, one plug-in adapter | none |
+| **P0.5** | ✅ **DONE (spec 18, 2026-07-06)** — **ModelAdapter contract** + legacy train/deploy reimplemented on it, **fully local**. `src/fsd/model/` (adapter/features/engine/bundle), `run_inference` real, `create_training_data(adapter=…)`, self-describing bundle. | Mode A end-to-end: EuroCrops RF train → inference → COG + STAC, one plug-in adapter (`tests/manual/deploy.md`) | none |
 | **P1** | Storage seam on Azure: adlfs/MSI read+write to the `rise` project storage; GDAL-VSI auth proven | build a datacube locally but I/O against `rise` blob (over VPN) | none (uses existing) |
 | **P2** | Azure Batch runner for datacube fan-out (the runner seam) | N datacubes built across the autoscaled `rise` Batch pool | **quota bump; likely `max_tasks_per_node`** |
 | **P3** | Thin control plane ("trigger from laptop"): submit-a-job UX + config files | Mode B: laptop triggers cloud build, pulls flattened arrays | none new |

@@ -4,7 +4,7 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-06_
 
-## LATEST (2026-07-06) — strategy docs + P0 (spec 16) implemented
+## LATEST (2026-07-06) — P0 (specs 16/17) + P0.5 (spec 18)
 
 The v1 core pipeline (download → catalog → datacube → flatten → workflows) is **complete +
 real-data-validated** (see history below). We have since set the **forward direction**:
@@ -25,8 +25,22 @@ real-data-validated** (see history below). We have since set the **forward direc
   `pystac` (now a direct dep) through the storage seam; round-trippable. Real-data smoke: 579-tile
   benchmark → 579 items in 0.06 s, both UTM zones. **140 tests, ruff clean** (7 new). `stac-geoparquet`
   deferred; advances TODO #14 (STAC half; TiTiler serving = P5).
-- **Next:** P0.5 (ModelAdapter + local train/deploy) — the last P0-tier piece before Azure — or
-  run the `spike/rslearn` benchmark. NB the Azure-Batch spec is a *future* number (not spec 10 —
+- **Spec 18 = P0.5 DONE (2026-07-06):** the **ModelAdapter contract** + local train/deploy. New
+  `src/fsd/model/` (`adapter` [Protocol + `BaseModelAdapter` + `Output`], `features` [the F1
+  anti-skew chokepoint + `median_per_id`], `engine` [fsd owns the predict loop → COG], `bundle`
+  [self-describing `module:attr` bundle, save/load, model-free preflight]). `api.py` wired:
+  `create_training_data(adapter=/feature_sequence=/aggregate=)` writes `features.npy` additively;
+  **`run_inference` is real** (local engine over pre-built inference datacubes → COG per cube +
+  STAC via new `catalog.stac.cog_outputs_to_items` + optional merged map); `deploy` still a P6
+  stub (bundle format now pinned). Example `examples/eurocrops_rf.py`; runbook
+  `tests/manual/deploy.md`; explainer `specs/18-model-bundle-explainer.md`. **150 tests, ruff
+  clean** (`tests/test_model.py`, 9 new). One bug fixed: engine copies `band_indices` (modify_bands
+  mutates it). ROI→S2-tiling front-end for `run_inference` stays **P4**.
+- **AZURE_INFRA.md scrubbed + git history rewritten (2026-07-06):** private-infra names/IDs/CIDR/
+  budget removed from the public repo (placeholders); concrete values live only in the local,
+  never-committed `AZURE_INFRA_PRIVATE.md` at the workspace root.
+- **Next:** the `spike/rslearn` benchmark (the big build-vs-borrow unknown), or **P1** (Azure
+  storage seam: adlfs/MSI + GDAL-VSI). NB the Azure-Batch spec is a *future* number (not spec 10 —
   that's "storage-and-scale", already used).
 
 ## Where we are

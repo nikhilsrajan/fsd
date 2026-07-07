@@ -9,6 +9,7 @@ High-level API (specs/16): `fsd.download`, `fsd.create_training_data` (+ `run_in
 """
 
 from fsd.api import (
+    InferenceResult,
     PreflightError,
     TrainingData,
     compute_n_timestamps,
@@ -17,16 +18,23 @@ from fsd.api import (
     download,
     run_inference,
 )
+from fsd.model import BaseModelAdapter, ModelAdapter, Output, load_bundle, save_bundle
 
 __version__ = "0.1.0"
 
 __all__ = [
     "PreflightError",
     "TrainingData",
+    "InferenceResult",
     "compute_n_timestamps",
     "create_training_data",
     "deploy",
     "download",
     "run_inference",
+    "ModelAdapter",
+    "BaseModelAdapter",
+    "Output",
+    "load_bundle",
+    "save_bundle",
     "__version__",
 ]

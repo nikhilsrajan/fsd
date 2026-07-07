@@ -4,6 +4,31 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## ModelAdapter contract + local train/deploy (spec 18 / P0.5, 2026-07-06)
+- **New `src/fsd/model/`** (`adapter`/`features`/`engine`/`bundle`) generalizes the legacy
+  `demo_02_model_train` + `model/demo_model_deploy.py` into a plug-in **ModelAdapter** contract.
+  The feature transform (`mask_invalid_and_interpolate → NDVI/NDRE/… → remove raw bands`) that
+  was **copy-pasted** between the train notebook and the deploy script now has **one** definition
+  (the adapter's `feature_sequence`), run by fsd in **both** `create_training_data` and
+  `run_inference` — the F1 anti-skew fix.
+- **`create_training_data` wiring:** the previously-stubbed `feature_sequence`/`aggregate` params
+  are live, plus a new `adapter=` (preferred). When any is given, fsd writes `features.npy`
+  (+ `feature_ids`/`feature_labels`) **additively**; raw `data.npy` is kept. `aggregate ∈
+  {None, "median_per_id", callable}` (the `np.nanmedian`-per-id reducer from demo_02 cell-3).
+- **`run_inference` is real (was a P4 stub):** local engine over **pre-built inference datacubes**
+  (input.csv / folder / list) → one COG per cube + a STAC catalog (+ optional merged map). fsd
+  owns the predict loop (drop-NaN → chunked `predict` → nodata scatter → `(bands,H,W)`). Output
+  COGs use **`raster.cog.to_cog`** (lossless + overviews) — **not** the legacy `rio_cogeo`/
+  `cog_translate` path (see DROPPED.md). The ROI→S2-tiling front-end stays P4 and will call this
+  same engine. Preflight asserts bands + `T` before any predict.
+- **`catalog.stac.cog_outputs_to_items`** implemented (spec 17 SO-6, was designed-for): one STAC
+  Item per output COG, `proj:*` read straight from the COG we just wrote.
+- **Bug fixed:** `engine.infer_datacube` now **copies `band_indices`** before `modify_bands`,
+  which mutates its `band_indices` argument in place — reusing one dict across cubes could
+  otherwise corrupt it (caught by `test_predict_batch_size_matches_whole_tile`).
+- **Deps:** no new *core* dep (sklearn/joblib live in the `[model-example]` extra for the example
+  + runbook only). Exports: `fsd.ModelAdapter/BaseModelAdapter/Output/load_bundle/save_bundle`.
+
 ## STAC export view of the tile catalog (spec 17 / P0, 2026-07-06)
 - **New (additive), `TileCatalog` GeoParquet schema unchanged:** `src/fsd/catalog/stac.py` maps
   catalog rows → **STAC Items** (one Item per tile-product acquisition, one asset per band file)

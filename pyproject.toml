@@ -32,6 +32,12 @@ notebooks = [
     "scikit-learn",
     "joblib",
 ]
+model-example = [  # for examples/eurocrops_rf.py + tests/manual/deploy.md + demos/ (not fsd core)
+    "scikit-learn",
+    "joblib",
+    "matplotlib",
+    "seaborn",
+]
 azure = [          # Phase 2, not used in v1 code
     "adlfs",       # fsspec Azure Blob backend
 ]

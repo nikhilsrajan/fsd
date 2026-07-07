@@ -144,6 +144,55 @@ def tile_catalog_to_items(gdf, *, collection_id=None, read_proj=False) -> list[p
     return items
 
 
+def cog_outputs_to_items(cog_filepaths, *, collection_id="fsd-inference",
+                         band_names=None, dt=None) -> list[pystac.Item]:
+    """Map inference-output COGs to STAC Items (spec 17 SO-6; used by run_inference, spec 18).
+
+    One Item per output COG. `proj:*` is read straight from the COG we just wrote (cheap, no
+    ambiguity), and the footprint is the COG's bounds reprojected to EPSG:4326. `dt` is the
+    Item datetime for all outputs (defaults to now, UTC) — outputs are mosaics over a window,
+    not a single acquisition.
+    """
+    import datetime as _datetime
+
+    import rasterio
+    from rasterio.warp import transform_bounds
+
+    if dt is None:
+        dt = _datetime.datetime.now(_datetime.timezone.utc)
+
+    items: list[pystac.Item] = []
+    for fp in cog_filepaths:
+        with rasterio.open(fp) as src:
+            bounds4326 = transform_bounds(src.crs, "EPSG:4326", *src.bounds, densify_pts=21)
+            epsg = src.crs.to_epsg() if src.crs else None
+            shape = [src.height, src.width]
+            transform = list(src.transform)[:6]
+
+        geom = shapely.geometry.box(*bounds4326)
+        item = pystac.Item(
+            id=os.path.splitext(os.path.basename(str(fp)))[0],
+            geometry=shapely.geometry.mapping(geom),
+            bbox=list(bounds4326),
+            datetime=dt,
+            properties={},
+            collection=collection_id,
+        )
+        if epsg is not None:
+            ProjectionExtension.ext(item, add_if_missing=True).epsg = epsg
+        item.properties["proj:shape"] = shape
+        item.properties["proj:transform"] = transform
+
+        asset = pystac.Asset(
+            href=str(fp), media_type=pystac.MediaType.COG, roles=["data"], title="output"
+        )
+        if band_names:
+            asset.extra_fields["eo:bands"] = [{"name": b} for b in band_names]
+        item.add_asset("output", asset)
+        items.append(item)
+    return items
+
+
 def items_to_rows(items: list[pystac.Item]):
     """Inverse mapping — reconstruct the `TileCatalog` columns from Items (round-trip check)."""
     import geopandas as gpd
