@@ -206,18 +206,20 @@ fsd.deploy(model_bundle, ...)               # register a bundle for scaled infer
 `runner=` and `storage=` are the seams: the **same call** runs Mode A (local, local disk) or
 Mode B/C (Batch, blob) by config alone — no code change.
 
-**ROI → S2-grid tiling** (inside `run_inference`, P4) is a **port, not an invention** — the
+**ROI → S2-grid tiling** (inside `run_inference(roi=…)`, **P0.75** — the tiling itself landed as
+`fsd.grid`, spec 19) is a **port, not an invention** — the
 legacy `rsutils.s2_grid_utils.get_s2_grids_gdf` already does it, and
 `fetch_satdata/notebooks/demo_preparation.ipynb` pins the intended recipe:
 1. `get_s2_grids_gdf(roi_geojson_4326, grid_size_km=5, scale_fact=1.1, res=None)` — map
    `grid_size_km`→S2 level (**5 km → res 11**, as in the legacy `100_random_grids`),
    `s2.polyfill` the ROI's **convex hull** at that level, keep cells that **intersect** the
    ROI, then **scale each cell by `scale_fact` (1.1 → 10 % overlap per side)** so adjacent
-   inference tiles don't leave seams at mosaic time.
-2. `gpd.overlay(grids_gdf, roi_gdf)` — clip the scaled grids to the ROI → the per-grid
-   geometries that feed datacube creation (each grid = one inference datacube = one task).
-3. Deps: `s2` (`from s2 import s2`, gives `polyfill`) + `s2cell`. Port into e.g. `fsd/grid.py`
-   (its own small spec) when P4 lands; not needed for P0's `create_training_data`.
+   grid cells don't leave seams at mosaic time.
+2. `gpd.overlay(grids_gdf, roi_gdf)` — clip the scaled grids to the ROI → the per-cell
+   geometries that feed datacube creation (each **grid cell** = one inference datacube = one
+   **per-cell task**).
+3. Deps: `s2` (`from s2 import s2`, gives `polyfill`) + `s2cell`. ✅ ported into `fsd/grid.py`
+   (spec 19); consumed by the **P0.75** wrapper, not P4. Not needed for P0's `create_training_data`.
 
 ---
 
@@ -230,10 +232,11 @@ a `raapid-infra` change to the admin (we never edit it ourselves).
 |---|---|---|---|
 | **P0** | fsd pip-installable (GitHub); high-level verb *skeletons*; STAC-aligned catalog (§6) | `pip install fsd`, local download→datacube→flatten via `create_training_data` | none |
 | **P0.5** | ✅ **DONE (spec 18, 2026-07-06)** — **ModelAdapter contract** + legacy train/deploy reimplemented on it, **fully local**. `src/fsd/model/` (adapter/features/engine/bundle), `run_inference` real, `create_training_data(adapter=…)`, self-describing bundle. | Mode A end-to-end: EuroCrops RF train → inference → COG + STAC, one plug-in adapter (`tests/manual/deploy.md`) | none |
+| **P0.75** | **Local ROI inference verb (completes Mode A).** `run_inference(roi=…)` chains **tile the ROI (`fsd.grid.roi_to_s2_grids`) → build one datacube per grid cell → infer → COG + STAC (+ optional display merge)** in a single call, all local via the Snakemake runner (imagery assumed present, or fetched first via `fsd.download`). *(`create_training_data(roi=…)` deferred — it already takes labelled field shapes, so it needs no ROI→cell tiling.)* | Mode A: one call turns an ROI GeoJSON into per-cell crop-class COGs — the spec-19 demo, as a verb | none |
 | **P1** | Storage seam on Azure: adlfs/MSI read+write to the `rise` project storage; GDAL-VSI auth proven | build a datacube locally but I/O against `rise` blob (over VPN) | none (uses existing) |
 | **P2** | Azure Batch runner for datacube fan-out (the runner seam) | N datacubes built across the autoscaled `rise` Batch pool | **quota bump; likely `max_tasks_per_node`** |
 | **P3** | Thin control plane ("trigger from laptop"): submit-a-job UX + config files | Mode B: laptop triggers cloud build, pulls flattened arrays | none new |
-| **P4** | Inference at scale: ROI → S2 tiles (✅ **tiling ported: `fsd.grid.roi_to_s2_grids`, spec 19**; remaining = the `run_inference(roi=…)` front-end that chains tiling→download→build→infer) → model → COG outputs on Batch | Mode C first light | maybe scale `max_nodes` |
+| **P4** | **Inference at scale.** Dispatch the **per-cell** build+infer unit-of-work from P0.75 onto the **`rise` Batch pool** (reusing the P2 datacube-fan-out runner), I/O against blob. Algorithm unchanged — this phase is **only** the runner/dispatch swap (`runner=`/`storage=` config, no new pipeline code). | Mode C: the P0.75 ROI verb fanned out across Batch nodes | maybe scale `max_nodes` |
 | **P5** | Output STAC + hosted TiTiler / XYZ | outputs viewable as web tiles | TiTiler hosting (infra) |
 | **P6** | Deploy/registration UX; model-bundle push/register | one-command deploy of a bundle | model store (infra) |
 
