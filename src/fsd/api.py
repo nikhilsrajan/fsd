@@ -403,7 +403,7 @@ def _resolve_inference_pairs(inference_datacubes, output_folderpath) -> list[tup
 
 def _merge_outputs(filepaths, dst, nodata) -> str:
     """Merge single-CRS output COGs into one COG (the legacy merged map). Multi-CRS raises —
-    the per-tile COGs + STAC are the multi-zone answer (fsd single-CRS-merge principle)."""
+    the per-output COGs + STAC are the multi-zone answer (fsd single-CRS-merge principle)."""
     import rasterio
     from rasterio.merge import merge as rio_merge
 
@@ -412,7 +412,7 @@ def _merge_outputs(filepaths, dst, nodata) -> str:
         crs_set = {s.crs.to_string() for s in srcs}
         if len(crs_set) > 1:
             raise PreflightError(
-                f"cannot merge outputs across multiple CRS {sorted(crs_set)}; use the per-tile "
+                f"cannot merge outputs across multiple CRS {sorted(crs_set)}; use the per-output "
                 "COGs + STAC catalog instead (collapse to one zone first for a merged map)."
             )
         mosaic, out_transform = rio_merge(srcs, nodata=nodata)

@@ -3,7 +3,7 @@
 Validates the **ModelAdapter contract + local inference engine** (spec 18) on real data,
 reproducing the legacy `demo_02_model_train` + `demo_03_model_deploy` through the fsd verbs:
 `create_training_data(adapter=…)` → train your own model → wrap it in an adapter/bundle →
-`run_inference(…)` → per-tile **COG** + a **STAC** catalog (+ optional merged map). The whole
+`run_inference(…)` → one **COG** per output + a **STAC** catalog (+ optional merged map). The whole
 loop runs on a laptop (Mode A) with **one** feature-transform definition shared by training and
 inference (the F1 anti-skew guarantee).
 
@@ -175,7 +175,7 @@ print("merged:", result.merged_filepath)
       and `merged.tif`. Each output is a **1-band uint8 COG, nodata 255**, in the cube's UTM CRS.
       Merge succeeds **only if all cubes share one CRS** — if the grid straddles the 36°E zone
       boundary it raises (by design); restrict the grid to one zone for a merged map, or use the
-      per-tile COGs + STAC.
+      per-output COGs + STAC.
 
 ---
 
@@ -195,7 +195,7 @@ print("stac items:", len(list(cat.get_items(recursive=True))))
       STAC item count == number of outputs; each item has `proj:transform` + a COG asset.
 
 **QGIS gate (required):**
-- [ ] Load `merged.tif` (or the per-tile `output.tif`s) — the class map aligns geographically
+- [ ] Load `merged.tif` (or the per-output `output.tif`s) — the class map aligns geographically
       with the ROI (drop the fields shapefile on top; classes fall on/near the training fields).
 - [ ] Overlay a true-colour composite for the same window (see `datacube.md`) — the crop map's
       nodata (255) coincides with cloud/edge nodata, not with valid land.
