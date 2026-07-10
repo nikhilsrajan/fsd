@@ -1,5 +1,8 @@
 # Spec 19 — end-to-end demo (demo_01 + demo_02 + demo_03) + ROI→S2-grid tiling
 
+> **Superseded in part by spec 23 (2026-07-10):** `demos/e2e_ethiopia.py` → `demos/e2e_austria.py`,
+> which starts from a real CDSE download and uses ROI-mode `run_inference`. See spec 23 + `demos/E2E_AUSTRIA.md`.
+>
 > **Status: SIGNED OFF + IMPLEMENTED + VERIFIED (2026-07-06).** SO-1..SO-6 approved as drafted. Landed
 > `src/fsd/grid.py` (`roi_to_s2_grids`, clean-room port) + `tests/test_grid.py` (4 tests, skip
 > without the `[grid]` extra) + `pyproject` `[grid]`/`[model-example]` extras; `demos/` (`adapters.py`

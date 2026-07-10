@@ -4,8 +4,9 @@
 `datacube_to_X` → drop-NaN pixels → chunked `predict` → scatter into a nodata-filled
 `(bands, H, W)` array (F2) → `to_output` (F3). `infer_datacube_to_cog` adds the COG write
 (reusing `fsd.raster.cog.to_cog`, lossless + overviews) with the datacube's transform/crs.
-`run_local` fans out over many datacubes (sequential, or a process pool when driven by a
-bundle path). The ROI→tiling→download front-end that produces the datacubes is P4.
+`run_local` runs many datacubes **sequentially in-process** (spec 22 retired the process pool;
+`api.run_inference` fans out `cores>1` via the Snakemake infer-only runner instead). The
+ROI→tiling→download front-end that produces the datacubes is spec 21 (`run_inference(roi=…)`).
 """
 
 from __future__ import annotations
@@ -112,7 +113,8 @@ def infer_datacube_to_cog(adapter, datacube_filepath: str, output_filepath: str,
 
 # --- fan-out over many datacubes ---------------------------------------------
 
-# Per-process adapter cache so a process pool loads each bundle only once.
+# Per-process adapter cache so a bundle is loaded only once per process (in-process run_local,
+# and the infer-only task's sequential group loop).
 _BUNDLE_CACHE: dict[str, object] = {}
 
 
@@ -123,42 +125,32 @@ def _adapter_from_bundle_cached(bundle_path: str):
     return _BUNDLE_CACHE[bundle_path]
 
 
-def _worker(args):
-    bundle_path, dc_fp, out_fp, predict_batch_size, skip_nan = args
-    adapter = _adapter_from_bundle_cached(bundle_path)
-    return infer_datacube_to_cog(
-        adapter, dc_fp, out_fp,
-        predict_batch_size=predict_batch_size, skip_nan=skip_nan,
-    )
-
-
-def run_local(model, pairs: list[tuple[str, str]], *, cores: int = 1,
+def run_local(model, pairs: list[tuple[str, str]], *,
               predict_batch_size: int | None = None, skip_nan: bool = True,
-              progress: bool = True) -> list[str]:
-    """Run inference over `pairs` of `(datacube_filepath, output_filepath)`.
+              overwrite: bool = False, progress: bool = True) -> list[str]:
+    """Infer over `pairs` of `(datacube_filepath, output_filepath)`, **sequentially in-process**.
 
-    `model` is a live adapter **or** a bundle path (str). `cores > 1` uses a process pool and
-    requires a bundle path (so each worker reloads it); a live adapter falls back to sequential.
+    `model` is a live adapter **or** a bundle path (str). This is the `cores=1` / test / debug /
+    small-run path; `api.run_inference` routes `cores>1` through the Snakemake **infer-only** runner
+    instead — fsd has **no in-process process pool** (spec 22 retired `mp.Pool`). Existing outputs
+    are **skipped** unless `overwrite` (idempotency, spec 22). Returns every output path.
     """
     is_bundle = isinstance(model, str)
-
-    if cores > 1 and is_bundle:
-        import multiprocessing as mp
-        tasks = [(model, dc, out, predict_batch_size, skip_nan) for dc, out in pairs]
-        with mp.Pool(processes=cores) as pool:
-            return list(pool.imap_unordered(_worker, tasks))
-
-    # Sequential: load the adapter once, loop.
     adapter = _adapter_from_bundle_cached(model) if is_bundle else model
     if not is_bundle:
         adapter.load()
     outs = []
     total = len(pairs)
     for i, (dc_fp, out_fp) in enumerate(pairs, 1):
-        outs.append(infer_datacube_to_cog(
-            adapter, dc_fp, out_fp,
-            predict_batch_size=predict_batch_size, skip_nan=skip_nan,
-        ))
-        if progress:
-            print(f"[inference] {i}/{total} -> {out_fp}", flush=True)
+        if not overwrite and fs.exists(out_fp):
+            if progress:
+                print(f"[inference] {i}/{total} skip (exists) -> {out_fp}", flush=True)
+        else:
+            infer_datacube_to_cog(
+                adapter, dc_fp, out_fp,
+                predict_batch_size=predict_batch_size, skip_nan=skip_nan,
+            )
+            if progress:
+                print(f"[inference] {i}/{total} -> {out_fp}", flush=True)
+        outs.append(out_fp)
     return outs

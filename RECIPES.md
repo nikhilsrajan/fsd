@@ -174,3 +174,56 @@ python3.11 -m venv .venv-modeldeploy
 Outputs: `demos/figures/{s2_grids,ndvi_timeseries,crop_map}.png` (committed) + QGIS artifacts
 (gridded ROI GeoJSON, per-grid COGs, STAC, merged display map) under `tests/outputs/demo_e2e/`
 (gitignored). Report + finding (multi-zone display merge): `demos/README.md`.
+
+## ROI inference in one call (`run_inference(roi=…)`, spec 21 / P0.75)
+
+Tile an ROI → build a datacube per S2 grid cell → infer → per-cell COGs + STAC + merged map,
+all local via the runner seam. Needs the `[grid]` extra (`.venv-modeldeploy`). The adapter must
+be importable by `module:attr` (put it in a module on `PYTHONPATH`, not `__main__`):
+
+```python
+import datetime, geopandas as gpd
+from shapely.geometry import box
+import fsd
+from ndvi_thresh import NDVIThresh          # an importable adapter module
+
+res = fsd.run_inference(
+    NDVIThresh(), output_folderpath="tests/outputs/roi_inference",
+    roi=gpd.GeoDataFrame({"geometry": [box(36.20, 11.45, 36.28, 11.53)]}, crs="EPSG:4326"),
+    catalog_filepath="../satellite_benchmark/sentinel-2-l2a/catalog.parquet",
+    startdate=datetime.datetime(2018, 6, 1), enddate=datetime.datetime(2018, 7, 11),  # T=2 @ 20d
+    mosaic_days=20, bands=["B04", "B08", "B8A", "SCL"],
+    grid_size_km=5, scale_fact=1.1, merge="reproject", cores=2,
+)
+# res.grids_filepath, res.output_filepaths (per-cell COGs), res.stac_catalog_filepath, res.merged_filepath
+```
+
+- `merge`: `True` = strict single-CRS (refuses a zone-straddling ROI); `"reproject"` =
+  cross-UTM-zone-safe merge to one CRS — the **max-total-area** zone, or a `merge_crs=<EPSG>` you
+  pass; **lossless where a cell already matches the target**. Re-running resumes (Snakemake skips
+  cells whose `done_infer.txt` exists).
+- Full runbook: `tests/manual/roi_inference.md`. Real smoke: ~9 km ROI → 10 cells / 10 COGs in ~40 s.
+
+## e2e LOCAL gate on fresh CDSE data — the go-to run-book (spec 23)
+
+One command runs the whole local pipeline (download → jp2→COG → datacube → flatten → train →
+bundle → ROI build+infer → COG/STAC/merged) on real Austria data, with decomposed download timings +
+a throughput probe + a no-download ETA estimator. **Reusable template** — swap `--roi/--train`
+(cross-UTM-zone ROIs supported). Needs CDSE creds + the `[dev,grid,model-example]` venv.
+
+```bash
+.venv-modeldeploy/bin/python demos/e2e_austria.py --creds /path/to/cdse_credentials.json
+.venv-modeldeploy/bin/python demos/e2e_austria.py --fast   # 2-month window + small inference ROI
+# your region:  --roi shapefiles/FR_ROI.geojson --train shapefiles/FR_FIELDS.geojson --id-col fid --label-col crop
+```
+
+Estimate another region **without downloading it** (uses a prior run's `timings.json → cost_model`):
+
+```python
+from estimate import estimate_run          # demos/estimate.py
+estimate_run("FR_ROI.geojson", START, END, BANDS, creds=creds, cost_model=cost_model,
+             max_cloudcover=70)             # -> {granules, cells, GB, download_min, compute_min, total_min}
+```
+
+- Missing imagery? the compute verbs now print an actionable `fsd.download(...)` plan
+  (`cdse.plan_download`) — they never auto-fetch. Full guide: `demos/E2E_AUSTRIA.md`.

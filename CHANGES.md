@@ -4,6 +4,83 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## e2e Austria local-completeness gate + download instrumentation (spec 23, 2026-07-10)
+- **`DownloadResult` gained decomposed metrics** (`fsd.sources.cdse`): `bytes_downloaded`,
+  `transfer_seconds`, `convert_seconds`, `bytes_by_band`. `_transfer_and_convert` now times the CDSE
+  byte-transfer separately from the local jp2→COG conversion (interleaved per file in worker
+  threads, so the summed seconds may exceed wall-time). `_download_one` returns `(ok, reason,
+  metrics)` — a **signature change** (its 4 call-site tests updated). New `sum_results` aggregates
+  `download_resume`'s per-pass results.
+- **New `cdse.probe_throughput`** — single-threaded one-file fetch → achievable MB/s baseline, so a
+  run can tell CDSE/link-bound from local contention (VPN/background load).
+- **New `cdse.plan_download` + `format_download_plan`** (the D13 guardrail) — query STAC + diff
+  needed-vs-present tiles → an actionable `fsd.download(...)` plan (JSON + printed command, +GB/ETA
+  when a cost model is known). Wired into the `create_training_data` / `run_inference` preflight:
+  **missing imagery now raises a clear "run fsd.download first" with the exact params**, not a deep
+  file-not-found. Compute verbs still never auto-fetch (quota + the Batch download-once model).
+- **`run_inference` merge is now cross-UTM-zone-safe by default policy.** `_merge_outputs`
+  `"reproject"` picks the target CRS by **max total cell area** (was most-cells; correct for clipped
+  ROI-edge cells) and accepts a **`merge_crs=`** override (EPSG/CRS string). It is **lossless where a
+  cell already matches the target** (single-zone ROIs like Austria don't resample). `run_inference`
+  gained `merge_crs`.
+- **`demos/e2e_ethiopia.py` → `demos/e2e_austria.py`** — now a **reusable template** that starts from
+  a real CDSE **download** (step 2, probe + `download_resume` + decomposed timing), uses ROI-mode
+  `run_inference(merge="reproject")`, and is driven by `--roi/--train/--id-col/--label-col/--creds`.
+  New `demos/estimate.py` (no-download ETA) + `demos/E2E_AUSTRIA.md` (the go-to local-run doc).
+
+## Inference parallelism: retire `mp.Pool`, unify on the runner seam + idempotent outputs (spec 22, 2026-07-07)
+- **`engine.run_local` no longer uses `multiprocessing.Pool`.** It is now the **in-process
+  sequential** path only (`cores=1` / live adapter / tests / debug). Parallel pre-built-cube
+  inference (`cores>1`) fans out through the **Snakemake infer-only runner**
+  (`workflows/infer_only_task.py` + `_snakefiles/infer_only/Snakefile` +
+  `runners.run_local_infer_only`), routed from `api.run_inference` (kept out of `engine` to avoid a
+  model→workflows import cycle). So **all** parallel fan-out (build, ROI, pre-built inference) now
+  goes through the runner seam → Batch (P4) can dispatch pre-built inference too, as a pure
+  `runner=` swap. **No `mp.Pool` anywhere in fsd.**
+- **Inference is now idempotent.** Both paths **skip existing outputs unless `overwrite=True`** —
+  a re-run of `run_inference` over an already-inferred set does nothing (fixes the observed
+  behaviour where the engine re-inferred every cube despite existing `output.tif`). `cores>1`
+  resumes via per-group sentinels; `cores=1` via an `fs.exists` check.
+- **New `cubes_per_task` knob (default 1)** groups K cubes per Snakemake job so the one-per-job
+  bundle load amortises (recovers the pool's economics without a pool — the intra-task loop is
+  sequential). `overwrite=True` forces recompute (`--forceall`). `run_inference` gains
+  `overwrite` + `cubes_per_task`; **default `cores=1` → fully backward-compatible** (only new
+  default behaviour is skip-existing).
+- **Behaviour preserved:** `cores=1` stays no-bundle in-process; `cores>1` requires a bundle (a live
+  adapter is auto-saved), same as the old pool. Positional calls `run_inference(model, cubes, out)`
+  unchanged.
+- **Bundle drift-check relaxed for *unset* spec fields (`model/bundle.py::load`).** A field the
+  adapter class leaves unset — `None`, an empty list, or `n_timestamps == 0` (the base default) — is
+  now **skipped** by the code/bundle drift check; the bundle value is authoritative. This lets **one
+  adapter class back models trained on different `T`** (n_timestamps is a trained-model property, not
+  a code constant) — surfaced when the demo's `cores>1` path first exercised `bundle.load` in a
+  worker. Fields the class *does* pin are still drift-checked (real drift still raises).
+- **Demo (`demos/e2e_ethiopia.py`) now infers via the bundle at `cores>0`** (`model=bundle_dir,
+  cores=CORES, cubes_per_task=20`) instead of a live sequential adapter — so step 5 is parallel +
+  resumable and the demo is real coverage for spec 22. `demos/adapters.py::DemoRF` no longer
+  hardcodes `n_timestamps` (model-determined). The demo exports its dir to `PYTHONPATH` so the
+  runner's subprocesses can import `adapters:DemoRF`.
+
+## run_inference: ROI mode + three merge modes (spec 21 / P0.75, 2026-07-07)
+- **`api.run_inference`** now has two mutually-exclusive modes. Old (spec 18): pass
+  `inference_datacubes=` (pre-built cubes, engine `mp.Pool`). New (spec 21): pass `roi=`
+  (+ `catalog_filepath`/`startdate`/`enddate`/`mosaic_days`/`bands`) → fsd tiles the ROI
+  (`fsd.grid`), then fans out a per-cell **build-datacube + infer → COG** task via the **runner
+  seam** (`workflows/infer_task.py` + `_snakefiles/create_inference/Snakefile` +
+  `runners.run_local_inference`). `inference_datacubes` + `output_folderpath` are now optional
+  (both default `None`, validated) — **positional calls `run_inference(model, cubes, out)` still
+  work**. `InferenceResult` gains `grids_filepath`.
+- **Why the runner seam, not the existing pool:** the per-cell unit-of-work is what Azure Batch
+  dispatches at P4, so folding inference into the runner keeps P4 a pure `runner=` swap. (The
+  pre-built `mp.Pool` path was **subsequently retired too** — see the spec-22 entry above.)
+- **`merge=` is now tri-state:** `False` (per-cell COGs only) | `True` (**strict single-CRS**,
+  refuses cross-CRS, error points at `"reproject"`) | `"reproject"` (**display** merge: reproject
+  to the dominant zone, nearest-neighbour, lossy). The demo's ad-hoc reproject-merge moved into
+  `api._merge_outputs`; `demos/e2e_ethiopia.py` now calls `merge="reproject"`.
+- **CDSE quota (SO-6):** ROI inference **never downloads from CDSE** — imagery is assumed present
+  in the catalog (download is a separate up-front phase). On cloud (P4) this means Batch tasks read
+  imagery from blob, never CDSE.
+
 ## Datacube builder: merge multiple tiles per acquisition (spec 20 bugfix, 2026-07-07)
 - **`datacube/builder.py::_stack_datacube`** — when a shape is covered by several tiles of the
   **same acquisition** (it straddles an MGRS tile boundary), all of them are now **nodata-fill

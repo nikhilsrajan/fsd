@@ -206,7 +206,10 @@ print("stac items:", len(list(cat.get_items(recursive=True))))
 - The 3×3 bbox grid is a **runbook stand-in** for the P4 ROI→S2-grid tiling
   (`rsutils.s2_grid_utils.get_s2_grids_gdf`; recipe pinned in ROADMAP §4). Real inference will
   tile + download inside `run_inference`; here you supply pre-built cubes.
-- `cores>1` in `run_inference` requires a **bundle path** (each worker reloads it); a live
-  adapter runs sequentially.
+- `cores=1` infers **in-process** (a live adapter is fine, no bundle). `cores>1` fans out via the
+  **Snakemake infer-only runner** (spec 22 — no `mp.Pool`) and needs a **bundle** (a live adapter is
+  auto-saved); `cubes_per_task` groups cubes per job to amortise the model load. Inference is
+  **idempotent** — a re-run skips existing outputs unless `overwrite=True` (so re-running this
+  runbook's step 4 does nothing the second time).
 - Outputs are gitignored (`tests/outputs/deploy/`). Scale up by using the full `SHAPES` set and a
   finer grid; a full-year (T=19) model just changes `START/END` and `n_timestamps`.

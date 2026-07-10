@@ -171,6 +171,13 @@ class DownloadResult:
     failures: list = dataclasses.field(default_factory=list)   # (src_url, reason)
     reason_counts: dict = dataclasses.field(default_factory=dict)  # {reason: count}
     circuit_tripped: bool = False  # stopped early: too many consecutive failures
+    # --- timing decomposition (spec 23, D1/D11) — summed across worker threads, so
+    # transfer_seconds + convert_seconds may exceed elapsed_s (they overlap). bytes_downloaded is
+    # the JP2 bytes actually pulled from CDSE (basis for throughput MB/s); skips contribute 0. ---
+    bytes_downloaded: int = 0            # JP2 bytes transferred this run (excludes skipped)
+    transfer_seconds: float = 0.0        # summed CDSE byte-transfer wall-time
+    convert_seconds: float = 0.0         # summed local JP2->COG conversion wall-time
+    bytes_by_band: dict = dataclasses.field(default_factory=dict)  # {band: bytes} for extrapolation
 
 
 # --- catalog discovery -------------------------------------------------------
@@ -370,17 +377,28 @@ def _is_local_path(path: str) -> bool:
     return fsspec.utils.get_protocol(path) in ("file", "local")
 
 
-def _transfer_and_convert(src_url: str, dst_path: str, s3opts: dict) -> None:
+def _transfer_and_convert(src_url: str, dst_path: str, s3opts: dict) -> tuple[float, float, int]:
     """Fetch a JP2 band to a **local** staging sibling, convert it to a COG at
     `dst_path` (spec 14), and remove the staging file. `to_cog` is atomic, so a
     crash leaves at most the staging JP2 (no half-written `.tif`) — the next resume
-    pass re-fetches and re-converts."""
+    pass re-fetches and re-converts.
+
+    Returns `(transfer_s, convert_s, jp2_bytes)` (spec 23, D1): the byte-transfer and the
+    JP2->COG conversion are timed separately so a run can tell CDSE-transfer cost from local
+    COG-conversion cost; `jp2_bytes` is the transferred size (throughput basis)."""
+    import time
+
     from fsd.raster.cog import to_cog
 
     staging = dst_path + ".src.jp2"
     try:
+        t0 = time.time()
         fs.transfer(src_url, staging, src_options=s3opts)
+        t1 = time.time()
+        jp2_bytes = fs.size(staging)
         to_cog(staging, dst_path)
+        t2 = time.time()
+        return t1 - t0, t2 - t1, jp2_bytes
     finally:
         if fs.exists(staging):
             try:
@@ -409,30 +427,34 @@ def _download_one(
     lossless COG conversion (`dst_path` is the `.tif`, spec 14); non-raster sidecars
     (`MTD_TL.xml`) transfer as-is. Idempotency keys on the **final** path.
 
-    Returns `(ok, reason)` where reason is ``"skipped"`` / ``"ok"`` on success, or a
-    short error label (e.g. ``"Forbidden"``, ``"SignatureDoesNotMatch"``) on failure.
+    Returns `(ok, reason, metrics)` where reason is ``"skipped"`` / ``"ok"`` on success, or a
+    short error label (e.g. ``"Forbidden"``, ``"SignatureDoesNotMatch"``) on failure, and
+    `metrics` is `(transfer_s, convert_s, bytes)` (spec 23) — zeros on skip/failure.
     """
     import random
     import time
 
+    zero = (0.0, 0.0, 0)
     # Skip only a *real* (non-empty) file — never a 0-byte "touched" leftover, which
     # would otherwise be treated as done and never re-fetched.
     if fs.exists(dst_path) and fs.size(dst_path) > 0:
-        return True, "skipped"
+        return True, "skipped", zero
     last: Exception | None = None
     for attempt in range(tries):
         try:
             if cog and src_url.endswith(".jp2"):
-                _transfer_and_convert(src_url, dst_path, s3opts)
+                metrics = _transfer_and_convert(src_url, dst_path, s3opts)
             else:
+                t0 = time.time()
                 fs.transfer(src_url, dst_path, src_options=s3opts)
-            return True, "ok"
+                metrics = (time.time() - t0, 0.0, fs.size(dst_path))
+            return True, "ok", metrics
         except Exception as e:
             last = e
             if attempt == tries - 1 or not _is_retryable_s3(e):
                 break
             time.sleep(min(base_delay * (2**attempt), 4.0) + random.uniform(0, 0.5))
-    return False, _error_reason(last) if last else "unknown"
+    return False, _error_reason(last) if last else "unknown", zero
 
 
 def _append_downloaded(catalog, tile_meta: dict, results: list[tuple]) -> int:
@@ -556,6 +578,10 @@ def download(
     skipped = 0
     failures: list[tuple[str, str]] = []
     reason_counts: collections.Counter = collections.Counter()
+    bytes_downloaded = 0
+    transfer_seconds = 0.0
+    convert_seconds = 0.0
+    bytes_by_band: collections.Counter = collections.Counter()
     start = time.time()
 
     def _emit():
@@ -582,9 +608,14 @@ def download(
             }
             for fut in concurrent.futures.as_completed(fut_to_w):
                 src, dst, tid = fut_to_w[fut]
-                ok, reason = fut.result()
+                ok, reason, (t_s, c_s, nb) = fut.result()
                 results.append((tid, dst, ok))
                 reason_counts[reason] += 1
+                transfer_seconds += t_s
+                convert_seconds += c_s
+                if nb:
+                    bytes_downloaded += nb
+                    bytes_by_band[os.path.splitext(os.path.basename(dst))[0]] += nb
                 if reason == "skipped":
                     skipped += 1
                 if ok:
@@ -616,6 +647,10 @@ def download(
         failures=failures,
         reason_counts=dict(reason_counts),
         circuit_tripped=tripped,
+        bytes_downloaded=bytes_downloaded,
+        transfer_seconds=transfer_seconds,
+        convert_seconds=convert_seconds,
+        bytes_by_band=dict(bytes_by_band),
     )
 
 
@@ -667,3 +702,165 @@ def download_resume(
         if r.circuit_tripped and cooldown_s:
             time.sleep(cooldown_s)  # bad window — back off, then resume
     return results
+
+
+def sum_results(results: list[DownloadResult]) -> DownloadResult:
+    """Aggregate the per-pass results of `download_resume` into one `DownloadResult` (spec 23).
+
+    Counts/bytes/seconds add; a later pass that skips an already-downloaded file contributes 0
+    bytes/seconds, so the sum is the true one-time cost. `elapsed_s` is the sum of pass wall-times.
+    """
+    import collections
+
+    agg = DownloadResult(successful_count=0, total_count=0)
+    by_band: collections.Counter = collections.Counter()
+    reasons: collections.Counter = collections.Counter()
+    for r in results:
+        agg.successful_count += r.successful_count
+        agg.total_count += r.total_count
+        agg.skipped_count += r.skipped_count
+        agg.failed_count += r.failed_count
+        agg.elapsed_s += r.elapsed_s
+        agg.failures.extend(r.failures)
+        agg.bytes_downloaded += r.bytes_downloaded
+        agg.transfer_seconds += r.transfer_seconds
+        agg.convert_seconds += r.convert_seconds
+        agg.circuit_tripped = agg.circuit_tripped or r.circuit_tripped
+        reasons.update(r.reason_counts)
+        by_band.update(r.bytes_by_band)
+    agg.reason_counts = dict(reasons)
+    agg.bytes_by_band = dict(by_band)
+    return agg
+
+
+def probe_throughput(
+    roi,
+    startdate: datetime.datetime,
+    enddate: datetime.datetime,
+    bands: list[str],
+    creds: CdseCredentials,
+    *,
+    max_cloudcover: float | None = None,
+) -> tuple[float, int, float]:
+    """Measure achievable CDSE **byte** throughput right now with a single-threaded fetch of ONE
+    representative band file (spec 23, D2). Returns `(mb_per_s, bytes, seconds)`.
+
+    A baseline to compare against a run's *aggregate effective* MB/s: probe≈aggregate → CDSE/link
+    bound; probe≫aggregate → local contention / concurrency. Transfers the JP2 to a temp path and
+    removes it (isolates network from COG-conversion; a fresh sample each call).
+    """
+    import tempfile
+    import time
+
+    creds.require_s3()
+    roi_gdf = _roi_gdf(roi)
+    items = _search_items(roi_gdf, startdate, enddate)
+    tiles = _finalize_catalog_gdf(_items_to_gdf(items), roi_gdf, max_cloudcover)
+    if not len(tiles):
+        return (0.0, 0, 0.0)
+    tile_ids = set(tiles["id"])
+    item = next(it for it in items if it.id in tile_ids)
+    band = bands[0]
+    keys = sorted(k for k in item.assets if k.split("_")[0] == band)
+    if not keys:
+        return (0.0, 0, 0.0)
+    src = item.assets[keys[0]].href
+    s3opts = creds.s3_storage_options()
+    tmp = os.path.join(tempfile.gettempdir(), f"fsd_probe_{item.id}_{band}.jp2")
+    try:
+        t0 = time.time()
+        fs.transfer(src, tmp, src_options=s3opts)
+        dt = time.time() - t0
+        nbytes = fs.size(tmp)
+    finally:
+        if fs.exists(tmp):
+            try:
+                fs.rm(tmp)
+            except Exception:
+                pass
+    return (nbytes / 1e6 / dt if dt > 0 else 0.0, nbytes, dt)
+
+
+def plan_download(
+    roi,
+    startdate: datetime.datetime,
+    enddate: datetime.datetime,
+    bands: list[str],
+    *,
+    catalog_filepath: str | None = None,
+    dst_folderpath: str | None = None,
+    max_cloudcover: float | None = None,
+    cost_model: dict | None = None,
+) -> dict:
+    """Compute an actionable download plan **without downloading** (spec 23, D13).
+
+    Queries the CDSE STAC (anonymous, no bytes) for the tiles this request needs, diffs them
+    against what is already in `catalog_filepath` (if given), and returns a plan dict: needed /
+    present / missing tile counts + ids, the exact `fsd.download(...)` params to satisfy it
+    (`max_tiles` = needed count), and — when a `cost_model` is supplied — the estimated GB + ETA
+    for the missing tiles. This is the CDSE (materializing-source) arm of the guardrail; a
+    streamable source (MPC) would never need it (TODO #21).
+    """
+    needed = query_catalog(roi, startdate, enddate, max_cloudcover=max_cloudcover)
+    needed_ids = list(needed["id"])
+    needed_set = set(needed_ids)
+
+    present_ids: list[str] = []
+    if catalog_filepath is not None and fs.exists(catalog_filepath):
+        try:
+            from fsd.catalog.catalog import TileCatalog
+
+            existing = TileCatalog(catalog_filepath).read()
+            present_ids = [i for i in existing["id"] if i in needed_set]
+        except Exception:  # noqa: BLE001 - a missing/unreadable catalog just means "all missing"
+            present_ids = []
+    present_set = set(present_ids)
+    missing_ids = [i for i in needed_ids if i not in present_set]
+
+    plan = {
+        "needed_count": len(needed_ids),
+        "present_count": len(present_ids),
+        "missing_count": len(missing_ids),
+        "missing_ids": missing_ids,
+        "download_params": {
+            "roi": roi if isinstance(roi, str) else "<GeoDataFrame>",
+            "startdate": startdate.isoformat() if hasattr(startdate, "isoformat") else str(startdate),
+            "enddate": enddate.isoformat() if hasattr(enddate, "isoformat") else str(enddate),
+            "bands": list(bands),
+            "max_tiles": max(len(needed_ids), 1),
+            "max_cloudcover": max_cloudcover,
+            "dst_folderpath": dst_folderpath,
+        },
+    }
+    if cost_model:
+        mean_by_band = cost_model.get("mean_bytes_by_band") or {}
+        per_granule = sum(mean_by_band.get(b, 0) for b in bands)
+        est_bytes = plan["missing_count"] * per_granule
+        mbps = cost_model.get("transfer_mb_per_s") or 0.0
+        plan["estimate"] = {
+            "gb": round(est_bytes / 1e9, 2),
+            "download_minutes": round((est_bytes / 1e6 / mbps) / 60, 1) if mbps else None,
+        }
+    return plan
+
+
+def format_download_plan(plan: dict) -> str:
+    """Render a `plan_download` dict as a copy-pasteable message (spec 23, D13)."""
+    p = plan["download_params"]
+    lines = [
+        "imagery for this run is not (fully) present in the catalog.",
+        f"  needed: {plan['needed_count']} granules | present: {plan['present_count']} | "
+        f"missing: {plan['missing_count']}",
+    ]
+    est = plan.get("estimate")
+    if est:
+        eta = f", ~{est['download_minutes']} min" if est.get("download_minutes") else ""
+        lines.append(f"  estimated: ~{est['gb']} GB{eta} (at last measured throughput)")
+    band_list = ", ".join(f'"{b}"' for b in p["bands"])
+    lines += [
+        "  run fsd.download(",
+        f'      roi={p["roi"]!r}, startdate="{p["startdate"]}", enddate="{p["enddate"]}",',
+        f"      bands=[{band_list}], max_tiles={p['max_tiles']}, "
+        f"max_cloudcover={p['max_cloudcover']}, dst_folderpath={p['dst_folderpath']!r})",
+    ]
+    return "\n".join(lines)

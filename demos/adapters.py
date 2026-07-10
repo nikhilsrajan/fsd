@@ -14,7 +14,8 @@ from fsd.model import BaseModelAdapter
 
 class DemoRF(BaseModelAdapter):
     required_bands = ["B04", "B08"]
-    n_timestamps = 19                      # full-year 20-day default; the script overrides per run
+    n_timestamps = 0                        # model-determined: the run sets it per instance and the
+                                            # bundle records it (not hardcoded -> bundle-safe for any T)
     output_dtype = "uint8"
     output_nodata = 255
     output_band_names = ["crop_class"]

@@ -124,6 +124,12 @@ def load(bundle_path: str, *, validate: bool = True):
         for field in _SPEC_FIELDS:
             declared = getattr(adapter, field, None)
             declared = list(declared) if isinstance(declared, (list, tuple)) else declared
+            # Skip fields the class leaves UNSET (it defers them to the trained model / bundle):
+            # None, an empty list, or n_timestamps==0 (the base default). This lets ONE adapter
+            # class back models trained on different T without hardcoding it — the bundle is
+            # authoritative. Fields the class *does* pin are still drift-checked.
+            if declared is None or declared == [] or (field == "n_timestamps" and declared == 0):
+                continue
             if manifest.get(field) is not None and declared != manifest[field]:
                 raise ValueError(
                     f"bundle.json {field}={manifest[field]!r} disagrees with "

@@ -7,7 +7,8 @@ Adds no pipeline logic.
 
 - `download(...)`            -> fetch S2 L2A tiles + build a TileCatalog (its own verb).
 - `create_training_data(...)`-> label polygons + catalog -> datacubes -> flattened arrays.
-- `run_inference(...)`       -> stub (P4): ROI -> S2 tiles -> model -> COG + STAC.
+- `run_inference(...)`       -> model over pre-built cubes (spec 18) OR an ROI (spec 21,
+                               tile -> per-cell build+infer via the runner seam) -> COG + STAC.
 - `deploy(...)`              -> stub (P6): register a model bundle.
 
 `runner=`/`storage=` are the seams (ROADMAP §2.2/§2.3): only `runner="local"` and local
@@ -162,6 +163,7 @@ class InferenceResult:
     output_filepaths: list[str]
     stac_catalog_filepath: str
     merged_filepath: str | None = None
+    grids_filepath: str | None = None  # ROI mode: the saved gridded-ROI GeoJSON (spec 21)
 
 
 # --- verbs -------------------------------------------------------------------
@@ -260,8 +262,12 @@ def create_training_data(
         _resolve_aggregate(aggregate)
     except ValueError as exc:
         errs.append(str(exc))
-    if not fs.exists(catalog_filepath):
-        errs.append(f"catalog_filepath does not exist: {catalog_filepath}")
+    catalog_present = fs.exists(catalog_filepath)
+    if not catalog_present:
+        errs.append(
+            f"catalog_filepath does not exist: {catalog_filepath} "
+            "— run fsd.download first (compute never fetches from CDSE; spec 23 D13)."
+        )
     gdf = None
     try:
         gdf = _as_gdf(label_polygons)
@@ -274,6 +280,18 @@ def create_training_data(
             errs.append("label_polygons has null geometries.")
     except Exception as exc:  # unreadable polygons is a preflight failure, not a crash
         errs.append(f"could not read label_polygons: {exc}")
+    # D13 guardrail: catalog exists but covers NONE of the fields in-window -> actionable download
+    # plan (the offline .filter is cheap; the STAC-backed plan only fires on the empty case).
+    if catalog_present and gdf is not None and len(gdf) and not gdf.geometry.isna().any():
+        try:
+            covered = TileCatalog(catalog_filepath).filter(gdf, startdate, enddate)
+        except Exception:  # noqa: BLE001 - a bad filter just means "skip the coverage hint"
+            covered = None
+        if covered is not None and len(covered) == 0:
+            errs.append(_imagery_missing_message(
+                gdf, startdate, enddate, bands, catalog_filepath=catalog_filepath,
+                why="no catalog tiles intersect the label polygons in-window",
+            ))
     _raise_preflight(errs)
 
     if run_folderpath is None:
@@ -401,27 +419,96 @@ def _resolve_inference_pairs(inference_datacubes, output_folderpath) -> list[tup
     return pairs
 
 
-def _merge_outputs(filepaths, dst, nodata) -> str:
-    """Merge single-CRS output COGs into one COG (the legacy merged map). Multi-CRS raises —
-    the per-output COGs + STAC are the multi-zone answer (fsd single-CRS-merge principle)."""
+def _merge_outputs(filepaths, dst, nodata, *, reproject_to_dominant: bool = False,
+                   merge_crs=None) -> str:
+    """Merge output COGs into one COG (spec 21/23).
+
+    `reproject_to_dominant=False` (``merge=True``) — **strict single-CRS** merge; multi-CRS
+    **raises** (the per-output COGs + STAC are the multi-zone answer; fsd single-CRS-merge
+    principle). Data-faithful: no resampling.
+
+    `reproject_to_dominant=True` (``merge="reproject"``) — reproject every output to one CRS with
+    **nearest-neighbour** (categorical output must not be interpolated), then mosaic. The target is
+    ``merge_crs`` if given (EPSG int or CRS string), else the **max-total-area** CRS across cells
+    (spec 23, D7 — correct for clipped ROI-edge cells; falls back to most-cells). **Lossless where a
+    cell already matches the target** (no resampling); reprojected only for cells changing zone.
+    Cross-UTM-zone-safe; the per-cell COGs stay authoritative.
+    """
     import rasterio
     from rasterio.merge import merge as rio_merge
 
-    srcs = [rasterio.open(fp) for fp in filepaths]
-    try:
-        crs_set = {s.crs.to_string() for s in srcs}
-        if len(crs_set) > 1:
-            raise PreflightError(
-                f"cannot merge outputs across multiple CRS {sorted(crs_set)}; use the per-output "
-                "COGs + STAC catalog instead (collapse to one zone first for a merged map)."
-            )
-        mosaic, out_transform = rio_merge(srcs, nodata=nodata)
-        profile = srcs[0].profile.copy()
-        profile.update(driver="GTiff", height=mosaic.shape[1], width=mosaic.shape[2],
-                       transform=out_transform, nodata=nodata)
-    finally:
-        for s in srcs:
-            s.close()
+    if reproject_to_dominant:
+        from rasterio.crs import CRS as _RioCRS
+        from rasterio.warp import Resampling, calculate_default_transform
+        from rasterio.warp import reproject as rio_reproject
+
+        area_by_crs: dict[str, float] = {}
+        for fp in filepaths:
+            with rasterio.open(fp) as s:
+                key = s.crs.to_string()
+                # extent area in the cell's own (metric UTM) CRS — comparable across UTM zones
+                area_by_crs[key] = area_by_crs.get(key, 0.0) + (
+                    abs(s.transform.a * s.transform.e) * s.width * s.height
+                )
+        if merge_crs is not None:
+            target = _RioCRS.from_user_input(merge_crs).to_string()   # user-forced target CRS
+        elif any(area_by_crs.values()):
+            target = max(area_by_crs, key=area_by_crs.get)            # dominant zone = max total area
+        else:
+            target = max(area_by_crs, key=lambda k: len(k))          # degenerate fallback
+
+        datasets, tmps = [], []
+        try:
+            for fp in filepaths:
+                src = rasterio.open(fp)
+                if src.crs.to_string() == target:
+                    datasets.append(src)
+                    continue
+                transform, w, h = calculate_default_transform(
+                    src.crs, target, src.width, src.height, *src.bounds)
+                prof = src.profile.copy()
+                prof.update(driver="GTiff", crs=target, transform=transform,
+                            width=w, height=h, nodata=nodata)
+                tmp = f"{fp}.reproj.tif"
+                tmps.append(tmp)
+                with rasterio.open(tmp, "w", **prof) as d:
+                    rio_reproject(
+                        rasterio.band(src, 1), rasterio.band(d, 1),
+                        src_transform=src.transform, src_crs=src.crs,
+                        dst_transform=transform, dst_crs=target,
+                        src_nodata=nodata, dst_nodata=nodata,
+                        resampling=Resampling.nearest,  # categorical-safe
+                    )
+                src.close()
+                datasets.append(rasterio.open(tmp))
+            mosaic, out_transform = rio_merge(datasets, nodata=nodata)
+            profile = datasets[0].profile.copy()
+            profile.update(driver="GTiff", height=mosaic.shape[1], width=mosaic.shape[2],
+                           transform=out_transform, crs=target, nodata=nodata)
+        finally:
+            for d in datasets:
+                d.close()
+            for t in tmps:
+                if os.path.exists(t):
+                    os.remove(t)
+    else:
+        srcs = [rasterio.open(fp) for fp in filepaths]
+        try:
+            crs_set = {s.crs.to_string() for s in srcs}
+            if len(crs_set) > 1:
+                raise PreflightError(
+                    f"cannot merge outputs across multiple CRS {sorted(crs_set)}; pass "
+                    'merge="reproject" for a display map (reprojects to the dominant zone, '
+                    "lossy), or use the per-output COGs + STAC (fsd single-CRS-merge principle)."
+                )
+            mosaic, out_transform = rio_merge(srcs, nodata=nodata)
+            profile = srcs[0].profile.copy()
+            profile.update(driver="GTiff", height=mosaic.shape[1], width=mosaic.shape[2],
+                           transform=out_transform, nodata=nodata)
+        finally:
+            for s in srcs:
+                s.close()
+
     raw = f"{dst}.raw.tif"
     try:
         with rasterio.open(raw, "w", **profile) as d:
@@ -433,35 +520,111 @@ def _merge_outputs(filepaths, dst, nodata) -> str:
     return dst
 
 
+def _finalize_outputs(output_filepaths, output_folderpath, spec, merge, collection_id, dt,
+                      *, grids_filepath=None, merge_crs=None) -> InferenceResult:
+    """Shared tail for both inference modes: STAC catalog + optional merge -> InferenceResult."""
+    items = _stac.cog_outputs_to_items(
+        output_filepaths, collection_id=collection_id,
+        band_names=spec.get("output_band_names") or None, dt=dt,
+    )
+    stac_catalog_filepath = _stac.write_stac_catalog(
+        items, os.path.join(output_folderpath, "stac"),
+        catalog_id="fsd-inference", collection_id=collection_id,
+        description="fsd inference outputs (STAC).",
+    )
+    merged_filepath = None
+    if merge:
+        merged_filepath = _merge_outputs(
+            output_filepaths, os.path.join(output_folderpath, "merged.tif"),
+            nodata=spec.get("output_nodata"),
+            reproject_to_dominant=(merge == "reproject"), merge_crs=merge_crs,
+        )
+    return InferenceResult(
+        output_folderpath=output_folderpath, output_filepaths=sorted(output_filepaths),
+        stac_catalog_filepath=stac_catalog_filepath, merged_filepath=merged_filepath,
+        grids_filepath=grids_filepath,
+    )
+
+
 def run_inference(
     model,
-    inference_datacubes,
-    output_folderpath: str,
+    inference_datacubes=None,
+    output_folderpath: str | None = None,
     *,
+    # --- ROI mode (spec 21) — mutually exclusive with inference_datacubes ---
+    roi=None,
+    catalog_filepath: str | None = None,
+    startdate: datetime.datetime | None = None,
+    enddate: datetime.datetime | None = None,
+    mosaic_days: int | None = None,
+    bands: list[str] | None = None,
+    grid_size_km: float = 5,
+    scale_fact: float = 1.1,
+    scl_mask_classes: list[int] | None = None,
+    # --- shared ---
     predict_batch_size: int | None = None,
     skip_nan: bool = True,
-    merge: bool = False,
+    merge=False,
+    merge_crs=None,
     cores: int = 1,
+    cubes_per_task: int = 1,
+    overwrite: bool = False,
     runner: str = "local",
     storage=None,
     collection_id: str = "fsd-inference",
     dt=None,
     progress: bool = True,
 ) -> InferenceResult:
-    """Run a model over **pre-built inference datacubes** -> one COG per cube + a STAC catalog.
+    """Run a model over inference datacubes -> one COG per cube + a STAC catalog (+ optional merge).
 
-    P0.5 (spec 18): the local inference engine (Mode A deploy). `model` is a live `ModelAdapter`
-    or a **bundle path**. `inference_datacubes` is an `input.csv`, a folder of datacube
-    subfolders, or a list of `datacube.npy` filepaths. Preflight asserts every datacube's bands
-    ⊇ `required_bands` and `len(timestamps) == n_timestamps` **before any predict**. The
-    ROI→S2-tiling→download front-end that *builds* the datacubes lands in P4 and calls this same
-    engine; `runner`/`storage` are local-only here.
+    Two mutually-exclusive modes:
+
+    - **pre-built cubes** (spec 18): pass ``inference_datacubes`` — an ``input.csv``, a folder of
+      datacube subfolders, or a list of ``datacube.npy`` filepaths. ``cores=1`` infers in-process
+      (sequential); ``cores>1`` fans out via the Snakemake **infer-only** runner (spec 22 — fsd has
+      no in-process pool; ``cubes_per_task`` groups cubes per job to amortise the bundle load).
+    - **ROI** (spec 21, P0.75 — completes Mode A): pass ``roi`` (+ ``catalog_filepath``,
+      ``startdate``/``enddate``/``mosaic_days``/``bands``). fsd tiles the ROI into S2 grid cells
+      (``fsd.grid``), then fans out a per-cell **build-datacube + infer -> COG** task through the
+      **runner seam** (Snakemake locally; Batch swaps in at P4 unchanged). Imagery is assumed
+      already present in ``catalog_filepath`` — inference never touches CDSE (conserve quota).
+
+    `model` is a live `ModelAdapter` or a **bundle path**; a bundle is required for ROI mode and for
+    ``cores>1`` (both cross a subprocess) — a live adapter is auto-saved to a temp bundle. Preflight
+    (before any build) asserts bands ⊇ ``required_bands`` and ``T == n_timestamps``. Inference is
+    **idempotent**: existing outputs are skipped unless ``overwrite=True`` (spec 22). ``merge``:
+    ``False`` | ``True`` (strict single-CRS) | ``"reproject"`` (cross-UTM-zone-safe merge to one
+    CRS — ``merge_crs`` if given, else the max-total-area zone; lossless where a cell already
+    matches the target). `runner`/`storage` are local-only here.
     """
     errs = _check_local_seams(runner, storage)
+    if output_folderpath is None:
+        errs.append("output_folderpath is required.")
+    if merge not in (False, True, "reproject"):
+        errs.append(f'merge must be False, True, or "reproject" (got {merge!r}).')
+
+    roi_mode = roi is not None
+    if roi_mode and inference_datacubes is not None:
+        errs.append("pass either roi= or inference_datacubes=, not both.")
+    if not roi_mode and inference_datacubes is None:
+        errs.append("pass roi= (ROI mode) or inference_datacubes= (pre-built cubes).")
+
     spec = _model_spec(model)
+
+    if roi_mode:
+        return _run_inference_roi(
+            model, spec, roi, output_folderpath, errs,
+            catalog_filepath=catalog_filepath, startdate=startdate, enddate=enddate,
+            mosaic_days=mosaic_days, bands=bands, grid_size_km=grid_size_km,
+            scale_fact=scale_fact, scl_mask_classes=scl_mask_classes,
+            predict_batch_size=predict_batch_size, skip_nan=skip_nan, merge=merge,
+            merge_crs=merge_crs, cores=cores, overwrite=overwrite,
+            collection_id=collection_id, dt=dt,
+        )
+
+    # --- pre-built cubes path (spec 18) ---
     required = set(spec.get("required_bands") or [])
     want_t = int(spec.get("n_timestamps") or 0)
-
     pairs = _resolve_inference_pairs(inference_datacubes, output_folderpath)
     if not pairs:
         errs.append(f"no inference datacubes found under {inference_datacubes!r}.")
@@ -481,31 +644,172 @@ def run_inference(
     _raise_preflight(errs)
 
     fs.makedirs(output_folderpath)
-    output_filepaths = _engine.run_local(
-        model, pairs, cores=cores,
-        predict_batch_size=predict_batch_size, skip_nan=skip_nan, progress=progress,
-    )
-
-    items = _stac.cog_outputs_to_items(
-        output_filepaths, collection_id=collection_id,
-        band_names=spec.get("output_band_names") or None, dt=dt,
-    )
-    stac_catalog_filepath = _stac.write_stac_catalog(
-        items, os.path.join(output_folderpath, "stac"),
-        catalog_id="fsd-inference", collection_id=collection_id,
-        description="fsd inference outputs (STAC).",
-    )
-
-    merged_filepath = None
-    if merge:
-        merged_filepath = _merge_outputs(
-            output_filepaths, os.path.join(output_folderpath, "merged.tif"),
-            nodata=spec.get("output_nodata"),
+    if cores > 1:
+        # cores>1 fans out via the Snakemake infer-only runner (spec 22 — no in-process pool)
+        output_filepaths = _run_prebuilt_via_runner(
+            model, pairs, output_folderpath, cores=cores, cubes_per_task=cubes_per_task,
+            overwrite=overwrite, predict_batch_size=predict_batch_size, skip_nan=skip_nan,
         )
+    else:
+        output_filepaths = _engine.run_local(
+            model, pairs, predict_batch_size=predict_batch_size, skip_nan=skip_nan,
+            overwrite=overwrite, progress=progress,
+        )
+    return _finalize_outputs(output_filepaths, output_folderpath, spec, merge, collection_id, dt,
+                             merge_crs=merge_crs)
 
-    return InferenceResult(
-        output_folderpath=output_folderpath, output_filepaths=sorted(output_filepaths),
-        stac_catalog_filepath=stac_catalog_filepath, merged_filepath=merged_filepath,
+
+def _ensure_bundle(model, output_folderpath, *, why):
+    """Return a bundle path for `model`, auto-saving a live adapter (needs an importable class)."""
+    if isinstance(model, str):
+        return model
+    try:
+        return _bundle.save(
+            model, getattr(model, "artifacts", {}) or {},
+            os.path.join(output_folderpath, "_bundle"),
+        )
+    except Exception as exc:  # noqa: BLE001 - surfaced as a preflight error
+        raise PreflightError(
+            f"{why} needs a model bundle; auto-saving the live adapter failed ({exc}). Pass a "
+            "bundle path (fsd.model.bundle.save) whose adapter class is importable by module:attr "
+            "(not a __main__/interactive class)."
+        ) from exc
+
+
+def _run_prebuilt_via_runner(model, pairs, output_folderpath, *, cores, cubes_per_task,
+                             overwrite, predict_batch_size, skip_nan) -> list[str]:
+    """Fan out pre-built-cube inference through the Snakemake infer-only runner (spec 22)."""
+    from fsd.workflows import runners as _runners
+
+    bundle_path = _ensure_bundle(model, output_folderpath, why="cores>1 inference")
+    run_dir = os.path.join(output_folderpath, "_infer_run")
+    fs.makedirs(run_dir)
+    csv_fp = os.path.join(run_dir, "input.csv")
+    df = pd.DataFrame({"datacube_filepath": [dc for dc, _ in pairs],
+                       "output_filepath": [out for _, out in pairs]})
+    with fs.open(csv_fp, "w") as f:
+        df.to_csv(f, index=False)
+
+    result = _runners.run_local_infer_only(
+        csv_fp, cores=cores, bundle_path=bundle_path, cubes_per_task=cubes_per_task,
+        overwrite=overwrite, predict_batch_size=predict_batch_size, skip_nan=skip_nan,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"inference runner failed (snakemake exit {result.returncode}).")
+    return [out for _, out in pairs if fs.exists(out)]
+
+
+def _imagery_missing_message(roi, startdate, enddate, bands, *, catalog_filepath, why) -> str:
+    """Build the D13 guardrail message: the plumbing found no imagery for this request, so turn the
+    error into an actionable `fsd.download(...)` plan (spec 23). Degrades gracefully if the STAC
+    query itself fails (still says clearly: run download first)."""
+    base = (f"imagery for this ROI/window is not present in the catalog "
+            f"({catalog_filepath!r}) — run fsd.download first, then re-run. [{why}]")
+    try:
+        from fsd.sources import cdse as _cdse
+
+        plan = _cdse.plan_download(
+            roi, startdate, enddate, bands, catalog_filepath=catalog_filepath,
+        )
+        return base + "\n" + _cdse.format_download_plan(plan)
+    except Exception:  # noqa: BLE001 - the plan is a nicety; never mask the real "run download"
+        return base
+
+
+def _run_inference_roi(
+    model, spec, roi, output_folderpath, errs, *,
+    catalog_filepath, startdate, enddate, mosaic_days, bands,
+    grid_size_km, scale_fact, scl_mask_classes,
+    predict_batch_size, skip_nan, merge, merge_crs, cores, overwrite, collection_id, dt,
+) -> InferenceResult:
+    """ROI mode (spec 21): preflight -> tile -> per-cell setup -> runner build+infer -> STAC/merge."""
+    from fsd import grid as _grid
+    from fsd.workflows import runners as _runners
+
+    # --- preflight (cheap, before any build) ---
+    for name, val in [("catalog_filepath", catalog_filepath), ("startdate", startdate),
+                      ("enddate", enddate), ("mosaic_days", mosaic_days), ("bands", bands)]:
+        if val is None:
+            errs.append(f"roi mode requires {name}=.")
+    required = set(spec.get("required_bands") or [])
+    want_t = int(spec.get("n_timestamps") or 0)
+    if bands is not None:
+        missing = required - set(bands)
+        if missing:
+            errs.append(f"bands is missing model-required {sorted(missing)}.")
+    if want_t and None not in (startdate, enddate, mosaic_days):
+        got_t = compute_n_timestamps(startdate, enddate, mosaic_days)
+        if got_t != want_t:
+            errs.append(
+                f"startdate/enddate/mosaic_days give T={got_t} but the model needs T={want_t}."
+            )
+    roi_gdf = None
+    try:
+        if isinstance(roi, gpd.GeoDataFrame):
+            roi_gdf = roi
+        elif isinstance(roi, str):
+            roi_gdf = gpd.read_file(roi)
+    except Exception as exc:  # noqa: BLE001 - surfaced as a preflight error
+        errs.append(f"could not read roi: {exc}.")
+    if roi_gdf is not None and len(roi_gdf) == 0:
+        errs.append("roi is empty.")
+    _raise_preflight(errs)
+
+    fs.makedirs(output_folderpath)
+
+    # model must be a bundle (it crosses a subprocess); auto-save a live adapter.
+    bundle_path = _ensure_bundle(model, output_folderpath, why="roi mode")
+
+    # 1) tile the ROI -> S2 grid cells (needs the [grid] extra; clean error if absent)
+    grids = _grid.roi_to_s2_grids(
+        roi_gdf if roi_gdf is not None else roi,
+        grid_size_km=grid_size_km, scale_fact=scale_fact,
+    )
+    grids_filepath = os.path.join(output_folderpath, "grids.geojson")
+    grids.to_file(grids_filepath, driver="GeoJSON")
+
+    # 2) per-cell setup (reuse the build workflow's setup; no labels). Skip if input.csv exists
+    #    so a re-run resumes (Snakemake then skips already-inferred cells).
+    run_folderpath = os.path.join(output_folderpath, "cells")
+    csv_filepath = os.path.join(run_folderpath, "input.csv")
+    if scl_mask_classes is None:
+        scl_mask_classes = list(config.SCL_MASK_CLASSES)
+    if not fs.exists(csv_filepath):
+        try:
+            _create_datacube.setup(
+                catalog_filepath=catalog_filepath, timestamp_col="timestamp",
+                shapefilepath=grids_filepath, id_col="id", run_folderpath=run_folderpath,
+                startdate=startdate, enddate=enddate, bands=bands,
+                scl_mask_classes=scl_mask_classes, mosaic_days=mosaic_days,
+                csv_filepath=csv_filepath, label_col=None,
+            )
+        except ValueError as exc:
+            raise PreflightError(_imagery_missing_message(
+                roi_gdf if roi_gdf is not None else roi, startdate, enddate, bands,
+                catalog_filepath=catalog_filepath, why=str(exc),
+            )) from exc
+
+    # 3) fan out the per-cell build+infer task via the runner seam
+    result = _runners.run_local_inference(
+        csv_filepath, cores=cores, bundle_path=bundle_path,
+        predict_batch_size=predict_batch_size, skip_nan=skip_nan, overwrite=overwrite,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"inference runner failed (snakemake exit {result.returncode}).")
+
+    # 4) collect the per-cell outputs
+    with fs.open(csv_filepath, "r") as f:
+        rows = pd.read_csv(f)
+    output_filepaths = [
+        os.path.join(str(exp), "output.tif") for exp in rows["export_folderpath"]
+        if fs.exists(os.path.join(str(exp), "output.tif"))
+    ]
+    if not output_filepaths:
+        raise RuntimeError("no per-cell outputs were produced.")
+
+    return _finalize_outputs(
+        output_filepaths, output_folderpath, spec, merge, collection_id, dt,
+        grids_filepath=grids_filepath, merge_crs=merge_crs,
     )
 
 

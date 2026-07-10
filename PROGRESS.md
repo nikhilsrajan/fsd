@@ -2,7 +2,48 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-06_
+_Last updated: 2026-07-11_
+
+## LATEST (2026-07-11) — spec 24 working contract (process, not pipeline)
+
+**How we work now (CLAUDE.md updated):** Claude **never runs pipeline/long/networked scripts** or
+backgrounds/polls them (may run `ruff`/`pytest`/`grep`/`git status`); everything else is a
+**run-book** in `fsd/runbooks/` (template landed) that the user runs, pasting back a step's
+**`_result.json`** (Claude diffs vs success criteria, never reads live logs). **Model split:**
+Opus@high plans/specs/debugs; user `/model sonnet` + `/effort medium` to implement a signed-off
+spec. **Handoff:** flush durable state to PROGRESS/MEMORY → user runs `/handoff` → fresh session
+(not `/compact`). Trigger for this spec: the spec-23 tiny-download run went wrong as a *process*
+failure (I launched a long download, user couldn't stop it / see progress, my log-polling burned
+tokens). **Next queued: spec 25 (download + jp2→COG redesign — inline GIL-bound conversion starves
+transfers), then spec 26 (safe runner: `--dry-run`/`--stop-file`/progress).**
+
+_Open from spec 23:_ `--tiny-download` was fixed to select a **single MGRS tile** (7 granules / 1
+tile / ~2 GB, verified offline) but the real e2e run has **not** been completed (I must not run it);
+that becomes a run-book. Specs 20–24 remain **UNCOMMITTED**.
+
+## LATEST (2026-07-10) — P0.9 local-completeness gate (spec 23) — LAST local step before P1
+
+**Next step: run `demos/e2e_austria.py` on real data** (needs CDSE creds + network; the user runs
+it) and paste the timing/QGIS Results into `demos/E2E_AUSTRIA.md §8`. Then we start **P1** (Azure
+storage seam — see `../P1_AZURE_SETUP.md` at the workspace root for the prerequisites the user fills).
+
+Spec 23 (SIGNED OFF + IMPLEMENTED, **176 tests, ruff clean**) turned the demo into the **go-to local
+run-book + confidence gate**: `demos/e2e_ethiopia.py` → `demos/e2e_austria.py`, now starting from a
+real CDSE **download** (the first e2e to include it) on an Austria ROI (single UTM-33; `fid`/`crop`,
+9 classes). Landed:
+- **Download instrumentation** (`fsd.sources.cdse`): `DownloadResult.{bytes_downloaded,
+  transfer_seconds,convert_seconds,bytes_by_band}` — decomposes CDSE-transfer vs local jp2→COG cost;
+  `sum_results` (resume-pass aggregate); **`probe_throughput`** (baseline MB/s to factor out
+  VPN/contention). `_download_one` now returns `(ok, reason, metrics)`.
+- **`plan_download` guardrail** (D13): missing imagery → an actionable `fsd.download(...)` plan
+  (JSON + printed command, +GB/ETA); wired into the `create_training_data`/`run_inference` preflight.
+  Compute verbs still **never auto-fetch** (quota + Batch download-once model).
+- **Cross-UTM-zone-safe merge** (D7): `run_inference(merge="reproject")` targets the **max-area** CRS
+  (or `merge_crs=`), lossless where a cell already matches — the reusable template runs for any ROI,
+  cross-zone included.
+- **Reusable template + tooling**: `--roi/--train/--id-col/--label-col/--creds`; `demos/estimate.py`
+  (no-download ETA for any region — answers "how long for full France?"); `demos/E2E_AUSTRIA.md`
+  (setup + bundling guide + concepts/limitations appendices).
 
 ## LATEST (2026-07-06) — P0 (specs 16/17) + P0.5 (spec 18) + e2e demo/tiling (spec 19)
 
@@ -36,6 +77,34 @@ real-data-validated** (see history below). We have since set the **forward direc
   `tests/manual/deploy.md`; explainer `specs/18-model-bundle-explainer.md`. **150 tests, ruff
   clean** (`tests/test_model.py`, 9 new). One bug fixed: engine copies `band_indices` (modify_bands
   mutates it). ROI→S2-tiling front-end for `run_inference` stays **P4**.
+- **Spec 22 = retire `engine.run_local`'s `mp.Pool` + idempotent inference DONE (2026-07-07):**
+  after P0.75, the pre-built-cubes inference pool was the last parallel fan-out **not** on the runner
+  seam. Now: `cores=1` stays **in-process sequential** (tests/debug/small, no bundle); `cores>1`
+  fans out via the **Snakemake infer-only runner** (`workflows/infer_only_task.py` +
+  `_snakefiles/infer_only/Snakefile` + `runners.run_local_infer_only`), routed from
+  `api.run_inference` (kept out of `engine` to avoid a model→workflows cycle). **No `mp.Pool`
+  anywhere** → Batch (P4) can dispatch pre-built inference too (pure `runner=` swap). **Inference is
+  idempotent:** both paths skip existing outputs unless `overwrite=True` (fixes the demo re-run the
+  user hit — engine re-inferred despite existing `output.tif`). New `cubes_per_task` knob (default 1)
+  groups K cubes per job to amortise the bundle load — the intra-task loop is **sequential, no pool**.
+  Default `cores=1` → backward-compatible. **167 tests, ruff clean** (+4). **Real cores>1 smoke**
+  (.venv, 5 synthetic cubes, cubes_per_task=2 → 3 Snakemake groups): 5 COGs + STAC, rerun = "Nothing
+  to be done" (idempotency confirmed). Docs: `CHANGES.md`, `specs/18` pointer, `deploy.md`.
+- **Spec 21 = P0.75 ROI inference verb DONE (2026-07-07):** `run_inference(roi=…)` completes
+  **Mode A** — one call tiles an ROI (`fsd.grid`), builds one datacube per S2 grid cell, infers,
+  and writes per-cell COGs + STAC (+ optional merged map). The per-cell **build+infer** is a single
+  **runner-dispatched** unit-of-work (`workflows/infer_task.py` + `_snakefiles/create_inference/`
+  Snakefile + `runners.run_local_inference`), *not* the spec-18 `mp.Pool` — so **P4 = a pure
+  `runner=` swap to Batch** (the reason we folded inference into the runner seam). `run_inference`
+  now takes `roi=` **xor** `inference_datacubes=` (both optional; positional calls still work);
+  `merge` is tri-state `False|True|"reproject"` (strict single-CRS vs lossy dominant-zone display
+  merge — the demo's logic moved into `api._merge_outputs`; demo now calls `merge="reproject"`).
+  **SO-6:** ROI inference never calls CDSE (imagery assumed present; conserve quota → on cloud,
+  Batch reads blob). **163 tests, ruff clean** (+11). **Real smoke** (`.venv-modeldeploy`, benchmark):
+  ~9 km ROI → 10 cells → 10 COGs + STAC + reproject-merge (899×889, 96.9 % valid), 42 s @ cores=2;
+  resumability confirmed. Bug fixed: snakemake parses empty `--config key=` as `None` → omit
+  `predict_batch_size` when None. Runbook `tests/manual/roi_inference.md`; supersedes deploy.md §3's
+  3×3-grid stand-in. **This clears the last pre-Azure phase — next is P1 (Azure storage seam).**
 - **Spec 20 = datacube-builder tile-merge bugfix (2026-07-07):** the spec-19 demo exposed a
   **correctness bug** — `_stack_datacube` kept only **one** tile per `(timestamp, band)` (a dict),
   so shapes straddling an MGRS tile boundary lost the coverage of every other same-acquisition
@@ -61,9 +130,12 @@ real-data-validated** (see history below). We have since set the **forward direc
 - **AZURE_INFRA.md scrubbed + git history rewritten (2026-07-06):** private-infra names/IDs/CIDR/
   budget removed from the public repo (placeholders); concrete values live only in the local,
   never-committed `AZURE_INFRA_PRIVATE.md` at the workspace root.
-- **Next:** the `spike/rslearn` benchmark (the big build-vs-borrow unknown), or **P1** (Azure
-  storage seam: adlfs/MSI + GDAL-VSI). NB the Azure-Batch spec is a *future* number (not spec 10 —
-  that's "storage-and-scale", already used).
+- **Next:** **P1** (Azure storage seam: adlfs/MSI + GDAL-VSI) — the last pre-Azure local phase
+  (P0.75, spec 21) is now done, so the whole local Mode-A product is complete. P1 needs Azure
+  access from this laptop (VPN + `az login`); the setup checklist is `../P1_AZURE_SETUP.md`
+  (workspace root, uncommitted). Alternatively the `spike/rslearn` benchmark (the big
+  build-vs-borrow unknown). NB the Azure-Batch spec is a *future* number (not spec 10 — that's
+  "storage-and-scale", already used).
 
 ## Where we are
 

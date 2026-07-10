@@ -1,5 +1,10 @@
 # Spec 18 — ModelAdapter contract + local train/deploy (P0.5)
 
+> **Superseded in part:** the engine's `cores>1` inference used a `multiprocessing.Pool` here;
+> **spec 22 retired it** — `cores>1` now fans out via the Snakemake infer-only runner, `cores=1`
+> stays the in-process path, and inference is idempotent (skip existing unless `overwrite`). The
+> contract/adapter/bundle/features design below is unchanged.
+
 > **Status: SIGNED OFF + IMPLEMENTED + VERIFIED (2026-07-06).** SO-1..SO-8 approved as drafted.
 > New `src/fsd/model/` (`adapter`/`features`/`engine`/`bundle`) + `catalog.stac.cog_outputs_to_items`
 > (spec 17 SO-6) + `api.py` wiring (`create_training_data(adapter/feature_sequence/aggregate)`,

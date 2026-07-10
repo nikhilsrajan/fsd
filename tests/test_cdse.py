@@ -271,13 +271,13 @@ def test_download_one_skips_and_reports_reason(monkeypatch, tmp_path):
     existing.write_bytes(b"data")
     assert cdse._download_one(
         "s3://eodata/a.jp2", str(existing), {}, cog=False
-    ) == (True, "skipped")
+    )[:2] == (True, "skipped")
 
     def boom(src, dst, **kw):
         raise PermissionError("An error occurred (Forbidden) ...")
 
     monkeypatch.setattr(cdse.fs, "transfer", boom)
-    ok, reason = cdse._download_one(
+    ok, reason, _metrics = cdse._download_one(
         "s3://eodata/b.jp2", str(tmp_path / "nope.jp2"), {}, cog=False, tries=1
     )
     assert (ok, reason) == (False, "Forbidden")
@@ -302,7 +302,7 @@ def test_download_one_redownloads_zero_byte_file(monkeypatch, tmp_path):
     monkeypatch.setattr(cdse.fs, "transfer", good_transfer)
     assert cdse._download_one(
         "s3://eodata/z.jp2", str(dst), {}, cog=False
-    ) == (True, "ok")
+    )[:2] == (True, "ok")
     assert calls == [str(dst)]  # actually re-downloaded, not skipped
 
 
@@ -365,13 +365,88 @@ def test_download_end_to_end_mocked(monkeypatch, tmp_path):
     assert result.circuit_tripped is False
 
 
+def test_download_accumulates_timing_bytes_and_by_band(monkeypatch, tmp_path):
+    """spec 23 SO-1/D11: download() records transfer/convert seconds, bytes, and per-band bytes."""
+    import os
+
+    from fsd.catalog.catalog import TileCatalog
+
+    item = _fake_item("S2A_T36PZT", "2018-01-30T08:00:00Z", 36.0, 11.0, 5.0, safe=SAFE)
+    monkeypatch.setattr(cdse, "_search_items", lambda *a, **k: [item])
+    monkeypatch.setattr(
+        cdse, "_select_item_files",
+        lambda it, bands, root, cog=True: [
+            (f"{cdse._safe_root_from_item(it)}/B04.jp2", str(tmp_path / "tile/B04.jp2")),
+            (f"{cdse._safe_root_from_item(it)}/B08.jp2", str(tmp_path / "tile/B08.jp2")),
+        ],
+    )
+    sizes = {"B04.jp2": 400, "B08.jp2": 600}
+
+    def fake_transfer(src, dst, **kw):
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        with open(dst, "wb") as f:
+            f.write(b"x" * sizes[os.path.basename(dst)])
+
+    monkeypatch.setattr(cdse.fs, "transfer", fake_transfer)
+    monkeypatch.setattr(cdse.fs, "exists", lambda p, **k: os.path.exists(p))
+    monkeypatch.setattr(cdse.fs, "size", lambda p, **k: os.path.getsize(p))
+
+    roi = gpd.GeoDataFrame(geometry=[sg.box(36.0, 11.0, 37.0, 12.0)], crs="EPSG:4326")
+    cat = TileCatalog(str(tmp_path / "c.parquet"))
+    r = cdse.download(roi, datetime.datetime(2018, 1, 1), datetime.datetime(2018, 2, 1),
+                      ["B04", "B08"], str(tmp_path), cat, CdseCredentials(**DUMMY_FIELDS),
+                      max_tiles=10, cog=False)  # cog=False -> no conversion timing
+    assert r.bytes_downloaded == 1000
+    assert r.bytes_by_band == {"B04": 400, "B08": 600}
+    assert r.convert_seconds == 0.0
+    assert r.transfer_seconds >= 0.0
+
+
+def test_sum_results_aggregates():
+    """spec 23 SO-1: download_resume passes aggregate; a later skip contributes 0 bytes."""
+    a = cdse.DownloadResult(successful_count=2, total_count=2, bytes_downloaded=100,
+                            transfer_seconds=1.0, convert_seconds=0.5,
+                            bytes_by_band={"B04": 100}, reason_counts={"ok": 2})
+    b = cdse.DownloadResult(successful_count=1, total_count=1, skipped_count=1,
+                            reason_counts={"skipped": 1})
+    agg = cdse.sum_results([a, b])
+    assert (agg.successful_count, agg.total_count, agg.skipped_count) == (3, 3, 1)
+    assert agg.bytes_downloaded == 100 and agg.bytes_by_band == {"B04": 100}
+    assert (agg.transfer_seconds, agg.convert_seconds) == (1.0, 0.5)
+    assert agg.reason_counts == {"ok": 2, "skipped": 1}
+
+
+def test_plan_download_diffs_needed_vs_present(monkeypatch, tmp_path):
+    """spec 23 D13: plan_download queries STAC, diffs vs the local catalog, suggests params + eta."""
+    from fsd.catalog.catalog import TileCatalog
+
+    needed = gpd.GeoDataFrame({"id": ["t1", "t2", "t3"]},
+                              geometry=[sg.box(0, 0, 1, 1)] * 3, crs="EPSG:4326")
+    monkeypatch.setattr(cdse, "query_catalog", lambda *a, **k: needed)
+    cat = TileCatalog(str(tmp_path / "c.parquet"))
+    cat.append([{"id": "t1", "satellite": "s2", "timestamp": "2018-01-01T00:00:00Z",
+                 "s3url": "s3://x", "local_folderpath": "x", "files": "B04.tif",
+                 "cloud_cover": 1.0, "geometry": sg.box(0, 0, 1, 1)}])
+    plan = cdse.plan_download(
+        "roi.geojson", datetime.datetime(2018, 4, 1), datetime.datetime(2018, 9, 30),
+        ["B04", "B08"], catalog_filepath=str(tmp_path / "c.parquet"),
+        cost_model={"transfer_mb_per_s": 5.0, "mean_bytes_by_band": {"B04": 1e6, "B08": 1e6}},
+    )
+    assert (plan["needed_count"], plan["present_count"], plan["missing_count"]) == (3, 1, 2)
+    assert plan["missing_ids"] == ["t2", "t3"]
+    assert plan["download_params"]["max_tiles"] == 3
+    assert plan["estimate"]["gb"] == round(2 * 2e6 / 1e9, 2)   # 2 missing x (1MB+1MB)
+    msg = cdse.format_download_plan(plan)
+    assert "fsd.download(" in msg and "missing: 2" in msg
+
+
 def test_circuit_breaker_trips_and_stops_early(monkeypatch, tmp_path):
     from fsd.catalog.catalog import TileCatalog
 
     # 6 tiles, 1 file each; every transfer fails; breaker at 3 consecutive.
     items = [_fake_item(f"t{i}", "2018-01-01T00:00:00Z", 0.0, 0.0, 0.0) for i in range(6)]
     monkeypatch.setattr(cdse, "_search_items", lambda *a, **k: items)
-    monkeypatch.setattr(cdse, "_download_one", lambda *a, **k: (False, "Forbidden"))
+    monkeypatch.setattr(cdse, "_download_one", lambda *a, **k: (False, "Forbidden", (0.0, 0.0, 0)))
     monkeypatch.setattr(cdse.fs, "exists", lambda p, **k: False)
 
     roi = gpd.GeoDataFrame(geometry=[sg.box(-0.5, -0.5, 1.5, 1.5)], crs="EPSG:4326")
@@ -426,8 +501,9 @@ def test_download_one_cog_converts_and_is_idempotent(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cdse.fs, "transfer", fake_transfer)
 
-    ok, reason = cdse._download_one("s3://eodata/x/B04.jp2", dst, {}, cog=True)
+    ok, reason, (t_s, c_s, nbytes) = cdse._download_one("s3://eodata/x/B04.jp2", dst, {}, cog=True)
     assert (ok, reason) == (True, "ok")
+    assert nbytes > 0 and t_s >= 0 and c_s >= 0  # spec 23: transfer/convert/bytes metrics
     assert os.path.exists(dst) and not os.path.exists(dst + ".src.jp2")  # staging gone
     with rasterio.open(dst) as d:
         assert d.driver == "GTiff"  # a COG is a GeoTIFF on disk
@@ -435,7 +511,7 @@ def test_download_one_cog_converts_and_is_idempotent(monkeypatch, tmp_path):
 
     # second call: final .tif present -> skip, no further transfer
     calls.clear()
-    assert cdse._download_one("s3://eodata/x/B04.jp2", dst, {}, cog=True) == (
+    assert cdse._download_one("s3://eodata/x/B04.jp2", dst, {}, cog=True)[:2] == (
         True, "skipped")
     assert calls == []
 

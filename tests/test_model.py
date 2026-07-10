@@ -58,6 +58,11 @@ class BundledArgmax(ArgmaxNDVI):
         return (X_chunk.mean(axis=1) > self.thresh).astype("uint8")
 
 
+class ModelDeterminedT(ArgmaxNDVI):
+    """Leaves n_timestamps unset (0) -> deferred to the trained model / bundle (spec 22)."""
+    n_timestamps = 0
+
+
 def _make_datacube_folder(folder, *, bands=BANDS, T=2, H=4, W=4):
     """(T,H,W,2) datacube: top rows NDVI>0 (class 1), bottom-left NDVI<0 (class 0),
     bottom-right all-zero nodata (-> NaN feature -> output nodata 255)."""
@@ -94,6 +99,23 @@ def test_infer_datacube_scatter_and_shape(tmp_path):
     assert top == 1                              # NDVI > 0
     assert bl == 0                               # NDVI < 0
     assert br == 255                             # all-zero pixel -> NaN feature -> nodata
+
+
+def test_run_local_skips_existing_unless_overwrite(tmp_path, monkeypatch):
+    """spec 22: inference is idempotent — a rerun skips existing outputs unless overwrite=True."""
+    dc = _make_datacube_folder(str(tmp_path / "dc"))
+    out_fp = str(tmp_path / "out" / "o.tif")
+    a = ArgmaxNDVI()
+    engine.run_local(a, [(dc, out_fp)], progress=False)      # first run writes it
+    assert os.path.exists(out_fp)
+
+    calls = []
+    monkeypatch.setattr(engine, "infer_datacube_to_cog",
+                        lambda *args, **kw: calls.append(1))
+    engine.run_local(a, [(dc, out_fp)], progress=False)      # output exists -> skip
+    assert calls == []
+    engine.run_local(a, [(dc, out_fp)], progress=False, overwrite=True)  # forced -> recompute
+    assert calls == [1]
 
 
 def test_predict_batch_size_matches_whole_tile(tmp_path):
@@ -186,6 +208,18 @@ def test_bundle_load_detects_drift(tmp_path):
         json.dump(manifest, f)
     with pytest.raises(ValueError, match="drift"):
         bundle.load(bundle_dir)
+
+
+def test_bundle_load_allows_model_determined_n_timestamps(tmp_path):
+    """A class that leaves n_timestamps unset (0) defers it to the trained model; the per-instance
+    value the run set is recorded in the bundle and load() accepts it (no false 'drift'). This is
+    what lets one adapter class back models trained on different T (spec 22 / demo cores>1)."""
+    a = ModelDeterminedT()
+    a.n_timestamps = 5                        # this model was trained on T=5
+    bundle_dir = bundle.save(a, {}, str(tmp_path / "bundle"))
+    assert bundle.read_spec(bundle_dir)["n_timestamps"] == 5   # bundle is authoritative
+    loaded = bundle.load(bundle_dir)          # would raise "drift" (0 != 5) before the fix
+    assert loaded.required_bands == BANDS
 
 
 def test_resolve_ref_errors_on_bad_form():
