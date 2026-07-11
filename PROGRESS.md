@@ -4,7 +4,62 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-11_
 
-## LATEST (2026-07-11) — spec 25 IMPLEMENTED (download/jp2→COG process-pool redesign)
+## LATEST (2026-07-11) — spec 25b IMPLEMENTED (pipeline exception-safety / no-hang fix)
+
+**Implemented in a Sonnet@medium session** against the signed-off spec (contained to
+`sources/cdse.py`: the `download()` callbacks + submit-loop stop condition, + additive
+`DownloadResult.pool_broken`, + the one-liner OR in `sum_results`). `pytest -q` = **193 passed, 1
+skipped** (42 original `test_cdse.py` tests unchanged + 5 new spec-25b tests: pool-submit-raises
+no-hang, convert-done-result-raises no-hang + permit release, PoolBroken breaker-neutrality,
+catalog-flush-failure no-hang + resume recovery, `sum_results` ORs `pool_broken`); `ruff check
+src/ tests/` clean; no network run (per CLAUDE.md — spec 26's job).
+
+**One thing found beyond the spec's explicit text, needed for correctness:** moving the chunk-flush
+catalog write **outside** the counters lock (spec §3) means concurrent flushes of *different*
+snapshots can now run truly in parallel — which would race-write the same parquet file and corrupt
+it (caught by a flaky-`_append_downloaded` regression test: lost a row + a `thrift deserialize`
+error on the next write). Added a dedicated `flush_lock` around just the `_append_downloaded` call
+(not the counters) — serializes the I/O without blocking `_finalize`'s metric updates behind it,
+preserving the spec's intent.
+
+Docs updated: `CHANGES.md` (new entry under spec 25), `TODO.md` (#22 per-granule convert
+quarantine, deferred), `specs/25-download-convert-redesign.md` (status line points to 25b),
+`PROGRESS.md` (this entry) + memory `fsd-status`.
+
+**Next: switch back to Opus@high for a review pass**, then start the **spec 26** interview (safe
+runner `--dry-run`/`--stop-file`/progress + the measured confirm-run — the first real CDSE network
+exercise of this pipeline).
+
+## PRIOR (2026-07-11) — spec 25 REVIEWED (Phase 1) + spec 25b SIGNED OFF (pipeline hang fix)
+
+**Opus@high Phase-1 review of the spec-25 implementation (`76b2cd9`) is done.** The four flagged
+concurrency concerns (max_staged=1 breaker determinism, semaphore balance, remaining/loop_finished/
+all_done drain, `_default_max_staged` cog-gating) all verified **correct**. `pytest tests/test_cdse.py`
+= 42 passed, ruff clean.
+
+**One real defect found (not previously flagged):** an unhandled exception in a completion callback
+leaks `remaining`/`sem_staged` → `download()` hangs forever on `all_done.wait()` (finally unreachable).
+Triggers: (1) **BrokenProcessPool** — a convert worker segfaults (GDAL on a bad granule) or is
+OOM-killed → `cfut.result()` / `pool.submit()` raise before release+finalize; `add_done_callback`
+swallows the exception so the drain never completes. (2) `catalog.append` (parquet flush) raising
+under the lock in `_finalize`, before the `remaining` decrement. Tests miss it (injected fake
+executors never break). This is exactly the silent-hang failure mode spec 26's "safe run" premise is
+meant to exclude, so it's fixed **first**.
+
+**→ `specs/25b-pipeline-exception-safety.md` is SIGNED OFF (2026-07-11), C1–C6 as recommended.** Fix =
+make `_on_transfer_done`/`_on_convert_done`/`_finalize` exception-safe so every submitted item
+finalizes once and every permit releases once, with `remaining`/`sem_staged` moved off any fallible
+call (pool submit, process result, parquet write); add additive `DownloadResult.pool_broken` (clean
+submit-loop stop on a dead pool; `download_resume` retries with a fresh pool, no cooldown);
+`"PoolBroken"` reason is breaker-neutral (like `ConvertError`); move the catalog flush off the lock;
+no-hang tests via a watchdog thread + `join(timeout)` (no pytest-timeout dep).
+
+**Next step: implement spec 25b in a fresh Sonnet@medium session** (user runs `/handoff`, `/model
+sonnet` + `/effort medium`, points it at `specs/25b-pipeline-exception-safety.md`). Claude (Opus) did
+NOT implement — Opus reviews/specs, Sonnet implements. After 25b lands + review, proceed to **spec 26**
+(safe runner + measured confirm-run).
+
+## PRIOR (2026-07-11) — spec 25 IMPLEMENTED (download/jp2→COG process-pool redesign)
 
 **Implemented in a Sonnet@medium session** against the signed-off spec (contained to
 `sources/cdse.py` + `config.py`). `pytest -q` all green (188 passed, 1 skipped) and `ruff check

@@ -41,6 +41,33 @@ carried over (renames, restructures, behavioral tweaks). Pure removals go in
   now controls only the catalog-flush cadence (flush every `chunksize` completed files). Default
   stays `100`; callers (`download_resume`, api, demos) are unaffected.
 
+## Download pipeline: exception-safe callbacks, no silent hang (spec 25b, 2026-07-11)
+- **`download()`'s inner callbacks are now exception-safe.** A Phase-1 review of spec 25 found that
+  `_on_transfer_done`/`_on_convert_done`/`_finalize` assumed the happy path — a **broken convert
+  process pool** (GDAL segfault / OOM-kill) or a **catalog-flush write error** raised *before* the
+  `remaining` decrement / `sem_staged` release, and `add_done_callback` swallows callback exceptions,
+  so the drain never completed and `download()` hung forever on `all_done.wait()`. Fixed: `remaining`
+  and `sem_staged` accounting no longer sit behind any fallible call (`pool.submit`, `cfut.result()`,
+  the parquet write) — `fut.result()`, the convert hand-off, and `cfut.result()` are all wrapped, and
+  the `sem_staged` release in `_on_convert_done` moved to a `finally`.
+- **New `DownloadResult.pool_broken`** (additive, defaults `False`): set when the convert process pool
+  dies mid-run. On a broken pool, the submit loop halts cleanly (no more new work queued; in-flight
+  transfers still drain) instead of transferring granules that can no longer be converted.
+  `sum_results` ORs it across passes, like `circuit_tripped`.
+- **New `"PoolBroken"` failure reason** — counted in `failed_count`/`failures`/`reason_counts`, but
+  **breaker-neutral** (does not touch the transfer circuit breaker's consecutive counter), same
+  rationale as `"ConvertError"` (spec 25 C4): a broken local process pool is not a bad CDSE window.
+  `download_resume` already retries a `pool_broken` pass with no cooldown (its completion check is
+  keyed on `failed_count`/`circuit_tripped`, unaffected by this new reason) — bounded by `max_passes`
+  as before; a deterministically-crashing granule re-breaks the pool each pass (TODO: per-granule
+  quarantine).
+- **Chunk-flush moved off the counters lock.** `_finalize` now snapshots-and-clears `pending_results`
+  under `lock`, then calls `_append_downloaded` (the parquet write) outside it — serialized by a
+  dedicated `flush_lock` (needed because concurrent flushes of *different* snapshots would otherwise
+  race-write the same catalog file). A flush failure logs a warning and re-queues the snapshot for a
+  later flush (recovered by `download_resume`'s idempotent-skip on the next pass if it's never
+  retried within the run). The end-of-run flush is likewise wrapped.
+
 ## e2e Austria local-completeness gate + download instrumentation (spec 23, 2026-07-10)
 - **`DownloadResult` gained decomposed metrics** (`fsd.sources.cdse`): `bytes_downloaded`,
   `transfer_seconds`, `convert_seconds`, `bytes_by_band`. `_transfer_and_convert` now times the CDSE

@@ -172,6 +172,7 @@ class DownloadResult:
     failures: list = dataclasses.field(default_factory=list)   # (src_url, reason)
     reason_counts: dict = dataclasses.field(default_factory=dict)  # {reason: count}
     circuit_tripped: bool = False  # stopped early: too many consecutive failures
+    pool_broken: bool = False     # convert process pool died mid-run (segfault/OOM); resume with a fresh pool
     # --- timing decomposition (spec 23, D1/D11) — summed across worker threads, so
     # transfer_seconds + convert_seconds may exceed elapsed_s (they overlap). bytes_downloaded is
     # the JP2 bytes actually pulled from CDSE (basis for throughput MB/s); skips contribute 0. ---
@@ -669,12 +670,17 @@ def download(
     bytes_by_band: collections.Counter = collections.Counter()
     state = {
         "done": 0, "skipped": 0, "successful": 0,
-        "consecutive": 0, "tripped": False,
+        "consecutive": 0, "tripped": False, "pool_broken": False,
         "transfer_seconds": 0.0, "convert_seconds": 0.0, "bytes_downloaded": 0,
         "remaining": 0, "loop_finished": False, "last_print": 0.0,
     }
     convert_pool_holder: dict = {"pool": None}
     pool_create_lock = threading.Lock()
+    # Serializes the actual catalog (parquet) write, which happens outside `lock`
+    # (spec 25b §3) so it doesn't block metric updates — but concurrent writers to
+    # the same file would otherwise race/corrupt it. This lock is around the I/O
+    # only, so chunk-flushes still don't stall the counter updates in `_finalize`.
+    flush_lock = threading.Lock()
 
     def _emit():
         if progress:
@@ -694,6 +700,11 @@ def download(
             return convert_pool_holder["pool"]
 
     def _finalize(tid, src, dst, ok, reason):
+        # `remaining`/`sem_staged` accounting must never sit behind a fallible call
+        # (spec 25b): decrement `remaining` under `lock` first, then flush the
+        # catalog (parquet write, can raise) OUTSIDE the lock so a write failure
+        # can't strand the drain.
+        snapshot = None
         with lock:
             pending_results.append((tid, dst, ok))
             reason_counts[reason] += 1
@@ -706,25 +717,45 @@ def download(
             # executor (one continuous pipeline) — it now only controls how often the
             # buffer flushes to the catalog (crash resilience).
             if len(pending_results) >= chunksize:
-                state["successful"] += _append_downloaded(catalog, tile_meta, pending_results)
+                snapshot = list(pending_results)
                 pending_results.clear()
             if progress and time.time() - state["last_print"] >= config.PROGRESS_EVERY_S:
                 state["last_print"] = time.time()
                 _emit()
             state["remaining"] -= 1
             drained = state["loop_finished"] and state["remaining"] == 0
+        if snapshot is not None:
+            try:
+                with flush_lock:
+                    n = _append_downloaded(catalog, tile_meta, snapshot)
+                with lock:
+                    state["successful"] += n
+            except Exception as e:
+                print(f"[fsd.download] warning: chunk-flush failed, will retry at "
+                      f"end-of-run: {e!r}", flush=True)
+                with lock:
+                    pending_results.extend(snapshot)
         if drained:
             all_done.set()
 
     def _on_convert_done(src, tid, dst, cfut):
-        ok, reason, c_s = cfut.result()
-        sem_staged.release()
+        try:
+            ok, reason, c_s = cfut.result()
+        except Exception:
+            ok, reason, c_s = False, "PoolBroken", 0.0
+            with lock:
+                state["pool_broken"] = True
+        finally:
+            sem_staged.release()
         with lock:
             state["convert_seconds"] += c_s
         _finalize(tid, src, dst, ok, reason)
 
     def _on_transfer_done(src, dst, tid, needs_convert, fut):
-        ok, reason, t_s, nbytes = fut.result()
+        try:
+            ok, reason, t_s, nbytes = fut.result()
+        except Exception as e:
+            ok, reason, t_s, nbytes = False, _error_reason(e), 0.0, 0
         with lock:
             state["transfer_seconds"] += t_s
             if nbytes:
@@ -738,8 +769,15 @@ def download(
                         and state["consecutive"] >= max_consecutive_failures):
                     state["tripped"] = True
         if ok and reason != "skipped" and needs_convert:
-            pool = _get_convert_pool()
-            cfut = pool.submit(_convert_one, dst + ".src.jp2", dst)
+            try:
+                pool = _get_convert_pool()
+                cfut = pool.submit(_convert_one, dst + ".src.jp2", dst)
+            except Exception:
+                with lock:
+                    state["pool_broken"] = True
+                sem_staged.release()
+                _finalize(tid, src, dst, False, "PoolBroken")
+                return
             cfut.add_done_callback(partial(_on_convert_done, src, tid, dst))
         else:
             if needs_convert:
@@ -749,12 +787,12 @@ def download(
     transfer_pool = concurrent.futures.ThreadPoolExecutor(max_workers=config.MAX_CONCURRENT_S3)
     try:
         for src, dst, tid in work:
-            if state["tripped"]:
+            if state["tripped"] or state["pool_broken"]:
                 break
             needs_convert = cog and src.endswith(".jp2")
             if needs_convert:
                 sem_staged.acquire()  # BLOCKS at max_staged in-flight -> backpressure
-                if state["tripped"]:
+                if state["tripped"] or state["pool_broken"]:
                     sem_staged.release()
                     break
             with lock:
@@ -773,10 +811,12 @@ def download(
         if convert_pool_holder["pool"] is not None:
             convert_pool_holder["pool"].shutdown(wait=True)
 
-    with lock:
-        if pending_results:
+    if pending_results:
+        try:
             state["successful"] += _append_downloaded(catalog, tile_meta, pending_results)
             pending_results.clear()
+        except Exception as e:
+            print(f"[fsd.download] warning: end-of-run catalog flush failed: {e!r}", flush=True)
 
     _emit()  # final line
 
@@ -789,6 +829,7 @@ def download(
         failures=failures,
         reason_counts=dict(reason_counts),
         circuit_tripped=state["tripped"],
+        pool_broken=state["pool_broken"],
         bytes_downloaded=state["bytes_downloaded"],
         transfer_seconds=state["transfer_seconds"],
         convert_seconds=state["convert_seconds"],
@@ -875,6 +916,7 @@ def sum_results(results: list[DownloadResult]) -> DownloadResult:
         agg.transfer_seconds += r.transfer_seconds
         agg.convert_seconds += r.convert_seconds
         agg.circuit_tripped = agg.circuit_tripped or r.circuit_tripped
+        agg.pool_broken = agg.pool_broken or r.pool_broken
         reasons.update(r.reason_counts)
         by_band.update(r.bytes_by_band)
     agg.reason_counts = dict(reasons)

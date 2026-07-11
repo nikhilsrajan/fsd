@@ -5,6 +5,7 @@ secrets/cdse_credentials.json.
 """
 
 import concurrent.futures
+import concurrent.futures.process
 import datetime
 import json
 import threading
@@ -939,3 +940,180 @@ def test_default_max_staged_disk_aware(monkeypatch, tmp_path, capsys):
     assert staged == cdse.config.MAX_CONCURRENT_S3   # clamped to the floor min, not 2
     assert staged < floor
     assert "disk-limited" in capsys.readouterr().out
+
+
+# --- spec 25b: exception-safe callbacks (no silent hang) ---------------------
+
+
+class _RaisingSubmitExecutor:
+    """Fake convert executor whose `submit()` raises synchronously (as a real
+    `ProcessPoolExecutor.submit` does once `BrokenProcessPool` has been detected)."""
+
+    def submit(self, fn, *args, **kwargs):
+        raise concurrent.futures.process.BrokenProcessPool("pool is broken")
+
+    def shutdown(self, wait=True):
+        pass
+
+
+class _BrokenResultExecutor:
+    """Fake convert executor whose `submit()` succeeds but returns a Future already
+    completed with `BrokenProcessPool` -- so `_on_convert_done` fires and
+    `cfut.result()` raises (simulates a worker dying *after* being handed the
+    submission)."""
+
+    def submit(self, fn, *args, **kwargs):
+        fut = concurrent.futures.Future()
+        fut.set_exception(concurrent.futures.process.BrokenProcessPool("worker died"))
+        return fut
+
+    def shutdown(self, wait=True):
+        pass
+
+
+def _download_in_thread(*args, timeout=10.0, **kwargs):
+    """Run `cdse.download` on a watchdog thread and assert it doesn't hang. Returns
+    the `DownloadResult` (or re-raises any exception from the worker thread)."""
+    box: dict = {}
+
+    def _run():
+        try:
+            box["result"] = cdse.download(*args, **kwargs)
+        except Exception as e:
+            box["error"] = e
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+    assert not t.is_alive(), "download() hung (watchdog timeout)"
+    if "error" in box:
+        raise box["error"]
+    return box["result"]
+
+
+def _setup_multi_tile_download(monkeypatch, tmp_path, n_tiles=4):
+    """Common fixture: n_tiles items, one B04 band each, fake local transfer."""
+    import os
+
+    from fsd.catalog.catalog import TileCatalog
+
+    items = [
+        _fake_item(f"t{i}", "2018-01-01T00:00:00Z", float(i), 0.0, 0.0)
+        for i in range(n_tiles)
+    ]
+    monkeypatch.setattr(cdse, "_search_items", lambda *a, **k: items)
+    monkeypatch.setattr(
+        cdse, "_select_item_files",
+        lambda it, bands, root, cog=True: [
+            (f"{cdse._safe_root_from_item(it)}/B04.jp2",
+             str(tmp_path / it.id / "B04.tif")),
+        ],
+    )
+
+    def fake_transfer(src, target, **kw):
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "wb") as f:
+            f.write(b"jp2bytes")
+
+    monkeypatch.setattr(cdse.fs, "transfer", fake_transfer)
+    monkeypatch.setattr(cdse.fs, "exists", lambda p, **k: os.path.exists(p))
+    monkeypatch.setattr(cdse.fs, "size", lambda p, **k: os.path.getsize(p))
+
+    roi = gpd.GeoDataFrame(geometry=[sg.box(-1, -1, n_tiles + 1, 1)], crs="EPSG:4326")
+    cat = TileCatalog(str(tmp_path / "c.parquet"))
+    return roi, cat
+
+
+def test_pool_submit_raises_no_hang_finalized_as_failure(monkeypatch, tmp_path):
+    """spec 25b test 1: `pool.submit` raises `BrokenProcessPool` -> no hang, every
+    item accounted, `pool_broken` set, `"PoolBroken"` recorded, submit loop stopped
+    early."""
+    roi, cat = _setup_multi_tile_download(monkeypatch, tmp_path, n_tiles=6)
+    result = _download_in_thread(
+        roi, datetime.datetime(2018, 1, 1), datetime.datetime(2018, 2, 1),
+        ["B04"], str(tmp_path), cat, CdseCredentials(**DUMMY_FIELDS),
+        max_tiles=10, cog=True, max_staged=2,
+        convert_executor=_RaisingSubmitExecutor(),
+    )
+    assert result.pool_broken is True
+    assert result.successful_count + result.failed_count == result.total_count
+    assert result.reason_counts.get("PoolBroken", 0) > 0
+    assert result.total_count < 6  # submit loop stopped early on pool_broken
+
+
+def test_convert_done_result_raises_no_hang_permit_released(monkeypatch, tmp_path):
+    """spec 25b test 2: `cfut.result()` raises `BrokenProcessPool` -> no hang, permit
+    released (small `max_staged` would deadlock on a leak), `pool_broken` set."""
+    roi, cat = _setup_multi_tile_download(monkeypatch, tmp_path, n_tiles=6)
+    result = _download_in_thread(
+        roi, datetime.datetime(2018, 1, 1), datetime.datetime(2018, 2, 1),
+        ["B04"], str(tmp_path), cat, CdseCredentials(**DUMMY_FIELDS),
+        max_tiles=10, cog=True, max_staged=1,
+        convert_executor=_BrokenResultExecutor(),
+    )
+    assert result.pool_broken is True
+    assert result.reason_counts.get("PoolBroken", 0) > 0
+    assert result.successful_count + result.failed_count == result.total_count
+
+
+def test_pool_broken_does_not_trip_transfer_breaker(monkeypatch, tmp_path):
+    """spec 25b test 3: PoolBroken is breaker-neutral -- a run whose converts all fail
+    via a broken pool must not trip the transfer circuit breaker."""
+    roi, cat = _setup_multi_tile_download(monkeypatch, tmp_path, n_tiles=6)
+    result = _download_in_thread(
+        roi, datetime.datetime(2018, 1, 1), datetime.datetime(2018, 2, 1),
+        ["B04"], str(tmp_path), cat, CdseCredentials(**DUMMY_FIELDS),
+        max_tiles=10, cog=True, max_staged=2, max_consecutive_failures=2,
+        convert_executor=_RaisingSubmitExecutor(),
+    )
+    assert result.pool_broken is True
+    assert result.circuit_tripped is False
+
+
+def test_catalog_flush_failure_does_not_hang_and_recovers_on_resume(monkeypatch, tmp_path):
+    """spec 25b test 4: a chunk-flush `_append_downloaded` failure doesn't hang or
+    lose the drain; the retried/failed rows are recovered by a subsequent pass
+    (idempotent skip on already-present files, re-queue-and-retry on the flush)."""
+    roi, cat = _setup_multi_tile_download(monkeypatch, tmp_path, n_tiles=6)
+
+    calls = {"n": 0}
+    real_append = cdse._append_downloaded
+
+    def flaky_append(catalog, tile_meta, results):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("disk full (simulated)")
+        return real_append(catalog, tile_meta, results)
+
+    monkeypatch.setattr(cdse, "_append_downloaded", flaky_append)
+
+    result = _download_in_thread(
+        roi, datetime.datetime(2018, 1, 1), datetime.datetime(2018, 2, 1),
+        ["B04"], str(tmp_path), cat, CdseCredentials(**DUMMY_FIELDS),
+        max_tiles=10, cog=False, chunksize=2,
+    )
+    assert result.failed_count == 0
+    assert result.successful_count + result.failed_count == result.total_count
+    assert result.total_count == 6
+
+    # a subsequent normal pass writes the catalog (idempotent-skip recovery)
+    result2 = cdse.download(
+        roi, datetime.datetime(2018, 1, 1), datetime.datetime(2018, 2, 1),
+        ["B04"], str(tmp_path), cat, CdseCredentials(**DUMMY_FIELDS),
+        max_tiles=10, cog=False,
+    )
+    assert result2.skipped_count == 6
+    gdf = cat.read()
+    assert len(gdf) == 6
+
+
+def test_sum_results_ors_pool_broken():
+    """spec 25b test 6: `sum_results` ORs `pool_broken` across passes."""
+    a = cdse.DownloadResult(successful_count=1, total_count=1, pool_broken=True)
+    b = cdse.DownloadResult(successful_count=1, total_count=1, pool_broken=False)
+    agg = cdse.sum_results([a, b])
+    assert agg.pool_broken is True
+
+    c = cdse.DownloadResult(successful_count=1, total_count=1, pool_broken=False)
+    d = cdse.DownloadResult(successful_count=1, total_count=1, pool_broken=False)
+    assert cdse.sum_results([c, d]).pool_broken is False

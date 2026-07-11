@@ -1,9 +1,11 @@
 # Spec 25 — download / jp2→COG redesign: pipeline transfer over a convert **process pool**
 
-> **Status: SIGNED OFF (2026-07-11) — awaiting implementation.** Opus@high (spec). C1–C6 resolved as
-> recommended (see "Sign-off resolutions" below). Implementation lands in a **Sonnet@medium** session
-> the user switches to (spec 24 D3/D5), against this spec. No pipeline/network script is run by Claude;
-> a measured confirm-run is **spec 26**'s job, not this one.
+> **Status: IMPLEMENTED (`76b2cd9`) + REVIEWED (Phase 1, 2026-07-11).** Opus@high (spec). C1–C6 resolved
+> as recommended (see "Sign-off resolutions" below). Implementation landed in a **Sonnet@medium** session
+> (spec 24 D3/D5), against this spec. No pipeline/network script is run by Claude;
+> a measured confirm-run is **spec 26**'s job, not this one. **The Phase-1 review found a silent-hang
+> defect in the completion callbacks (not covered by any test) — fixed in the follow-up
+> `specs/25b-pipeline-exception-safety.md` (SIGNED OFF + IMPLEMENTED, 2026-07-11), same two files.**
 
 ## Sign-off resolutions (2026-07-11)
 
