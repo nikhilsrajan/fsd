@@ -4,6 +4,40 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-11_
 
+## LATEST (2026-07-11) — spec 25 SIGNED OFF (download/jp2→COG redesign) — ready to implement
+
+**Spec `specs/25-download-convert-redesign.md` is SIGNED OFF; next action = implement in a fresh
+Sonnet@medium session** (spec 24 D3/D5 — user runs `/handoff`, switches `/model sonnet` + `/effort
+medium`, points it at spec 25). Claude did NOT implement (Opus plans, Sonnet implements).
+
+**The fix (all in `sources/cdse.py` + `config.py`; read/build path, `to_cog`, `DownloadResult` shape
+untouched):** conversion currently runs **inline on the 4 transfer threads** and GDAL's `to_cog`
+**holds the GIL** → starves downloads (observed: 8.8 MB/s probe but ~0.2 file/s aggregate). Redesign =
+split the per-file worker into `_transfer_one` (thread stage) + `_convert_one` (top-level, picklable,
+**process** stage), and run them as **one continuous A2 pipeline**: `ThreadPoolExecutor(MAX_CONCURRENT_S3=4)`
+transfers → each completion chains its staged JP2 to `ProcessPoolExecutor(MAX_CONVERT_PROCS=min(cpu,8),
+spawn)` via `add_done_callback`; a `BoundedSemaphore(MAX_STAGED)` bounds staged-but-unconverted JP2s.
+
+**Locked decisions (C1–C6 all accepted as recommended):** callbacks + single `sem_staged` (C1); keep
+`_download_one` as a sequential wrapper so its tests survive, `download()` won't call it (C3);
+circuit breaker → **streaming stop on consecutive *transfer* failures only** (rewrite the one breaker
+test) (C4); new keyword knobs `max_convert_procs`/`max_staged`/`convert_executor` (the injected
+executor is the in-process test seam) + pass-through on `download_resume` (C5); **keep ingest
+overviews** (D2 — convert stays the ~15 s/file ceiling, accepted); **disk-aware `MAX_STAGED`** =
+`min(MAX_CONCURRENT_S3 + 2*MAX_CONVERT_PROCS, free*0.25/0.2GB)`, sized once at start, **cap not a
+lever** (C6/D5). `chunksize` repurposed → catalog-flush cadence. Confirm-run deferred to **spec 26**.
+
+**Concurrency-familiarization artifacts (workspace root, NOT in the fsd repo):** `concurrency_demo.py`
+(the pipeline with sleeps+files — backpressure/LEAK_BUG/disk-accounting demos) and
+`concurrency_sweep.py` (network-free `MAX_STAGED` tuning sweep showing the throughput plateau past the
+saturation floor). Built to teach the primitives before implementing; not part of the package.
+
+**Test plan (pytest only, no network):** most existing download tests must still pass;
+`test_circuit_breaker_trips_and_stops_early` is rewritten (C4); new tests for `_transfer_one`,
+`_convert_one`, the cog=True pipeline (via injected synchronous `convert_executor`), backpressure
+bound, lazy-pool (no procs on all-skip/cog=False), and `_default_max_staged`. Docs to update on
+implement: `CHANGES.md`, `TODO.md`, `specs/14` pointer, `config.py` comments, `PROGRESS.md`, memory.
+
 ## LATEST (2026-07-11) — spec 24 working contract (process, not pipeline)
 
 **How we work now (CLAUDE.md updated):** Claude **never runs pipeline/long/networked scripts** or
