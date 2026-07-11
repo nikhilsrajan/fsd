@@ -14,6 +14,8 @@ env/
 .pytest_cache/
 .ruff_cache/
 .ipynb_checkpoints/
+# Claude Code session state + worktrees — never commit
+.claude/
 
 # Data / artifacts (never commit downloaded tiles or datacubes)
 data/
