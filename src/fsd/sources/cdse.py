@@ -16,6 +16,7 @@ import dataclasses
 import datetime
 import json
 import os
+import shutil
 
 import geopandas as gpd
 import pandas as pd
@@ -377,28 +378,73 @@ def _is_local_path(path: str) -> bool:
     return fsspec.utils.get_protocol(path) in ("file", "local")
 
 
-def _transfer_and_convert(src_url: str, dst_path: str, s3opts: dict) -> tuple[float, float, int]:
-    """Fetch a JP2 band to a **local** staging sibling, convert it to a COG at
-    `dst_path` (spec 14), and remove the staging file. `to_cog` is atomic, so a
-    crash leaves at most the staging JP2 (no half-written `.tif`) — the next resume
-    pass re-fetches and re-converts.
+def _transfer_one(
+    src_url: str,
+    dst_path: str,
+    s3opts: dict,
+    *,
+    needs_convert: bool,
+    tries: int = 3,
+    base_delay: float = 0.5,
+) -> tuple[bool, str, float, int]:
+    """THREAD stage (spec 25). Idempotent skip on the **final** `dst_path`
+    (`size > 0`, never a 0-byte "touched" leftover — that re-transfers). Otherwise
+    transfers with the **fail-fast** retry loop on CDSE's transient S3 auth errors
+    (BUG-001: a few quick re-rolls recover a *partial* bad window; a *sustained* one
+    is not worth grinding — `download_resume` is the real recovery).
 
-    Returns `(transfer_s, convert_s, jp2_bytes)` (spec 23, D1): the byte-transfer and the
-    JP2->COG conversion are timed separately so a run can tell CDSE-transfer cost from local
-    COG-conversion cost; `jp2_bytes` is the transferred size (throughput basis)."""
+    When `needs_convert` (cog and a `.jp2` band), the byte transfer lands at the
+    local staging sibling `dst_path + ".src.jp2"` (converted later by `_convert_one`,
+    off this thread); otherwise (sidecar, or `cog=False`) it transfers straight to
+    `dst_path`. No conversion here.
+
+    Returns `(ok, reason, transfer_s, jp2_bytes)`; `reason` is ``"skipped"``/``"ok"``
+    on success or a short error label on failure. Zeros on skip/failure.
+    """
+    import random
+    import time
+
+    if fs.exists(dst_path) and fs.size(dst_path) > 0:
+        return True, "skipped", 0.0, 0
+    target = dst_path + ".src.jp2" if needs_convert else dst_path
+    last: Exception | None = None
+    for attempt in range(tries):
+        try:
+            t0 = time.time()
+            fs.transfer(src_url, target, src_options=s3opts)
+            t1 = time.time()
+            return True, "ok", t1 - t0, fs.size(target)
+        except Exception as e:
+            last = e
+            if attempt == tries - 1 or not _is_retryable_s3(e):
+                break
+            time.sleep(min(base_delay * (2**attempt), 4.0) + random.uniform(0, 0.5))
+    return False, _error_reason(last) if last else "unknown", 0.0, 0
+
+
+def _convert_one(staging: str, dst_path: str) -> tuple[bool, str, float]:
+    """PROCESS stage (spec 25). `to_cog(staging, dst_path)` (spec 14, lossless COG
+    with overviews) then remove `staging` (`finally` — `to_cog` is atomic, so a crash
+    leaves at most the staging JP2, never a half-written `.tif`; the next resume pass
+    re-transfers and re-converts).
+
+    Top-level & picklable (`ProcessPoolExecutor`, spawn) — operates only on real local
+    files, so it never needs a parent-process monkeypatch. A failure here is a local/
+    data fault (``"ConvertError"``), never a CDSE window — the caller must not fold it
+    into the transfer-failure circuit breaker (spec 25 C4).
+
+    Returns `(ok, reason, convert_s)`.
+    """
     import time
 
     from fsd.raster.cog import to_cog
 
-    staging = dst_path + ".src.jp2"
     try:
         t0 = time.time()
-        fs.transfer(src_url, staging, src_options=s3opts)
-        t1 = time.time()
-        jp2_bytes = fs.size(staging)
         to_cog(staging, dst_path)
-        t2 = time.time()
-        return t1 - t0, t2 - t1, jp2_bytes
+        return True, "ok", time.time() - t0
+    except Exception:
+        return False, "ConvertError", 0.0
     finally:
         if fs.exists(staging):
             try:
@@ -415,46 +461,25 @@ def _download_one(
     cog: bool = True,
     tries: int = 3,
     base_delay: float = 0.5,
-) -> tuple[bool, str]:
-    """Transfer one file (idempotent: skip if already on disk), with **fail-fast**
-    retry on CDSE's transient S3 auth errors. Those errors are per-request node
-    roulette (BUG-001): a few quick re-rolls (short capped backoff + jitter) recover
-    files during a *partial* window, but a *sustained* bad window is not worth
-    grinding — the resume path is re-running `download` later (idempotent), not many
-    in-run retries. Measured 2026-07-02: 6 retries barely beat 1 during a bad window.
+) -> tuple[bool, str, tuple[float, float, int]]:
+    """Sequential reference wrapper (spec 25) = `_transfer_one` then, inline,
+    `_convert_one`. Kept for its direct-call unit tests and as the single-worker
+    reference unit; `download()` no longer calls this — it drives the two stages
+    across a transfer thread pool and a convert process pool instead (see `download`).
 
-    When `cog` and the source is a `.jp2` band, the byte transfer is followed by a
-    lossless COG conversion (`dst_path` is the `.tif`, spec 14); non-raster sidecars
-    (`MTD_TL.xml`) transfer as-is. Idempotency keys on the **final** path.
-
-    Returns `(ok, reason, metrics)` where reason is ``"skipped"`` / ``"ok"`` on success, or a
-    short error label (e.g. ``"Forbidden"``, ``"SignatureDoesNotMatch"``) on failure, and
+    Returns `(ok, reason, metrics)` where `reason` is ``"skipped"``/``"ok"`` on
+    success or a short error label (transfer or ``"ConvertError"``) on failure, and
     `metrics` is `(transfer_s, convert_s, bytes)` (spec 23) — zeros on skip/failure.
     """
-    import random
-    import time
-
-    zero = (0.0, 0.0, 0)
-    # Skip only a *real* (non-empty) file — never a 0-byte "touched" leftover, which
-    # would otherwise be treated as done and never re-fetched.
-    if fs.exists(dst_path) and fs.size(dst_path) > 0:
-        return True, "skipped", zero
-    last: Exception | None = None
-    for attempt in range(tries):
-        try:
-            if cog and src_url.endswith(".jp2"):
-                metrics = _transfer_and_convert(src_url, dst_path, s3opts)
-            else:
-                t0 = time.time()
-                fs.transfer(src_url, dst_path, src_options=s3opts)
-                metrics = (time.time() - t0, 0.0, fs.size(dst_path))
-            return True, "ok", metrics
-        except Exception as e:
-            last = e
-            if attempt == tries - 1 or not _is_retryable_s3(e):
-                break
-            time.sleep(min(base_delay * (2**attempt), 4.0) + random.uniform(0, 0.5))
-    return False, _error_reason(last) if last else "unknown", zero
+    needs_convert = cog and src_url.endswith(".jp2")
+    ok, reason, t_s, nbytes = _transfer_one(
+        src_url, dst_path, s3opts, needs_convert=needs_convert,
+        tries=tries, base_delay=base_delay,
+    )
+    if not ok or reason == "skipped" or not needs_convert:
+        return ok, reason, (t_s, 0.0, nbytes)
+    c_ok, c_reason, c_s = _convert_one(dst_path + ".src.jp2", dst_path)
+    return c_ok, c_reason, (t_s, c_s, nbytes)
 
 
 def _append_downloaded(catalog, tile_meta: dict, results: list[tuple]) -> int:
@@ -489,6 +514,40 @@ def _append_downloaded(catalog, tile_meta: dict, results: list[tuple]) -> int:
     return sum(len(f) for f in files_by_tile.values())
 
 
+def _default_max_staged(root_folderpath: str, max_convert_procs: int) -> int:
+    """Disk-aware `MAX_STAGED` sizing (spec 25 D5/D6): a **safety cap** on
+    staged-but-unconverted JP2s, not a throughput lever — past `floor` a bigger
+    buffer gives no throughput gain (bounded-buffer queueing), so free disk only
+    *shrinks* the cap, never grows it beyond the saturation target `headroom`.
+    Sized **once** at `download()` start from `shutil.disk_usage(root_folderpath)`.
+    """
+    floor = config.MAX_CONCURRENT_S3 + max_convert_procs
+    headroom = config.MAX_CONCURRENT_S3 + 2 * max_convert_procs
+    free = shutil.disk_usage(root_folderpath).free
+    disk_cap = int(free * config.STAGING_DISK_FRACTION / (config.STAGING_ITEM_GB * 1e9))
+    staged = max(config.MAX_CONCURRENT_S3, min(headroom, disk_cap))
+    if staged < floor:
+        print(
+            f"[fsd.download] warning: disk-limited staging={staged} < {floor} "
+            "(convert pool may under-saturate)",
+            flush=True,
+        )
+    return staged
+
+
+def _make_convert_pool(max_workers: int):
+    """Default convert-process-pool factory (spec 25). A module-level seam: tests
+    monkeypatch this to assert a `cog=False` / all-skip `download()` run never spawns
+    a process pool. **Spawn** start-method (GDAL-safe; `fork` + GDAL's internal
+    threads can deadlock on Linux/Batch)."""
+    import concurrent.futures
+    import multiprocessing
+
+    return concurrent.futures.ProcessPoolExecutor(
+        max_workers=max_workers, mp_context=multiprocessing.get_context("spawn"),
+    )
+
+
 def _fmt_progress(done, total, ok_n, fail_n, skipped, elapsed_s) -> str:
     """A single newline-terminated progress line (log-friendly, with ETA)."""
     rate = done / elapsed_s if elapsed_s > 0 else 0.0
@@ -516,29 +575,49 @@ def download(
     progress: bool = False,
     max_consecutive_failures: int | None = None,
     cog: bool = True,
+    max_convert_procs: int | None = None,
+    max_staged: int | None = None,
+    convert_executor=None,
 ) -> DownloadResult:
     """THE SOURCE CONTRACT (documented signature; see specs/01-sources.md).
 
-    Discover matching tiles, download the requested band files (+ MTD_TL.xml) to
-    `root_folderpath` via `fsd.storage.transfer`, and append per-tile records to
-    `catalog`. Idempotent (skips files already on disk); downloads in file-chunks
-    and upserts the catalog after each chunk so a crash doesn't lose progress;
-    refuses if matched tiles exceed `max_tiles`. S3 concurrency is capped at CDSE's
-    limit.
+    Discover matching tiles and download the requested band files (+ MTD_TL.xml) to
+    `root_folderpath` via a **pipeline** (spec 25): a `MAX_CONCURRENT_S3`-wide thread
+    pool transfers bytes while a separate process pool converts fetched JP2s to COGs
+    concurrently, chained by `add_done_callback` and bounded by a `max_staged`
+    backpressure semaphore (staged-but-unconverted JP2s on disk). Idempotent (skips
+    files already on disk); the catalog is upserted every `chunksize` completions so a
+    crash doesn't lose progress; refuses if matched tiles exceed `max_tiles`.
 
     `cog` (default True, spec 14): convert each fetched JP2 band to a lossless COG
     (`Bxx.tif`, with overviews) on arrival — the native ingest format, which the
-    datacube build reads far faster (spec 13). `cog=False` keeps the native `.jp2`.
-    Conversion needs a **local** `root_folderpath`; a remote (`s3://`/`az://`) dst
-    with `cog=True` raises (the stage-local→convert→upload path is deferred).
+    datacube build reads far faster (spec 13). `cog=False` keeps the native `.jp2`
+    (and never staggers a convert pool). Conversion needs a **local**
+    `root_folderpath`; a remote (`s3://`/`az://`) dst with `cog=True` raises (the
+    stage-local→convert→upload path is deferred).
 
-    `max_consecutive_failures` is the **circuit breaker**: if that many files fail
-    back-to-back (a bad CDSE window, BUG-001), the pass stops early (finishing the
-    current chunk) and returns with `circuit_tripped=True` instead of grinding. Pair
-    with `download_resume` to retry the remainder later — the catalog makes it a clean
-    resume.
+    `max_convert_procs` (default `config.MAX_CONVERT_PROCS`), `max_staged` (default:
+    `_default_max_staged`, disk-aware) and `convert_executor` (default: a real
+    `ProcessPoolExecutor`, spawn context) are optional knobs — `convert_executor` is
+    the test seam (inject a synchronous stand-in to exercise the pipeline in-process,
+    no subprocess). The convert pool is created **lazily**, on the first file that
+    actually needs conversion — a `cog=False` run or an all-skip resume pass spawns
+    zero processes.
+
+    `max_consecutive_failures` is the **circuit breaker**, keyed on consecutive
+    **transfer** failures only (a `_convert_one` failure is a local fault, not a CDSE
+    window, spec 25 C4): if that many transfers fail back-to-back (a bad CDSE window,
+    BUG-001), the submit loop stops queuing new work, in-flight transfers/converts
+    drain, and the pass returns with `circuit_tripped=True` instead of grinding — it
+    stops within roughly `max_staged` items of the trip (streaming, no exact chunk
+    boundary). Pair with `download_resume` to retry the remainder later — the catalog
+    makes it a clean resume.
     """
+    import collections
     import concurrent.futures
+    import threading
+    import time
+    from functools import partial
 
     creds.require_s3()  # discovery (STAC) is anonymous; only download needs S3 keys
 
@@ -570,86 +649,149 @@ def download(
         for src, dst in _select_item_files(it, bands, root_folderpath, cog=cog):
             work.append((src, dst, it.id))
 
-    import collections
-    import time
-
     total = len(work)
-    successful = 0
-    skipped = 0
+    start = time.time()
+
+    procs = max_convert_procs if max_convert_procs is not None else config.MAX_CONVERT_PROCS
+    staged_cap = max_staged
+    if staged_cap is None:
+        # _default_max_staged needs a real local path; only cog=True can reach here
+        # with a local root (cog=False + remote root is otherwise legal and sem_staged
+        # is never acquired for it, so skip the disk probe entirely).
+        staged_cap = _default_max_staged(root_folderpath, procs) if cog else config.MAX_CONCURRENT_S3
+    sem_staged = threading.BoundedSemaphore(staged_cap)
+
+    lock = threading.Lock()
+    all_done = threading.Event()
+    pending_results: list[tuple[str, str, bool]] = []
     failures: list[tuple[str, str]] = []
     reason_counts: collections.Counter = collections.Counter()
-    bytes_downloaded = 0
-    transfer_seconds = 0.0
-    convert_seconds = 0.0
     bytes_by_band: collections.Counter = collections.Counter()
-    start = time.time()
+    state = {
+        "done": 0, "skipped": 0, "successful": 0,
+        "consecutive": 0, "tripped": False,
+        "transfer_seconds": 0.0, "convert_seconds": 0.0, "bytes_downloaded": 0,
+        "remaining": 0, "loop_finished": False, "last_print": 0.0,
+    }
+    convert_pool_holder: dict = {"pool": None}
+    pool_create_lock = threading.Lock()
 
     def _emit():
         if progress:
             print(
-                _fmt_progress(done, total, reason_counts["ok"] + skipped,
-                              len(failures), skipped, time.time() - start),
+                _fmt_progress(state["done"], total, reason_counts["ok"] + state["skipped"],
+                              len(failures), state["skipped"], time.time() - start),
                 flush=True,
             )
 
-    done = 0
-    last_print = 0.0
-    consecutive = 0
-    tripped = False
-    for i in range(0, total, chunksize):
-        chunk = work[i : i + chunksize]
-        results = []
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=config.MAX_CONCURRENT_S3
-        ) as pool:
-            fut_to_w = {
-                pool.submit(_download_one, src, dst, s3opts, cog=cog): (src, dst, tid)
-                for (src, dst, tid) in chunk
-            }
-            for fut in concurrent.futures.as_completed(fut_to_w):
-                src, dst, tid = fut_to_w[fut]
-                ok, reason, (t_s, c_s, nb) = fut.result()
-                results.append((tid, dst, ok))
-                reason_counts[reason] += 1
-                transfer_seconds += t_s
-                convert_seconds += c_s
-                if nb:
-                    bytes_downloaded += nb
-                    bytes_by_band[os.path.splitext(os.path.basename(dst))[0]] += nb
-                if reason == "skipped":
-                    skipped += 1
-                if ok:
-                    consecutive = 0
-                else:
-                    failures.append((src, reason))
-                    consecutive += 1
-                    if (max_consecutive_failures is not None
-                            and consecutive >= max_consecutive_failures):
-                        tripped = True
-                done += 1
-                # Log-friendly newline progress line (a \r tqdm bar looks frozen in a
-                # redirected log). Emit at most every PROGRESS_EVERY_S.
-                if progress and time.time() - last_print >= config.PROGRESS_EVERY_S:
-                    last_print = time.time()
-                    _emit()
-        successful += _append_downloaded(catalog, tile_meta, results)
-        if tripped:
-            break
+    def _get_convert_pool():
+        with pool_create_lock:
+            if convert_pool_holder["pool"] is None:
+                convert_pool_holder["pool"] = (
+                    convert_executor if convert_executor is not None
+                    else _make_convert_pool(procs)
+                )
+            return convert_pool_holder["pool"]
+
+    def _finalize(tid, src, dst, ok, reason):
+        with lock:
+            pending_results.append((tid, dst, ok))
+            reason_counts[reason] += 1
+            if reason == "skipped":
+                state["skipped"] += 1
+            if not ok:
+                failures.append((src, reason))
+            state["done"] += 1
+            # Catalog-flush cadence (spec 25 §4): chunksize no longer batches the
+            # executor (one continuous pipeline) — it now only controls how often the
+            # buffer flushes to the catalog (crash resilience).
+            if len(pending_results) >= chunksize:
+                state["successful"] += _append_downloaded(catalog, tile_meta, pending_results)
+                pending_results.clear()
+            if progress and time.time() - state["last_print"] >= config.PROGRESS_EVERY_S:
+                state["last_print"] = time.time()
+                _emit()
+            state["remaining"] -= 1
+            drained = state["loop_finished"] and state["remaining"] == 0
+        if drained:
+            all_done.set()
+
+    def _on_convert_done(src, tid, dst, cfut):
+        ok, reason, c_s = cfut.result()
+        sem_staged.release()
+        with lock:
+            state["convert_seconds"] += c_s
+        _finalize(tid, src, dst, ok, reason)
+
+    def _on_transfer_done(src, dst, tid, needs_convert, fut):
+        ok, reason, t_s, nbytes = fut.result()
+        with lock:
+            state["transfer_seconds"] += t_s
+            if nbytes:
+                state["bytes_downloaded"] += nbytes
+                bytes_by_band[os.path.splitext(os.path.basename(dst))[0]] += nbytes
+            if ok:
+                state["consecutive"] = 0
+            else:
+                state["consecutive"] += 1
+                if (max_consecutive_failures is not None
+                        and state["consecutive"] >= max_consecutive_failures):
+                    state["tripped"] = True
+        if ok and reason != "skipped" and needs_convert:
+            pool = _get_convert_pool()
+            cfut = pool.submit(_convert_one, dst + ".src.jp2", dst)
+            cfut.add_done_callback(partial(_on_convert_done, src, tid, dst))
+        else:
+            if needs_convert:
+                sem_staged.release()
+            _finalize(tid, src, dst, ok, reason)
+
+    transfer_pool = concurrent.futures.ThreadPoolExecutor(max_workers=config.MAX_CONCURRENT_S3)
+    try:
+        for src, dst, tid in work:
+            if state["tripped"]:
+                break
+            needs_convert = cog and src.endswith(".jp2")
+            if needs_convert:
+                sem_staged.acquire()  # BLOCKS at max_staged in-flight -> backpressure
+                if state["tripped"]:
+                    sem_staged.release()
+                    break
+            with lock:
+                state["remaining"] += 1
+            fut = transfer_pool.submit(_transfer_one, src, dst, s3opts, needs_convert=needs_convert)
+            fut.add_done_callback(partial(_on_transfer_done, src, dst, tid, needs_convert))
+
+        with lock:
+            state["loop_finished"] = True
+            drained = state["remaining"] == 0
+        if drained:
+            all_done.set()
+        all_done.wait()
+    finally:
+        transfer_pool.shutdown(wait=True)
+        if convert_pool_holder["pool"] is not None:
+            convert_pool_holder["pool"].shutdown(wait=True)
+
+    with lock:
+        if pending_results:
+            state["successful"] += _append_downloaded(catalog, tile_meta, pending_results)
+            pending_results.clear()
 
     _emit()  # final line
 
     return DownloadResult(
-        successful_count=successful,
-        total_count=successful + len(failures),   # files actually attempted
-        skipped_count=skipped,
+        successful_count=state["successful"],
+        total_count=state["successful"] + len(failures),   # files actually attempted
+        skipped_count=state["skipped"],
         failed_count=len(failures),
         elapsed_s=time.time() - start,
         failures=failures,
         reason_counts=dict(reason_counts),
-        circuit_tripped=tripped,
-        bytes_downloaded=bytes_downloaded,
-        transfer_seconds=transfer_seconds,
-        convert_seconds=convert_seconds,
+        circuit_tripped=state["tripped"],
+        bytes_downloaded=state["bytes_downloaded"],
+        transfer_seconds=state["transfer_seconds"],
+        convert_seconds=state["convert_seconds"],
         bytes_by_band=dict(bytes_by_band),
     )
 
@@ -672,6 +814,9 @@ def download_resume(
     cooldown_s: float = 60.0,
     on_pass=None,
     cog: bool = True,
+    max_convert_procs: int | None = None,
+    max_staged: int | None = None,
+    convert_executor=None,
 ) -> list[DownloadResult]:
     """Resume-loop: run `download` repeatedly until every file is present (a full pass
     with no failures) or `max_passes` is reached.
@@ -683,6 +828,9 @@ def download_resume(
 
     `on_pass(pass_index, DownloadResult)` is called after each pass (e.g. to persist
     stats), keeping file I/O out of the library. Returns the per-pass results.
+
+    `max_convert_procs`/`max_staged`/`convert_executor` pass through to each `download`
+    call unchanged (spec 25) — see its docstring.
     """
     import time
 
@@ -692,7 +840,8 @@ def download_resume(
             roi, startdate, enddate, bands, root_folderpath, catalog, creds,
             max_tiles=max_tiles, chunksize=chunksize, max_cloudcover=max_cloudcover,
             progress=progress, max_consecutive_failures=max_consecutive_failures,
-            cog=cog,
+            cog=cog, max_convert_procs=max_convert_procs, max_staged=max_staged,
+            convert_executor=convert_executor,
         )
         results.append(r)
         if on_pass is not None:

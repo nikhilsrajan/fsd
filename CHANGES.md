@@ -4,6 +4,43 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## Download pipeline: transfer/convert process-pool split (spec 25, 2026-07-11)
+- **Conversion decoupled onto a process pool.** `sources/cdse.py::download` previously ran
+  transfer+convert serially on one of `MAX_CONCURRENT_S3=4` worker threads
+  (`_transfer_and_convert`); GDAL's `to_cog` holds the GIL, so a few converting threads starved the
+  rest and collapsed download concurrency (~0.2 file/s observed, spec 23 instrumentation). Now a
+  `MAX_CONCURRENT_S3`-wide **thread** pool only transfers bytes, while a separate
+  `MAX_CONVERT_PROCS`-wide **process** pool (`spawn`, GDAL-safe) converts JP2→COG concurrently —
+  chained via `add_done_callback` and bounded by a `sem_staged` backpressure semaphore (staged-but-
+  unconverted JP2s on disk). Behavior kept: conversion is still lossless COG **with overviews**
+  (`COG_OVERVIEWS="AUTO"` unchanged, D2). `_transfer_and_convert` is removed, replaced by
+  `_transfer_one` (thread stage) + `_convert_one` (process stage, top-level & picklable);
+  `_download_one` survives as the sequential reference wrapper (`_transfer_one` then inline
+  `_convert_one`) but `download()` no longer calls it. New optional `download`/`download_resume`
+  kwargs: `max_convert_procs`, `max_staged`, `convert_executor` (all defaulted, backward-compatible;
+  `convert_executor` is the test seam — inject a synchronous stand-in to exercise the pipeline
+  without a subprocess). The convert pool is created **lazily** (first file needing conversion) —
+  `cog=False` or an all-skip resume pass spawns zero processes.
+- **`MAX_STAGED` is disk-aware, not a static constant** (D5/D6): `cdse._default_max_staged` helper
+  sizes the backpressure cap once at `download()` start from
+  `shutil.disk_usage(root_folderpath).free` (`STAGING_DISK_FRACTION=0.25`,
+  `STAGING_ITEM_GB=0.2`), targeting `headroom = MAX_CONCURRENT_S3 + 2*MAX_CONVERT_PROCS`. Disk is a
+  **cap, not a lever** — a larger buffer past the saturation floor gives no throughput gain (bounded-
+  buffer queueing), so free disk only shrinks the cap, never grows it. New `config.py` constants:
+  `MAX_CONVERT_PROCS = min(os.cpu_count(), 8)`, `STAGING_DISK_FRACTION`, `STAGING_ITEM_GB`.
+- **Circuit breaker → streaming stop, transfer-failures-only** (conscious semantics change). The old
+  breaker "finished the current chunk, then stopped" (`ThreadPoolExecutor` per file-chunk); the new
+  one continuous pipeline has no chunk boundary. The breaker now keys on **consecutive transfer
+  failures only** — a `_convert_one` failure is a local/data fault (`"ConvertError"`), not a CDSE
+  window, and does not touch the consecutive counter. On trip, the submit loop stops queuing new
+  work; in-flight transfers/converts drain; the pass returns `circuit_tripped=True`, stopping within
+  roughly `max_staged` items of the trip (no exact chunk count — `download_resume` is still the real
+  recovery). `test_circuit_breaker_trips_and_stops_early` rewritten to monkeypatch `_transfer_one`
+  and assert early stop, not the old exact "4 of 6" chunk count.
+- **`chunksize` repurposed.** No longer batches the executor (there is one continuous pipeline); it
+  now controls only the catalog-flush cadence (flush every `chunksize` completed files). Default
+  stays `100`; callers (`download_resume`, api, demos) are unaffected.
+
 ## e2e Austria local-completeness gate + download instrumentation (spec 23, 2026-07-10)
 - **`DownloadResult` gained decomposed metrics** (`fsd.sources.cdse`): `bytes_downloaded`,
   `transfer_seconds`, `convert_seconds`, `bytes_by_band`. `_transfer_and_convert` now times the CDSE

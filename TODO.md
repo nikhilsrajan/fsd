@@ -47,7 +47,10 @@ not CPU. **Now scoped into a 3-part benchmark-first plan (interviewed 2026-07-03
   (new `src/fsd/raster/cog.py::to_cog`); `cog=False` keeps JP2. Local-dst only in v1. Follow-ups
   (not scheduled): (a) **remote-dst COG** — stage-local→convert→upload, needed for the Azure/Blob
   ingest path; (b) a **dedicated conversion process pool** to decouple CPU fan-out from the S3
-  network fan-out (conversion currently runs inline in the download threads); (c) **bulk-migrate
+  network fan-out → **DONE (spec 25, 2026-07-11):** `download()` now pipelines a
+  `MAX_CONCURRENT_S3`-wide transfer thread pool against a separate `MAX_CONVERT_PROCS`-wide convert
+  process pool (`spawn`), chained via `add_done_callback` + a disk-aware `sem_staged` backpressure
+  bound — see CHANGES.md; (c) **bulk-migrate
   the existing `satellite_benchmark` JP2 archive to COG → DONE (2026-07-04):**
   `benchmarks/migrate_jp2_to_cog.py` converted all 2316 band files in place (COG + overviews,
   lossless), deleted the JP2s, and rewrote `catalog.parquet` to `.tif` (0 failed, 72 min at 8

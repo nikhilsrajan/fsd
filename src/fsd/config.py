@@ -4,6 +4,8 @@ These are decided contracts (see specs/00-overview.md §6), not implementation
 logic, so they are filled in. Anything requiring real logic lives in its module.
 """
 
+import os
+
 # --- Satellite ---------------------------------------------------------------
 SATELLITE_S2L2A = "sentinel-2-l2a"
 
@@ -76,3 +78,13 @@ COG_COMPRESS = "DEFLATE"
 COG_PREDICTOR = 2
 COG_BLOCKSIZE = 512
 COG_OVERVIEWS = "AUTO"   # "AUTO" builds overviews; "NONE" skips them
+
+# --- Convert process pool (spec 25) -------------------------------------------
+# Convert-on-download runs GDAL COG-translate (GIL-holding, CPU-bound) in a PROCESS pool,
+# decoupled from the 4 transfer threads (spec 25). Knee is 8 workers (migration report).
+MAX_CONVERT_PROCS = min(os.cpu_count() or 1, 8)
+
+# Staging backpressure is sized at download() START from FREE DISK (not a static constant): it is a
+# safety CAP, not a throughput lever (D5). Throughput plateaus once the buffer keeps both pools fed.
+STAGING_DISK_FRACTION = 0.25   # use at most 25% of free space on root_folderpath for in-flight staging
+STAGING_ITEM_GB = 0.2          # rough disk per in-flight band file (the JP2 + its COG coexist mid-convert)

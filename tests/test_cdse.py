@@ -4,8 +4,11 @@ Credential loading only (no network). Uses DUMMY values — never the real
 secrets/cdse_credentials.json.
 """
 
+import concurrent.futures
 import datetime
 import json
+import threading
+import time
 import types
 
 import geopandas as gpd
@@ -441,12 +444,16 @@ def test_plan_download_diffs_needed_vs_present(monkeypatch, tmp_path):
 
 
 def test_circuit_breaker_trips_and_stops_early(monkeypatch, tmp_path):
+    """spec 25 C4: breaker keys on consecutive **transfer** failures only, and the
+    A2 pipeline has no chunk boundary -- semantics are "stops within ~max_staged of
+    the trip", not an exact chunk count. `max_staged=1` forces strictly serialized
+    submission (one file in flight at a time) so the trip point is deterministic."""
     from fsd.catalog.catalog import TileCatalog
 
     # 6 tiles, 1 file each; every transfer fails; breaker at 3 consecutive.
     items = [_fake_item(f"t{i}", "2018-01-01T00:00:00Z", 0.0, 0.0, 0.0) for i in range(6)]
     monkeypatch.setattr(cdse, "_search_items", lambda *a, **k: items)
-    monkeypatch.setattr(cdse, "_download_one", lambda *a, **k: (False, "Forbidden", (0.0, 0.0, 0)))
+    monkeypatch.setattr(cdse, "_transfer_one", lambda *a, **k: (False, "Forbidden", 0.0, 0))
     monkeypatch.setattr(cdse.fs, "exists", lambda p, **k: False)
 
     roi = gpd.GeoDataFrame(geometry=[sg.box(-0.5, -0.5, 1.5, 1.5)], crs="EPSG:4326")
@@ -454,11 +461,12 @@ def test_circuit_breaker_trips_and_stops_early(monkeypatch, tmp_path):
     result = cdse.download(
         roi, datetime.datetime(2018, 1, 1), datetime.datetime(2018, 2, 1),
         ["B02"], str(tmp_path), cat, CdseCredentials(**DUMMY_FIELDS),
-        max_tiles=10, chunksize=2, max_consecutive_failures=3,
+        max_tiles=10, chunksize=2, max_consecutive_failures=3, max_staged=1,
     )
     assert result.circuit_tripped is True
-    # stopped after the chunk that crossed the threshold (4 of 6 attempted), not all 6
-    assert result.total_count == 4 and result.failed_count == 4
+    # streaming stop: fewer than the full work list attempted, and every attempt failed
+    assert result.total_count < 6
+    assert result.failed_count == result.total_count
 
 
 # --- COG-on-download (spec 14) -----------------------------------------------
@@ -553,3 +561,381 @@ def test_download_resume_loops_until_complete(monkeypatch):
     )
     assert len(out) == 3 and out[-1].failed_count == 0
     assert seen == [0, 1, 2]  # on_pass fired each pass
+
+
+# --- spec 25: transfer/convert process-pool pipeline split -------------------
+
+
+def test_transfer_one_skips_on_existing_final(monkeypatch, tmp_path):
+    import os
+
+    monkeypatch.setattr(cdse.fs, "exists", lambda p, **k: os.path.exists(p))
+    dst = tmp_path / "x.jp2"
+    dst.write_bytes(b"data")
+    assert cdse._transfer_one(
+        "s3://eodata/a.jp2", str(dst), {}, needs_convert=False
+    )[:2] == (True, "skipped")
+
+
+def test_transfer_one_redownloads_zero_byte_leftover(monkeypatch, tmp_path):
+    """A 0-byte 'touched' leftover must NOT be treated as done -- it re-transfers."""
+    import os
+
+    dst = tmp_path / "z.jp2"
+    dst.write_bytes(b"")
+    monkeypatch.setattr(cdse.fs, "exists", lambda p, **k: os.path.exists(p))
+    monkeypatch.setattr(cdse.fs, "size", lambda p, **k: os.path.getsize(p))
+    calls = []
+
+    def good_transfer(src, d, **kw):
+        calls.append(d)
+        with open(d, "wb") as f:
+            f.write(b"realbytes")
+
+    monkeypatch.setattr(cdse.fs, "transfer", good_transfer)
+    ok, reason, t_s, nbytes = cdse._transfer_one(
+        "s3://eodata/z.jp2", str(dst), {}, needs_convert=False
+    )
+    assert (ok, reason) == (True, "ok")
+    assert nbytes == len(b"realbytes")
+    assert calls == [str(dst)]
+
+
+def test_transfer_one_retries_then_fails(monkeypatch, tmp_path):
+    import os
+
+    monkeypatch.setattr(cdse.fs, "exists", lambda p, **k: os.path.exists(p))
+
+    def boom(src, dst, **kw):
+        raise PermissionError("An error occurred (Forbidden) ...")
+
+    monkeypatch.setattr(cdse.fs, "transfer", boom)
+    ok, reason, t_s, nbytes = cdse._transfer_one(
+        "s3://eodata/b.jp2", str(tmp_path / "nope.jp2"), {}, needs_convert=False, tries=1
+    )
+    assert (ok, reason) == (False, "Forbidden")
+    assert (t_s, nbytes) == (0.0, 0)
+
+
+def test_transfer_one_needs_convert_writes_to_staging_sibling(monkeypatch, tmp_path):
+    import os
+
+    monkeypatch.setattr(cdse.fs, "exists", lambda p, **k: os.path.exists(p))
+    monkeypatch.setattr(cdse.fs, "size", lambda p, **k: os.path.getsize(p))
+    dst = str(tmp_path / "B04.tif")
+    calls = []
+
+    def fake_transfer(src, target, **kw):
+        calls.append(target)
+        with open(target, "wb") as f:
+            f.write(b"jp2bytes")
+
+    monkeypatch.setattr(cdse.fs, "transfer", fake_transfer)
+    ok, reason, t_s, nbytes = cdse._transfer_one(
+        "s3://eodata/B04.jp2", dst, {}, needs_convert=True
+    )
+    assert (ok, reason) == (True, "ok")
+    assert calls == [dst + ".src.jp2"]  # staged sibling, not the final .tif
+    assert nbytes == len(b"jp2bytes")
+    assert not os.path.exists(dst)
+
+
+def test_transfer_one_sidecar_writes_straight_to_dst(monkeypatch, tmp_path):
+    """cog=False / sidecar files (MTD_TL.xml) skip staging entirely."""
+    import os
+
+    monkeypatch.setattr(cdse.fs, "exists", lambda p, **k: os.path.exists(p))
+    monkeypatch.setattr(cdse.fs, "size", lambda p, **k: os.path.getsize(p))
+    dst = str(tmp_path / "MTD_TL.xml")
+    calls = []
+
+    def fake_transfer(src, target, **kw):
+        calls.append(target)
+        with open(target, "wb") as f:
+            f.write(b"<xml/>")
+
+    monkeypatch.setattr(cdse.fs, "transfer", fake_transfer)
+    ok, reason, t_s, nbytes = cdse._transfer_one(
+        "s3://eodata/MTD_TL.xml", dst, {}, needs_convert=False
+    )
+    assert (ok, reason) == (True, "ok")
+    assert calls == [dst]
+
+
+def test_convert_one_converts_and_cleans_staging(tmp_path):
+    import os
+
+    import rasterio
+
+    staging = str(tmp_path / "B04.tif.src.jp2")
+    dst = str(tmp_path / "B04.tif")
+    src_data = _write_raster(staging)
+
+    ok, reason, c_s = cdse._convert_one(staging, dst)
+    assert (ok, reason) == (True, "ok")
+    assert c_s >= 0
+    assert os.path.exists(dst) and not os.path.exists(staging)
+    with rasterio.open(dst) as d:
+        assert d.driver == "GTiff"
+        assert (d.read() == src_data).all()
+
+
+def test_convert_one_bad_staging_reports_convert_error_and_cleans_up(tmp_path):
+    import os
+
+    staging = tmp_path / "bad.tif.src.jp2"
+    staging.write_bytes(b"not a raster")
+    dst = str(tmp_path / "bad.tif")
+
+    ok, reason, c_s = cdse._convert_one(str(staging), dst)
+    assert (ok, reason) == (False, "ConvertError")
+    assert not os.path.exists(staging)  # cleaned up even on failure
+    assert not os.path.exists(dst)
+
+
+class _SyncExecutor:
+    """Synchronous stand-in for `ProcessPoolExecutor` (spec 25 test seam): runs the
+    submitted callable inline on the calling thread and returns an already-done
+    Future -- no subprocess spawned, immune to the spawn-vs-monkeypatch problem."""
+
+    def submit(self, fn, *args, **kwargs):
+        fut = concurrent.futures.Future()
+        try:
+            result = fn(*args, **kwargs)
+        except Exception as e:
+            fut.set_exception(e)
+        else:
+            fut.set_result(result)
+        return fut
+
+    def shutdown(self, wait=True):
+        pass
+
+
+def test_download_cog_pipeline_converts_via_injected_sync_executor(monkeypatch, tmp_path):
+    """spec 25: the full download() pipeline (transfer thread pool -> convert pool)
+    exercised in-process with a synchronous convert_executor -- no subprocess."""
+    import os
+
+    import rasterio
+
+    from fsd.catalog.catalog import TileCatalog
+
+    item = _fake_item("S2A_T36PZT", "2018-01-30T08:00:00Z", 36.0, 11.0, 5.0, safe=SAFE)
+    monkeypatch.setattr(cdse, "_search_items", lambda *a, **k: [item])
+    monkeypatch.setattr(
+        cdse, "_select_item_files",
+        lambda it, bands, root, cog=True: [
+            (f"{cdse._safe_root_from_item(it)}/B04.jp2", str(tmp_path / "tile" / "B04.tif")),
+        ],
+    )
+    src_data = _write_raster(tmp_path / "ref.tif")
+
+    def fake_transfer(src, target, **kw):
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        _write_raster(target)
+
+    monkeypatch.setattr(cdse.fs, "transfer", fake_transfer)
+    monkeypatch.setattr(cdse.fs, "exists", lambda p, **k: os.path.exists(p))
+    monkeypatch.setattr(cdse.fs, "size", lambda p, **k: os.path.getsize(p))
+
+    roi = gpd.GeoDataFrame(geometry=[sg.box(36.0, 11.0, 37.0, 12.0)], crs="EPSG:4326")
+    cat = TileCatalog(str(tmp_path / "c.parquet"))
+    result = cdse.download(
+        roi, datetime.datetime(2018, 1, 1), datetime.datetime(2018, 2, 1),
+        ["B04"], str(tmp_path), cat, CdseCredentials(**DUMMY_FIELDS),
+        max_tiles=10, cog=True, convert_executor=_SyncExecutor(),
+    )
+    dst = str(tmp_path / "tile" / "B04.tif")
+    assert os.path.exists(dst) and not os.path.exists(dst + ".src.jp2")
+    with rasterio.open(dst) as d:
+        assert d.driver == "GTiff"
+        assert (d.read() == src_data).all()
+    assert result.convert_seconds > 0
+    assert result.bytes_by_band.get("B04", 0) > 0
+    gdf = cat.read()
+    assert len(gdf) == 1 and gdf["files"].iloc[0] == "B04.tif"
+
+    # rerun: idempotent skip
+    result2 = cdse.download(
+        roi, datetime.datetime(2018, 1, 1), datetime.datetime(2018, 2, 1),
+        ["B04"], str(tmp_path), cat, CdseCredentials(**DUMMY_FIELDS),
+        max_tiles=10, cog=True, convert_executor=_SyncExecutor(),
+    )
+    assert result2.skipped_count == 1 and result2.failed_count == 0
+
+
+class _BlockingConvertExecutor:
+    """Fake convert executor (spec 25 test seam): each submission blocks until
+    `release_all()` is called, and tracks concurrent + peak in-flight count -- used
+    to observe the `sem_staged` backpressure bound without racing on the filesystem."""
+
+    def __init__(self):
+        self.inflight = 0
+        self.peak = 0
+        self._lock = threading.Lock()
+        self._release = threading.Event()
+        self._threads = []
+
+    def submit(self, fn, *args, **kwargs):
+        with self._lock:
+            self.inflight += 1
+            self.peak = max(self.peak, self.inflight)
+        fut = concurrent.futures.Future()
+
+        def _run():
+            self._release.wait()
+            try:
+                result = fn(*args, **kwargs)
+            except Exception as e:
+                fut.set_exception(e)
+            else:
+                fut.set_result(result)
+            with self._lock:
+                self.inflight -= 1
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        self._threads.append(t)
+        return fut
+
+    def release_all(self):
+        self._release.set()
+
+    def shutdown(self, wait=True):
+        if wait:
+            for t in self._threads:
+                t.join(timeout=5)
+
+
+def test_download_pipeline_bounds_staged_backpressure(monkeypatch, tmp_path):
+    """spec 25 D5/D6: sem_staged never lets more than max_staged files be
+    staged-but-unconverted at once -- observed via the fake convert executor's
+    in-flight count (peak), not a filesystem race."""
+    import os
+
+    from fsd.catalog.catalog import TileCatalog
+
+    n_tiles = 6
+    items = [
+        _fake_item(f"t{i}", "2018-01-01T00:00:00Z", float(i), 0.0, 0.0)
+        for i in range(n_tiles)
+    ]
+    monkeypatch.setattr(cdse, "_search_items", lambda *a, **k: items)
+
+    def fake_transfer(src, target, **kw):
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        _write_raster(target)
+
+    monkeypatch.setattr(cdse.fs, "transfer", fake_transfer)
+    monkeypatch.setattr(cdse.fs, "exists", lambda p, **k: os.path.exists(p))
+    monkeypatch.setattr(cdse.fs, "size", lambda p, **k: os.path.getsize(p))
+
+    executor = _BlockingConvertExecutor()
+    max_staged = 2
+
+    def _releaser():
+        for _ in range(500):
+            if executor.peak >= max_staged:
+                break
+            time.sleep(0.01)
+        executor.release_all()
+
+    threading.Thread(target=_releaser, daemon=True).start()
+
+    roi = gpd.GeoDataFrame(geometry=[sg.box(-1, -1, n_tiles + 1, 1)], crs="EPSG:4326")
+    cat = TileCatalog(str(tmp_path / "c.parquet"))
+    result = cdse.download(
+        roi, datetime.datetime(2018, 1, 1), datetime.datetime(2018, 2, 1),
+        ["B02"], str(tmp_path), cat, CdseCredentials(**DUMMY_FIELDS),
+        max_tiles=10, cog=True, max_staged=max_staged, convert_executor=executor,
+    )
+    assert result.failed_count == 0
+    assert executor.peak <= max_staged
+
+
+def test_download_cog_false_never_spawns_convert_pool(monkeypatch, tmp_path):
+    """A cog=False run spawns zero convert processes (spec 25: lazy pool creation)."""
+    import os
+
+    from fsd.catalog.catalog import TileCatalog
+
+    def _boom_factory(max_workers):
+        raise AssertionError("convert pool factory must not be invoked (cog=False)")
+
+    monkeypatch.setattr(cdse, "_make_convert_pool", _boom_factory)
+
+    item = _fake_item("S2A_T36PZT", "2018-01-30T08:00:00Z", 36.0, 11.0, 5.0, safe=SAFE)
+    monkeypatch.setattr(cdse, "_search_items", lambda *a, **k: [item])
+
+    def fake_transfer(src, dst, **kw):
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        open(dst, "wb").close()
+
+    monkeypatch.setattr(cdse.fs, "transfer", fake_transfer)
+    monkeypatch.setattr(cdse.fs, "exists", lambda p, **k: os.path.exists(p))
+
+    roi = gpd.GeoDataFrame(geometry=[sg.box(36.0, 11.0, 37.0, 12.0)], crs="EPSG:4326")
+    cat = TileCatalog(str(tmp_path / "c.parquet"))
+    result = cdse.download(
+        roi, datetime.datetime(2018, 1, 1), datetime.datetime(2018, 2, 1),
+        ["B02"], str(tmp_path), cat, CdseCredentials(**DUMMY_FIELDS),
+        max_tiles=10, cog=False,
+    )
+    assert result.failed_count == 0
+
+
+def test_download_all_skip_pass_never_spawns_convert_pool(monkeypatch, tmp_path):
+    """An all-skip resume pass (cog=True, every final file already present) spawns
+    zero convert processes (spec 25: lazy pool creation)."""
+    import os
+
+    from fsd.catalog.catalog import TileCatalog
+
+    def _boom_factory(max_workers):
+        raise AssertionError("convert pool factory must not be invoked (all-skip pass)")
+
+    monkeypatch.setattr(cdse, "_make_convert_pool", _boom_factory)
+
+    item = _fake_item("S2A_T36PZT", "2018-01-30T08:00:00Z", 36.0, 11.0, 5.0, safe=SAFE)
+    monkeypatch.setattr(cdse, "_search_items", lambda *a, **k: [item])
+    monkeypatch.setattr(
+        cdse, "_select_item_files",
+        lambda it, bands, root, cog=True: [
+            (f"{cdse._safe_root_from_item(it)}/B04.jp2", str(tmp_path / "tile" / "B04.tif")),
+        ],
+    )
+    dst = tmp_path / "tile" / "B04.tif"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_bytes(b"already-there")
+    monkeypatch.setattr(cdse.fs, "exists", lambda p, **k: os.path.exists(p))
+    monkeypatch.setattr(cdse.fs, "size", lambda p, **k: os.path.getsize(p))
+
+    roi = gpd.GeoDataFrame(geometry=[sg.box(36.0, 11.0, 37.0, 12.0)], crs="EPSG:4326")
+    cat = TileCatalog(str(tmp_path / "c.parquet"))
+    result = cdse.download(
+        roi, datetime.datetime(2018, 1, 1), datetime.datetime(2018, 2, 1),
+        ["B04"], str(tmp_path), cat, CdseCredentials(**DUMMY_FIELDS),
+        max_tiles=10, cog=True,
+    )
+    assert result.skipped_count == 1 and result.failed_count == 0
+
+
+def test_default_max_staged_disk_aware(monkeypatch, tmp_path, capsys):
+    """spec 25 D5/C6: disk-aware MAX_STAGED -- roomy disk settles at `headroom`;
+    tight disk shrinks toward `disk_cap`, never below `MAX_CONCURRENT_S3`, and warns
+    when the result falls below `floor`."""
+    procs = 8
+    floor = cdse.config.MAX_CONCURRENT_S3 + procs          # 12
+    headroom = cdse.config.MAX_CONCURRENT_S3 + 2 * procs   # 20
+
+    monkeypatch.setattr(cdse.shutil, "disk_usage",
+                        lambda p: types.SimpleNamespace(free=500e9))
+    assert cdse._default_max_staged(str(tmp_path), procs) == headroom
+
+    monkeypatch.setattr(cdse.shutil, "disk_usage",
+                        lambda p: types.SimpleNamespace(free=2e9))  # disk_cap = 2
+    staged = cdse._default_max_staged(str(tmp_path), procs)
+    assert staged == cdse.config.MAX_CONCURRENT_S3   # clamped to the floor min, not 2
+    assert staged < floor
+    assert "disk-limited" in capsys.readouterr().out

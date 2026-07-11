@@ -96,11 +96,13 @@ Local ingest (today's reality) works fully.
 ## Cost & performance notes (call out, don't re-measure)
 - **Storage:** base COG ≈ 1.225× JP2 (spec 13); **with overviews ≈ +38% on top → ~1.7× JP2**.
   This is the price of tiling-readiness the user chose; flagged in the download report / docs.
-- **CPU at download time:** conversion (DEFLATE + overview build) runs **inline in the existing
-  download worker threads** (`MAX_CONCURRENT_S3=4`). GDAL releases the GIL for compression, so the
-  threads parallelize the CPU work; download stays I/O-bound-dominated. A dedicated conversion
-  **process pool** (decouple network fan-out from CPU fan-out) is a possible future optimization →
-  TODO, not v1.
+- **CPU at download time:** conversion (DEFLATE + overview build) ran **inline in the download
+  worker threads** (`MAX_CONCURRENT_S3=4`) at this spec's implementation — GDAL's `to_cog` in fact
+  **holds the GIL** (not releases it, contra the original note here), so a few converting threads
+  starved the rest and collapsed download concurrency. **Decoupled onto a dedicated convert process
+  pool → spec 25** (2026-07-11): a `MAX_CONCURRENT_S3`-wide transfer thread pool now runs
+  continuously against a separate `MAX_CONVERT_PROCS`-wide process pool for conversion, bounded by a
+  disk-aware `sem_staged` backpressure cap. See `specs/25-download-convert-redesign.md` + CHANGES.md.
 
 ## Validation
 - **Unit (pure/local, no network):**
@@ -123,7 +125,7 @@ Local ingest (today's reality) works fully.
 - Remote-dst (Blob/S3) COG conversion — stage-local→convert→upload (Azure milestone).
 - Sourcing AWS `sentinel-2-l2a-cogs` instead of converting CDSE JP2 (a different discovery source;
   TODO #11 source-extension territory).
-- A conversion process pool / decoupled CPU fan-out (perf tuning; TODO).
+- A conversion process pool / decoupled CPU fan-out (perf tuning) → **DONE, spec 25**.
 - Re-downloading / migrating the existing `satellite_benchmark` JP2 archive to COG (this changes
   *new* ingest only; a bulk migration is a separate op).
 - ZSTD/LZW alternatives, offset/DN decisions (TODO #10), STAC-geoparquet (TODO #14).

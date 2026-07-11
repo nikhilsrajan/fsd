@@ -4,7 +4,35 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-11_
 
-## LATEST (2026-07-11) — spec 25 SIGNED OFF (download/jp2→COG redesign) — ready to implement
+## LATEST (2026-07-11) — spec 25 IMPLEMENTED (download/jp2→COG process-pool redesign)
+
+**Implemented in a Sonnet@medium session** against the signed-off spec (contained to
+`sources/cdse.py` + `config.py`). `pytest -q` all green (188 passed, 1 skipped) and `ruff check
+src/ tests/` clean; **no network run** (per CLAUDE.md — that's spec 26's job). Docs updated:
+`CHANGES.md` (new top entry), `TODO.md` (item (b) marked DONE), `specs/14-cog-on-download.md`
+(pointer updated), `config.py` comments.
+
+**What landed:** `_transfer_and_convert` replaced by `_transfer_one` (thread stage, fail-fast
+retry, writes to `dst+".src.jp2"` when `needs_convert`) + `_convert_one` (top-level/picklable
+process stage, `to_cog` + staging cleanup in `finally`); `_download_one` kept as the sequential
+wrapper (its direct-call tests pass unchanged) but `download()` no longer calls it — it drives the
+A2 pipeline: a `MAX_CONCURRENT_S3`-wide transfer `ThreadPoolExecutor` + a lazily-created
+`MAX_CONVERT_PROCS`-wide `ProcessPoolExecutor` (spawn), chained via `add_done_callback`, bounded by
+a `sem_staged` `BoundedSemaphore`. New `config.py` constants `MAX_CONVERT_PROCS`,
+`STAGING_DISK_FRACTION`, `STAGING_ITEM_GB`; new `cdse._default_max_staged` (disk-aware sizing) and
+`cdse._make_convert_pool` (the lazy-pool factory seam tests monkeypatch). Circuit breaker rewritten
+to streaming/transfer-failures-only semantics; `chunksize` repurposed to catalog-flush cadence only.
+New `download`/`download_resume` kwargs `max_convert_procs`/`max_staged`/`convert_executor` (all
+defaulted, backward-compatible). Test suite: 5 unchanged regression tests still pass, 1 rewritten
+(`test_circuit_breaker_trips_and_stops_early`, now forces determinism via `max_staged=1`), 15 new
+tests (`_transfer_one` × 5, `_convert_one` × 2, cog=True pipeline via injected `_SyncExecutor`,
+backpressure bound via `_BlockingConvertExecutor`, lazy-pool × 2, `_default_max_staged`).
+
+**Next step: spec 26** (safe runner — `--dry-run`/`--stop-file`/progress + the measured
+transfer-vs-convert-split confirm-run over a real CDSE download). That is the first real network
+exercise of this pipeline; not run yet.
+
+## PRIOR (2026-07-11) — spec 25 SIGNED OFF (download/jp2→COG redesign) — ready to implement
 
 **Spec `specs/25-download-convert-redesign.md` is SIGNED OFF; next action = implement in a fresh
 Sonnet@medium session** (spec 24 D3/D5 — user runs `/handoff`, switches `/model sonnet` + `/effort
