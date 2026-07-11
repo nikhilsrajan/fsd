@@ -1117,3 +1117,104 @@ def test_sum_results_ors_pool_broken():
     c = cdse.DownloadResult(successful_count=1, total_count=1, pool_broken=False)
     d = cdse.DownloadResult(successful_count=1, total_count=1, pool_broken=False)
     assert cdse.sum_results([c, d]).pool_broken is False
+
+
+# --- spec 26: should_stop seam + _fmt_progress ETA ----------------------------
+
+
+def test_should_stop_halts_submit_loop_mid_pass(monkeypatch, tmp_path):
+    """spec 26 test 1: a `should_stop` that flips True once the first item is
+    finalized halts the submit loop early -- no hang (watchdog), `stopped is True`,
+    fewer than the full work list attempted, every attempted item accounted, no
+    leaked `sem_staged` permit (a leak would deadlock the next acquire and trip the
+    watchdog timeout). `max_staged=1` + a synchronous convert executor forces strictly
+    serialized submission (as the spec-25 circuit-breaker test does) so the stop point
+    is deterministic."""
+    monkeypatch.setattr(cdse.config, "PROGRESS_EVERY_S", 0)  # disable the throttle
+    roi, cat = _setup_multi_tile_download(monkeypatch, tmp_path, n_tiles=6)
+
+    finalized = {"n": 0}
+    real_convert_one = cdse._convert_one
+
+    def counting_convert_one(staging, dst):
+        result = real_convert_one(staging, dst)
+        finalized["n"] += 1
+        return result
+
+    monkeypatch.setattr(cdse, "_convert_one", counting_convert_one)
+
+    result = _download_in_thread(
+        roi, datetime.datetime(2018, 1, 1), datetime.datetime(2018, 2, 1),
+        ["B04"], str(tmp_path), cat, CdseCredentials(**DUMMY_FIELDS),
+        max_tiles=10, cog=True, max_staged=1, convert_executor=_SyncExecutor(),
+        should_stop=lambda: finalized["n"] >= 1,
+    )
+    assert result.stopped is True
+    assert result.total_count < 6
+    assert result.successful_count + result.failed_count == result.total_count
+
+
+def test_should_stop_none_is_noop(monkeypatch, tmp_path):
+    """spec 26 test 2: `should_stop=None` (the default) is today's behavior exactly --
+    a normal run finishes all work, `stopped is False`."""
+    roi, cat = _setup_multi_tile_download(monkeypatch, tmp_path, n_tiles=6)
+    result = _download_in_thread(
+        roi, datetime.datetime(2018, 1, 1), datetime.datetime(2018, 2, 1),
+        ["B04"], str(tmp_path), cat, CdseCredentials(**DUMMY_FIELDS),
+        max_tiles=10, cog=False,
+    )
+    assert result.stopped is False
+    assert result.total_count == 6
+
+
+def test_download_resume_breaks_on_stopped_pass(monkeypatch):
+    """spec 26 test 3: a `should_stop` that trips on pass 1 ends `download_resume`
+    immediately -- only one pass ran, the last result has `stopped True`, no cooldown
+    taken (a user stop is neither a bad-window cooldown nor a completion)."""
+    from fsd.sources.cdse import DownloadResult
+
+    calls = {"n": 0}
+
+    def fake_download(*a, **k):
+        calls["n"] += 1
+        return DownloadResult(2, 4, failed_count=0, stopped=True)
+
+    monkeypatch.setattr(cdse, "download", fake_download)
+    slept = {"called": False}
+    monkeypatch.setattr(time, "sleep", lambda s: slept.__setitem__("called", True))
+
+    roi = gpd.GeoDataFrame(geometry=[sg.box(0, 0, 1, 1)], crs="EPSG:4326")
+    out = cdse.download_resume(
+        roi, datetime.datetime(2018, 1, 1), datetime.datetime(2018, 2, 1),
+        ["B02"], "/root", object(), CdseCredentials(**DUMMY_FIELDS),
+        max_tiles=10, cooldown_s=5, max_passes=5, should_stop=lambda: False,
+    )
+    assert calls["n"] == 1
+    assert len(out) == 1 and out[-1].stopped is True
+    assert slept["called"] is False
+
+
+def test_sum_results_ors_stopped():
+    """spec 26 test 4: `sum_results` ORs `stopped` across passes."""
+    a = cdse.DownloadResult(successful_count=1, total_count=1, stopped=True)
+    b = cdse.DownloadResult(successful_count=1, total_count=1, stopped=False)
+    agg = cdse.sum_results([a, b])
+    assert agg.stopped is True
+
+    c = cdse.DownloadResult(successful_count=1, total_count=1, stopped=False)
+    d = cdse.DownloadResult(successful_count=1, total_count=1, stopped=False)
+    assert cdse.sum_results([c, d]).stopped is False
+
+
+def test_fmt_progress_eta_placeholder_before_first_completion():
+    """spec 26 test 7: ETA is `~?` until `done > 0` (no rate to extrapolate from
+    yet), a finite `~Nm` once there's a completion, and all existing fields (spec 23)
+    are unchanged."""
+    s0 = cdse._fmt_progress(0, 200, ok_n=0, fail_n=0, skipped=0, elapsed_s=10.0)
+    assert "ETA ~?" in s0
+
+    s1 = cdse._fmt_progress(50, 200, ok_n=45, fail_n=5, skipped=0, elapsed_s=100.0)
+    assert "ETA ~?" not in s1
+    assert "ETA ~" in s1
+    for token in ("50/200", "25%", "ok=45", "fail=5", "file/s"):
+        assert token in s1

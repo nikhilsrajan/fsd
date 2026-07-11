@@ -40,6 +40,11 @@ catalog = fsd.download(
     creds=creds,
     max_tiles=600,
 )
+# Or drive it from the shell (safe runner: --dry-run preview, --stop-file clean stop,
+# progress + ETA, spec-24 _result.json) — see RECIPES.md:
+#   python -m fsd.sources.download_cli --roi my_roi.geojson --start 2018-01-01 --end 2019-01-01 \
+#       --bands B04 B08 B8A SCL --dst data/s2l2a --catalog data/s2l2a/catalog.parquet \
+#       --max-tiles 600 --dry-run
 
 # 2. Known-label polygons + catalog -> flattened training arrays. (No "flatten" needed.)
 training = fsd.create_training_data(

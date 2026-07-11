@@ -4,7 +4,112 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-11_
 
-## LATEST (2026-07-11) — spec 25b IMPLEMENTED (pipeline exception-safety / no-hang fix)
+## LATEST (2026-07-11) — spec 26 offline half REVIEWED (Opus@high): PASS on the hard stuff, 2 small fixes queued
+
+**Opus@high review of the spec-26 offline half (in the worktree `.claude/worktrees/spec26-download-cli`).**
+Verified **correct** (do not touch): the `should_stop` throttle is race-free (`_stop()` runs only in the
+single submit-loop thread; callbacks never touch `last_stop_check`/`stop_cached`; sticky `stopped` set
+under `lock`, read after pool join); **no `sem_staged` permit leak** at either checkpoint (top-of-loop
+break pre-`acquire`; post-`acquire` release-then-break); `download_resume` stop-before-cooldown ordering
+right (a user stop never enters cooldown); `--dry-run` touches zero band bytes; `_fmt_progress`
+`ETA ~?`-until-`done>0` math correct. Local `pytest` 55 passed on touched files, `ruff` clean.
+
+**Found 2 defects → fix in a Sonnet@medium session** (handoff written:
+`/tmp/fsd-handoff-spec26-sonnet-fixes.md`, exact code + 2 new tests):
+- **Fix 1 (correctness):** the CLI's exit-code/`status` gates on `sum_results`' **summed**
+  `failed_count`, which over-counts failures a later resume pass recovered → a successful-but-flaky
+  run reports `status="failed"`/exit 1 (contradicts the runbook's own step-3 integrity PASS; the demo
+  treats the same number as a soft warning). Fix = judge the **terminal pass** (download_resume's own
+  break condition), treat empty `results` (stop before pass 1) as `stopped`, keep summed counts as
+  metrics + add `failed_total` diagnostic. Exit 0 on clean-or-stopped preserved.
+- **Fix 2 (usability):** a stale `--stop-file` (e.g. `/tmp/fsd.stop` left after a stop) makes the
+  documented "re-run to resume" an instant no-op stop. Fix = runbook says `rm -f` the stop-file before
+  resuming + a tiny CLI startup warning when the stop-file already exists.
+- **NOT fixed (left for the user):** the runbook's `missing_count [5,10]` range is likely low
+  (~12 granules for a 2-month single-tile window at ~5-day S2 revisit); user decides whether to widen.
+
+**Next: Sonnet@medium implements the 2 fixes** (target: `pytest` **203 passed, 1 skipped**, ruff clean),
+then hand off + clear. The network confirm-run (`runbooks/26-download-confirm-run.md` step 2 onward)
+still waits for the user on a real (non-hotspot) connection.
+
+**UPDATE (2026-07-11, Sonnet@medium):** both review fixes landed — CLI completion gate now judges the
+terminal pass (`results[-1]`) instead of `sum_results`' summed `failed_count`, empty `results` maps to
+`status="stopped"`, new `metrics.failed_total` diagnostic; stale-`--stop-file` startup warning added +
+runbook step-2 now says `rm -f` it before resuming. `pytest -q` = **203 passed, 1 skipped**, `ruff`
+clean. Worktree left uncommitted per CLAUDE.md (commit only on request).
+
+## PRIOR (2026-07-11) — spec 26 offline half IMPLEMENTED (safe download CLI + should_stop seam)
+
+**Implemented in a Sonnet@medium session against `specs/26-safe-download-runner.md` (offline
+half only — no network run, per CLAUDE.md).** Landed, all contained to `sources/cdse.py` +
+one new module:
+- `should_stop: Callable[[], bool] | None = None` kwarg on `download()`/`download_resume` (spec
+  §1): checked in the submit loop at the two existing checkpoints, throttled to
+  `config.PROGRESS_EVERY_S`, identical halt-new-submissions-only semantics to `tripped`/
+  `pool_broken`. New additive `DownloadResult.stopped`; `sum_results` ORs it; `download_resume`
+  passes `should_stop` through + `if r.stopped: break` + a pre-pass check.
+- New `src/fsd/sources/download_cli.py` (`python -m fsd.sources.download_cli`): `--dry-run`
+  (plan only, zero band bytes, no probe), `--stop-file` (builds the `should_stop` closure), an
+  optional single `probe_throughput` on the real path (`--no-probe` to skip), writes the spec-24
+  `_result.json`; exit code 0 on clean-or-stopped, non-zero on failed/tripped/pool_broken.
+- `_fmt_progress` ETA edge case: `ETA ~?` until `done>0` (was misleadingly `ETA 0m`).
+- `runbooks/26-download-confirm-run.md` — fully written offline (self-contained `expected`
+  block: step-1 `missing_count` in `[5,10]`, step-2 clean `status=ok`/`failed=0`/`stopped=false`,
+  step-3 integrity script, step-4 report, optional stop drill). **Not run** — the network half
+  (mobile-hotspot pause) is deferred to whenever the user has a real connection.
+- Tests: 8 new (`tests/test_cdse.py` — should_stop mid-pass halt via watchdog + `max_staged=1` +
+  `_SyncExecutor` determinism, `should_stop=None` no-op, `download_resume` breaks on stopped pass
+  no cooldown, `sum_results` ORs `stopped`, `_fmt_progress` ETA `~?`/`~Nm`; new
+  `tests/test_download_cli.py` — dry-run zero-bytes + result-json, real-path wiring +
+  `--stop-file` predicate + exit-code mapping, missing-creds guard). `pytest -q` = **201 passed,
+  1 skipped** (all 47 original `test_cdse.py` regressions + 154 other pre-existing tests
+  unaffected); `ruff check src/ tests/` clean. Docs updated: `CHANGES.md`, `RECIPES.md`, `README`
+  (one-line pointer), `TODO.md` (#23, cost_model persistence follow-up).
+
+**Next: Opus@high review pass**, then hand off + clear (per spec 26's deliberate pause) — the
+confirm-run itself (runbook step 2 onward, real CDSE download) waits for the user on a real
+connection; a later session verifies the pasted `_result.json` against the runbook's own
+`expected` block.
+
+## PRIOR (2026-07-11) — spec 25b REVIEWED (PASS) + spec 26 SIGNED OFF (safe download runner)
+
+**Spec 25b review (Opus@high) = PASS.** Traced the exception-safety invariant through every
+callback path (transfer ok→convert / submit-raises / cfut-raises / failed / skipped / no-convert):
+`_finalize` runs exactly once per item, each acquired `sem_staged` permit releases exactly once,
+`remaining`/`sem_staged` never sit behind a fallible call. No double-release/double-finalize. The
+beyond-spec `flush_lock` is correct + necessary (serializes concurrent chunk-flush parquet writes;
+never nested with `lock` → no deadlock; end-of-run flush is post-pool-join so needs none).
+Re-queue-on-failure is safe because `catalog.append` is idempotent upsert-by-id (union files).
+Verified: `test_cdse.py` 47 passed, full suite **193 passed / 1 skipped**, ruff clean; docs
+(CHANGES §25b, TODO #22, spec-25 pointer) accurate. Minor non-blockers noted (tautological assert in
+test 1; `transfer_pool.submit` raise→loud-exit-not-hang; persistent-flush-failure metric undercount
+recovered by resume) — none warrant a change.
+
+**→ `specs/26-safe-download-runner.md` SIGNED OFF (2026-07-11), C1–C6 accepted as drafted.** The
+first real CDSE network exercise of the spec-25/25b pipeline, as a **safe runner + confirm-run**.
+Locked (interview): **D1** one spec = CLI + confirm-run; **D2** a thin **CLI wrapping
+`download_resume`** (`python -m fsd.sources.download_cli`), NOT a Snakemake unit-of-work; **D3**
+`--stop-file` checked **mid-pass** via a generic `should_stop` predicate at the two submit-loop
+checkpoints (throttled to `PROGRESS_EVERY_S`); **D4** confirm-run = tiny **1-MGRS-tile** Austria
+slice (~7 granules / ~2 GB). Additive `DownloadResult.stopped`; `--dry-run` = `plan_download` only
+(**zero band bytes**, no probe); `_fmt_progress` gains rate+ETA; `_result.json` per spec 24; exit
+code doubles as PASS/FAIL (0 on clean OR user stop). Untouched: `_transfer_one`/`_convert_one`/
+`to_cog`/discovery/circuit-breaker/`pool_broken`.
+
+**⚠️ DELIBERATE PAUSE (mobile-hotspot).** Spec 26 splits at a network seam. **Offline half**
+(implement + review with NO network): the CLI, the `should_stop` seam, `DownloadResult.stopped`,
+`_fmt_progress` ETA, all pytest (monkeypatched), docs, **and the fully-written runbook
+`runbooks/26-download-confirm-run.md`**. **Network half** = runbook **step 2 onward** (real
+download → integrity → report). After 26 is implemented + reviewed we **hand off + clear**; the
+user runs the confirm-run only on a real (non-hotspot) connection, whenever available, and pastes
+the `_result.json` back — verified against the runbook's **self-contained `expected` block**, not
+this conversation.
+
+**Next step: implement spec 26 (offline half) in a fresh Sonnet@medium session** (user runs
+`/handoff`, `/model sonnet` + `/effort medium`, points it at `specs/26-safe-download-runner.md`).
+Opus does NOT implement. After it lands + Opus review → hand off + clear → confirm-run later.
+
+## PRIOR (2026-07-11) — spec 25b IMPLEMENTED (pipeline exception-safety / no-hang fix)
 
 **Implemented in a Sonnet@medium session** against the signed-off spec (contained to
 `sources/cdse.py`: the `download()` callbacks + submit-loop stop condition, + additive

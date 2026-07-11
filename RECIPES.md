@@ -45,6 +45,30 @@ arrays = training.load()   # {"data" (px,T,b), "ids", "labels", "coords", "metad
 `run_inference` / `deploy` are stubs (P4 / P6). Install: `pip install
 "git+ssh://git@github.com/nikhilsrajan/fsd.git"`. Module = `src/fsd/api.py`.
 
+## Safe download runner CLI (spec 26)
+
+A thin CLI over `download_resume` — preview before committing GB + quota, and a clean
+mid-run stop. Run from `fsd/`, venv active.
+
+```bash
+# preview: metadata only, zero band bytes
+.venv/bin/python -m fsd.sources.download_cli \
+  --roi my_roi.geojson --start 2018-01-01 --end 2019-01-01 \
+  --bands B04 B08 B8A SCL --dst data/s2l2a --catalog data/s2l2a/catalog.parquet \
+  --max-tiles 600 --dry-run
+
+# real run, with a stop-file armed (touch it to stop cleanly; resume by re-running)
+.venv/bin/python -m fsd.sources.download_cli \
+  --roi my_roi.geojson --start 2018-01-01 --end 2019-01-01 \
+  --bands B04 B08 B8A SCL --dst data/s2l2a --catalog data/s2l2a/catalog.parquet \
+  --max-tiles 600 --stop-file /tmp/fsd.stop --creds cdse_credentials.json
+# touch /tmp/fsd.stop   # from another terminal, to stop cleanly
+```
+
+Writes `<dst>/_result.json` (spec 24 paste-back shape); exit code doubles as PASS/FAIL (0 on
+clean completion or a user stop, non-zero on failures/circuit-trip/unresolved pool-break).
+Confirm-run runbook: `runbooks/26-download-confirm-run.md`.
+
 ## STAC export of the tile catalog (spec 17)
 
 Additive interchange view — the GeoParquet stays the query format. Pure-metadata (no raster

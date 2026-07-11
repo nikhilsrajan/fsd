@@ -68,6 +68,46 @@ carried over (renames, restructures, behavioral tweaks). Pure removals go in
   later flush (recovered by `download_resume`'s idempotent-skip on the next pass if it's never
   retried within the run). The end-of-run flush is likewise wrapped.
 
+## Safe download runner CLI + should_stop seam (spec 26, 2026-07-11)
+- **New `should_stop: Callable[[], bool] | None = None` kwarg on `download()`/`download_resume`**
+  (additive, default `None` = unchanged behavior). A generic user-stop predicate — not a hard-coded
+  stop-file — checked in `download()`'s submit loop at the two existing checkpoints (top-of-loop and
+  post-`sem_staged.acquire()`), alongside `tripped`/`pool_broken`, throttled to at most once per
+  `config.PROGRESS_EVERY_S` (a filesystem `os.path.exists` isn't stat-ed per granule). Semantics are
+  identical to `tripped`/`pool_broken`: halts **new** submissions only, every already-submitted
+  transfer/convert finalizes normally and drains, a stopped item is never attempted (not a failure,
+  not counted). New **`DownloadResult.stopped: bool = False`** (additive); `sum_results` ORs it.
+  `download_resume` passes `should_stop` through to each pass, adds `if r.stopped: break` (a user
+  stop ends the resume loop immediately — no cooldown, not a completion), and checks `should_stop()`
+  once before starting each new pass.
+- **New CLI `python -m fsd.sources.download_cli`** (`src/fsd/sources/download_cli.py`) — a thin
+  driver wrapping `download_resume`: `--dry-run` (metadata-only preview via `plan_download` +
+  `format_download_plan`, **zero band bytes**, no `probe_throughput`), `--stop-file` (builds the
+  `should_stop` closure), an optional single `probe_throughput` baseline on the real path
+  (skippable `--no-probe`), and a spec-24 `_result.json` per run. Exit code doubles as PASS/FAIL:
+  `0` on clean completion **or** a user stop, non-zero on `failed_count>0`/`circuit_tripped`/
+  unresolved `pool_broken`.
+- **`_fmt_progress` ETA edge case fixed.** Rate/ETA were already reported (`N.N file/s | ETA ~Xm`);
+  now `ETA ~?` is shown until `done > 0` (previously `ETA 0m`, misleadingly precise with no
+  completions yet to extrapolate from). All existing fields/tokens unchanged (spec 23 assertions
+  still hold).
+- **Confirm-run runbook** `runbooks/26-download-confirm-run.md` — the first real CDSE network
+  exercise of the spec-25/25b pipeline, over the tiny 1-MGRS-tile Austria slice (~7 granules/~2 GB,
+  reusing `demos/e2e_austria.py::_single_tile_roi`). Not run yet (mobile-hotspot pause, spec 26) —
+  self-contained `expected` block so a later session can verify the user's pasted `_result.json`
+  without this conversation's memory.
+- **Review fix (2026-07-11): CLI completion gate is now the terminal pass, not the summed
+  `failed_count`.** `sum_results` sums `failed_count` across passes, so a resume that hit a
+  transient failure on an earlier pass and recovered it on a later, clean pass previously reported
+  `status="failed"`/exit 1 even though every file landed — the CLI was stricter than
+  `download_resume`'s own completion semantics. `download_cli.main` now judges `status`/exit code
+  from `results[-1]` (the terminal pass); an empty `results` list (stop-file already present before
+  pass 1) is now `status="stopped"`, not a false "ok". `metrics.failed` reflects the terminal pass;
+  a new `metrics.failed_total` keeps the historical sum as a diagnostic. Plus: a stale `--stop-file`
+  silently turned "re-run to resume" into an instant no-op — the CLI now warns on startup if the
+  stop-file already exists, and the runbook's step-2 failure guidance now says to `rm -f` it before
+  resuming.
+
 ## e2e Austria local-completeness gate + download instrumentation (spec 23, 2026-07-10)
 - **`DownloadResult` gained decomposed metrics** (`fsd.sources.cdse`): `bytes_downloaded`,
   `transfer_seconds`, `convert_seconds`, `bytes_by_band`. `_transfer_and_convert` now times the CDSE

@@ -17,6 +17,7 @@ import datetime
 import json
 import os
 import shutil
+from typing import Callable
 
 import geopandas as gpd
 import pandas as pd
@@ -173,6 +174,7 @@ class DownloadResult:
     reason_counts: dict = dataclasses.field(default_factory=dict)  # {reason: count}
     circuit_tripped: bool = False  # stopped early: too many consecutive failures
     pool_broken: bool = False     # convert process pool died mid-run (segfault/OOM); resume with a fresh pool
+    stopped: bool = False         # user requested a clean stop (should_stop); not a failure
     # --- timing decomposition (spec 23, D1/D11) — summed across worker threads, so
     # transfer_seconds + convert_seconds may exceed elapsed_s (they overlap). bytes_downloaded is
     # the JP2 bytes actually pulled from CDSE (basis for throughput MB/s); skips contribute 0. ---
@@ -550,14 +552,18 @@ def _make_convert_pool(max_workers: int):
 
 
 def _fmt_progress(done, total, ok_n, fail_n, skipped, elapsed_s) -> str:
-    """A single newline-terminated progress line (log-friendly, with ETA)."""
+    """A single newline-terminated progress line (log-friendly, with rate + ETA).
+
+    ETA is derived from `done/elapsed_s` and shown as `ETA ~?` until `done > 0`
+    (no rate to extrapolate from yet) — spec 26 §3.
+    """
     rate = done / elapsed_s if elapsed_s > 0 else 0.0
-    eta_s = (total - done) / rate if rate > 0 else 0.0
     pct = 100 * done // max(1, total)
+    eta = f"~{int(((total - done) / rate) // 60)}m" if done > 0 and rate > 0 else "~?"
     return (
         f"[{int(elapsed_s // 60):3d}m{int(elapsed_s % 60):02d}s] "
         f"{done}/{total} ({pct:2d}%) ok={ok_n} fail={fail_n} skip={skipped} | "
-        f"{rate:.1f} file/s | ETA {int(eta_s // 60)}m"
+        f"{rate:.1f} file/s | ETA {eta}"
     )
 
 
@@ -579,6 +585,7 @@ def download(
     max_convert_procs: int | None = None,
     max_staged: int | None = None,
     convert_executor=None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> DownloadResult:
     """THE SOURCE CONTRACT (documented signature; see specs/01-sources.md).
 
@@ -613,6 +620,13 @@ def download(
     stops within roughly `max_staged` items of the trip (streaming, no exact chunk
     boundary). Pair with `download_resume` to retry the remainder later — the catalog
     makes it a clean resume.
+
+    `should_stop` (spec 26 §1, default None = today's behavior) is a generic
+    user-stop predicate checked in the submit loop, alongside `tripped`/`pool_broken`,
+    throttled to at most once per `config.PROGRESS_EVERY_S` (a filesystem check isn't
+    stat-ed per granule). Halts **new** submissions only — every already-submitted
+    transfer/convert finalizes normally and drains; a stopped item is never attempted,
+    so it is not a failure and not counted. Sets `DownloadResult.stopped=True`.
     """
     import collections
     import concurrent.futures
@@ -673,6 +687,7 @@ def download(
         "consecutive": 0, "tripped": False, "pool_broken": False,
         "transfer_seconds": 0.0, "convert_seconds": 0.0, "bytes_downloaded": 0,
         "remaining": 0, "loop_finished": False, "last_print": 0.0,
+        "stopped": False, "last_stop_check": -1e18, "stop_cached": False,
     }
     convert_pool_holder: dict = {"pool": None}
     pool_create_lock = threading.Lock()
@@ -689,6 +704,21 @@ def download(
                               len(failures), state["skipped"], time.time() - start),
                 flush=True,
             )
+
+    def _stop() -> bool:
+        # Called only from the single submit-loop thread (below), so no lock needed
+        # around the throttle bookkeeping itself; only the sticky `stopped` flag
+        # (read by other threads via the final result) is set under `lock`.
+        if should_stop is None:
+            return False
+        now = time.time()
+        if now - state["last_stop_check"] >= config.PROGRESS_EVERY_S:
+            state["last_stop_check"] = now
+            state["stop_cached"] = bool(should_stop())
+            if state["stop_cached"]:
+                with lock:
+                    state["stopped"] = True
+        return state["stop_cached"]
 
     def _get_convert_pool():
         with pool_create_lock:
@@ -787,12 +817,12 @@ def download(
     transfer_pool = concurrent.futures.ThreadPoolExecutor(max_workers=config.MAX_CONCURRENT_S3)
     try:
         for src, dst, tid in work:
-            if state["tripped"] or state["pool_broken"]:
+            if state["tripped"] or state["pool_broken"] or _stop():
                 break
             needs_convert = cog and src.endswith(".jp2")
             if needs_convert:
                 sem_staged.acquire()  # BLOCKS at max_staged in-flight -> backpressure
-                if state["tripped"] or state["pool_broken"]:
+                if state["tripped"] or state["pool_broken"] or _stop():
                     sem_staged.release()
                     break
             with lock:
@@ -830,6 +860,7 @@ def download(
         reason_counts=dict(reason_counts),
         circuit_tripped=state["tripped"],
         pool_broken=state["pool_broken"],
+        stopped=state["stopped"],
         bytes_downloaded=state["bytes_downloaded"],
         transfer_seconds=state["transfer_seconds"],
         convert_seconds=state["convert_seconds"],
@@ -858,6 +889,7 @@ def download_resume(
     max_convert_procs: int | None = None,
     max_staged: int | None = None,
     convert_executor=None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> list[DownloadResult]:
     """Resume-loop: run `download` repeatedly until every file is present (a full pass
     with no failures) or `max_passes` is reached.
@@ -872,21 +904,30 @@ def download_resume(
 
     `max_convert_procs`/`max_staged`/`convert_executor` pass through to each `download`
     call unchanged (spec 25) — see its docstring.
+
+    `should_stop` (spec 26 §1) passes through to each `download` pass; when a pass
+    returns `stopped=True` the resume loop ends immediately (no cooldown, not a
+    completion). Also checked once before starting each new pass so a stop between
+    passes doesn't launch another.
     """
     import time
 
     results: list[DownloadResult] = []
     for p in range(max_passes):
+        if should_stop is not None and should_stop():
+            break
         r = download(
             roi, startdate, enddate, bands, root_folderpath, catalog, creds,
             max_tiles=max_tiles, chunksize=chunksize, max_cloudcover=max_cloudcover,
             progress=progress, max_consecutive_failures=max_consecutive_failures,
             cog=cog, max_convert_procs=max_convert_procs, max_staged=max_staged,
-            convert_executor=convert_executor,
+            convert_executor=convert_executor, should_stop=should_stop,
         )
         results.append(r)
         if on_pass is not None:
             on_pass(p, r)
+        if r.stopped:
+            break  # user stop: ends the resume loop immediately, no cooldown
         if r.failed_count == 0 and not r.circuit_tripped:
             break  # complete: a full pass attempted everything and nothing failed
         if r.circuit_tripped and cooldown_s:
@@ -917,6 +958,7 @@ def sum_results(results: list[DownloadResult]) -> DownloadResult:
         agg.convert_seconds += r.convert_seconds
         agg.circuit_tripped = agg.circuit_tripped or r.circuit_tripped
         agg.pool_broken = agg.pool_broken or r.pool_broken
+        agg.stopped = agg.stopped or r.stopped
         reasons.update(r.reason_counts)
         by_band.update(r.bytes_by_band)
     agg.reason_counts = dict(reasons)
