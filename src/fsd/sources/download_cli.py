@@ -98,13 +98,20 @@ def main(argv=None) -> int:
             "--creds is required (or set $CDSE_CREDENTIALS_JSON) for a real download"
         )
     creds = CdseCredentials.from_json(args.creds)
+    verbose = not args.quiet
 
     probe_mb_per_s = 0.0
     if not args.no_probe:
+        # The probe silently downloads one full JP2 band file (~50-150 MB) to measure
+        # throughput; without these lines the run looks hung during that transfer.
+        if verbose:
+            print("[fsd.download_cli] probing throughput (downloads 1 band file)…", flush=True)
         probe_mb_per_s, _, _ = cdse.probe_throughput(
             args.roi, pd.to_datetime(args.start), pd.to_datetime(args.end), args.bands,
             creds, max_cloudcover=args.max_cloudcover,
         )
+        if verbose:
+            print(f"[fsd.download_cli] probe: {probe_mb_per_s:.1f} MB/s", flush=True)
 
     catalog = TileCatalog(args.catalog)
     should_stop = _stop_predicate(args.stop_file)
@@ -114,6 +121,10 @@ def main(argv=None) -> int:
             f"will stop immediately without downloading. rm it first to actually download.",
             file=sys.stderr, flush=True,
         )
+    if verbose:
+        # download_resume does its own STAC search + planning before the first granule
+        # completes; label that second silent gap so it doesn't read as a hang either.
+        print("[fsd.download_cli] discovering + planning download…", flush=True)
     t0 = time.time()
     results = cdse.download_resume(
         args.roi, pd.to_datetime(args.start), pd.to_datetime(args.end), args.bands,

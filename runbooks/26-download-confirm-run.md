@@ -7,7 +7,7 @@
 
 ## Handoff checklist (before starting a fresh session)
 - [x] Claude has flushed durable state to `fsd/PROGRESS.md` (+ `MEMORY.md`).
-- [ ] User ran `/handoff <goal>` when ready to run this (a real, non-hotspot connection).
+- [x] User ran `/handoff <goal>` when ready to run this (a real, non-hotspot connection).
 - [ ] Fresh session started (not `/compact`); model/effort set for the verifying session
       (Opus/high to diff the pasted `_result.json` against this doc).
 
@@ -36,7 +36,7 @@ sys.path.insert(0, 'demos')
 import e2e_austria as demo
 from fsd.sources.cdse import CdseCredentials
 
-creds_fp = os.environ.get('CDSE_CREDENTIALS_JSON') or os.path.join('..', 'cdse_credentials.json')
+creds_fp = os.environ.get('CDSE_CREDENTIALS_JSON') or os.path.join('../secrets', 'cdse_credentials.json')
 creds = CdseCredentials.from_json(creds_fp)
 creds.require_s3()
 assert not creds.is_expired(), 'S3 keys expired — refresh cdse_credentials.json'
@@ -84,7 +84,10 @@ print('tiny ROI ->', fp)
   --max-tiles 10 --stop-file /tmp/fsd.stop \
   --result-json tests/outputs/demo_e2e/imagery/_result_step2.json
 ```
-- **Expect:** a probe line (`... MB/s`), then live progress lines every ~5s with `file/s` + `ETA`,
+- **Expect:** `probing throughput (downloads 1 band file)…` (this transfers one full JP2 and can
+  sit silent for up to ~a minute on a slow link — not a hang), then `probe: N.N MB/s`, then
+  `discovering + planning download…`, then live progress lines every ~5s with `file/s` + `ETA`
+  (the first one appears only after the first granule finishes downloading **and** converting),
   then a final summary line (`successful=... failed=... | transfer=...s convert=...s | probe=...
   aggregate=... | stopped=False ...`).
 - **PASS if:** exit code `0`; `_result_step2.json` has `status="ok"`, `metrics.failed == 0`,
@@ -185,8 +188,13 @@ The run passes when step 1's `missing` is in `[5, 10]`, step 2's `status == "ok"
 **Paste these files back** (not the logs).
 
 ## Stop / observe
+- Startup is not instant and not silent: `download_cli` prints `probing throughput…` then
+  `probe: N.N MB/s` (the probe downloads one full JP2 — silent for up to ~a minute on a slow
+  link), then `discovering + planning download…`. Live progress starts only after the first
+  granule lands.
 - Progress: `download_cli` prints a live line every ~5s with rate (`N.N file/s`) and ETA
   (`ETA ~Nm`, or `ETA ~?` before the first completion).
+- `--quiet` suppresses all of the above (the startup lines and the live progress lines).
 - Dry-run: `--dry-run` (step 1) prints the plan + cost estimate with **zero** side effects.
 - Abort: `touch /tmp/fsd.stop` (armed via `--stop-file`) — clean drain within seconds, resume-safe.
   Ctrl-C also works (not resume-guaranteed the same way — prefer the stop-file).

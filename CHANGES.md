@@ -107,6 +107,13 @@ carried over (renames, restructures, behavioral tweaks). Pure removals go in
   silently turned "re-run to resume" into an instant no-op — the CLI now warns on startup if the
   stop-file already exists, and the runbook's step-2 failure guidance now says to `rm -f` it before
   resuming.
+- **UX fix (2026-07-13): label the two silent startup phases.** `probe_throughput` silently
+  downloads one full JP2 (~50–150 MB) and `download_resume` does its own STAC search before the
+  first progress line, so a real run looked hung for up to a minute at launch. `download_cli` now
+  prints `probing throughput (downloads 1 band file)…` / `probe: N.N MB/s` around the probe and
+  `discovering + planning download…` before the download loop (all gated by `--quiet`, like the
+  live progress lines). The runbook's step-2 "Expect" and "Stop / observe" wording — which had
+  promised a standalone probe line that the code never emitted — now match.
 
 ## e2e Austria local-completeness gate + download instrumentation (spec 23, 2026-07-10)
 - **`DownloadResult` gained decomposed metrics** (`fsd.sources.cdse`): `bytes_downloaded`,
