@@ -55,20 +55,35 @@ print('tiny ROI ->', fp)
   connectivity before retrying.
 
 ### Step 1 — dry-run (metadata only, zero band bytes)
+First write the run's success criteria once; `--expected-json` echoes them into every
+`_result.json`'s `expected` block, so each pasted result is self-contained for the diff (spec 26 §4).
+The CLI additionally auto-fills the universal invariants (`failed=0, stopped=false,
+circuit_tripped=false, pool_broken=false`) on the real-download result.
 ```bash
+mkdir -p tests/outputs/demo_e2e/imagery
+cat > tests/outputs/demo_e2e/expected.json <<'JSON'
+{
+  "missing_count_range": [10, 15],
+  "successful": "missing_count * (len(bands) + 1)",
+  "failed": 0
+}
+JSON
 .venv/bin/python -m fsd.sources.download_cli \
   --roi tests/outputs/demo_e2e/tiny_roi.geojson \
   --start 2018-04-01 --end 2018-06-01 \
   --bands B04 B08 B8A SCL \
   --dst tests/outputs/demo_e2e/imagery \
   --catalog tests/outputs/demo_e2e/imagery/catalog.parquet \
-  --max-tiles 10 --dry-run \
+  --max-tiles 15 --dry-run \
+  --expected-json tests/outputs/demo_e2e/expected.json \
   --result-json tests/outputs/demo_e2e/imagery/_result_step1.json
 ```
 - **Expect:** a printed plan (`needed: N granules | present: 0 | missing: N`), exit code `0`.
-- **PASS if:** `missing_count` is between **5 and 10** (a single MGRS tile revisited every ~5 days
-  over the 2-month window → ~7 granules; exact count depends on the real STAC match/cloud filter);
-  **zero bytes transferred** (no new files under `--dst`); exit code `0`.
+- **PASS if:** `missing_count` is between **10 and 15** (a single MGRS tile revisited every ~5 days —
+  S2A+S2B combined — over the 2-month window → **~13 granules**; exact count depends on the real STAC
+  match/cloud filter); **zero bytes transferred** (no new files under `--dst`); exit code `0`.
+  Note `--max-tiles` (the download guardrail, checked in step 2) must be **≥ this count** or step 2
+  raises `... matched tiles exceed max_tiles`; 15 leaves headroom above the observed 13.
 - **If it fails / hangs:** this step makes no network transfer beyond the anonymous STAC query, so
   a hang here points at CDSE STAC reachability, not the download pipeline. Ctrl-C is safe (no
   side effects to clean up).
@@ -81,9 +96,15 @@ print('tiny ROI ->', fp)
   --bands B04 B08 B8A SCL \
   --dst tests/outputs/demo_e2e/imagery \
   --catalog tests/outputs/demo_e2e/imagery/catalog.parquet \
-  --max-tiles 10 --stop-file /tmp/fsd.stop \
+  --max-tiles 15 --stop-file /tmp/fsd.stop \
+  --expected-json tests/outputs/demo_e2e/expected.json \
   --result-json tests/outputs/demo_e2e/imagery/_result_step2.json
 ```
+> **To capture a real throughput measurement (step 4), step 2 must actually transfer bytes.** If
+> `tests/outputs/demo_e2e/imagery` already holds a completed run, every file is skipped
+> (`skipped == successful`, `transfer_s == 0`, `aggregate == 0`) — a valid resume, but it measures
+> nothing. For a fresh measurement either use a clean `--dst` (and matching `--catalog`) or
+> `rm -rf tests/outputs/demo_e2e/imagery/Sentinel-2` first, then run.
 - **Expect:** `probing throughput (downloads 1 band file)…` (this transfers one full JP2 and can
   sit silent for up to ~a minute on a slow link — not a hang), then `probe: N.N MB/s`, then
   `discovering + planning download…`, then live progress lines every ~5s with `file/s` + `ETA`
@@ -91,9 +112,13 @@ print('tiny ROI ->', fp)
   then a final summary line (`successful=... failed=... | transfer=...s convert=...s | probe=...
   aggregate=... | stopped=False ...`).
 - **PASS if:** exit code `0`; `_result_step2.json` has `status="ok"`, `metrics.failed == 0`,
-  `metrics.successful + metrics.skipped` matches the step-1 `missing_count`
-  (i.e. every missing file landed), `metrics.stopped == false`, `metrics.circuit_tripped == false`,
-  `metrics.pool_broken == false`.
+  `metrics.stopped == false`, `metrics.circuit_tripped == false`, `metrics.pool_broken == false`,
+  and every requested file landed: **`metrics.successful == missing_count × files_per_granule`**,
+  where `files_per_granule = len(bands) + 1` (the +1 is `MTD_TL.xml`) — so for 13 granules × (4 bands
+  + 1) = **65**. Note `metrics.successful` already *includes* already-present files, and
+  `metrics.skipped` is the subset that were already on disk: `skipped == 0` ⇒ a fresh download (real
+  `transfer_s`/`aggregate`), `skipped == successful` ⇒ a pure resume (zeros — nothing measured). Do
+  **not** add `successful + skipped` (that double-counts, and mixes file vs granule units).
 - **If it fails / hangs:** `touch /tmp/fsd.stop` to stop cleanly (expect a clean drain within a
   few seconds — no hung process, no orphaned `.part`/`.src.jp2` files). **To resume, `rm -f
   /tmp/fsd.stop` first** (else the re-run stops again immediately, before downloading anything),
@@ -169,23 +194,27 @@ Each step writes `<dst>/_result_step<N>.json` (step 2's shape, spec 24 / spec 26
   "status": "ok | dry-run | stopped | failed",
   "pass": 1,
   "metrics": {
-    "needed": 7, "present": 0, "missing": 7,
-    "successful": 7, "failed": 0, "failed_total": 0, "skipped": 0,
+    "needed": 13, "present": 0, "missing": 13,
+    "successful": 65, "failed": 0, "failed_total": 0, "skipped": 0,
     "gb": 2.0, "transfer_s": 0, "convert_s": 0,
     "probe_mb_per_s": 0, "aggregate_mb_per_s": 0,
     "elapsed_s": 0, "stopped": false,
     "circuit_tripped": false, "pool_broken": false
   },
   "expected": {
-    "missing_count_range": [5, 10],
+    "missing_count_range": [10, 15],
+    "successful": "missing_count * (len(bands) + 1)",
     "failed": 0, "stopped": false, "circuit_tripped": false, "pool_broken": false
   },
   "error": null
 }
 ```
-The run passes when step 1's `missing` is in `[5, 10]`, step 2's `status == "ok"` with
-`failed == 0` and `stopped == false`, and step 3's integrity script prints `PASS`.
-**Paste these files back** (not the logs).
+(`needed`/`present`/`missing` are **granules**; `successful`/`skipped`/`failed` are **files** —
+`(len(bands) + 1)` per granule, the +1 being `MTD_TL.xml`. So 13 granules ⇒ 65 files.)
+The run passes when step 1's `missing` is in `[10, 15]`, step 2's `status == "ok"` with
+`failed == 0`, `stopped == false`, and `successful == missing × (len(bands)+1)`, and step 3's
+integrity script prints `PASS`. A real throughput number (step 4) additionally needs
+`skipped == 0` (a fresh download, not a resume). **Paste these files back** (not the logs).
 
 ## Stop / observe
 - Startup is not instant and not silent: `download_cli` prints `probing throughput…` then

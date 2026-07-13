@@ -51,6 +51,9 @@ def _parse_args(argv=None) -> argparse.Namespace:
                    help="skip the single baseline probe_throughput on the real path")
     p.add_argument("--result-json", default=None,
                    help="write the _result.json here (default <dst>/_result.json)")
+    p.add_argument("--expected-json", default=None,
+                   help="JSON file of the runbook's success criteria; echoed into the "
+                        "_result.json 'expected' block for a self-contained diff (spec 26 §4)")
     p.add_argument("--quiet", action="store_true", help="suppress live progress lines")
     return p.parse_args(argv)
 
@@ -59,6 +62,20 @@ def _write_result(path: str, result: dict) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w") as f:
         json.dump(result, f, indent=2, default=str)
+
+
+def _expected_block(expected_json: str | None, *, run_invariants: bool) -> dict:
+    """The `_result.json` 'expected' block (spec 26 §4). Starts from the universal
+    success invariants the CLI itself gates exit-0 on (a real run only), then merges in
+    the runbook's run-specific criteria from `--expected-json` (which wins on overlap).
+    """
+    expected: dict = {}
+    if run_invariants:
+        expected = {"failed": 0, "stopped": False, "circuit_tripped": False, "pool_broken": False}
+    if expected_json:
+        with open(expected_json) as f:
+            expected.update(json.load(f))
+    return expected
 
 
 def _stop_predicate(stop_file: str | None):
@@ -72,6 +89,28 @@ def main(argv=None) -> int:
     result_json = args.result_json or os.path.join(args.dst, "_result.json")
     cog = not args.no_cog
 
+    if not args.dry_run and not args.creds:
+        raise SystemExit(
+            "--creds is required (or set $CDSE_CREDENTIALS_JSON) for a real download"
+        )
+
+    try:
+        return _run(args, result_json, cog)
+    except Exception as e:  # noqa: BLE001 - any failure must still leave a pasteable result
+        # spec 26 §4: on a crash (network, creds, disk, …) still write a _result.json so
+        # the runbook flow has something to paste, then re-raise so the traceback shows.
+        _write_result(result_json, {
+            "step": "download-confirm-run",
+            "status": "failed",
+            "pass": 0,
+            "metrics": {},
+            "expected": _expected_block(args.expected_json, run_invariants=not args.dry_run),
+            "error": repr(e),
+        })
+        raise
+
+
+def _run(args, result_json: str, cog: bool) -> int:
     if args.dry_run:
         plan = cdse.plan_download(
             args.roi, pd.to_datetime(args.start), pd.to_datetime(args.end), args.bands,
@@ -88,15 +127,11 @@ def main(argv=None) -> int:
                 "present": plan["present_count"],
                 "missing": plan["missing_count"],
             },
-            "expected": {},
+            "expected": _expected_block(args.expected_json, run_invariants=False),
             "error": None,
         })
         return 0
 
-    if not args.creds:
-        raise SystemExit(
-            "--creds is required (or set $CDSE_CREDENTIALS_JSON) for a real download"
-        )
     creds = CdseCredentials.from_json(args.creds)
     verbose = not args.quiet
 
@@ -156,6 +191,17 @@ def main(argv=None) -> int:
     else:
         status = "ok"
 
+    error = None
+    if status == "failed":
+        reasons = []
+        if terminal.failed_count > 0:
+            reasons.append(f"{terminal.failed_count} file(s) failed on the terminal pass")
+        if terminal.circuit_tripped:
+            reasons.append("circuit breaker tripped")
+        if unresolved_pool_broken:
+            reasons.append("convert pool broken with unresolved failures")
+        error = "; ".join(reasons) or "download reported failure"
+
     print(
         f"\n[fsd.download_cli] {status}: successful={agg.successful_count} "
         f"failed={terminal.failed_count} (total across passes {agg.failed_count}) "
@@ -186,8 +232,8 @@ def main(argv=None) -> int:
             "circuit_tripped": terminal.circuit_tripped,
             "pool_broken": terminal.pool_broken,
         },
-        "expected": {},
-        "error": None,
+        "expected": _expected_block(args.expected_json, run_invariants=True),
+        "error": error,
     })
     # spec 26 C4: exit 0 on clean completion OR a user stop; non-zero otherwise.
     return 0 if (stopped or not failed) else 1

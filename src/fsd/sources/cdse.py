@@ -643,6 +643,14 @@ def download(
             "stage-local->convert->upload path (Azure milestone)."
         )
 
+    # Ensure the local output root exists: the disk-usage probe in _default_max_staged
+    # (and, for a first run, the per-file writes) assume it is already there. Leaf dirs
+    # auto-create on write, but the root-level probe runs before any write, so a fresh
+    # --dst would otherwise FileNotFoundError. Creating the root is part of download()'s
+    # contract (put files under root_folderpath), not the caller's job.
+    if _is_local_path(root_folderpath):
+        fs.makedirs(root_folderpath, exist_ok=True)
+
     roi_gdf = _roi_gdf(roi)
     items = _search_items(roi_gdf, startdate, enddate)
     tiles = _finalize_catalog_gdf(_items_to_gdf(items), roi_gdf, max_cloudcover)

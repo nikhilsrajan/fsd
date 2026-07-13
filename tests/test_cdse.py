@@ -369,6 +369,42 @@ def test_download_end_to_end_mocked(monkeypatch, tmp_path):
     assert result.circuit_tripped is False
 
 
+def test_download_creates_missing_local_root(monkeypatch, tmp_path):
+    """download() creates its local output root if absent (regression: a fresh --dst
+    previously FileNotFoundError'd on the disk-usage probe / first write, because
+    nothing created the root). The fix runs for any local root, so cog=False exercises
+    the same code path as the reported cog=True disk-probe crash."""
+    import os
+
+    from fsd.catalog.catalog import TileCatalog
+
+    item = _fake_item("S2A_T36PZT", "2018-01-30T08:00:00Z", 36.0, 11.0, 5.0, safe=SAFE)
+    monkeypatch.setattr(cdse, "_search_items", lambda *a, **k: [item])
+    monkeypatch.setattr(
+        cdse, "_select_item_files",
+        lambda it, bands, root, cog=True: [
+            (f"{cdse._safe_root_from_item(it)}/B02.jp2", os.path.join(root, "tile/B02.jp2")),
+        ],
+    )
+
+    def fake_transfer(src, dst, **kw):
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        open(dst, "wb").close()
+    monkeypatch.setattr(cdse.fs, "transfer", fake_transfer)
+    monkeypatch.setattr(cdse.fs, "exists", lambda p, **k: os.path.exists(p))
+
+    root = tmp_path / "fresh_root"          # does NOT exist yet
+    assert not root.exists()
+    roi = gpd.GeoDataFrame(geometry=[sg.box(36.0, 11.0, 37.0, 12.0)], crs="EPSG:4326")
+    cat = TileCatalog(str(tmp_path / "c.parquet"))
+    result = cdse.download(roi, datetime.datetime(2018, 1, 1),
+                           datetime.datetime(2018, 2, 1), ["B02"],
+                           str(root), cat, CdseCredentials(**DUMMY_FIELDS),
+                           max_tiles=10, cog=False)
+    assert root.exists()                    # download() created it
+    assert result.successful_count == 1
+
+
 def test_download_accumulates_timing_bytes_and_by_band(monkeypatch, tmp_path):
     """spec 23 SO-1/D11: download() records transfer/convert seconds, bytes, and per-band bytes."""
     import os

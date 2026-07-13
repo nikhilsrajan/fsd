@@ -114,7 +114,8 @@ its own.
 | `--no-cog` | keep native JP2 (default converts to COG) |
 | `--max-convert-procs N` / `--max-staged N` | optional pass-through (default auto) |
 | `--result-json PATH` | write the spec-24 `_result.json` here (default `<dst>/_result.json`) |
-| `--quiet` | suppress the live progress lines (default: progress on) |
+| `--expected-json PATH` | runbook success criteria echoed into the result `expected` block (§4) |
+| `--quiet` | suppress the live progress + startup lines (default: on) |
 
 - **`--dry-run`** → `plan_download(...)` + `format_download_plan(...)` printed; **no `probe_throughput`**
   (a probe transfers a real band file — a dry-run must touch **zero** band bytes; only the anonymous
@@ -159,6 +160,13 @@ probe vs aggregate MB/s, stopped/tripped/pool_broken).
 `aggregate_mb_per_s = bytes_downloaded / transfer_seconds` (effective transfer rate); comparing it to
 `probe_mb_per_s` is the transfer-contention diagnostic (spec 23 D2). `status="stopped"` when the run
 ended on the stop-file; `"failed"` when the exit is non-zero.
+
+- **`expected`** = the CLI's universal success invariants (`failed=0, stopped=false,
+  circuit_tripped=false, pool_broken=false`, real run only) merged with the runbook's run-specific
+  criteria from `--expected-json` — so the pasted result is self-contained for the diff.
+- **`error`** = a short reason on a non-exception `status="failed"`. If the run *raises* (network /
+  creds / disk), the CLI still writes a `status="failed"` result with `error=repr(exc)` before
+  re-raising, so the runbook flow always has a result to paste.
 
 ### 5. The confirm-run runbook — `runbooks/26-download-confirm-run.md` (D4)
 

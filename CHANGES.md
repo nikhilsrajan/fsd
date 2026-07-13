@@ -114,6 +114,32 @@ carried over (renames, restructures, behavioral tweaks). Pure removals go in
   `discovering + planning download…` before the download loop (all gated by `--quiet`, like the
   live progress lines). The runbook's step-2 "Expect" and "Stop / observe" wording — which had
   promised a standalone probe line that the code never emitted — now match.
+- **Runbook criteria fix (2026-07-13), after the first real confirm-run (13-granule Austria slice).**
+  Two defects in `runbooks/26-download-confirm-run.md`, both found while verifying the pasted
+  `_result.json`: (a) the step-2 PASS formula `successful + skipped == missing_count` was wrong —
+  `missing_count` is **granules** while `successful`/`skipped` are **files** (`len(bands)+1` per
+  granule, the +1 being `MTD_TL.xml`), and `successful` already *includes* the skipped files, so the
+  sum double-counted and mixed units; corrected to `successful == missing_count × (len(bands)+1)`
+  with `failed == 0`. (b) the step-1 `missing_count` range `[5,10]` (assumed ~7) was too low — the
+  real slice is **13 granules** (single MGRS tile, S2A+S2B ~5-day revisit over 2 months), so the
+  range is now `[10,15]` and `--max-tiles` bumped `10 → 15` (13 would trip the old guardrail). Also
+  documented that a real throughput measurement (step 4) needs a **fresh** download (`skipped == 0`),
+  not a resume — a resume yields `transfer_s == aggregate == 0`.
+- **Bugfix (2026-07-13): `download()` creates a missing local output root.** A fresh `--dst`
+  `FileNotFoundError`'d because `_default_max_staged`'s `shutil.disk_usage(root_folderpath)` disk
+  probe runs before any write, and nothing created the root (leaf dirs auto-create on write, but the
+  probe is earlier). `cdse.download` now `fs.makedirs(root_folderpath, exist_ok=True)` for a local
+  root right after the cog/local guard — creating the destination root is part of `download()`'s
+  contract, not the caller's job, so this fixes the CLI, `fsd.download`, and workflows at once.
+- **`_result.json` fix (2026-07-13): populate `expected` and `error`** (they were hardcoded `{}` /
+  `None`, defeating spec 26 §4's self-contained-diff design). `download_cli` now (a) auto-fills the
+  real-run `expected` with the universal success invariants (`failed=0, stopped=false,
+  circuit_tripped=false, pool_broken=false`) and merges the runbook's run-specific criteria from a
+  new `--expected-json PATH` flag; (b) sets `error` to a short reason on a non-exception
+  `status="failed"`; and (c) wraps the run so a crash (network/creds/disk) still writes a
+  `status="failed"` result with `error=repr(exc)` **before** re-raising — the runbook flow always has
+  a result to paste. The confirm-run runbook now writes an `expected.json` and passes `--expected-json`
+  to steps 1–2.
 
 ## e2e Austria local-completeness gate + download instrumentation (spec 23, 2026-07-10)
 - **`DownloadResult` gained decomposed metrics** (`fsd.sources.cdse`): `bytes_downloaded`,

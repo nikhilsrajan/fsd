@@ -164,3 +164,81 @@ def test_cli_empty_results_is_stopped(monkeypatch, tmp_path):
     ])
     assert rc == 0
     assert json.loads(open(result_json).read())["status"] == "stopped"
+
+
+def test_cli_expected_block_populated_and_merges_expected_json(monkeypatch, tmp_path):
+    """spec 26 §4: a real run's `expected` block carries the universal success invariants,
+    and `--expected-json` merges the runbook's run-specific criteria on top."""
+    monkeypatch.setattr(
+        download_cli.CdseCredentials, "from_json",
+        classmethod(lambda cls, fp, **kw: cls(**DUMMY_FIELDS)),
+    )
+    monkeypatch.setattr(
+        download_cli.cdse, "download_resume",
+        lambda *a, **k: [cdse.DownloadResult(successful_count=5, total_count=5, failed_count=0)],
+    )
+    expected_json = tmp_path / "expected.json"
+    expected_json.write_text(json.dumps({"missing_count_range": [10, 15], "failed": 0}))
+    result_json = str(tmp_path / "_result.json")
+    rc = download_cli.main([
+        "--roi", "roi.geojson", "--start", "2018-04-01", "--end", "2018-06-01",
+        "--bands", "B04", "--dst", str(tmp_path), "--catalog", str(tmp_path / "c.parquet"),
+        "--max-tiles", "5", "--result-json", result_json, "--no-probe",
+        "--creds", str(tmp_path / "creds.json"), "--expected-json", str(expected_json),
+    ])
+    assert rc == 0
+    exp = json.loads(open(result_json).read())["expected"]
+    # universal invariants present …
+    assert exp["stopped"] is False and exp["circuit_tripped"] is False and exp["pool_broken"] is False
+    # … plus the runbook's merged-in criterion
+    assert exp["missing_count_range"] == [10, 15]
+
+
+def test_cli_error_populated_on_failed_status(monkeypatch, tmp_path):
+    """A run that reports failures (non-exception) fills `error` with a short reason, not None."""
+    monkeypatch.setattr(
+        download_cli.CdseCredentials, "from_json",
+        classmethod(lambda cls, fp, **kw: cls(**DUMMY_FIELDS)),
+    )
+    monkeypatch.setattr(
+        download_cli.cdse, "download_resume",
+        lambda *a, **k: [cdse.DownloadResult(successful_count=3, total_count=5, failed_count=2)],
+    )
+    result_json = str(tmp_path / "_result.json")
+    rc = download_cli.main([
+        "--roi", "roi.geojson", "--start", "2018-04-01", "--end", "2018-06-01",
+        "--bands", "B04", "--dst", str(tmp_path), "--catalog", str(tmp_path / "c.parquet"),
+        "--max-tiles", "5", "--result-json", result_json, "--no-probe",
+        "--creds", str(tmp_path / "creds.json"),
+    ])
+    assert rc != 0
+    data = json.loads(open(result_json).read())
+    assert data["status"] == "failed"
+    assert data["error"] and "terminal pass" in data["error"]
+
+
+def test_cli_exception_writes_failed_result_then_reraises(monkeypatch, tmp_path):
+    """spec 26 §4: if download_resume raises, the CLI still writes a status="failed" result
+    (with error=repr(exc)) so the runbook flow has something to paste, then re-raises."""
+    import pytest
+
+    monkeypatch.setattr(
+        download_cli.CdseCredentials, "from_json",
+        classmethod(lambda cls, fp, **kw: cls(**DUMMY_FIELDS)),
+    )
+
+    def boom(*a, **k):
+        raise RuntimeError("STAC endpoint unreachable")
+
+    monkeypatch.setattr(download_cli.cdse, "download_resume", boom)
+    result_json = str(tmp_path / "_result.json")
+    with pytest.raises(RuntimeError, match="STAC endpoint unreachable"):
+        download_cli.main([
+            "--roi", "roi.geojson", "--start", "2018-04-01", "--end", "2018-06-01",
+            "--bands", "B04", "--dst", str(tmp_path), "--catalog", str(tmp_path / "c.parquet"),
+            "--max-tiles", "5", "--result-json", result_json, "--no-probe",
+            "--creds", str(tmp_path / "creds.json"),
+        ])
+    data = json.loads(open(result_json).read())
+    assert data["status"] == "failed"
+    assert "STAC endpoint unreachable" in data["error"]
