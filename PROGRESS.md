@@ -2,9 +2,47 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-11_
+_Last updated: 2026-07-13_
 
-## LATEST (2026-07-11) — spec 26 offline half REVIEWED (Opus@high): PASS on the hard stuff, 2 small fixes queued
+## LATEST (2026-07-13) — spec 26 confirm-run EXECUTED for real + pipeline hardened; next = Austria go-to doc
+
+**The spec-26 network confirm-run was run for real (CDSE, 3.5 GB, Austria 1-MGRS slice) and PASSES.**
+Everything on `main` (pushed, HEAD `69e6517`). Fresh-download `_result`: `status=ok`, 65/65 files
+(13 granules × 5 = 4 bands + MTD_TL.xml), `failed=0`, `skipped=0`, gb=3.50, integrity verified on disk
+(52 tif + 13 xml, 0 leftovers, 13 catalog rows). **Throughput baseline: probe 25 / per-stream 4.8 /
+wall 19 MB/s → link-bound, 4 transfer streams slightly SLOWER than 1.**
+
+**Bugs/gaps this real run surfaced and we FIXED this session (all committed + tested, 209 passed):**
+- `download()` crashed on a **fresh `--dst`** (disk-usage probe before makedirs) → now `fs.makedirs`
+  the local root [spec 25 latent bug].
+- `format_download_plan` **contradicted itself** at `missing=0` ("not present" + a download cmd) →
+  fixed [spec 23 latent bug].
+- `_result.json` **`expected`/`error` were dead** (`{}`/`None`) → now populated; a crash writes a
+  `status=failed` result before re-raising; new `--expected-json` merges runbook criteria [spec 26 §4].
+- **stop-file felt slow + silent** → now prints `stop requested — draining N…` within ~1s
+  (`STOP_CHECK_EVERY_S=1.0`, decoupled from `PROGRESS_EVERY_S`); the ~`max_staged` overshoot is the
+  clean-drain-by-design (no partial files); `--max-staged` trades it.
+- **misleading throughput metric** → added `transfer_wall_seconds` + `wall_transfer_mb_per_s` (honest
+  all-streams rate) and a **`--max-concurrent-s3`** knob to sweep stream count. Runbook step-4 rewritten.
+- Silent startup phases (probe + planning) now labelled; `.gitignore` gained `.claude/`.
+
+**Commits (all pushed to `main`):** `8bb1882` gitignore, `c822654` startup labels, `aa20279` makedirs
++ expected/error, `b4b1bf5` format_download_plan, `2f0b530` stop-file ack, `69e6517` wall metric +
+`--max-concurrent-s3`. (Plus `356f07b` = the merged spec-26 offline half.)
+
+**→ NEXT (the pre-P1 goal): make the Austria end-to-end the GO-TO USER DOCUMENT.** Two demos docs
+need reconciling (this is the ROADMAP pre-P1 deliverable, not new pipeline code):
+- `demos/README.md` — **STALE**: describes the old Ethiopia offline demo, references
+  `demos/e2e_ethiopia.py` (renamed to **`e2e_austria.py`**) and `shapefiles/inference_roi.geojson`.
+  Superseded by `E2E_AUSTRIA.md`.
+- `demos/E2E_AUSTRIA.md` — the intended go-to guide, but: **§8 "Results (fill from a real run)" is an
+  empty placeholder** we can now fill with the real confirm-run numbers; and it has **zero mention of
+  the safe download runner** (`python -m fsd.sources.download_cli`, `--stop-file`, the confirm-run,
+  spec 26) — the whole download story we just built + validated. §2 predates all of it.
+- Decide: fold `README.md` into `E2E_AUSTRIA.md` as the single canonical doc (thin redirect README),
+  and thread the real download step + numbers through it. Handoff doc: `/tmp/fsd-handoff-austria-doc.md`.
+
+## PRIOR (2026-07-11) — spec 26 offline half REVIEWED (Opus@high): PASS on the hard stuff, 2 small fixes queued
 
 **Opus@high review of the spec-26 offline half (in the worktree `.claude/worktrees/spec26-download-cli`).**
 Verified **correct** (do not touch): the `should_stop` throttle is race-free (`_stop()` runs only in the
