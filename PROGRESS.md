@@ -30,8 +30,20 @@ wall 19 MB/s → link-bound, 4 transfer streams slightly SLOWER than 1.**
 + expected/error, `b4b1bf5` format_download_plan, `2f0b530` stop-file ack, `69e6517` wall metric +
 `--max-concurrent-s3`. (Plus `356f07b` = the merged spec-26 offline half.)
 
-**→ NEXT (the pre-P1 goal): make the Austria end-to-end the GO-TO USER DOCUMENT.** Two demos docs
-need reconciling (this is the ROADMAP pre-P1 deliverable, not new pipeline code):
+**→ IMMEDIATE NEXT (user is on university wifi, ready to run): execute the FULL Austria e2e.**
+Runbook **`runbooks/27-austria-full-e2e.md`** is written + on `main`. It runs `demos/e2e_austria.py`
+(FULL mode: real CDSE download of the whole AT_ROI, Apr–Sep, → datacube → train on real EuroCrops
+labels → inference → crop map). Size estimate (scaled from the confirm-run): ~2–4 MGRS tiles / ~80–160
+granules / ~20–45 GB / ~1–1.5 hr. **Step 0 = a full-ROI dry-run to size it exactly before committing;
+Step 1 = `rm -rf imagery/` for clean §8 numbers; Step 2 = the backgrounded run; Step 3 = paste back
+`timings.json` + coverage.** The demo's download uses `download_resume` directly (no `--stop-file`;
+Ctrl-C + re-run resumes). Note the AT inputs are REAL EuroCrops ground truth in the test region
+(labels ARE meaningful; the *point* is infra, not model quality — the earlier "toy/Ethiopia" framing
+is stale). `AT_ROI` = Waldviertel (~14.6–15.5°E, 48.4–49.0°N, single UTM-33), 900 train fields.
+
+**→ THEN (the pre-P1 goal): make the Austria end-to-end the GO-TO USER DOCUMENT.** Fill `E2E_AUSTRIA.md
+§8` from runbook 27's output, and reconcile the two demos docs (this is the ROADMAP pre-P1 deliverable,
+not new pipeline code):
 - `demos/README.md` — **STALE**: describes the old Ethiopia offline demo, references
   `demos/e2e_ethiopia.py` (renamed to **`e2e_austria.py`**) and `shapefiles/inference_roi.geojson`.
   Superseded by `E2E_AUSTRIA.md`.
