@@ -1183,7 +1183,7 @@ def test_should_stop_halts_submit_loop_mid_pass(monkeypatch, tmp_path):
     watchdog timeout). `max_staged=1` + a synchronous convert executor forces strictly
     serialized submission (as the spec-25 circuit-breaker test does) so the stop point
     is deterministic."""
-    monkeypatch.setattr(cdse.config, "PROGRESS_EVERY_S", 0)  # disable the throttle
+    monkeypatch.setattr(cdse.config, "STOP_CHECK_EVERY_S", 0)  # disable the stop-check throttle
     roi, cat = _setup_multi_tile_download(monkeypatch, tmp_path, n_tiles=6)
 
     finalized = {"n": 0}

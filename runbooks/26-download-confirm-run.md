@@ -180,8 +180,13 @@ work left); a few seconds after progress lines start, in another terminal:
 ```bash
 touch /tmp/fsd.stop
 ```
-- **Expect:** the run drains in-flight transfers/converts and exits within a few seconds — no
-  hang, no `.part`/`.src.jp2` leftovers.
+- **Expect:** within ~1s the CLI prints `[fsd.download] stop requested — halting new submissions;
+  draining N in-flight transfer(s)/convert(s), then exiting…`, then it finishes those N and exits —
+  no hang, no `.part`/`.src.jp2` leftovers. **The stop is not instant:** it halts *new* submissions
+  but lets everything already in flight finish (that's what guarantees no partial files). `N ≈
+  --max-staged` (default ~`MAX_CONCURRENT_S3 + 2×MAX_CONVERT_PROCS` ≈ 20), so on a fast link the
+  progress % can still climb a good bit after the touch — expected, not a bug. To make the stop
+  tighter (at a throughput cost), lower `--max-staged` (e.g. `--max-staged 4` → ~4 in-flight).
 - **PASS if:** exit code `0`, `_result.json` has `status="stopped"`, `metrics.stopped == true`.
   Re-running the same command afterward (without `--stop-file` armed, or with it removed) resumes
   and completes (idempotent skip on what's already on disk).
@@ -225,5 +230,9 @@ integrity script prints `PASS`. A real throughput number (step 4) additionally n
   (`ETA ~Nm`, or `ETA ~?` before the first completion).
 - `--quiet` suppresses all of the above (the startup lines and the live progress lines).
 - Dry-run: `--dry-run` (step 1) prints the plan + cost estimate with **zero** side effects.
-- Abort: `touch /tmp/fsd.stop` (armed via `--stop-file`) — clean drain within seconds, resume-safe.
-  Ctrl-C also works (not resume-guaranteed the same way — prefer the stop-file).
+- Abort: `touch /tmp/fsd.stop` (armed via `--stop-file`). The stop-file is polled ~every 1s, so
+  within ~1s you get `[fsd.download] stop requested — … draining N in-flight …`. It's a **clean**
+  stop, not an instant kill: new submissions halt, but the `N ≈ --max-staged` transfers/converts
+  already in flight finish first (so no partial `.part`/`.src.jp2` files are left). Progress can
+  keep climbing until that drain completes — lower `--max-staged` to shrink it. Ctrl-C also works
+  (not resume-guaranteed the same way — prefer the stop-file).

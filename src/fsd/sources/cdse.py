@@ -720,12 +720,21 @@ def download(
         if should_stop is None:
             return False
         now = time.time()
-        if now - state["last_stop_check"] >= config.PROGRESS_EVERY_S:
+        if now - state["last_stop_check"] >= config.STOP_CHECK_EVERY_S:
             state["last_stop_check"] = now
             state["stop_cached"] = bool(should_stop())
-            if state["stop_cached"]:
+            if state["stop_cached"] and not state["stopped"]:
                 with lock:
                     state["stopped"] = True
+                    in_flight = state["remaining"]
+                if progress:
+                    # Acknowledge the stop the moment it's seen (the run then keeps going
+                    # only to drain what's already in flight — no partial files left behind).
+                    print(
+                        f"[fsd.download] stop requested — halting new submissions; draining "
+                        f"{in_flight} in-flight transfer(s)/convert(s), then exiting…",
+                        flush=True,
+                    )
         return state["stop_cached"]
 
     def _get_convert_pool():

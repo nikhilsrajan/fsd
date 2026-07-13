@@ -64,6 +64,12 @@ S3_READ_TIMEOUT = 30
 # How often download(progress=True) prints a newline progress line (seconds).
 PROGRESS_EVERY_S = 5
 
+# How often the download submit-loop re-checks the stop-file (seconds). Decoupled from
+# PROGRESS_EVERY_S and much shorter: os.path.exists is cheap, and a shorter interval cuts
+# how far past a `touch <stop-file>` new submissions keep starting (the in-flight drain is
+# separate — see download()'s cooperative-stop docstring).
+STOP_CHECK_EVERY_S = 1.0
+
 # Rough size guard for the download safety check (~GB per tile).
 APPROX_GB_PER_TILE = 0.725
 

@@ -140,6 +140,16 @@ carried over (renames, restructures, behavioral tweaks). Pure removals go in
   `status="failed"` result with `error=repr(exc)` **before** re-raising — the runbook flow always has
   a result to paste. The confirm-run runbook now writes an `expected.json` and passes `--expected-json`
   to steps 1–2.
+- **Stop-file UX (2026-07-13): acknowledge the stop + tighten the poll.** Two issues with
+  `touch <stop-file>`: it was silent (no sign the stop was seen), and it appeared to take "too long"
+  (progress kept climbing well past the touch). `download()` now (a) prints
+  `stop requested — halting new submissions; draining N in-flight …` the moment the stop is first
+  seen (N = in-flight count), and (b) polls the stop-file on a dedicated `STOP_CHECK_EVERY_S = 1.0`s
+  interval (was coupled to `PROGRESS_EVERY_S = 5`s) so new submissions halt within ~1s of the touch.
+  The *overshoot itself is by design*: a clean stop drains everything already in flight (≈ `max_staged`
+  ≈ `MAX_CONCURRENT_S3 + 2×MAX_CONVERT_PROCS` ≈ 20 files) so no partial `.part`/`.src.jp2` is left —
+  lower `--max-staged` to trade throughput for a tighter stop. Runbook stop-drill + "Stop / observe"
+  updated accordingly.
 
 ## e2e Austria local-completeness gate + download instrumentation (spec 23, 2026-07-10)
 - **`DownloadResult` gained decomposed metrics** (`fsd.sources.cdse`): `bytes_downloaded`,
