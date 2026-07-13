@@ -445,7 +445,7 @@ def test_download_accumulates_timing_bytes_and_by_band(monkeypatch, tmp_path):
 def test_sum_results_aggregates():
     """spec 23 SO-1: download_resume passes aggregate; a later skip contributes 0 bytes."""
     a = cdse.DownloadResult(successful_count=2, total_count=2, bytes_downloaded=100,
-                            transfer_seconds=1.0, convert_seconds=0.5,
+                            transfer_seconds=1.0, convert_seconds=0.5, transfer_wall_seconds=0.4,
                             bytes_by_band={"B04": 100}, reason_counts={"ok": 2})
     b = cdse.DownloadResult(successful_count=1, total_count=1, skipped_count=1,
                             reason_counts={"skipped": 1})
@@ -453,6 +453,7 @@ def test_sum_results_aggregates():
     assert (agg.successful_count, agg.total_count, agg.skipped_count) == (3, 3, 1)
     assert agg.bytes_downloaded == 100 and agg.bytes_by_band == {"B04": 100}
     assert (agg.transfer_seconds, agg.convert_seconds) == (1.0, 0.5)
+    assert agg.transfer_wall_seconds == 0.4   # wall span sums across passes
     assert agg.reason_counts == {"ok": 2, "skipped": 1}
 
 

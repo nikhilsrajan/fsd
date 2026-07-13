@@ -47,6 +47,9 @@ def _parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--no-cog", action="store_true", help="keep native JP2 (default converts to COG)")
     p.add_argument("--max-convert-procs", type=int, default=None)
     p.add_argument("--max-staged", type=int, default=None)
+    p.add_argument("--max-concurrent-s3", type=int, default=None,
+                   help="transfer-stream count (default config.MAX_CONCURRENT_S3=4); lower it to "
+                        "test whether fewer streams is faster on a link-bound connection")
     p.add_argument("--no-probe", action="store_true",
                    help="skip the single baseline probe_throughput on the real path")
     p.add_argument("--result-json", default=None,
@@ -167,13 +170,21 @@ def _run(args, result_json: str, cog: bool) -> int:
         max_tiles=args.max_tiles, max_cloudcover=args.max_cloudcover,
         progress=not args.quiet, max_passes=args.max_passes, cog=cog,
         max_convert_procs=args.max_convert_procs, max_staged=args.max_staged,
+        max_concurrent_s3=args.max_concurrent_s3,
         should_stop=should_stop,
     )
     agg = cdse.sum_results(results)
     elapsed_s = time.time() - t0
 
+    # per-stream rate (bytes / thread-summed transfer time) — comparable to the single-stream probe
     aggregate_mb_per_s = (
         agg.bytes_downloaded / 1e6 / agg.transfer_seconds if agg.transfer_seconds > 0 else 0.0
+    )
+    # effective WALL rate (bytes / actual transfer-phase wall span) — the honest "how fast did all
+    # streams together pull"; wall ≥ probe means concurrency helped, wall < probe means it didn't.
+    wall_transfer_mb_per_s = (
+        agg.bytes_downloaded / 1e6 / agg.transfer_wall_seconds
+        if agg.transfer_wall_seconds > 0 else 0.0
     )
     # spec 26 review, finding 1: sum_results SUMS failed_count across passes, so a resume that
     # recovers a transient failure on a later pass has agg.failed_count > 0 even though every file
@@ -208,7 +219,8 @@ def _run(args, result_json: str, cog: bool) -> int:
         f"skipped={agg.skipped_count} "
         f"({agg.bytes_downloaded/1e9:.2f} GB) | transfer={agg.transfer_seconds:.1f}s "
         f"convert={agg.convert_seconds:.1f}s | probe={probe_mb_per_s:.1f} MB/s "
-        f"aggregate={aggregate_mb_per_s:.1f} MB/s | stopped={stopped} "
+        f"per-stream={aggregate_mb_per_s:.1f} wall={wall_transfer_mb_per_s:.1f} MB/s "
+        f"| stopped={stopped} "
         f"circuit_tripped={terminal.circuit_tripped} pool_broken={terminal.pool_broken}",
         flush=True,
     )
@@ -224,9 +236,11 @@ def _run(args, result_json: str, cog: bool) -> int:
             "skipped": agg.skipped_count,
             "gb": round(agg.bytes_downloaded / 1e9, 3),
             "transfer_s": round(agg.transfer_seconds, 1),
+            "transfer_wall_s": round(agg.transfer_wall_seconds, 1),
             "convert_s": round(agg.convert_seconds, 1),
             "probe_mb_per_s": round(probe_mb_per_s, 2),
-            "aggregate_mb_per_s": round(aggregate_mb_per_s, 2),
+            "aggregate_mb_per_s": round(aggregate_mb_per_s, 2),   # per-stream (vs probe)
+            "wall_transfer_mb_per_s": round(wall_transfer_mb_per_s, 2),  # effective, all streams
             "elapsed_s": round(elapsed_s, 1),
             "stopped": stopped,
             "circuit_tripped": terminal.circuit_tripped,

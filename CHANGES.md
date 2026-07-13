@@ -150,6 +150,20 @@ carried over (renames, restructures, behavioral tweaks). Pure removals go in
   ≈ `MAX_CONCURRENT_S3 + 2×MAX_CONVERT_PROCS` ≈ 20 files) so no partial `.part`/`.src.jp2` is left —
   lower `--max-staged` to trade throughput for a tighter stop. Runbook stop-drill + "Stop / observe"
   updated accordingly.
+- **Throughput metric honesty (2026-07-13), after the first fresh-download measurement.** The first
+  real confirm-run read as `aggregate 4.83` vs `probe 25.4 MB/s` — alarming until you notice they
+  aren't measured the same way. `aggregate_mb_per_s = bytes / thread-summed transfer_s` is a
+  **per-stream** rate; comparing it to the single-stream probe is fine, but it isn't the effective
+  throughput. `DownloadResult` gains **`transfer_wall_seconds`** (the wall-clock span the transfer
+  phase actually occupied, earliest-start..latest-end, tracked in `_on_transfer_done`), and
+  `download_cli` now reports **`wall_transfer_mb_per_s = bytes / transfer_wall_seconds`** — the
+  honest all-streams effective rate. `wall ≥ probe` ⇒ concurrency helped; `wall < probe` ⇒ it didn't.
+  First run: probe 25 / per-stream 4.8 / **wall 19** MB/s → link-bound, 4 streams slower than 1.
+- **New `--max-concurrent-s3` knob (2026-07-13).** `download()`/`download_resume()`/`download_cli`
+  gained `max_concurrent_s3` (default `config.MAX_CONCURRENT_S3=4`), threaded through the transfer
+  `ThreadPoolExecutor` and `_default_max_staged` sizing, so a link-bound run can sweep stream count
+  (`--max-concurrent-s3 1|2`) without editing `config.py`. Runbook step-4 rewritten to explain the
+  three rates (probe / per-stream / wall) and which pair to compare.
 
 ## e2e Austria local-completeness gate + download instrumentation (spec 23, 2026-07-10)
 - **`DownloadResult` gained decomposed metrics** (`fsd.sources.cdse`): `bytes_downloaded`,

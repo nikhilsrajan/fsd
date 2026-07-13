@@ -194,6 +194,39 @@ def test_cli_expected_block_populated_and_merges_expected_json(monkeypatch, tmp_
     assert exp["missing_count_range"] == [10, 15]
 
 
+def test_cli_forwards_max_concurrent_s3_and_reports_wall_rate(monkeypatch, tmp_path):
+    """--max-concurrent-s3 threads through to download_resume, and the result-json reports
+    both the per-stream aggregate and the effective wall transfer rate (spec 25 measurement)."""
+    monkeypatch.setattr(
+        download_cli.CdseCredentials, "from_json",
+        classmethod(lambda cls, fp, **kw: cls(**DUMMY_FIELDS)),
+    )
+    captured = {}
+
+    def fake_resume(*a, **k):
+        captured.update(k)
+        # bytes=2 MB; per-stream transfer 4s (thread-summed), wall span 1s (4 streams)
+        return [cdse.DownloadResult(
+            successful_count=5, total_count=5, failed_count=0,
+            bytes_downloaded=2_000_000, transfer_seconds=4.0, transfer_wall_seconds=1.0,
+        )]
+
+    monkeypatch.setattr(download_cli.cdse, "download_resume", fake_resume)
+    result_json = str(tmp_path / "_result.json")
+    rc = download_cli.main([
+        "--roi", "roi.geojson", "--start", "2018-04-01", "--end", "2018-06-01",
+        "--bands", "B04", "--dst", str(tmp_path), "--catalog", str(tmp_path / "c.parquet"),
+        "--max-tiles", "5", "--result-json", result_json, "--no-probe",
+        "--creds", str(tmp_path / "creds.json"), "--max-concurrent-s3", "2",
+    ])
+    assert rc == 0
+    assert captured["max_concurrent_s3"] == 2
+    m = json.loads(open(result_json).read())["metrics"]
+    assert m["aggregate_mb_per_s"] == 0.5    # 2 MB / 4 thread-summed s (per-stream)
+    assert m["wall_transfer_mb_per_s"] == 2.0  # 2 MB / 1 wall s (effective, all streams)
+    assert m["transfer_wall_s"] == 1.0
+
+
 def test_cli_error_populated_on_failed_status(monkeypatch, tmp_path):
     """A run that reports failures (non-exception) fills `error` with a short reason, not None."""
     monkeypatch.setattr(

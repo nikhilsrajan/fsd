@@ -179,8 +179,12 @@ class DownloadResult:
     # transfer_seconds + convert_seconds may exceed elapsed_s (they overlap). bytes_downloaded is
     # the JP2 bytes actually pulled from CDSE (basis for throughput MB/s); skips contribute 0. ---
     bytes_downloaded: int = 0            # JP2 bytes transferred this run (excludes skipped)
-    transfer_seconds: float = 0.0        # summed CDSE byte-transfer wall-time
+    transfer_seconds: float = 0.0        # summed CDSE byte-transfer wall-time (across threads)
     convert_seconds: float = 0.0         # summed local JP2->COG conversion wall-time
+    # Wall-clock span the transfer phase actually occupied (earliest start .. latest end), NOT
+    # summed across threads — so bytes_downloaded / transfer_wall_seconds is the *effective*
+    # aggregate MB/s to compare apples-to-apples with the single-stream probe (spec 25).
+    transfer_wall_seconds: float = 0.0
     bytes_by_band: dict = dataclasses.field(default_factory=dict)  # {band: bytes} for extrapolation
 
 
@@ -517,18 +521,19 @@ def _append_downloaded(catalog, tile_meta: dict, results: list[tuple]) -> int:
     return sum(len(f) for f in files_by_tile.values())
 
 
-def _default_max_staged(root_folderpath: str, max_convert_procs: int) -> int:
+def _default_max_staged(root_folderpath: str, max_convert_procs: int,
+                        max_concurrent_s3: int = config.MAX_CONCURRENT_S3) -> int:
     """Disk-aware `MAX_STAGED` sizing (spec 25 D5/D6): a **safety cap** on
     staged-but-unconverted JP2s, not a throughput lever — past `floor` a bigger
     buffer gives no throughput gain (bounded-buffer queueing), so free disk only
     *shrinks* the cap, never grows it beyond the saturation target `headroom`.
     Sized **once** at `download()` start from `shutil.disk_usage(root_folderpath)`.
     """
-    floor = config.MAX_CONCURRENT_S3 + max_convert_procs
-    headroom = config.MAX_CONCURRENT_S3 + 2 * max_convert_procs
+    floor = max_concurrent_s3 + max_convert_procs
+    headroom = max_concurrent_s3 + 2 * max_convert_procs
     free = shutil.disk_usage(root_folderpath).free
     disk_cap = int(free * config.STAGING_DISK_FRACTION / (config.STAGING_ITEM_GB * 1e9))
-    staged = max(config.MAX_CONCURRENT_S3, min(headroom, disk_cap))
+    staged = max(max_concurrent_s3, min(headroom, disk_cap))
     if staged < floor:
         print(
             f"[fsd.download] warning: disk-limited staging={staged} < {floor} "
@@ -584,6 +589,7 @@ def download(
     cog: bool = True,
     max_convert_procs: int | None = None,
     max_staged: int | None = None,
+    max_concurrent_s3: int | None = None,
     convert_executor=None,
     should_stop: Callable[[], bool] | None = None,
 ) -> DownloadResult:
@@ -676,12 +682,13 @@ def download(
     start = time.time()
 
     procs = max_convert_procs if max_convert_procs is not None else config.MAX_CONVERT_PROCS
+    s3_workers = max_concurrent_s3 if max_concurrent_s3 is not None else config.MAX_CONCURRENT_S3
     staged_cap = max_staged
     if staged_cap is None:
         # _default_max_staged needs a real local path; only cog=True can reach here
         # with a local root (cog=False + remote root is otherwise legal and sem_staged
         # is never acquired for it, so skip the disk probe entirely).
-        staged_cap = _default_max_staged(root_folderpath, procs) if cog else config.MAX_CONCURRENT_S3
+        staged_cap = _default_max_staged(root_folderpath, procs, s3_workers) if cog else s3_workers
     sem_staged = threading.BoundedSemaphore(staged_cap)
 
     lock = threading.Lock()
@@ -694,6 +701,7 @@ def download(
         "done": 0, "skipped": 0, "successful": 0,
         "consecutive": 0, "tripped": False, "pool_broken": False,
         "transfer_seconds": 0.0, "convert_seconds": 0.0, "bytes_downloaded": 0,
+        "transfer_wall_start": None, "transfer_wall_end": 0.0,
         "remaining": 0, "loop_finished": False, "last_print": 0.0,
         "stopped": False, "last_stop_check": -1e18, "stop_cached": False,
     }
@@ -799,6 +807,7 @@ def download(
         _finalize(tid, src, dst, ok, reason)
 
     def _on_transfer_done(src, dst, tid, needs_convert, fut):
+        t_end = time.time()  # ~transfer end; back out the start from the measured duration
         try:
             ok, reason, t_s, nbytes = fut.result()
         except Exception as e:
@@ -808,6 +817,13 @@ def download(
             if nbytes:
                 state["bytes_downloaded"] += nbytes
                 bytes_by_band[os.path.splitext(os.path.basename(dst))[0]] += nbytes
+                # wall span the transfer phase actually occupied (for effective MB/s, vs the
+                # thread-summed transfer_seconds): earliest start .. latest end across all files.
+                t_start = t_end - t_s
+                if state["transfer_wall_start"] is None or t_start < state["transfer_wall_start"]:
+                    state["transfer_wall_start"] = t_start
+                if t_end > state["transfer_wall_end"]:
+                    state["transfer_wall_end"] = t_end
             if ok:
                 state["consecutive"] = 0
             else:
@@ -831,7 +847,7 @@ def download(
                 sem_staged.release()
             _finalize(tid, src, dst, ok, reason)
 
-    transfer_pool = concurrent.futures.ThreadPoolExecutor(max_workers=config.MAX_CONCURRENT_S3)
+    transfer_pool = concurrent.futures.ThreadPoolExecutor(max_workers=s3_workers)
     try:
         for src, dst, tid in work:
             if state["tripped"] or state["pool_broken"] or _stop():
@@ -881,6 +897,10 @@ def download(
         bytes_downloaded=state["bytes_downloaded"],
         transfer_seconds=state["transfer_seconds"],
         convert_seconds=state["convert_seconds"],
+        transfer_wall_seconds=(
+            state["transfer_wall_end"] - state["transfer_wall_start"]
+            if state["transfer_wall_start"] is not None else 0.0
+        ),
         bytes_by_band=dict(bytes_by_band),
     )
 
@@ -905,6 +925,7 @@ def download_resume(
     cog: bool = True,
     max_convert_procs: int | None = None,
     max_staged: int | None = None,
+    max_concurrent_s3: int | None = None,
     convert_executor=None,
     should_stop: Callable[[], bool] | None = None,
 ) -> list[DownloadResult]:
@@ -938,6 +959,7 @@ def download_resume(
             max_tiles=max_tiles, chunksize=chunksize, max_cloudcover=max_cloudcover,
             progress=progress, max_consecutive_failures=max_consecutive_failures,
             cog=cog, max_convert_procs=max_convert_procs, max_staged=max_staged,
+            max_concurrent_s3=max_concurrent_s3,
             convert_executor=convert_executor, should_stop=should_stop,
         )
         results.append(r)
@@ -973,6 +995,7 @@ def sum_results(results: list[DownloadResult]) -> DownloadResult:
         agg.bytes_downloaded += r.bytes_downloaded
         agg.transfer_seconds += r.transfer_seconds
         agg.convert_seconds += r.convert_seconds
+        agg.transfer_wall_seconds += r.transfer_wall_seconds  # per-pass spans don't overlap → sum
         agg.circuit_tripped = agg.circuit_tripped or r.circuit_tripped
         agg.pool_broken = agg.pool_broken or r.pool_broken
         agg.stopped = agg.stopped or r.stopped

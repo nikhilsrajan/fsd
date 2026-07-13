@@ -164,15 +164,26 @@ print('PASS')
 import json
 r = json.load(open('tests/outputs/demo_e2e/imagery/_result_step2.json'))
 m = r['metrics']
-print(f\"transfer: {m['transfer_s']:.1f}s | convert: {m['convert_s']:.1f}s | \"
-      f\"gb: {m['gb']:.2f} | probe: {m['probe_mb_per_s']:.1f} MB/s | \"
-      f\"aggregate: {m['aggregate_mb_per_s']:.1f} MB/s\")
+print(f\"transfer: {m['transfer_s']:.1f}s (summed) / {m['transfer_wall_s']:.1f}s wall | \"
+      f\"convert: {m['convert_s']:.1f}s (summed) | gb: {m['gb']:.2f}\")
+print(f\"probe(1 stream): {m['probe_mb_per_s']:.1f} | per-stream: {m['aggregate_mb_per_s']:.1f} | \"
+      f\"wall(all streams): {m['wall_transfer_mb_per_s']:.1f} MB/s\")
 "
 ```
-- **Expect:** the transfer_s/convert_s split and probe-vs-aggregate MB/s line.
-- **PASS/FAIL:** no hard threshold (this is the first baseline measurement) — just captured. Flag
-  it if `aggregate_mb_per_s` is far below `probe_mb_per_s` (< ~50%, say) — that's a
-  local-contention/concurrency signal worth a follow-up, not a step failure.
+- **Expect:** the transfer/convert split (summed-across-threads **and** wall) and three MB/s numbers.
+- **How to read it** (three rates, three different things — don't compare the wrong pair):
+  - `probe_mb_per_s` — a **single** stream, wall-clock.
+  - `aggregate_mb_per_s` — bytes ÷ **thread-summed** transfer_s → the **per-stream** rate under
+    concurrency. Compare this to `probe`: `per-stream ≈ probe` ⇒ streams don't interfere;
+    `per-stream ≪ probe` ⇒ they contend for a shared resource (the CDSE link, usually — *not*
+    necessarily local CPU/disk).
+  - `wall_transfer_mb_per_s` — bytes ÷ **wall** transfer span → the **effective** throughput all
+    streams achieved together. **This is the one that matters for tuning:** `wall ≥ probe` ⇒
+    concurrency helped; `wall < probe` ⇒ it didn't (the link is the bottleneck) — try fewer streams
+    with `--max-concurrent-s3 1` or `2`.
+- **PASS/FAIL:** no hard threshold — this is a baseline to capture. (First real run, 2026-07-13:
+  probe 25 / per-stream 4.8 / wall 19 MB/s on a 3.5 GB / 13-granule slice → link-bound, 4 streams
+  slightly slower than 1.)
 
 ### Optional — stop drill
 Re-run step 2's command from a clean state (or after removing a few `Bxx.tif` files to have
@@ -201,8 +212,8 @@ Each step writes `<dst>/_result_step<N>.json` (step 2's shape, spec 24 / spec 26
   "metrics": {
     "needed": 13, "present": 0, "missing": 13,
     "successful": 65, "failed": 0, "failed_total": 0, "skipped": 0,
-    "gb": 2.0, "transfer_s": 0, "convert_s": 0,
-    "probe_mb_per_s": 0, "aggregate_mb_per_s": 0,
+    "gb": 2.0, "transfer_s": 0, "transfer_wall_s": 0, "convert_s": 0,
+    "probe_mb_per_s": 0, "aggregate_mb_per_s": 0, "wall_transfer_mb_per_s": 0,
     "elapsed_s": 0, "stopped": false,
     "circuit_tripped": false, "pool_broken": false
   },

@@ -167,6 +167,10 @@ ended on the stop-file; `"failed"` when the exit is non-zero.
 - **`error`** = a short reason on a non-exception `status="failed"`. If the run *raises* (network /
   creds / disk), the CLI still writes a `status="failed"` result with `error=repr(exc)` before
   re-raising, so the runbook flow always has a result to paste.
+- **Three throughput rates** (don't compare the wrong pair): `probe_mb_per_s` = one stream, wall;
+  `aggregate_mb_per_s` = bytes / thread-summed transfer_s = per-stream rate under concurrency (compare
+  to probe: ≪ ⇒ streams contend); `wall_transfer_mb_per_s` = bytes / wall transfer span = effective
+  all-streams rate (≥ probe ⇒ concurrency helped). `--max-concurrent-s3 N` sweeps the stream count.
 
 ### 5. The confirm-run runbook — `runbooks/26-download-confirm-run.md` (D4)
 
