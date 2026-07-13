@@ -164,6 +164,51 @@ carried over (renames, restructures, behavioral tweaks). Pure removals go in
   `ThreadPoolExecutor` and `_default_max_staged` sizing, so a link-bound run can sweep stream count
   (`--max-concurrent-s3 1|2`) without editing `config.py`. Runbook step-4 rewritten to explain the
   three rates (probe / per-stream / wall) and which pair to compare.
+- **`demos/e2e_austria.py` crop-map/NDVI colors (2026-07-13):** replaced the arbitrary `tab20`
+  class colormap (which painted pasture/grassland pink) with a curated `CLASS_COLORS` dict —
+  semantic where possible (grass→green, mustard→yellow, sunflower→orange, alfalfa→violet, …) and
+  spread across hue/lightness for separability. Applied to **both** the crop map and the NDVI
+  timeseries so each class has one consistent color; unlisted classes fall back to `tab20`. Cosmetic
+  (demo-only); regenerate `demos/figures/{crop_map,ndvi_timeseries}.png` by re-running the demo.
+- **`demos/E2E_AUSTRIA.md §8` filled from the real 2026-07-13 full run** (stitched: download+train
+  from pass 1, inference from a clean re-pass) — timing table, download transfer/convert/wall block,
+  per-cell build-vs-infer decomposition, and merged-map coverage (6830×6868, EPSG:32633, 99.2% valid).
+- **`E2E_AUSTRIA.md` is now the single go-to doc (2026-07-13).** Threaded the safe download runner
+  (`python -m fsd.sources.download_cli`: `--dry-run` sizing, `--stop-file`, `--max-concurrent-s3`,
+  `_result.json`/`--expected-json`, the probe/per-stream/wall rates) into §2 + a §5 dry-run tip; added
+  **Appendix C** ("why run the full ROI") capturing the real bugs full-ROI runs caught — spec-20
+  tile-merge, spec-26 STAC id collision, the multi-UTM-zone display merge. **`demos/README.md`**
+  rewritten from the stale Ethiopia writeup (referenced the renamed `e2e_ethiopia.py` /
+  `inference_roi.geojson`) into a **thin redirect** to `E2E_AUSTRIA.md` (driver/adapter/estimator/
+  figures pointers + a one-paragraph history note).
+- **STAC inference-output item-id collision fixed (2026-07-13).** `catalog.stac.cog_outputs_to_items`
+  derived each Item id from the COG **filename stem** (`os.path.basename → splitext`), but fsd writes
+  every output as `<cube_id>/output.tif` — so all N items got the constant id `"output"`.
+  `write_stac_catalog`'s `normalize_hrefs` then mapped them all to `./output/output.json`, producing a
+  `collection.json` with **N identical item links** and **one** item file on disk (all others
+  overwritten). Surfaced on the full Austria run (300 cells → 300 dup links, 1 file). Fix: id now comes
+  from the **parent directory** (`_output_item_id`, the cube id — unique by fsd's `<cube_id>/output.tif`
+  layout in both ROI and prebuilt-cubes modes), plus a **uniqueness guard** that raises if ids ever
+  collide again instead of silently emitting a corrupt catalog. `merged.tif` + per-cell COGs were
+  unaffected (they use `output_filepaths`, not the ids). Regression: `test_run_inference_writes_cogs_and_stac`
+  now asserts **distinct** item ids (the old `len(items)==2` passed on the bug because
+  `get_items(recursive=True)` followed the duplicate links to the same file twice). 213 passed.
+- **`demos/e2e_austria.py` step 5 bugfix (2026-07-13): pass the required `output_folderpath`.**
+  `step_inference` called `fsd.run_inference(...)` without `output_folderpath`, so ROI-mode preflight
+  aborted with `PreflightError: output_folderpath is required.` — surfaced on the first full run to
+  reach step 5 (smoke levels never exercised it end-to-end). Now passes
+  `output_folderpath=OUTDIR/model_outputs`, matching the runbook 27 / `E2E_AUSTRIA.md §5` output paths
+  (`model_outputs/<cell>/output.tif`, `stac/`, `merged.tif`). Demo-only; no `src/fsd/` change.
+- **`demos/e2e_austria.py` step 2 now reports the aggregate (wall) transfer rate (2026-07-13)**, to
+  match `download_cli` and the wall metric above. It divided `bytes_downloaded / transfer_seconds`
+  (the thread-summed **per-stream** rate) everywhere; now the console `transfer` line shows the
+  transfer-only wall seconds + **both** rates (`X MB/s aggregate / Y per stream`), the
+  probe-vs-effective verdict compares the probe against the **aggregate** rate, and
+  `cost_model["transfer_mb_per_s"]` (→ `demos/estimate.py` ETAs) is the aggregate rate
+  (`per_stream_mb_per_s` kept as a diagnostic). Rationale: per-stream understated throughput ~4×
+  (confirm-run 4.8 vs 19 MB/s) → the demo printed the wrong link-vs-contention verdict and
+  `estimate.py` predicted download times ~4× too slow. Reporting/calibration only — no pipeline
+  behavior change; `E2E_AUSTRIA.md §8`'s "MB/s summed" template line follows when §8 is filled.
 
 ## e2e Austria local-completeness gate + download instrumentation (spec 23, 2026-07-10)
 - **`DownloadResult` gained decomposed metrics** (`fsd.sources.cdse`): `bytes_downloaded`,

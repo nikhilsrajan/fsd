@@ -144,6 +144,17 @@ def tile_catalog_to_items(gdf, *, collection_id=None, read_proj=False) -> list[p
     return items
 
 
+def _output_item_id(fp) -> str:
+    """STAC item id for an inference-output COG.
+
+    fsd writes every output as ``<cube_id>/output.tif`` (the per-cell/-cube folder *is* the id),
+    so the id is the **parent directory** name — not the constant ``output`` filename stem, which
+    would collide across all outputs. Falls back to the filename stem when there is no parent dir.
+    """
+    return (os.path.basename(os.path.dirname(str(fp)))
+            or os.path.splitext(os.path.basename(str(fp)))[0])
+
+
 def cog_outputs_to_items(cog_filepaths, *, collection_id="fsd-inference",
                          band_names=None, dt=None) -> list[pystac.Item]:
     """Map inference-output COGs to STAC Items (spec 17 SO-6; used by run_inference, spec 18).
@@ -171,7 +182,7 @@ def cog_outputs_to_items(cog_filepaths, *, collection_id="fsd-inference",
 
         geom = shapely.geometry.box(*bounds4326)
         item = pystac.Item(
-            id=os.path.splitext(os.path.basename(str(fp)))[0],
+            id=_output_item_id(fp),
             geometry=shapely.geometry.mapping(geom),
             bbox=list(bounds4326),
             datetime=dt,
@@ -190,6 +201,17 @@ def cog_outputs_to_items(cog_filepaths, *, collection_id="fsd-inference",
             asset.extra_fields["eo:bands"] = [{"name": b} for b in band_names]
         item.add_asset("output", asset)
         items.append(item)
+    # STAC item ids must be unique: write_stac_catalog's normalize_hrefs maps id -> <id>/<id>.json,
+    # so a collision silently overwrites all-but-one item on disk AND duplicates the collection link
+    # (the spec-26 bug). fsd writes every output as <cube_id>/output.tif, so ids come from the parent
+    # dir and are unique by construction; guard loudly if a layout ever breaks that invariant.
+    ids = [it.id for it in items]
+    if len(set(ids)) != len(ids):
+        dupes = sorted({i for i in ids if ids.count(i) > 1})
+        raise ValueError(
+            f"cog_outputs_to_items: item ids are not unique ({dupes}); each output must live in "
+            "its own per-cube folder (<cube_id>/output.tif)."
+        )
     return items
 
 

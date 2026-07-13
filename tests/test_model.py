@@ -147,6 +147,9 @@ def test_run_inference_writes_cogs_and_stac(tmp_path):
     cat = pystac.Catalog.from_file(result.stac_catalog_filepath)
     items = list(cat.get_items(recursive=True))
     assert len(items) == 2
+    # each output gets a DISTINCT item id (the per-cube folder), not the constant "output" stem —
+    # regression for the spec-26 STAC id collision (all items overwrote one <output>/output.json).
+    assert len({it.id for it in items}) == 2
     assert all("proj:transform" in it.properties for it in items)
 
 

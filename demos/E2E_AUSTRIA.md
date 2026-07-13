@@ -53,6 +53,43 @@ surface in seconds, not after an hour.
   CDSE window, **just re-run the script; it resumes** and completes the remainder. A slow/failing
   pass is not a fsd bug.
 
+### The safe download runner (`fsd.sources.download_cli`)
+
+The demo calls the download **engine** (`cdse.download_resume`) in-process, but for real / large pulls
+there is a **standalone CLI over the same engine** — `python -m fsd.sources.download_cli` (spec 26) —
+that adds the operational controls a one-off call doesn't need (it's also what the Batch runner will
+dispatch later):
+
+- **`--dry-run`** — metadata-only preview (STAC query + plan, **zero band bytes**): how many granules
+  are *needed / present / missing*, so you **size a pull before committing** to hours of transfer.
+- **`--stop-file PATH`** — graceful stop: `touch` the file and the run halts *new* submissions and
+  drains what's in flight (no partial files left); delete it and re-run to resume.
+- **`--max-concurrent-s3 N`** — number of parallel S3 transfer streams (default 4). More is **not**
+  always faster — read the three rates below.
+- **`--result-json` / `--expected-json`** — a machine-readable `_result.json` per run (status, counts,
+  GB, throughput) and a pass/fail diff against expected criteria; the process **exit code** doubles as
+  PASS/FAIL for scripting. Everything stays **idempotent + resumable**, same as the in-demo download.
+
+```bash
+# size the full pull first (no bytes fetched):
+.venv-modeldeploy/bin/python -m fsd.sources.download_cli \
+    --roi shapefiles/AT_ROI.geojson --start 2018-04-01 --end 2018-09-30 \
+    --bands B04 B08 B8A SCL --max-cloudcover 70 \
+    --dst tests/outputs/demo_e2e/imagery --catalog tests/outputs/demo_e2e/imagery/catalog.parquet \
+    --max-tiles 200 --dry-run
+```
+
+**Read the three throughput numbers** it (and the demo's step 2) report:
+- **probe** — single-stream achievable MB/s *right now* (one file, one thread).
+- **per-stream** — bytes ÷ thread-summed transfer time (the average each of the N streams saw).
+- **wall / aggregate** — bytes ÷ transfer wall-clock (the honest *all-streams* effective rate).
+
+Compare **probe vs aggregate**: aggregate ≈ probe (or below) ⇒ **link-bound** (one stream already
+saturates your uplink; extra streams don't help — or hurt); aggregate ≫ probe ⇒ concurrency is paying
+off. On the §8 run, probe 26 vs aggregate 17 MB/s → link-bound, and 4 streams were *slower* than 1.
+**That verdict is environment-specific** — it inverts on a datacenter NIC, so `--max-concurrent-s3` is
+tuned per environment, not baked in (§9; and the Azure re-tune, TODO #24).
+
 ---
 
 ## 3. Prerequisites
@@ -107,6 +144,10 @@ fastest true end-to-end); **`--fast`** shortens the window + shrinks the *infere
 downloads the full ROI; no flag = full season over the whole ROI. `--cores` (training-data build
 parallelism), `--infer-cores` (inference build+infer parallelism — **keep low**, each ~5×5 km cube
 is memory-heavy; defaults to `max(1, cores//4)`).
+
+**Tip:** before a large first pull, **size the download** with the runner's `--dry-run` (§2) — it
+reports the granule count with zero bytes fetched, so you can sanity-check disk + time up front.
+
 The 7 steps and what they produce (all heavy artifacts under `tests/outputs/demo_e2e/`, gitignored):
 
 | step | produces |
@@ -189,31 +230,57 @@ bundle — this is what lets **one adapter class back models trained on differen
 
 ---
 
-## 8. Results (fill from a real run)
+## 8. Results — a real full run
 
-> Run the demo (`--fast` first) and paste the console's **timing breakdown** + **download** block
-> here, plus the QGIS screenshots. Placeholders below show the shape.
+Measured **2026-07-13** on the full **Waldviertel AT_ROI** (single UTM-33), window **2018-04-01…09-30**,
+`mosaic_days=20` (**T=10**), bands `B04 B08 B8A SCL`, `--cores 8` (macOS, university wifi). **207**
+Sentinel-2 granules, **300** S2 grid cells, **900** EuroCrops training fields (9 classes). *Numbers are
+stitched from a resumed run — the download + training were measured on the first pass, inference on a
+clean re-pass over all 300 cells (see the note under the table). Your throughput will differ (§9).*
 
 ```
 step                          seconds   share
-0_preflight                       0.x      -%
-1_tiling                          x.x      -%
-2_download                        x.x     -%    <- transfer vs convert vs wall below
-3_training_data                   x.x     -%
-4_train_bundle                    x.x      -%
-5_run_inference                   x.x     -%
-6_plots                           x.x      -%
-7_report                          0.x      -%
-TOTAL                             x.x    100%
+0_preflight                       0.0      0%
+1_tiling                          0.8      0%
+2_download                     2732.8     45%    <- transfer / convert / wall below
+3_training_data                 591.6     10%
+4_train_bundle                   26.9      0%
+5_run_inference                2683.5     44%    <- build + infer per cell, below
+6_plots                           6.0      0%
+7_report                          0.0      0%
+TOTAL                          6041.6    100%   (~100 min)
 
 download:
-  transfer :  ___ s  (___ GB, ___ MB/s summed)
-  convert  :  ___ s  (jp2 → COG, ___ files)
-  wall     :  ___ s  (___ granules, _ pass)
-  probe ___ MB/s vs effective ___ MB/s -> <CDSE/link-bound | local contention>
+  transfer : 2666.7 s  (44.61 GB, 16.7 MB/s aggregate / 4.4 per stream)
+  convert  : 11926.0 s (jp2 → COG; summed over the ~8-proc convert pool, fully OVERLAPPED with
+             transfer — the download step wall is 2732.8 s ≈ transfer wall 2688.6 s, not the sum)
+  wall     : 2688.6 s  (207 granules, 1 pass, ~0.216 GB/granule)
+  probe 26.3 MB/s vs effective 16.7 MB/s (aggregate) -> link-bound: 4 parallel streams were
+  SLOWER than 1 (per-stream 4.4). This is a property of the local uplink, not CDSE or fsd — it
+  is expected to invert on a datacenter NIC; re-tune `max_concurrent_s3` per environment (TODO #24).
 ```
-Outputs: `model_outputs/<cell>/output.tif` (one COG per cell), `stac/catalog.json`, `merged.tif`.
-Screenshots: `figures/s2_grids.png`, `figures/ndvi_timeseries.png`, `figures/crop_map.png`.
+
+**Two steps dominate (~90%): download (45%) and inference (44%).** Everything else is noise.
+
+- **Download** is transfer-bound, not convert-bound — the jp2→COG conversion runs in a separate
+  process pool that fully overlaps the transfers (§Appendix A), so the step wall tracks the network,
+  not the CPU. At 16.7 MB/s aggregate the 44.6 GB took ~45 min.
+- **Inference = build + infer, per cell.** The 2683.5 s over 300 cells ≈ **8.9 s/cell** at
+  `INFER_CORES=2` (`max(1, cores//4)`; each ~5×5 km cube is memory-heavy). Decomposed (per-cell,
+  reconstructed from the build/infer file timestamps): **build ≈ 8.0 s** (scales with a cell's image
+  count, 23–203) and **infer ≈ 7.8 s** — where the "infer" time is *almost entirely fixed model-load
+  overhead* (a flat 6–10 s regardless of cell size; an RF predict is sub-second), because ROI mode
+  reloads the bundle once per cell. Grouping cells per worker would roughly halve it (TODO #25).
+
+**Outputs** (under `tests/outputs/demo_e2e/model_outputs/`): one COG per cell
+`cells/<window>/<cell_id>/output.tif` (300), a self-contained `stac/` catalog (300 distinct Items),
+and the single-CRS display mosaic `merged.tif` — **6830×6868 px, EPSG:32633, 99.2% valid**. Class mix
+of the map: pasture/grassland 49.7%, buckwheat 13.7%, hemp 6.4%, maize 5.8%, the rest 4–6% each.
+
+**Figures** (committed under `demos/figures/`, so they survive clearing the outputs folder):
+`s2_grids.png` (ROI→300 cells), `ndvi_timeseries.png` (per-class median NDVI), `crop_map.png`
+(the merged class map). Model quality is illustrative — the point is the pipeline (§6, bring your
+own model). Validate the map in QGIS (Appendix A: visual validation).
 
 ---
 
@@ -272,3 +339,29 @@ Screenshots: `figures/s2_grids.png`, `figures/ndvi_timeseries.png`, `figures/cro
   `flatten` drops the nodata. Don't be alarmed eyeballing a cube in QGIS.
 - **`fsd.deploy` is a P6 stub** (registration/push); local train + bundle + infer is the complete
   path today.
+
+## Appendix C — Why run the full ROI (real bugs it has caught)
+
+Small synthetic / single-field tests pass while a real, full-ROI run surfaces coverage and
+serialization bugs — which is exactly why this demo exists, and why outputs get **eyeballed in QGIS**,
+not just unit-tested:
+
+- **Tile-merge coverage bug (spec 20).** An early full run showed **9 of 300 cells as ~nodata holes**
+  along an MGRS-tile-row boundary. The cause was a real datacube-builder bug (not the demo): the
+  builder kept only **one** MGRS tile per `(timestamp, band)`, so a cell straddling a tile boundary
+  lost every *other* same-acquisition tile's coverage (worst cell: 0.6% valid despite ~80% raw
+  coverage). Fixed by nodata-fill **merging all same-`(timestamp, band)` tiles** onto the reference
+  grid → the dead cells rebuilt to 80%+ valid and recovered ~6% more training pixels too. (This is
+  the "boundary cells don't lose data" guarantee in Appendix A.)
+- **STAC item-id collision (spec 26).** The full 300-cell run produced a `collection.json` with **300
+  links all pointing to one item file** — every output COG is named `output.tif`, and the item id was
+  derived from that constant filename. Fixed to derive the id from the per-cell folder, with a
+  uniqueness guard that now fails loudly instead of silently overwriting. A 2-cube synthetic test had
+  *masked* it (it counted duplicate link-follows as distinct items).
+- **Multi-UTM-zone outputs → the display merge.** A cross-zone ROI's per-cell cubes land in
+  *different* CRSs (e.g. a ROI near 36°E gets **both** EPSG:32636 and 32637, since S2 zone-36 tiles
+  reach past 36°E). `rasterio.merge` needs one CRS (the single-CRS-merge principle), so
+  `merge="reproject"` reprojects every output COG to the area-dominant zone before mosaicking the
+  display map. Austria (§8) is single-zone UTM-33, so no reprojection was needed — but the path is
+  exercised, and the `--roi` swap in §4 (France/Russia-style cross-zone ROIs) relies on it working
+  unchanged.

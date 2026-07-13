@@ -7,14 +7,31 @@
 > data-generation + model-deploy **infrastructure** working end-to-end on real data is.
 
 ## Prereqs
-- venv **`.venv-modeldeploy`** (has `[dev,grid,model-example]`; the e2e needs sklearn/s2/matplotlib
-  that must stay out of fsd's lean `.venv`). If missing:
-  `python3.11 -m venv .venv-modeldeploy && .venv-modeldeploy/bin/pip install -e ".[dev,grid,model-example]"`.
+- **Python 3.11** on `PATH` (`python3.11 --version`). The venv itself is created in **Setup** below —
+  you do **not** need it beforehand.
 - **Fresh CDSE creds** at `../secrets/cdse_credentials.json` (or `$CDSE_CREDENTIALS_JSON`) — S3 keys
   **not expired** (they lapse fast; step 0 warns). See `demos/E2E_AUSTRIA.md §3`.
 - Disk: **≥ 50 GB free** under `tests/outputs/demo_e2e/` (you have ~148 GB — fine).
 - A real (non-hotspot) network — **university wifi ✓**.
 - All commands run from the `fsd/` package root.
+
+## Setup — create the demo venv (once; idempotent, safe to re-run)
+The e2e needs a **separate** venv `.venv-modeldeploy` with the `[dev,grid,model-example]` extras
+(sklearn/s2/matplotlib) that are deliberately kept out of fsd's lean core `.venv`. This block creates
+it only if missing, then verifies the imports the run depends on:
+```bash
+cd fsd   # package root — all commands below assume this
+test -x .venv-modeldeploy/bin/python || python3.11 -m venv .venv-modeldeploy
+.venv-modeldeploy/bin/pip install -e ".[dev,grid,model-example]"
+.venv-modeldeploy/bin/python -c "import fsd, sklearn, joblib, matplotlib, s2, rasterio, s3fs, geopandas; print('venv OK')"
+```
+- **Expect:** the final line prints `venv OK` (all imports resolve), exit 0. First-time install
+  pulls sklearn/geopandas/rasterio and takes a few minutes; a re-run is a fast no-op.
+- The extras (from `demos/E2E_AUSTRIA.md §3`): **`[grid]`** = `s2`/`s2cell` (ROI→S2-cell tiling);
+  **`[model-example]`** = `scikit-learn`/`joblib`/`matplotlib` (the demo RF + plots — *not* fsd
+  itself); **`[dev]`** = ruff/pytest.
+- Wrong venv is the #1 new-user mistake: the demo **will not** run under fsd's core `.venv` (no
+  sklearn/s2). Always invoke it as `.venv-modeldeploy/bin/python …` as every step below does.
 
 ## Size expectation (from the tiny confirm-run, scaled to the full 6-month window)
 ~2–4 MGRS tiles → **~80–160 granules → ~20–45 GB**, download ~18–40 min @ ~19 MB/s wall, plus

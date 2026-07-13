@@ -4,7 +4,50 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-13_
 
-## LATEST (2026-07-13) — spec 26 confirm-run EXECUTED for real + pipeline hardened; next = Austria go-to doc
+## LATEST (2026-07-13 pm) — FULL Austria e2e EXECUTED; `E2E_AUSTRIA.md` is now the single go-to doc; next = titiler/Leaflet STAC-verify spec (task 2)
+
+**The full Austria e2e ran for real, end-to-end, and PASSES** (real CDSE download → datacube → train on
+real EuroCrops → inference → crop map). Everything on `main` (pushed). Run: Waldviertel AT_ROI,
+2018-04-01..09-30, T=10, `--cores 8`; **207 granules / 44.61 GB**, **300 grid cells**, 900 train fields
+(9 classes); `merged.tif` **6830×6868 EPSG:32633, 99.2% valid**. Timing **~100 min** (download 45% /
+inference 44% dominate). Numbers stitched (download+train from pass 1, inference from a clean re-pass) —
+see `demos/E2E_AUSTRIA.md §8`.
+
+**3 issues the full run surfaced + FIXED (213 pytest / ruff clean):**
+- **demo step 5 crashed** — `run_inference` called without the required `output_folderpath` →
+  `PreflightError`; now passes `OUTDIR/model_outputs`. Demo-only.
+- **STAC item-id collision (real `src/fsd` bug)** — `cog_outputs_to_items` derived the item id from the
+  COG filename stem (constant `"output"`) → `collection.json` had N identical links + 1 item file on
+  disk. Fixed to derive from the per-cell folder (`_output_item_id`) + a uniqueness guard; strengthened
+  `test_run_inference_writes_cogs_and_stac` (asserts distinct ids). `merged.tif` + per-cell COGs were
+  unaffected. Validated on the real run (300 links, 300 unique).
+- **demo step 2 metric** now reports the honest **aggregate (wall)** transfer rate + verdict (was the
+  misleading per-stream), matching `download_cli`; cost_model feeds `estimate.py` the aggregate rate.
+
+**Also:** crop_map/NDVI recolored via a semantic + separable `CLASS_COLORS` dict (was pink grassland);
+user regenerated the 3 committed `demos/figures/`.
+
+**Phase-2 doc work DONE — `E2E_AUSTRIA.md` is the single go-to doc:** §8 filled from the real run; the
+safe download runner (`python -m fsd.sources.download_cli`: `--dry-run`/`--stop-file`/
+`--max-concurrent-s3`/`_result.json`, the probe/per-stream/wall rates) threaded into §2 + a §5 tip;
+**Appendix C** ("real bugs full-ROI runs caught": spec-20 tile-merge, spec-26 STAC, multi-zone merge);
+**`demos/README.md`** shrunk from the stale Ethiopia writeup to a thin redirect.
+
+**Two TODOs opened (do NOT tangent now):** **#24** re-tune `max_concurrent_s3` per Azure region/pool
+(local run was **link-bound**: probe 26 vs aggregate 17 MB/s, 4 streams slower than 1 — a laptop-uplink
+property that inverts on a datacenter NIC); **#25** fine-grained per-cell inference timing (model-load /
+build / predict / COG-save) + kill the per-cell model reload — found `cubes_per_task` is silently
+ignored in ROI mode (`api.py:793`), so the bundle reloads 300× (per-cell "infer" ≈ flat ~7.8s model
+load, not predict). Discussion-only until we decide it's worth specing.
+
+**→ NEXT: task (2) — titiler + Leaflet explainer doc + a detailed spec for Sonnet** to stand up a basic
+tile server + Leaflet dashboard that verifies the inference **STAC catalog + COGs** (ROADMAP P5 /
+TODO #14). Handoff being prepared. NOTE: actually *running* titiler needs `model_outputs/{stac,cells}`
+COGs under `tests/outputs/demo_e2e/` — the user may delete that to free space, so the titiler work will
+regenerate them via a fast **download-free** inference re-pass (cells skip). The doc + spec can be
+written regardless.
+
+## PRIOR (2026-07-13 am) — spec 26 confirm-run EXECUTED for real + pipeline hardened; next = Austria go-to doc
 
 **The spec-26 network confirm-run was run for real (CDSE, 3.5 GB, Austria 1-MGRS slice) and PASSES.**
 Everything on `main` (pushed, HEAD `69e6517`). Fresh-download `_result`: `status=ok`, 65/65 files

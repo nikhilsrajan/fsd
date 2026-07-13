@@ -66,8 +66,23 @@ SCL_MASK = [0, 1, 3, 7, 8, 9, 10]
 MOSAIC_DAYS = 20
 
 # --- download guardrails (spec 23 D6) ---
-MAX_TILES = 200
+MAX_TILES = 207
 MAX_CLOUDCOVER = 70
+
+# --- crop-class colors: semantic where possible, spread across hue/lightness for separability.
+#     Tweak freely; a class not listed falls back to a tab20 color. Used by BOTH plots so a class
+#     has one consistent color across the crop map and the NDVI timeseries. ---
+CLASS_COLORS = {
+    "alfalfa_lucerne":                "#6A3D9A",  # violet — alfalfa's purple flowers
+    "buckwheat":                      "#B15928",  # sienna — reddish buckwheat stems
+    "grain_maize_corn_popcorn":       "#DAA520",  # goldenrod — ripe maize
+    "hemp_cannabis":                  "#1B5E20",  # deep green — hemp
+    "mustard":                        "#FFD500",  # bright yellow — mustard bloom
+    "pasture_meadow_grassland_grass": "#7CB342",  # grass green
+    "spring_common_soft_wheat":       "#F0E4B0",  # pale wheat
+    "sunflower":                      "#FF7F00",  # orange — sunflower
+    "winter_common_soft_wheat":       "#8B7500",  # dark khaki — winter wheat (vs pale spring)
+}
 
 OUTDIR = os.path.join(_HERE, "..", "tests/outputs/demo_e2e")       # heavy artifacts (gitignored)
 DATA_DIR = os.path.join(OUTDIR, "imagery")                        # downloaded COGs + catalog.parquet
@@ -173,15 +188,19 @@ def step_download(creds, download_roi_fp):
 
     granules = len(cat.read())
     wall = max(agg.elapsed_s, 1e-9)
-    eff_mbps = agg.bytes_downloaded / 1e6 / max(agg.transfer_seconds, 1e-9)
-    print(f"\n  transfer : {agg.transfer_seconds:7.1f}s  ({agg.bytes_downloaded/1e9:.2f} GB, "
-          f"{eff_mbps:.1f} MB/s summed)")
+    gb = agg.bytes_downloaded / 1e9
+    # aggregate (wall) rate = the honest all-streams throughput to compare vs the single-stream
+    # probe (spec 25/26); per-stream rate is the thread-summed average, shown only for context.
+    eff_mbps = agg.bytes_downloaded / 1e6 / max(agg.transfer_wall_seconds, 1e-9)   # aggregate
+    per_stream_mbps = agg.bytes_downloaded / 1e6 / max(agg.transfer_seconds, 1e-9)  # per stream
+    print(f"\n  transfer : {agg.transfer_wall_seconds:7.1f}s  ({gb:.2f} GB, "
+          f"{eff_mbps:.1f} MB/s aggregate / {per_stream_mbps:.1f} per stream)")
     print(f"  convert  : {agg.convert_seconds:7.1f}s  (jp2 → COG, {agg.successful_count} files)")
     print(f"  wall     : {wall:7.1f}s  ({granules} granules, {len(results)} pass(es))")
     if probe_mbps and eff_mbps:
         verdict = ("CDSE/link-bound" if eff_mbps >= 0.75 * probe_mbps
                    else "local contention / concurrency-bound")
-        print(f"  probe {probe_mbps:.1f} MB/s vs effective {eff_mbps:.1f} MB/s -> {verdict}")
+        print(f"  probe {probe_mbps:.1f} MB/s vs effective {eff_mbps:.1f} MB/s (aggregate) -> {verdict}")
 
     if agg.circuit_tripped or agg.failed_count:
         print("  ! CDSE was flaky (BUG-001): re-run this script to resume the remainder.", flush=True)
@@ -191,7 +210,8 @@ def step_download(creds, download_roi_fp):
     # calibrate the cost_model for the estimator (best-effort; a fresh download makes it exact).
     if agg.bytes_downloaded > 0 and granules > 0:
         COST_MODEL.update({
-            "transfer_mb_per_s": round(eff_mbps, 2),
+            "transfer_mb_per_s": round(eff_mbps, 2),          # aggregate (wall) → realistic ETAs
+            "per_stream_mb_per_s": round(per_stream_mbps, 2),  # per-stream, diagnostic only
             "probe_mb_per_s": round(probe_mbps, 2),
             "convert_s_per_file": round(agg.convert_seconds / max(agg.successful_count, 1), 3),
             "mean_bytes_by_band": {b: int(v / granules) for b, v in agg.bytes_by_band.items()},
@@ -283,7 +303,8 @@ def step_inference(bundle_dir, catalog_fp, roi_run_fp, grids):
     # (spec 21); cores=INFER_CORES fans out via the Snakemake runner; cubes_per_task amortises the RF
     # load. Idempotent: a re-run skips cells whose output.tif exists.
     result = fsd.run_inference(
-        model=bundle_dir, roi=roi_run_fp, catalog_filepath=catalog_fp,
+        model=bundle_dir, output_folderpath=os.path.join(OUTDIR, "model_outputs"),
+        roi=roi_run_fp, catalog_filepath=catalog_fp,
         startdate=START, enddate=END, mosaic_days=MOSAIC_DAYS, bands=BANDS,
         scl_mask_classes=SCL_MASK, merge="reproject",
         cores=INFER_CORES, cubes_per_task=20, overwrite=False, progress=True,
@@ -349,7 +370,8 @@ def _plot_ndvi_timeseries(d):
     fig, ax = plt.subplots(figsize=(11, 6))
     for lab in sorted(set(labels)):
         med = np.nanmedian(ndvi[labels == lab], axis=0)
-        ax.plot(ts, med, marker="o", markersize=3, linewidth=1.2, label=lab)
+        ax.plot(ts, med, marker="o", markersize=3, linewidth=1.2, label=lab,
+                color=CLASS_COLORS.get(lab))
     ax.set_title("Per-class median NDVI over the season (training features)")
     ax.set_ylabel("NDVI")
     ax.set_xlabel("mosaic window")
@@ -368,7 +390,9 @@ def _plot_crop_map(merged_fp, classes):
         arr = src.read(1)
     arr = np.ma.masked_equal(arr, 255)
     values = list(range(len(classes)))
-    cmap = ListedColormap(plt.cm.tab20(np.linspace(0, 1, len(values))))
+    fallback = plt.cm.tab20(np.linspace(0, 1, max(len(values), 1)))
+    colors = [CLASS_COLORS.get(classes[i], fallback[i]) for i in values]
+    cmap = ListedColormap(colors)
     norm = BoundaryNorm(np.array(values + [values[-1] + 1]) - 0.5, cmap.N)
     fig, ax = plt.subplots(figsize=(10, 9))
     ax.imshow(arr, cmap=cmap, norm=norm)
