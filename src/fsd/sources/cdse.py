@@ -1088,6 +1088,14 @@ def plan_download(
 def format_download_plan(plan: dict) -> str:
     """Render a `plan_download` dict as a copy-pasteable message (spec 23, D13)."""
     p = plan["download_params"]
+    if plan["missing_count"] == 0:
+        # Nothing to download — don't contradict "missing: 0" with a "not present" line
+        # and a fsd.download(...) command.
+        return (
+            "imagery for this run is fully present in the catalog — nothing to download.\n"
+            f"  needed: {plan['needed_count']} granules | present: {plan['present_count']} | "
+            "missing: 0"
+        )
     lines = [
         "imagery for this run is not (fully) present in the catalog.",
         f"  needed: {plan['needed_count']} granules | present: {plan['present_count']} | "

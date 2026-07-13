@@ -480,6 +480,23 @@ def test_plan_download_diffs_needed_vs_present(monkeypatch, tmp_path):
     assert "fsd.download(" in msg and "missing: 2" in msg
 
 
+def test_format_download_plan_fully_present_is_not_contradictory():
+    """When missing_count == 0, the message must not say "not present" nor emit a
+    fsd.download(...) command (regression: it did both, contradicting "missing: 0")."""
+    plan = {
+        "needed_count": 13, "present_count": 13, "missing_count": 0, "missing_ids": [],
+        "download_params": {
+            "roi": "roi.geojson", "startdate": "2018-04-01T00:00:00",
+            "enddate": "2018-06-01T00:00:00", "bands": ["B04"], "max_tiles": 13,
+            "max_cloudcover": None, "dst_folderpath": "dst",
+        },
+    }
+    msg = cdse.format_download_plan(plan)
+    assert "fully present" in msg and "missing: 0" in msg
+    assert "fsd.download(" not in msg
+    assert "not (fully) present" not in msg
+
+
 def test_circuit_breaker_trips_and_stops_early(monkeypatch, tmp_path):
     """spec 25 C4: breaker keys on consecutive **transfer** failures only, and the
     A2 pipeline has no chunk boundary -- semantics are "stops within ~max_staged of
