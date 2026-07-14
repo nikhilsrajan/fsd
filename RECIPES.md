@@ -251,3 +251,34 @@ estimate_run("FR_ROI.geojson", START, END, BANDS, creds=creds, cost_model=cost_m
 
 - Missing imagery? the compute verbs now print an actionable `fsd.download(...)` plan
   (`cdse.plan_download`) — they never auto-fetch. Full guide: `demos/E2E_AUSTRIA.md`.
+
+## Regenerate an output STAC's geometry from its manifest (spec 28)
+
+The inference-output STAC Item `geometry` is the true S2-cell polygon (from
+`input.csv.shapefilepath`), not the raster bbox — re-derive it any time (no re-inference):
+
+```bash
+.venv/bin/python -m demos.regen_output_stac \
+    --input-csv tests/outputs/demo_e2e/model_outputs/cells/input.csv \
+    --stac-dir tests/outputs/demo_e2e/model_outputs/stac
+# writes a _result.json: {items, distinct_ids, non_rectangular_geoms}
+```
+Full runbook: `runbooks/28-stac-geometry-regen.md`.
+
+## Serve the crop map to STACNotator (Tier-1 pre-styled XYZ, spec 29)
+
+A minimal FastAPI/`rio-tiler` server over the demo's `merged.tif`, for STACNotator's
+Bring-Your-Own-XYZ mode (no viewer, no pgSTAC — Tier 2 is the full stack):
+
+```bash
+python3.11 -m venv .venv-titiler && .venv-titiler/bin/pip install -e ".[titiler]"
+.venv-titiler/bin/python -m demos.titiler_serve
+# -> XYZ template: http://127.0.0.1:8000/cropmap/tiles/{z}/{x}/{y}.png
+```
+
+- **curl smoke:** `curl -s -o /tmp/t.png -w '%{http_code} %{content_type}\n'
+  http://127.0.0.1:8000/cropmap/tiles/13/4437/2823.png` -> `200 image/png`.
+- **QGIS quick-check:** Add Layer -> Add XYZ Layer, paste the template URL, pan to Austria —
+  distinct class colors, transparent nodata, correctly placed.
+- **STACNotator BYO:** paste the same template URL as a Bring-Your-Own-XYZ imagery slice.
+- Full runbook (incl. the STACNotator step): `runbooks/29-tier1-stacnotator-byo.md`.

@@ -4,7 +4,47 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-14_
 
-## LATEST (2026-07-14) — STRATEGIC PIVOT on serving: fsd emits standard STAC+COGs+render config → STACNotator (via stock pgSTAC+titiler-pgstac); the fsd Leaflet dashboard is CANCELLED
+## LATEST (2026-07-14, later) — specs 28 + 29 IMPLEMENTED (Sonnet@medium), in a worktree, uncommitted
+
+**Both signed-off specs from the serving pivot (below) landed, against `/tmp/fsd-handoff-specs-28-29.md`,
+in git worktree `.claude/worktrees/specs-28-29-impl` (branch `specs-28-29-impl`) — not yet merged/committed
+to `main`.**
+
+- **Spec 28 (STAC geometry fix, TODO #27 DONE):** `catalog/stac.py::cog_outputs_to_items` gained
+  `geometries={cog: geometry.geojson_path}` (+ `_read_footprint_geometry` helper +
+  `cog_outputs_to_items_from_manifest(input_csv)` convenience wrapper). `api.py::_finalize_outputs`/
+  `_resolve_inference_pairs`/`_run_inference_roi` thread `geometries` from `input.csv.shapefilepath`
+  for both inference modes; `geometries=None` (bare COG lists, folder/list pre-built modes) keeps the
+  old raster-bbox behavior unchanged. Missing/unreadable geometry **raises** (deterministic, no
+  fallback, per the user's 2026-07-14 design revision). New `demos/regen_output_stac.py` +
+  `runbooks/28-stac-geometry-regen.md` (**not yet run** — regenerates the existing 300-item demo
+  STAC over `tests/outputs/demo_e2e/`; the user runs it). 4 new tests; `BUGS.md` BUG-003;
+  `CHANGES.md`; `specs/17` pointer; `TODO.md` #27 marked DONE.
+- **Spec 29 (Tier-1 pre-styled XYZ, TODO #26 Tier-1 DONE):** new `demos/titiler_serve.py` (FastAPI +
+  rio-tiler; `GET /cropmap/tiles/{z}/{x}/{y}.png` over `merged.tif`, discrete colormap from
+  `e2e_austria.CLASS_COLORS`/`render.json`, `nodata=255` transparent, nearest resampling, permissive
+  CORS) + a new `[titiler]` pyproject extra (isolated `.venv-titiler`, kept out of `.venv`) +
+  `runbooks/29-tier1-stacnotator-byo.md`. 4 new tests (`tests/test_titiler_serve.py`,
+  `pytest.importorskip("rio_tiler")` — skip cleanly in the core `.venv`). The actual STACNotator BYO
+  check (runbook step 5, needs STACNotator running locally) is **not yet run** — the user's next
+  action. `CHANGES.md`/`RECIPES.md`/`E2E_AUSTRIA.md` §3+§8/`TODO.md` #26 updated.
+- **Verified (this session):** `pytest -q` in `.venv` = **213 passed, 2 skipped** (grid + titiler,
+  both skip cleanly without their extras); `.venv-titiler` runs the 4 titiler tests green
+  (`rio-tiler` 7.9.6). `ruff check src/ tests/ demos/` clean in both venvs. One implementation note
+  beyond the spec's literal text: `rio_tiler.models.ImageData`'s masking needs a
+  `numpy.ma.MaskedArray` (not a bare second positional `mask` array — that arg is actually
+  `cutline_mask` in rio-tiler 6/7.x and does not drive transparency the way the spec's D3 pseudocode
+  implied); fixed in `_empty_png` and verified the out-of-bounds/nodata tiles render with alpha=0.
+
+**→ NEXT:** hand back to **Opus@high** for a review pass over the worktree diff, then the user (1)
+runs `runbooks/28-stac-geometry-regen.md` (STAC regen over the existing demo outputs) and (2) runs
+`runbooks/29-tier1-stacnotator-byo.md` (server launch + curl smoke + optional QGIS + the real
+STACNotator BYO check, pasting back a screenshot). Merge the worktree branch to `main` once
+reviewed + the user is satisfied (commit/merge only on request, per CLAUDE.md). **Still to spec
+(Opus):** TODO #28 (model-dev render config → STAC render extension) and TODO #26 **Tier 2** (local
+pgSTAC + titiler-pgstac mini-MPC); **#29** (B02/B03 band expansion — PARKED for wifi).
+
+## PRIOR (2026-07-14) — STRATEGIC PIVOT on serving: fsd emits standard STAC+COGs+render config → STACNotator (via stock pgSTAC+titiler-pgstac); the fsd Leaflet dashboard is CANCELLED
 
 **What happened:** started task (2) as a *local titiler+Leaflet dashboard to verify the inference STAC*
 (explainer `demos/TITILER_LEAFLET.md` + `specs/27` written, MosaicJSON DB-free design signed-off-pending).

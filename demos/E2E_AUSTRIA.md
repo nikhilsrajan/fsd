@@ -109,6 +109,9 @@ tuned per environment, not baked in (§9; and the Azure re-tune, TODO #24).
   S3 keys **can expire** — the script warns via `CdseCredentials.is_expired`.
 - **No VPN required.** fsd talks to CDSE over the public internet; a VPN only affects *your* measured
   throughput (see §10) — it is never a setup step to reproduce.
+- **(Optional, serving) `.venv-titiler`** — for §8's "serve the crop map to STACNotator" step
+  (spec 29): a *separate* isolated venv, `python3.11 -m venv .venv-titiler && .venv-titiler/bin/pip
+  install -e ".[titiler]"` (rio-tiler/fastapi/uvicorn). Not needed for the pipeline itself.
 
 ---
 
@@ -281,6 +284,14 @@ of the map: pasture/grassland 49.7%, buckwheat 13.7%, hemp 6.4%, maize 5.8%, the
 `s2_grids.png` (ROI→300 cells), `ndvi_timeseries.png` (per-class median NDVI), `crop_map.png`
 (the merged class map). Model quality is illustrative — the point is the pipeline (§6, bring your
 own model). Validate the map in QGIS (Appendix A: visual validation).
+
+**Serve the crop map to STACNotator (BYO-XYZ, spec 29):** `merged.tif` above can be served as a
+pre-styled XYZ layer and consumed by NASA Harvest's **STACNotator** viewer via its
+Bring-Your-Own-XYZ mode — the Tier-1 rung of the serving contract (`PROGRESS.md` LATEST
+2026-07-14). See `RECIPES.md` "Serve the crop map to STACNotator" and the full runbook
+`runbooks/29-tier1-stacnotator-byo.md`. The output STAC's Item geometry is the true S2-cell
+polygon, not a bbox (spec 28) — see `runbooks/28-stac-geometry-regen.md` to regenerate it over
+this run's outputs.
 
 ---
 

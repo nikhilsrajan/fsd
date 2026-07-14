@@ -131,3 +131,41 @@ tiles first, then `image_index`. Confined to `_stack_datacube`; output shape/axe
 
 **To re-eyeball (user).** The spec-19 demo `crop_map.png` / `merged.tif` after the re-run
 (lat-11.75 gaps should be gone) and the multi-CRS `datacube.md` cube in QGIS.
+
+---
+
+## BUG-003 — inference-output STAC Item geometry over-claimed coverage (raster bbox, not cell shape)
+
+**Status:** RESOLVED (2026-07-14, spec 28). **Serving correctness — regenerate + re-eyeball the
+demo STAC over a real basemap once served.**
+
+**Symptom.** Every inference-output STAC Item's `geometry` was the output COG's axis-aligned
+bounding box (`catalog/stac.py::cog_outputs_to_items`, `geom = shapely.geometry.box(*bounds4326)`),
+not the true S2-cell footprint. Confirmed on the real Austria run (cell `477303c`):
+`geometry.geojson` (truth) is a slanted quadrilateral `(14.766,48.492) (14.789,48.534)
+(14.847,48.526) (14.825,48.484)`; the STAC Item shipped the north-aligned box
+`(14.766,48.484)–(14.847,48.534)` instead.
+
+**Why it matters.** An fsd datacube/output is a north-up raster rectangle carrying a nodata halo
+around the real (slanted) ROI shape — the box **over-claims coverage**. This was cosmetic until
+the STACNotator serving study (`PROGRESS.md` LATEST 2026-07-14): a per-tile `ST_Intersects`
+(either STACNotator's self-hosted tiler or pgSTAC search, the Tier-2 target) matches items whose
+box overlaps a query tile even when the *actual* footprint (past the halo) does not — wasted COG
+reads and wrong/loose pgSTAC search hits.
+
+**Found.** Discovered while digesting STACNotator's tiler (`../stacnotator/tiler/src/tiles.py:87`)
+during the serving-pivot design study, not from a failing test — the geometry was always
+structurally valid, just wrong.
+
+**Fix.** `cog_outputs_to_items(cog_filepaths, geometries={cog: geometry.geojson_path}, …)` — the
+Item geometry/bbox now come from the **build manifest** (`input.csv.shapefilepath`, the same
+`geometry.geojson` `run_inference` already writes per cell), not the raster. Deterministic and
+manifest-driven by design: no sibling-file discovery, no fallback — a manifest entry missing its
+footprint raises rather than silently boxing. `geometries=None` (geometry-less callers: bare COG
+lists, unit tests, the pre-built folder/list inference modes with no manifest) keeps the old
+raster-bbox behavior, unchanged. See `CHANGES.md` and `specs/28-stac-output-geometry-fix.md`.
+
+**To re-eyeball (user).** Run `runbooks/28-stac-geometry-regen.md` (regenerates the existing
+300-item demo STAC from its manifest, no re-inference) — expect `non_rectangular_geoms == 300`.
+Visually: once served (spec 29 Tier 1 or a Tier-2 pgSTAC search), item footprints should hug the
+slanted cell shapes, not boxes.

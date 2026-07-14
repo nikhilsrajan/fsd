@@ -155,14 +155,38 @@ def _output_item_id(fp) -> str:
             or os.path.splitext(os.path.basename(str(fp)))[0])
 
 
-def cog_outputs_to_items(cog_filepaths, *, collection_id="fsd-inference",
+def _read_footprint_geometry(geom_path):
+    """Read the polygon + `properties.id` from a `geometry.geojson` (CRS84, one Feature),
+    through the `fsd.storage` seam. Returns `(None, None)` if the FeatureCollection is empty."""
+    import json
+
+    with fs.open(str(geom_path), "r") as f:
+        fc = json.load(f)
+    features = fc.get("features") or []
+    if not features:
+        return None, None
+    feat = features[0]
+    geom = shapely.geometry.shape(feat["geometry"])
+    feat_id = (feat.get("properties") or {}).get("id")
+    return geom, feat_id
+
+
+def cog_outputs_to_items(cog_filepaths, *, geometries=None, collection_id="fsd-inference",
                          band_names=None, dt=None) -> list[pystac.Item]:
     """Map inference-output COGs to STAC Items (spec 17 SO-6; used by run_inference, spec 18).
 
     One Item per output COG. `proj:*` is read straight from the COG we just wrote (cheap, no
-    ambiguity), and the footprint is the COG's bounds reprojected to EPSG:4326. `dt` is the
-    Item datetime for all outputs (defaults to now, UTC) — outputs are mosaics over a window,
-    not a single acquisition.
+    ambiguity). `dt` is the Item datetime for all outputs (defaults to now, UTC) — outputs are
+    mosaics over a window, not a single acquisition.
+
+    `geometries` (spec 28): an optional `{output_cog_filepath: geometry.geojson_path}` mapping —
+    the **true S2-cell footprint** (CRS84, from the build manifest's `shapefilepath` column), used
+    as the Item geometry/bbox instead of the raster bbox. This is a **deterministic, manifest-driven
+    contract, not a per-item fallback**: when `geometries` is given, every `fp` in `cog_filepaths`
+    must have a readable polygon entry — a missing/unreadable/empty one raises (a manifest that
+    lists an output but no footprint is a real inconsistency; fail loud, don't silently box).
+    `geometries=None` (the default) keeps the raster-bbox behavior, for geometry-less callers
+    (unit tests; a bare list of COGs; pre-built folder/list inference modes with no manifest).
     """
     import datetime as _datetime
 
@@ -175,16 +199,46 @@ def cog_outputs_to_items(cog_filepaths, *, collection_id="fsd-inference",
     items: list[pystac.Item] = []
     for fp in cog_filepaths:
         with rasterio.open(fp) as src:
-            bounds4326 = transform_bounds(src.crs, "EPSG:4326", *src.bounds, densify_pts=21)
             epsg = src.crs.to_epsg() if src.crs else None
             shape = [src.height, src.width]
             transform = list(src.transform)[:6]
 
-        geom = shapely.geometry.box(*bounds4326)
+            if geometries is not None:
+                geom_path = geometries.get(str(fp), geometries.get(fp))
+                if geom_path is None:
+                    raise ValueError(
+                        f"cog_outputs_to_items: geometries has no entry for output COG {fp!r}; "
+                        "the manifest-driven contract requires every output to have a footprint "
+                        "(pass geometries=None to fall back to the raster bbox for ALL outputs)."
+                    )
+                try:
+                    geom, feat_id = _read_footprint_geometry(geom_path)
+                except (OSError, ValueError) as exc:
+                    raise ValueError(
+                        f"cog_outputs_to_items: could not read geometry {geom_path!r} for "
+                        f"output COG {fp!r}: {exc}"
+                    ) from exc
+                if geom is None or geom.is_empty:
+                    raise ValueError(
+                        f"cog_outputs_to_items: geometry.geojson at {geom_path!r} (for {fp!r}) "
+                        "has no readable polygon feature."
+                    )
+                item_id = _output_item_id(fp)
+                if feat_id is not None and str(feat_id) != item_id:
+                    raise ValueError(
+                        f"cog_outputs_to_items: geometry.geojson id {feat_id!r} at {geom_path!r} "
+                        f"disagrees with output item id {item_id!r} for {fp!r}."
+                    )
+                bbox = list(geom.bounds)
+            else:
+                bounds4326 = transform_bounds(src.crs, "EPSG:4326", *src.bounds, densify_pts=21)
+                geom = shapely.geometry.box(*bounds4326)
+                bbox = list(bounds4326)
+
         item = pystac.Item(
             id=_output_item_id(fp),
             geometry=shapely.geometry.mapping(geom),
-            bbox=list(bounds4326),
+            bbox=bbox,
             datetime=dt,
             properties={},
             collection=collection_id,
@@ -213,6 +267,26 @@ def cog_outputs_to_items(cog_filepaths, *, collection_id="fsd-inference",
             "its own per-cube folder (<cube_id>/output.tif)."
         )
     return items
+
+
+def cog_outputs_to_items_from_manifest(input_csv_filepath, **kwargs) -> list[pystac.Item]:
+    """Convenience wrapper (spec 28): build `geometries` from a `run_inference` build manifest
+    (`input.csv`, columns `export_folderpath, shapefilepath, …`) and call `cog_outputs_to_items`.
+
+    Only COGs that exist on disk are included (a manifest row's build may not have produced an
+    output, e.g. a partial/resumed run). `kwargs` forwards to `cog_outputs_to_items`
+    (`collection_id`, `band_names`, `dt`).
+    """
+    import pandas as pd
+
+    with fs.open(str(input_csv_filepath), "r") as f:
+        rows = pd.read_csv(f)
+    geometries = {
+        os.path.join(str(exp), "output.tif"): str(sp)
+        for exp, sp in zip(rows["export_folderpath"], rows["shapefilepath"])
+    }
+    cogs = [cog for cog in geometries if fs.exists(cog)]
+    return cog_outputs_to_items(cogs, geometries=geometries, **kwargs)
 
 
 def items_to_rows(items: list[pystac.Item]):

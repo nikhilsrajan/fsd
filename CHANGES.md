@@ -4,6 +4,37 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## STAC inference-output Item geometry: true cell polygon, not raster bbox (spec 28, 2026-07-14)
+- **Behavior change:** `catalog/stac.py::cog_outputs_to_items` gains a `geometries=` kwarg — a
+  `{output_cog_filepath: geometry.geojson_path}` mapping sourced from the `run_inference` build
+  manifest (`input.csv.shapefilepath`). When given, every output Item's `geometry`/`bbox` is now the
+  **true S2-cell polygon** (CRS84, read straight from the manifest's `geometry.geojson`) instead of
+  the raster bounding box — the old behavior over-claimed coverage past the ROI's slanted edges
+  (BUG entry). `bbox` is tightened to the polygon's own bounds (still STAC-valid: `bbox` contains
+  `geometry`). **Deterministic, manifest-driven, no fallback:** a COG missing a geometry entry, or
+  one whose `geometry.geojson` is unreadable/empty, **raises** — this is not a per-item best-effort.
+  `geometries=None` (the default) is unchanged: the raster-bbox path, for geometry-less callers
+  (bare COG lists, unit tests, the pre-built folder/list inference modes with no manifest).
+- `api.py::_finalize_outputs` gains a matching `geometries=` passthrough. Both `run_inference` modes
+  now supply it: ROI mode (`_run_inference_roi`) builds it from the `input.csv` rows it already
+  reads back; the pre-built `input.csv` mode (`_resolve_inference_pairs`) now also captures
+  `shapefilepath` alongside `datacube_filepath`/`id` when present. Folder/list pre-built modes have
+  no manifest and keep passing `geometries=None` (raster bbox, unchanged).
+- New convenience wrapper `catalog/stac.py::cog_outputs_to_items_from_manifest(input_csv)` — reads
+  an `input.csv`, builds the `geometries` map, calls `cog_outputs_to_items`. Used by the new
+  `demos/regen_output_stac.py` (regenerates an existing output STAC from its manifest, no
+  re-inference) and available to any future caller that only has an `input.csv` path.
+
+## Titiler demo server: Tier-1 pre-styled XYZ for STACNotator BYO (spec 29, 2026-07-14)
+- Purely additive (`demos/` + a new `[titiler]` optional extra) — no `src/fsd/` change. New
+  `demos/titiler_serve.py`: a minimal FastAPI app serving `merged.tif` as a param-free pre-styled
+  XYZ (`GET /cropmap/tiles/{z}/{x}/{y}.png`) via `rio-tiler` — discrete categorical colormap (from
+  `demos/e2e_austria.py::CLASS_COLORS`, overridable by a `render.json`), `nodata=255` -> transparent,
+  `resampling_method="nearest"` (categorical codes must never interpolate), permissive CORS.
+  Validates fsd's serving-contract with the real consumer (STACNotator's Bring-Your-Own-XYZ mode)
+  before the heavier Tier-2 pgSTAC + titiler-pgstac stack. Not part of fsd's core `.venv` — installs
+  into an isolated `.venv-titiler`.
+
 ## Download pipeline: transfer/convert process-pool split (spec 25, 2026-07-11)
 - **Conversion decoupled onto a process pool.** `sources/cdse.py::download` previously ran
   transfer+convert serially on one of `MAX_CONCURRENT_S3=4` worker threads

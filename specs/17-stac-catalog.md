@@ -121,6 +121,6 @@ output-catalog builder is designed-for but deferred.
 - [x] **[SO-3]** One Item per catalog row; one asset per band file; media types by extension (COG for `.tif`).
 - [x] **[SO-4]** Field mapping per the table; `proj:epsg` from MGRS (**no I/O**); `proj:shape/transform` opt-in `read_proj`; href seam for blob later.
 - [x] **[SO-5]** Round-trip reconstructs the 8 catalog columns losslessly (validation, not a general importer).
-- [x] **[SO-6]** `stac.py` shaped so the inference-output catalog reuses it; only tile-catalog path built now. **(Output builder `cog_outputs_to_items` since implemented in spec 18 / P0.5, reusing `write_stac_catalog`.)**
+- [x] **[SO-6]** `stac.py` shaped so the inference-output catalog reuses it; only tile-catalog path built now. **(Output builder `cog_outputs_to_items` since implemented in spec 18 / P0.5, reusing `write_stac_catalog`. Its Item `geometry` was later corrected from the raster bbox to the true S2-cell polygon — spec 28, 2026-07-14 — see `CHANGES.md`/`BUGS.md` BUG-003.)**
 - [x] **[SO-7]** Tests: structural validity always; `pystac.validate()` only if offline `jsonschema` present (no network).
 - [x] `pystac` promoted to a direct dep; living docs (CHANGES/RECIPES/TODO #14/spec 02) updated.

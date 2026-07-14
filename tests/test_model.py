@@ -11,9 +11,11 @@ from __future__ import annotations
 import os
 
 import numpy as np
+import pandas as pd
 import pystac
 import pytest
 import rasterio
+import shapely.geometry
 from rasterio.crs import CRS
 from rasterio.transform import from_origin
 
@@ -151,6 +153,42 @@ def test_run_inference_writes_cogs_and_stac(tmp_path):
     # regression for the spec-26 STAC id collision (all items overwrote one <output>/output.json).
     assert len({it.id for it in items}) == 2
     assert all("proj:transform" in it.properties for it in items)
+
+
+def test_run_inference_from_csv_uses_manifest_geometry(tmp_path):
+    """spec 28: the pre-built input.csv path threads `shapefilepath` -> STAC gets the true
+    cell polygon, not the raster bbox."""
+    import json
+
+    dc_fp = _make_datacube_folder(str(tmp_path / "dc0"))
+    polygon = shapely.geometry.Polygon(
+        [(14.766, 48.492), (14.789, 48.534), (14.847, 48.526), (14.825, 48.484)]
+    )
+    geom_fp = str(tmp_path / "dc0" / "geometry.geojson")
+    with open(geom_fp, "w") as f:
+        json.dump({
+            "type": "FeatureCollection",
+            "features": [{
+                "type": "Feature",
+                "properties": {"id": "cell0"},
+                "geometry": shapely.geometry.mapping(polygon),
+            }],
+        }, f)
+
+    csv_fp = str(tmp_path / "input.csv")
+    pd.DataFrame({
+        "datacube_filepath": [dc_fp], "id": ["cell0"], "shapefilepath": [geom_fp],
+    }).to_csv(csv_fp, index=False)
+
+    out_dir = str(tmp_path / "out")
+    result = fsd.run_inference(ArgmaxNDVI(), csv_fp, out_dir, progress=False)
+
+    cat = pystac.Catalog.from_file(result.stac_catalog_filepath)
+    items = list(cat.get_items(recursive=True))
+    assert len(items) == 1
+    got = shapely.geometry.shape(items[0].geometry)
+    assert got.equals(polygon)
+    assert list(items[0].bbox) == list(polygon.bounds)
 
 
 def test_preflight_rejects_band_and_timestamp_mismatch(tmp_path):

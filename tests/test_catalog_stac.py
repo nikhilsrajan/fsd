@@ -5,6 +5,9 @@ Synthetic + pure-metadata: no raster files are read (read_proj defaults False).
 
 from __future__ import annotations
 
+import json
+import os
+
 import pandas as pd
 import pystac
 import pytest
@@ -132,3 +135,78 @@ def test_tilecatalog_to_stac(tmp_path):
     catalog_json = TileCatalog(cat_path).to_stac(str(tmp_path / "stac"))
     cat = pystac.Catalog.from_file(catalog_json)
     assert len(list(cat.get_items(recursive=True))) == 2
+
+
+# --- cog_outputs_to_items geometry (spec 28) ---------------------------------
+
+def _make_output_cog(folder, *, epsg=32637):
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_origin
+
+    os.makedirs(folder, exist_ok=True)
+    fp = os.path.join(folder, "output.tif")
+    data = np.zeros((1, 4, 4), dtype="uint8")
+    with rasterio.open(
+        fp, "w", driver="GTiff", height=4, width=4, count=1, dtype="uint8",
+        crs=f"EPSG:{epsg}", transform=from_origin(500000, 4000000, 10, 10),
+    ) as dst:
+        dst.write(data)
+    return fp
+
+
+_SLANTED_POLYGON = shapely.geometry.Polygon(
+    [(14.766, 48.492), (14.789, 48.534), (14.847, 48.526), (14.825, 48.484)]
+)
+
+
+def _write_geometry_geojson(folder, *, feature_id="cell-1", geom=_SLANTED_POLYGON):
+    fp = os.path.join(folder, "geometry.geojson")
+    fc = {
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "properties": {"id": feature_id},
+            "geometry": shapely.geometry.mapping(geom),
+        }],
+    }
+    with open(fp, "w") as f:
+        json.dump(fc, f)
+    return fp
+
+
+def test_cog_outputs_to_items_uses_manifest_geometry_not_raster_box(tmp_path):
+    cell_dir = str(tmp_path / "cell-1")
+    cog = _make_output_cog(cell_dir)
+    geom_path = _write_geometry_geojson(cell_dir, feature_id="cell-1")
+
+    items = stac.cog_outputs_to_items([cog], geometries={cog: geom_path})
+    assert len(items) == 1
+    it = items[0]
+    assert shapely.geometry.shape(it.geometry).equals(_SLANTED_POLYGON)
+    assert list(it.bbox) == list(_SLANTED_POLYGON.bounds)
+    # not an axis-aligned rectangle: more than 2 distinct x's and y's among the corners.
+    xs, ys = zip(*it.geometry["coordinates"][0])
+    assert len(set(xs)) > 2
+    assert len(set(ys)) > 2
+
+
+def test_cog_outputs_to_items_missing_geometry_raises(tmp_path):
+    cell_dir = str(tmp_path / "cell-1")
+    cog = _make_output_cog(cell_dir)
+    with pytest.raises(ValueError, match="no entry"):
+        stac.cog_outputs_to_items([cog], geometries={})
+
+
+def test_cog_outputs_to_items_geometries_none_keeps_raster_box(tmp_path):
+    cell_dir = str(tmp_path / "cell-1")
+    cog = _make_output_cog(cell_dir)
+
+    items = stac.cog_outputs_to_items([cog])
+    assert len(items) == 1
+    geom = shapely.geometry.shape(items[0].geometry)
+    minx, miny, maxx, maxy = geom.bounds
+    # axis-aligned rectangle: exactly 4 corners with 2 distinct x's x 2 distinct y's.
+    xs, ys = zip(*items[0].geometry["coordinates"][0][:-1])
+    assert set(xs) == {minx, maxx}
+    assert set(ys) == {miny, maxy}

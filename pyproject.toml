@@ -45,6 +45,12 @@ grid = [           # ROI → S2-grid tiling (fsd.grid); optional so core stays l
 azure = [          # Phase 2, not used in v1 code
     "adlfs",       # fsspec Azure Blob backend
 ]
+titiler = [        # P5 serving validation (spec 29 Tier 1; grows for Tier 2). NOT fsd core.
+    "rio-tiler>=6,<8",       # the COG tile read + render (the pre-styled route)
+    "fastapi",               # the app
+    "uvicorn[standard]",     # ASGI server
+    # titiler.core / titiler.mosaic are added in Tier 2 (pgSTAC); Tier 1 needs only rio-tiler.
+]
 dev = [
     "ruff",
     "pytest",

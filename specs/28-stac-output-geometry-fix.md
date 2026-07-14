@@ -1,6 +1,14 @@
 # Spec 28 — STAC inference-output geometry: use the true S2-cell polygon, not the raster bbox
 
-> **Status: SIGNED OFF (2026-07-14) — ready to implement.** Opus@high (interview → spec). Implements
+> **Status: IMPLEMENTED (2026-07-14, Sonnet@medium).** `catalog/stac.py::cog_outputs_to_items`
+> gained `geometries=`, `_output_item_id`'s docstring untouched, new
+> `cog_outputs_to_items_from_manifest`; `api.py::_finalize_outputs`/`_resolve_inference_pairs`/
+> `_run_inference_roi` thread `geometries` from `input.csv.shapefilepath` per D1/D2; new
+> `demos/regen_output_stac.py` + `runbooks/28-stac-geometry-regen.md` (the user runs the regen —
+> not yet executed). 4 new tests (`tests/test_catalog_stac.py` ×3, `tests/test_model.py` ×1);
+> `pytest -q` 213 passed / 2 skipped, `ruff check` clean. Docs updated: `CHANGES.md`, `BUGS.md`
+> (BUG-003), `specs/17` pointer, `TODO.md` #27. **Signed off (2026-07-14) — ready to implement.**
+> Opus@high (interview → spec). Implements
 > **TODO #27**. Signed off with the **manifest-driven** design (D1/D2 revised per the user: geometry from
 > `input.csv.shapefilepath`, deterministic, no sibling-file discovery, no raster-box fallback). Small,
 > self-contained correctness fix to `catalog/stac.py::cog_outputs_to_items` (+ tests + STAC regeneration

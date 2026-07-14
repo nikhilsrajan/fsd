@@ -1,6 +1,14 @@
 # Spec 29 — Tier-1 serving validation: a pre-styled XYZ for the crop map, consumed by STACNotator
 
-> **Status: SIGNED OFF (2026-07-14) — ready to implement.** Opus@high (interview → spec). Implements
+> **Status: IMPLEMENTED (2026-07-14, Sonnet@medium).** New `demos/titiler_serve.py` (FastAPI +
+> rio-tiler; `GET /cropmap/tiles/{z}/{x}/{y}.png`, discrete `CLASS_COLORS`/`render.json` colormap,
+> `nodata=255` transparent, `resampling_method="nearest"`, permissive CORS) + a `[titiler]` extra
+> in `pyproject.toml` + `runbooks/29-tier1-stacnotator-byo.md`. 4 new tests
+> (`tests/test_titiler_serve.py`, `pytest.importorskip("rio_tiler")`) pass in a fresh
+> `.venv-titiler` (`rio-tiler` 7.9.6); skip cleanly in the core `.venv`. `ruff check` clean. The
+> STACNotator BYO check itself (runbook step 5) is **not yet run** — the user runs it. Docs
+> updated: `CHANGES.md`, `RECIPES.md`, `E2E_AUSTRIA.md`, `TODO.md` #26 Tier-1. **Signed off
+> (2026-07-14) — ready to implement.** Opus@high (interview → spec). Implements
 > **TODO #26, Tier 1** (the fast, DB-free rung of the serving-contract validation). Signed off with the
 > recommended defaults on the open questions (serve `merged.tif`; a `render.json` seam with a
 > `CLASS_COLORS` fallback; a fixed pre-styled `/cropmap` route; STACNotator as a guided manual runbook

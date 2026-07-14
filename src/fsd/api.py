@@ -396,10 +396,17 @@ def _model_spec(model) -> dict:
     }
 
 
-def _resolve_inference_pairs(inference_datacubes, output_folderpath) -> list[tuple[str, str]]:
-    """-> [(datacube_filepath, output_filepath)]. Accepts an input.csv, a folder of datacube
-    subfolders, or an explicit list of `datacube.npy` filepaths."""
+def _resolve_inference_pairs(inference_datacubes, output_folderpath):
+    """-> (pairs, geometries). `pairs` = [(datacube_filepath, output_filepath)]. Accepts an
+    input.csv, a folder of datacube subfolders, or an explicit list of `datacube.npy` filepaths.
+
+    `geometries` (spec 28) = `{output_filepath: shapefilepath}` when the source is an `input.csv`
+    with a `shapefilepath` column (the manifest-driven STAC-geometry contract); `None` for the
+    folder/list modes, which have no manifest to source a footprint from (STAC falls back to the
+    raster bbox for those).
+    """
     ids = None
+    shapefilepaths = None
     if isinstance(inference_datacubes, (list, tuple)):
         dc_filepaths = [str(p) for p in inference_datacubes]
     elif isinstance(inference_datacubes, str) and inference_datacubes.endswith(".csv"):
@@ -409,14 +416,20 @@ def _resolve_inference_pairs(inference_datacubes, output_folderpath) -> list[tup
         dc_filepaths = [str(p) for p in df[col]]
         if "id" in df.columns:
             ids = [str(i) for i in df["id"]]
+        if "shapefilepath" in df.columns:
+            shapefilepaths = [str(p) for p in df["shapefilepath"]]
     else:  # a folder: each subfolder holds a datacube.npy
         dc_filepaths = sorted(fs.glob(os.path.join(str(inference_datacubes), "*", "datacube.npy")))
 
     pairs = []
+    geometries = {} if shapefilepaths is not None else None
     for i, dc in enumerate(dc_filepaths):
         stem = ids[i] if ids is not None else os.path.basename(os.path.dirname(dc))
-        pairs.append((dc, os.path.join(str(output_folderpath), stem, "output.tif")))
-    return pairs
+        out = os.path.join(str(output_folderpath), stem, "output.tif")
+        pairs.append((dc, out))
+        if shapefilepaths is not None:
+            geometries[out] = shapefilepaths[i]
+    return pairs, geometries
 
 
 def _merge_outputs(filepaths, dst, nodata, *, reproject_to_dominant: bool = False,
@@ -521,10 +534,15 @@ def _merge_outputs(filepaths, dst, nodata, *, reproject_to_dominant: bool = Fals
 
 
 def _finalize_outputs(output_filepaths, output_folderpath, spec, merge, collection_id, dt,
-                      *, grids_filepath=None, merge_crs=None) -> InferenceResult:
-    """Shared tail for both inference modes: STAC catalog + optional merge -> InferenceResult."""
+                      *, grids_filepath=None, merge_crs=None, geometries=None) -> InferenceResult:
+    """Shared tail for both inference modes: STAC catalog + optional merge -> InferenceResult.
+
+    `geometries` (spec 28): `{output_filepath: geometry.geojson_path}` sourced from the build
+    manifest — the true per-cell footprint, forwarded to `cog_outputs_to_items` in place of the
+    raster bbox. `None` for geometry-less callers (see `_resolve_inference_pairs`).
+    """
     items = _stac.cog_outputs_to_items(
-        output_filepaths, collection_id=collection_id,
+        output_filepaths, geometries=geometries, collection_id=collection_id,
         band_names=spec.get("output_band_names") or None, dt=dt,
     )
     stac_catalog_filepath = _stac.write_stac_catalog(
@@ -625,7 +643,7 @@ def run_inference(
     # --- pre-built cubes path (spec 18) ---
     required = set(spec.get("required_bands") or [])
     want_t = int(spec.get("n_timestamps") or 0)
-    pairs = _resolve_inference_pairs(inference_datacubes, output_folderpath)
+    pairs, geometries = _resolve_inference_pairs(inference_datacubes, output_folderpath)
     if not pairs:
         errs.append(f"no inference datacubes found under {inference_datacubes!r}.")
     for dc_fp, _ in pairs:
@@ -656,7 +674,7 @@ def run_inference(
             overwrite=overwrite, progress=progress,
         )
     return _finalize_outputs(output_filepaths, output_folderpath, spec, merge, collection_id, dt,
-                             merge_crs=merge_crs)
+                             merge_crs=merge_crs, geometries=geometries)
 
 
 def _ensure_bundle(model, output_folderpath, *, why):
@@ -797,19 +815,20 @@ def _run_inference_roi(
     if result.returncode != 0:
         raise RuntimeError(f"inference runner failed (snakemake exit {result.returncode}).")
 
-    # 4) collect the per-cell outputs
+    # 4) collect the per-cell outputs (+ each cell's true footprint, for STAC geometry — spec 28)
     with fs.open(csv_filepath, "r") as f:
         rows = pd.read_csv(f)
-    output_filepaths = [
-        os.path.join(str(exp), "output.tif") for exp in rows["export_folderpath"]
-        if fs.exists(os.path.join(str(exp), "output.tif"))
-    ]
+    geometries = {
+        os.path.join(str(exp), "output.tif"): str(sp)
+        for exp, sp in zip(rows["export_folderpath"], rows["shapefilepath"])
+    }
+    output_filepaths = [cog for cog in geometries if fs.exists(cog)]
     if not output_filepaths:
         raise RuntimeError("no per-cell outputs were produced.")
 
     return _finalize_outputs(
         output_filepaths, output_folderpath, spec, merge, collection_id, dt,
-        grids_filepath=grids_filepath, merge_crs=merge_crs,
+        grids_filepath=grids_filepath, merge_crs=merge_crs, geometries=geometries,
     )
 
 
