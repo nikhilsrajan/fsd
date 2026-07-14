@@ -2,9 +2,66 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-13_
+_Last updated: 2026-07-14_
 
-## LATEST (2026-07-13 pm) — FULL Austria e2e EXECUTED; `E2E_AUSTRIA.md` is now the single go-to doc; next = titiler/Leaflet STAC-verify spec (task 2)
+## LATEST (2026-07-14) — STRATEGIC PIVOT on serving: fsd emits standard STAC+COGs+render config → STACNotator (via stock pgSTAC+titiler-pgstac); the fsd Leaflet dashboard is CANCELLED
+
+**What happened:** started task (2) as a *local titiler+Leaflet dashboard to verify the inference STAC*
+(explainer `demos/TITILER_LEAFLET.md` + `specs/27` written, MosaicJSON DB-free design signed-off-pending).
+A design discussion then **reframed the whole thing** and `specs/27` is **SUPERSEDED — do not implement**.
+
+**The pivot (all agreed with the user, 2026-07-14):** the user cloned NASA Harvest's **STACNotator** (a
+React+OpenLayers imagery-annotation tool) into the workspace as read-only reference; I digested it →
+**`../STACNOTATOR_DIGEST.md`** (workspace root, NOT in the fsd repo — never committed). Key finding:
+**STACNotator IS the viewer**, and it consumes **MPC's two APIs** — a STAC API (CQL2 search + Sort) + a
+**titiler-pgstac** data API (`/mosaic/register` → `searchId` → XYZ `/mosaic/{searchId}/tiles/{tms}/{z}/{x}/{y}`
++ viz params). So:
+- **fsd builds NO dashboard.** fsd's job = emit artifacts standard enough that a **stock eoAPI stack
+  (pgSTAC + stac-fastapi + titiler-pgstac)** serves the XYZ endpoints STACNotator consumes → fsd becomes
+  "another MPC". **3-layer seam:** fsd (COGs on blob + `stac-geoparquet` catalog + render config) → stock
+  serving infra (platform/`rise` or fsd-adjacent — *a deploy decision, not fsd code*) → STACNotator.
+- **Catalog → `stac-geoparquet`** for BOTH CDSE downloads and model outputs (option (b): keep the internal
+  working `catalog.parquet` for compute now; full migration a follow-on). STAC is justified precisely
+  because it feeds pgSTAC/titiler-pgstac + is the interop lingua franca; MosaicJSON was the throwaway.
+- **Model-dev display config → STAC Render Extension** (`renders` on the output collection) = the standard
+  "how to display my output"; titiler-pgstac serves it natively (verified). Categorical crop map uses its
+  custom `colormap` object (better than STACNotator's self-hosted `colormap_name`).
+- **Scale goal:** many projects, MANY models/outputs, all conveniently on STACNotator.
+
+**Locked decisions:** (1) no bespoke fsd dashboard/repo — STACNotator + stock serving; (2) the stock
+pgSTAC+titiler-pgstac stack runs as **platform infra**, fsd owns only the **catalog/COG/render contract**;
+(3) **model outputs first**, input-imagery viewing + **B02/B03 band expansion PARKED for university wifi**
+(mobile-hotspot now — no big downloads); (4) validate in two tiers — **Tier 1** pre-styled XYZ into
+STACNotator BYO (fast, hotspot-OK, no download), then **Tier 2** local pgSTAC+titiler-pgstac "mini-MPC".
+
+**Captured as TODO #26 (serving contract + validation), #27 (STAC-geometry fix — now serving-critical),
+#28 (render config → STAC render extension), #29 (B02/B03 expansion, parked).** `specs/27` +
+`demos/TITILER_LEAFLET.md` both carry a SUPERSEDED/concepts-primer banner. **A real finding surfaced:**
+`cog_outputs_to_items` writes each Item's geometry as the raster bbox (`stac.py:183`), not the true
+S2-cell polygon in `<cell>/geometry.geojson` → over-claims coverage; matters for `ST_Intersects`/pgSTAC
+search (TODO #27).
+
+**TWO SPECS DRAFTED + SIGNED OFF (2026-07-14):**
+- **`specs/28-stac-output-geometry-fix.md`** (TODO #27) — the STAC item-geometry fix, **manifest-driven**
+  per the user: `cog_outputs_to_items(cog_filepaths, geometries={cog: geom_path})` sources each Item's
+  footprint from `input.csv.shapefilepath` (deterministic — no sibling-file discovery, no raster-box
+  fallback; missing geometry raises). Both inference modes + a `demos/regen_output_stac.py` feed it from
+  `input.csv`. Regenerates the existing 300-item STAC. +tests. **Hotspot-friendly.**
+- **`specs/29-tier1-prestyled-xyz-validation.md`** (TODO #26 Tier 1) — a minimal `demos/titiler_serve.py`
+  serving `merged.tif` as a **param-free pre-styled XYZ** (`GET /cropmap/tiles/{z}/{x}/{y}.png`,
+  hand-rolled over rio-tiler: discrete categorical colormap + nodata=255 transparent + nearest, CORS on),
+  from a `render.json`/`CLASS_COLORS` config. **No viewer** — validated by pasting the URL into
+  **STACNotator's Bring-Your-Own-XYZ** (QGIS XYZ as a quick pre-check). Replaces the cancelled `specs/27`
+  `titiler_serve`. **Hotspot-friendly** (serves existing `merged.tif`).
+
+**→ NEXT:** hand off to a **Sonnet@medium** session to implement **specs 28 + 29** (independent — either
+order, or parallel). Both need no downloads. After they land + Opus review, the Tier-1 runbook is the
+user's STACNotator BYO check. **Still to spec (Opus):** TODO #28 (model-dev render config → STAC render
+extension) and TODO #26 **Tier 2** (local pgSTAC + titiler-pgstac mini-MPC — heavier, do when convenient),
+**#29** (B02/B03 band expansion — PARKED for wifi). Nothing committed yet; `specs/{27,28,29}`,
+`demos/TITILER_LEAFLET.md`, `TODO.md`, `PROGRESS.md` edits are on disk, uncommitted.
+
+## PRIOR (2026-07-13 pm) — FULL Austria e2e EXECUTED; `E2E_AUSTRIA.md` is now the single go-to doc; next = titiler/Leaflet STAC-verify spec (task 2)
 
 **The full Austria e2e ran for real, end-to-end, and PASSES** (real CDSE download → datacube → train on
 real EuroCrops → inference → crop map). Everything on `main` (pushed). Run: Waldviertel AT_ROI,
