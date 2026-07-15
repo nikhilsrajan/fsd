@@ -6,13 +6,21 @@
 # no-fork rationale as the stac-fastapi-pgstac image alongside it.
 FROM python:3.12-slim
 
+# titiler-pgstac imports rasterio (via rio-tiler) at startup; rasterio's wheel dynamically
+# links libexpat.so.1, which python:3.12-slim does NOT ship -> "ImportError: libexpat.so.1"
+# and the gunicorn worker fails to boot. Install the system lib (Debian pkg `libexpat1`)
+# before pip. (stac-fastapi-pgstac needs none of this — it doesn't import rasterio.)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libexpat1 \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN pip install --no-cache-dir uvicorn gunicorn "titiler.pgstac[psycopg-binary]==3.0.0"
 
 ENV MODULE_NAME=titiler.pgstac.main \
     VARIABLE_NAME=app \
     HOST=0.0.0.0 \
     PORT=8082 \
-    WEB_CONCURRENCY=1
+    WEB_CONCURRENCY=4
 
 EXPOSE 8082
 

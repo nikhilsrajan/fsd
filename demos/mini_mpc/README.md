@@ -34,7 +34,9 @@ Dockerfile"). Version pins are cross-checked for compatibility: `stac-fastapi.pg
 
 - `database` — Postgres/pgSTAC, `localhost:5439` (DSN: `postgresql://username:password@localhost:5439/postgis`).
 - `stac` — the STAC API, `http://localhost:8081` (`POST /search`, collections, items).
-- `raster` — titiler-pgstac, `http://localhost:8082` (`POST /mosaic/register`, `GET /mosaic/{searchid}/tiles/...`).
+- `raster` — titiler-pgstac, `http://localhost:8082` (`POST /searches/register`, `GET /searches/{id}/tiles/...`;
+  these are titiler-pgstac's own route names — MPC's `/mosaic/register` + `searchid` are its product wrapping
+  around the identical contract, see `register_and_url.py`'s docstring).
 
 ## Scripts
 

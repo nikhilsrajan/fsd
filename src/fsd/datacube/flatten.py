@@ -2,9 +2,14 @@
 
 Spec: specs/05-flatten.md. Folds in datacube_flatten_2d.
 
-Outputs (via fsd.storage): data.npy (pixels,t,b), coords.npy (pixels,2) [kept],
-ids.npy, labels.npy (optional), metadata.pickle.npy. Raises if datacubes disagree
-on bands/timestamps.
+Outputs (via fsd.storage): data.npy (pixels,t,b), coords.npy (pixels,2) [lon/lat in
+EPSG:4326], ids.npy, labels.npy (optional), metadata.pickle.npy. Raises if datacubes
+disagree on bands/timestamps.
+
+Coords are reprojected from each cube's native CRS to EPSG:4326 (lon, lat) before
+concatenation (TODO #16): a training set spanning two UTM zones would otherwise mix
+eastings/northings from different zones in one array — same number, different place.
+Lon/lat is a single common CRS so the concatenated coords are geographically comparable.
 """
 
 from __future__ import annotations
@@ -12,7 +17,9 @@ from __future__ import annotations
 import os
 
 import numpy as np
+import rasterio.crs
 import rasterio.transform
+import rasterio.warp
 
 from fsd import config
 from fsd.storage import fs
@@ -89,7 +96,7 @@ def _check_metadata_consistency(metadata_filepaths, check_attributes=("bands",
 
 def _read_datacube_2d(filepath: str, nodata: int = 0):
     """Load a `(t, H, W, b)` datacube, keep pixels that aren't entirely nodata across
-    time+band -> `(pixels, t, b)`, and return their easting/northing coords."""
+    time+band -> `(pixels, t, b)`, and return their (lon, lat) coords in EPSG:4326."""
     datacube = fs.load_npy(filepath)
     nt, _, _, nb = datacube.shape  # asserts 4-D
 
@@ -102,8 +109,28 @@ def _read_datacube_2d(filepath: str, nodata: int = 0):
     gt = metadata["geotiff_metadata"]
     en = _easting_northing_array(width=gt["width"], height=gt["height"],
                                  transform=gt["transform"])
-    coords_2d = en[h_idx, w_idx, :]                        # (pixels, 2)
+    coords_2d = en[h_idx, w_idx, :]                        # (pixels, 2) native CRS
+    coords_2d = _to_lonlat(coords_2d, gt.get("crs"))       # -> EPSG:4326 (lon, lat)
     return data_2d, coords_2d
+
+
+def _to_lonlat(coords_2d, src_crs):
+    """Reproject `(x, y)` coords from the cube's native CRS to EPSG:4326 `(lon, lat)`.
+
+    A no-op when `src_crs` is missing (can't reproject) or already EPSG:4326. Real
+    datacubes always carry a CRS (the builder's `reference_profile`); the missing-CRS
+    guard is only for synthetic/legacy metadata that never set one.
+    """
+    if src_crs is None or coords_2d.shape[0] == 0:
+        return coords_2d
+    dst = rasterio.crs.CRS.from_epsg(4326)
+    src = rasterio.crs.CRS.from_user_input(src_crs)
+    if src == dst:
+        return coords_2d
+    lons, lats = rasterio.warp.transform(
+        src, dst, coords_2d[:, 0].tolist(), coords_2d[:, 1].tolist()
+    )
+    return np.column_stack([lons, lats])
 
 
 def _easting_northing_array(width: int, height: int, transform):

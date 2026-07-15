@@ -55,32 +55,46 @@ def main(argv=None) -> int:
 
     args = _parse_args(argv)
 
-    cmap = build_colormap(args.render_json)
-    cmap_json = json.dumps({str(k): list(v) for k, v in cmap.items()}, separators=(",", ":"))
+    try:
+        cmap = build_colormap(args.render_json)
+        cmap_json = json.dumps({str(k): list(v) for k, v in cmap.items()}, separators=(",", ":"))
 
-    search_body = {"collections": [args.collection_id]}
-    resp = requests.post(f"{args.raster_base}/searches/register", json=search_body, timeout=30)
-    resp.raise_for_status()
-    payload = resp.json()
-    search_id = payload["id"]
+        search_body = {"collections": [args.collection_id]}
+        resp = requests.post(f"{args.raster_base}/searches/register", json=search_body, timeout=30)
+        resp.raise_for_status()
+        payload = resp.json()
+        search_id = payload["id"]
 
-    query = urllib.parse.urlencode(
-        {"assets": "output", "colormap": cmap_json, "nodata": 255, "resampling": "nearest"}
-    )
-    xyz_template = (
-        f"{args.raster_base}/searches/{search_id}/tiles/WebMercatorQuad/"
-        "{z}/{x}/{y}.png?" + query
-    )
+        query = urllib.parse.urlencode(
+            {"assets": "output", "colormap": cmap_json, "nodata": 255, "resampling": "nearest"}
+        )
+        xyz_template = (
+            f"{args.raster_base}/searches/{search_id}/tiles/WebMercatorQuad/"
+            "{z}/{x}/{y}.png?" + query
+        )
 
-    result = {
-        "step": "register-mosaic",
-        "status": "ok",
-        "pass": bool(search_id),
-        "metrics": {"searchid_present": bool(search_id), "search_id": search_id},
-        "expected": {"searchid_present": True},
-        "error": None,
-        "xyz_template": xyz_template,
-    }
+        result = {
+            "step": "register-mosaic",
+            "status": "ok",
+            "pass": bool(search_id),
+            "metrics": {"searchid_present": bool(search_id), "search_id": search_id},
+            "expected": {"searchid_present": True},
+            "error": None,
+            "xyz_template": xyz_template,
+        }
+    except Exception as e:  # noqa: BLE001 - always leave a pasteable result
+        result = {
+            "step": "register-mosaic",
+            "status": "failed",
+            "pass": False,
+            "metrics": {"searchid_present": False},
+            "expected": {"searchid_present": True},
+            "error": str(e),
+        }
+        with open(args.result_json, "w") as f:
+            json.dump(result, f, indent=2, default=str)
+        raise
+
     with open(args.result_json, "w") as f:
         json.dump(result, f, indent=2, default=str)
 

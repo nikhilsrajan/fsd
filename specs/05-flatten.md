@@ -28,8 +28,12 @@ def flatten(
   `labels.npy` (if `label_col`), `metadata.pickle.npy`. Written via `fsd.storage`.
 
 ## coords.npy (kept)
-- `coords.npy` (per-pixel easting/northing via the geotransform) is **kept** — cheap
-  and useful for mapping predictions back to geography. Emit it alongside `data.npy`.
+- `coords.npy` (per-pixel `(lon, lat)` in **EPSG:4326**) is **kept** — cheap and useful
+  for mapping predictions back to geography. Emit it alongside `data.npy`. Per-pixel
+  easting/northing is read from the geotransform, then **reprojected from each cube's
+  native CRS to EPSG:4326** before concatenation (TODO #16, done) so a training set
+  spanning multiple UTM zones shares one common CRS instead of mixing incomparable
+  eastings/northings.
 
 ## Drops vs legacy
 - `PLANET_NODATA` naming / Planet assumptions — generalize to a `nodata` param

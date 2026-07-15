@@ -4,7 +4,38 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-15_
 
-## LATEST (2026-07-15) — spec 30 (serving Tier 2: mini-MPC + stac-geoparquet) IMPLEMENTED (Sonnet@medium) → hand to Opus for review, then the user runs the Docker runbook
+## LATEST (2026-07-15) — spec 30 (serving Tier 2: mini-MPC + stac-geoparquet) REVIEWED (Opus@high) + runbook RAN GREEN (user) → Tier 2 VALIDATED; TODO #16 also fixed
+
+**Opus@high review of `faf8382` = PASS** (storage-seam staging, href-rewrite, both documented
+deviations all sound; no floating tags). Three minor fixes applied on top: README route-naming line
+corrected to `/searches/...`, `register_and_url.py` now writes a failure `_result.json` like its
+siblings, `.gitignore` covers `.pgdata/`/`*.ndjson`/`_result_register.json`.
+
+**Runbook `runbooks/30-tier2-mini-mpc.md` RAN GREEN (user, 2026-07-15): steps 1–6 all PASS** — tile
+curl `200 image/png 50145`; QGIS renders the 300-cell Austria crop map in the discrete class colors
+over the true (slanted) cell footprints through the full pgSTAC → stac-fastapi-pgstac →
+titiler-pgstac register→searchId→XYZ path. Step 7 (STACNotator in-app) skipped — the explicitly
+non-gating stretch (D-C). **fsd is "just another MPC"; the TODO #26 serving contract is proven end
+to end (Tier 1 spec 29 + Tier 2 spec 30).** Two runbook-run bugs found + fixed:
+`Dockerfile.titiler-pgstac` now `apt-get install`s **`libexpat1`** (rasterio, via rio-tiler, links
+`libexpat.so.1` at import; `python:3.12-slim` omits it → the `raster` worker failed to boot); and the
+runbook's Docker-up/directory-scoping + the step-5 curl `{z}/{x}/{y}` substitution (curl globs `{}`)
+were clarified. New plain-language **`MINI_MPC_NOTES.md`** at the **workspace root** (outside the
+public repo) — Docker primer + running issue log, per the user's request (memory
+[[user-docker-infra-onboarding]]).
+
+**Also fixed this session — TODO #16 (`flatten` multi-zone `coords.npy`):** `flatten` now reprojects
+each cube's per-pixel easting/northing from its native CRS to **EPSG:4326 (lon, lat)** before
+concatenation (`flatten._to_lonlat`), so a multi-UTM-zone training set no longer mixes incomparable
+eastings/northings. Behavior change to `coords.npy` (CHANGES.md); new multi-zone test; **214 passed,
+3 skipped**, ruff clean.
+
+**→ NEXT:** commit the accumulated work (all on top of `faf8382`, uncommitted, not pushed) if the
+user wants. **Still open after 30:** TODO #26 catalog-format full-migration (run_inference default →
+stac-geoparquet), #28 (render config → STAC render extension), #29 (B02/B03 true-color input imagery,
+PARKED for wifi). Optional polish: bump titiler `WEB_CONCURRENCY` (>1) to speed up the QGIS mosaic view.
+
+## PRIOR (2026-07-15) — spec 30 (serving Tier 2: mini-MPC + stac-geoparquet) IMPLEMENTED (Sonnet@medium) → hand to Opus for review, then the user runs the Docker runbook
 
 **Sonnet@medium implemented `specs/30-tier2-mini-mpc-validation.md`** (signed off earlier the same
 day). Implements **TODO #26 Tier 2** (the second half of the serving-contract validation; Tier 1 =

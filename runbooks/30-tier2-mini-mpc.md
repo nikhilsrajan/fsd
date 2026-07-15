@@ -39,23 +39,50 @@ Dockerfile/source checkout).
 
 All commands below run from the `fsd/` repo root unless a step says otherwise.
 
+> ## ⚠️ READ THIS FIRST — the stack must be UP for steps 2–6
+> Step 1 (`docker compose up --build -d`) starts three long-running server containers (a
+> database + two web APIs) **in the background** and returns immediately. Steps 2–6 are
+> *clients* that talk to those servers over `localhost` — **they only work while the step-1
+> stack is still running.** Do **not** run `docker compose down` (or quit Docker Desktop)
+> until after step 6.
+>
+> **Two different working directories, don't mix them up:**
+> - **`docker compose …` commands** (up/ps/logs/down) must be run from **`demos/mini_mpc/`**
+>   — that's where `docker-compose.yml` lives, and `docker compose` only sees the stack when
+>   run from that folder. Run it elsewhere and `docker compose ps` shows *nothing* (it's
+>   looking at the wrong/empty project — a common confusion).
+> - **The Python scripts** (`load_pgstac.py`, `register_and_url.py`) run from the **`fsd/`
+>   repo root** (so `fsd`/`demos` import). They reach the servers via `127.0.0.1:PORT`
+>   regardless of directory.
+>
+> New to Docker / don't know what `compose`, `--build`, `-d`, `ps`, or "reading the logs"
+> mean? See **`../../MINI_MPC_NOTES.md`** (workspace root, outside the repo) — a plain-language
+> primer + a running log of every issue hit on this harness.
+
 ## Steps
 
 ### Step 1 — bring up the mini-MPC
 ```bash
 cd demos/mini_mpc
 cp -n .env.example .env   # adjust FSD_OUTPUTS_DIR if your outputs live elsewhere
-docker compose up --build -d
-docker compose ps          # wait until `database` is "healthy"
+docker compose up --build -d    # builds images (first run / after a Dockerfile change), starts all 3 in the background
+docker compose ps -a            # -a also shows crashed/exited containers — check ALL three
 cd ../..
 ```
-- **Expect:** three containers running (`fsd-mini-mpc-db`, `fsd-mini-mpc-stac`,
-  `fsd-mini-mpc-raster`); `database` shows `healthy` in `docker compose ps`.
-- **PASS if:** all three are `Up` (db `healthy`) within ~2 min of the images being built/pulled.
-- **If it fails / hangs:** `docker compose logs stac raster` for the app containers (most likely
-  cause: a port already in use — change the host-side port in `docker-compose.yml`, or a bad pin —
-  compare the version in `dockerfiles/Dockerfile.*` against `demos/mini_mpc/README.md`'s table).
-  Stop with `docker compose down` (resume-safe; `.pgdata` persists unless `-v`).
+- **Expect (`docker compose ps -a`):** all three containers present and healthy —
+  `fsd-mini-mpc-db` = `running (healthy)`, `fsd-mini-mpc-stac` = `running`,
+  `fsd-mini-mpc-raster` = **`running`** (with a `127.0.0.1:8082->8082/tcp` port shown).
+- **PASS if:** all three are `running` (db `healthy`) within ~2 min. **`raster` must say
+  `running`, not `exited`** — if it exited, step 4/5 will get "Connection refused" on port 8082.
+- **If a container shows `exited (…)`:** read *its* startup crash with
+  `docker compose logs <service> --tail 60` (e.g. `docker compose logs raster --tail 60`). Look
+  for the last Python `Traceback` / `ImportError` / "Worker failed to boot". Known issues + fixes
+  are logged in `../../MINI_MPC_NOTES.md`. After changing a `dockerfiles/Dockerfile.*`, re-run
+  `docker compose up --build -d` (the `--build` rebuilds; `.pgdata` + already-loaded data persist).
+- **Other likely causes:** a host port already in use (change the host-side port in
+  `docker-compose.yml`), or a bad version pin (compare `dockerfiles/Dockerfile.*` vs
+  `demos/mini_mpc/README.md`'s table). Stop with `docker compose down` (resume-safe; `.pgdata`
+  persists unless you add `-v`).
 
 ### Step 2 — load
 ```bash
@@ -116,13 +143,16 @@ print(json.dumps(result, indent=2))
 
 ### Step 5 — tile render (curl)
 ```bash
-# pick a z/x/y over Austria (Waldviertel) — e.g. zoom 13 around (14.9E, 48.7N):
-curl -s -o /tmp/mini_mpc_tile.png -w '%{http_code} %{content_type} %{size_download}\n' \
-    "<paste the XYZ template from step 4, substituting z=13 x=4437 y=2823>"
+# Substitute a real z/x/y over Austria (Waldviertel) for the template's {z}/{x}/{y}
+# — e.g. zoom 13 tile 4437/2819. THREE things that matter (see "If it fails" below):
+#   1) wrap the WHOLE url in SINGLE quotes  2) add -g (--globoff)  3) no {} left in it.
+curl -s -g --max-time 120 -o /tmp/mini_mpc_tile.png \
+    -w '%{http_code} %{content_type} %{size_download}\n' \
+    '<paste the XYZ template from step 4, with {z}/{x}/{y} replaced by 13/4437/2819>'
 
 python3 -c "
 import json, os
-size = os.path.getsize('/tmp/mini_mpc_tile.png')
+size = os.path.getsize('/tmp/mini_mpc_tile.png') if os.path.exists('/tmp/mini_mpc_tile.png') else 0
 result = {
     'step': 'tile-render', 'status': 'ok', 'pass': size > 0,
     'metrics': {'tile_status': 200, 'tile_nonempty': size > 0},
@@ -135,10 +165,18 @@ print(json.dumps(result, indent=2))
 ```
 - **Expect:** `200 image/png <nonzero size>`.
 - **PASS if:** `_result_30_tile.json`'s `pass` is `true`.
-- **If it fails:** a 500 with no `/data` bind-mount is the classic miss (re-check `.env`'s
+- **If it prints `000  0` and writes no file:** curl never sent the request — almost always its
+  **URL globbing** choking on leftover `{` `}` braces (or an unquoted `&`). Fixes, all three
+  together: (a) replace `{z}/{x}/{y}` with real numbers (e.g. `13/4437/2819`); (b) add `-g`
+  (`--globoff`); (c) wrap the whole URL in **single** quotes. Re-run once without `-s` to see curl's
+  own error (`curl: (3) …`). QGIS (step 6) works with the literal `{z}/{x}/{y}` because *it*
+  substitutes them — curl does not.
+- **If it fails otherwise:** a 500 with no `/data` bind-mount is the classic miss (re-check `.env`'s
   `FSD_OUTPUTS_DIR` == step 2's `--outputs-dir`, and that `docker compose up` picked it up —
-  `docker compose up -d` again after editing `.env`); a 404 means the `z/x/y` you picked doesn't
-  intersect the Austria ROI — widen the search or use QGIS (step 6) to find one visually first.
+  `docker compose up -d` again after editing `.env`); a 404/204/empty tile means the `z/x/y` you
+  picked doesn't intersect the Austria ROI — use QGIS (step 6) to find a colored spot first, then
+  pick a tile there. (Tiles are **slow** when zoomed out — titiler mosaics up to 300 COGs per tile
+  on the fly; that's expected, see `../../MINI_MPC_NOTES.md`.)
 
 ### Step 6 — QGIS visual (the user's principle)
 1. QGIS → Layer → Add Layer → Add XYZ Layer → New → paste the XYZ template from step 4 (as-is,

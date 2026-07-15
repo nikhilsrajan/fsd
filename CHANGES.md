@@ -4,6 +4,17 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## flatten `coords.npy` reprojected to EPSG:4326 (TODO #16, 2026-07-15)
+- **`datacube.flatten` now emits `coords.npy` as `(lon, lat)` in EPSG:4326**, not raw per-cube
+  easting/northing in the cube's native UTM CRS. Each cube's kept-pixel coords are reprojected
+  from `geotiff_metadata["crs"]` to EPSG:4326 (`rasterio.warp.transform`) before concatenation, so
+  a training set spanning multiple UTM zones (e.g. EuroCrops west EPSG:32636 / east EPSG:32637) no
+  longer mixes incomparable eastings/northings in one array (the same easting number in two zones
+  is two different places). No-op when a cube's metadata carries no CRS (synthetic/legacy) or is
+  already EPSG:4326. **Behavior change to the `coords.npy` artifact** — downstream code that read
+  coords as native UTM must now expect lon/lat; the spectral arrays (`data`/`ids`/`labels`) are
+  unaffected. Multi-zone reprojection covered by a new test in `tests/test_datacube_flatten.py`.
+
 ## stac-geoparquet export + Tier-2 mini-MPC harness (spec 30, 2026-07-15)
 - **New, additive module `catalog/stac_geoparquet.py`** — `items_to_stac_geoparquet(items,
   dst_filepath)` writes a `list[pystac.Item]` to a single GeoParquet file via the `stac-geoparquet`
@@ -34,6 +45,14 @@ carried over (renames, restructures, behavioral tweaks). Pure removals go in
   rio-tiler pin. Scripts + `runbooks/30-tier2-mini-mpc.md` only — Claude never runs Docker; the
   href-rewrite/ndjson-emission logic was smoke-tested directly (no Docker) against the real
   300-item catalog before handoff.
+- **Runbook-run fix (2026-07-15):** the `raster` (titiler-pgstac) container crashed at startup with
+  `ImportError: libexpat.so.1` — `python:3.12-slim` doesn't ship the system lib rasterio (via
+  rio-tiler) links at import. `dockerfiles/Dockerfile.titiler-pgstac` now `apt-get install -y
+  libexpat1` before pip. Runbook clarified: bring the stack up with `docker compose up --build -d`
+  and keep it running for steps 2–6, run all `docker compose` commands from `demos/mini_mpc/` (it's
+  directory-scoped), and `docker compose ps -a` to catch a crashed/exited container. Plain-language
+  primer + running issue log kept at the workspace root in `MINI_MPC_NOTES.md` (outside the public
+  repo).
 
 ## STAC inference-output Item geometry: true cell polygon, not raster bbox (spec 28, 2026-07-14)
 - **Behavior change:** `catalog/stac.py::cog_outputs_to_items` gains a `geometries=` kwarg — a

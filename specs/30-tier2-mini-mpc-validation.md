@@ -1,7 +1,12 @@
 # Spec 30 — Serving contract Tier 2: local pgSTAC + titiler-pgstac "mini-MPC" (+ stac-geoparquet export)
 
-> **Status: IMPLEMENTED (2026-07-15) — Deliverable B verified (pytest + a real-catalog smoke run);
-> Deliverable A is scripts + a runbook awaiting the user's Docker run.** Opus@high (interview → spec →
+> **Status: DONE / VALIDATED (2026-07-15) — Deliverable B verified (pytest + real-catalog smoke run);
+> Deliverable A's runbook RAN GREEN (user, 2026-07-15): steps 1–6 all PASS (tile curl
+> `200 image/png 50145`, QGIS renders the crop map in class colors over true cell footprints through
+> the full pgSTAC→titiler-pgstac path); step 7 (STACNotator in-app) skipped as the explicitly
+> non-gating stretch. Two runbook-run fixes landed: `Dockerfile.titiler-pgstac` installs `libexpat1`
+> (rasterio needs it; `python:3.12-slim` omits it), and the runbook/curl step + a plain-language
+> `MINI_MPC_NOTES.md` (workspace root) were clarified.** Opus@high (interview → spec →
 > sign-off) → Sonnet@medium (implement, this pass). All five open-questions accepted as recommended (new
 > `[serving]` extra; new `catalog/stac_geoparquet.py` module; href-rewrite + `/data` bind-mount;
 > geoparquet round-trip pytest only in this spec; Opus specs → Sonnet implements → user runs the Docker
