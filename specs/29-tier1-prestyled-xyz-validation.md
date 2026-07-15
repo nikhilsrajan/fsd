@@ -1,6 +1,7 @@
 # Spec 29 — Tier-1 serving validation: a pre-styled XYZ for the crop map, consumed by STACNotator
 
-> **Status: IMPLEMENTED (2026-07-14, Sonnet@medium).** New `demos/titiler_serve.py` (FastAPI +
+> **Status: DONE (2026-07-14) — reviewed (Opus@high), merged to `main` (`620441e`, not pushed),
+> validated (curl + QGIS + STACNotator BYO overlay all PASS).** New `demos/titiler_serve.py` (FastAPI +
 > rio-tiler; `GET /cropmap/tiles/{z}/{x}/{y}.png`, discrete `CLASS_COLORS`/`render.json` colormap,
 > `nodata=255` transparent, `resampling_method="nearest"`, permissive CORS) + a `[titiler]` extra
 > in `pyproject.toml` + `runbooks/29-tier1-stacnotator-byo.md`. 4 new tests

@@ -4,11 +4,48 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-14_
 
-## LATEST (2026-07-14, later) — specs 28 + 29 IMPLEMENTED (Sonnet@medium), in a worktree, uncommitted
+## LATEST (2026-07-15) — spec 30 (serving Tier 2: mini-MPC + stac-geoparquet) SIGNED OFF → hand to Sonnet
 
-**Both signed-off specs from the serving pivot (below) landed, against `/tmp/fsd-handoff-specs-28-29.md`,
-in git worktree `.claude/worktrees/specs-28-29-impl` (branch `specs-28-29-impl`) — not yet merged/committed
-to `main`.**
+**Opus@high interview → `specs/30-tier2-mini-mpc-validation.md` SIGNED OFF (2026-07-15).** Implements
+**TODO #26 Tier 2** (the second half of the serving-contract validation; Tier 1 = spec 29, DONE). Builds
+on spec 28 (true-polygon geometry) + spec 29 (the discrete crop-class colormap). **Two deliverables:**
+
+- **A — local "mini-MPC" harness** (`demos/mini_mpc/` + `runbooks/30-tier2-mini-mpc.md`): borrow the
+  **stock eoAPI docker-compose** (pgSTAC + stac-fastapi-pgstac + titiler-pgstac), load the spec-28
+  output STAC (300 Austria crop-map cells) via **`pypgstac` ndjson** (convert the JSON catalog we already
+  write; **rewrite COG asset hrefs host→`/data` + bind-mount** the outputs dir so GDAL resolves them
+  inside the container — the one non-obvious wiring step), then prove the **register→searchId→XYZ** MPC
+  path renders. Categorical color rides in the tile **`colormap`** query param (reuse
+  `titiler_serve.build_colormap`), `assets=output`, `nodata=255`, `resampling=nearest`. **Success = curl
+  (search returns 300 items with true polygon geometry + register 200 + tile PNG) + a QGIS XYZ-layer
+  visual** (the user asked for QGIS — now through the full pgSTAC→titiler path); STACNotator-in-app is an
+  optional stretch (may need a STACNotator config/PR to add a custom MPC endpoint — not gating).
+- **B — stac-geoparquet export** (fsd core, additive): new `catalog/stac_geoparquet.py` +
+  `[serving]` optional extra (`stac-geoparquet`) + a `demos/mini_mpc/export_stac_geoparquet.py` CLU; the
+  #26 north-star interchange format. **Round-trip pytest only** in this spec (items→geoparquet→items
+  equal on id/geometry/bbox/dt/proj/asset); **not** wired into the run_inference default write path — that
+  full catalog migration stays the #26 follow-on.
+
+**Interview decisions (all 5 open-qs accepted as recommended):** new `[serving]` extra; new
+`catalog/stac_geoparquet.py` module; href-rewrite + `/data` bind-mount; geoparquet round-trip pytest only;
+Opus specs → **Sonnet@medium implements** the export + harness scripts → the **user runs the Docker
+runbook** (Claude never runs Docker/pipeline, per CLAUDE.md). Non-goals: no Azure/production deploy (the
+`rise` deploy is propose-only, separate), no input-imagery serving (B02/B03 = #29, parked for wifi), no
+render-extension (#28), no STACNotator code change for the hard bar.
+
+**→ NEXT:** user runs `/handoff "implement spec 30 (serving Tier 2)"` → fresh **Sonnet@medium** session
+(`/model sonnet`, `/effort medium`) pointed at `specs/30-tier2-mini-mpc-validation.md`. One-time cost =
+pulling eoAPI Docker images (hundreds of MB, no satellite downloads — Docker already proven working
+2026-07-15). Then Opus reviews. **Still open after 30:** TODO #26 catalog-format full-migration
+(run_inference default → stac-geoparquet), TODO #28 (render config → STAC render extension — makes the
+categorical color turnkey, no baked-in `colormap` param), #29 (B02/B03 for true-color input imagery,
+PARKED for wifi).
+
+## PRIOR (2026-07-14, later) — specs 28 + 29 REVIEWED (Opus@high), MERGED to `main`, all runbooks PASS ✅
+
+**Both serving-pivot specs are DONE: reviewed, merged, and validated end to end.** Merged fast-forward
+into `main` (`50749e8`→`620441e`, "Implement specs 28+29"); **not pushed to origin** (per the user —
+local merge only). The implementation baton was `/tmp/fsd-handoff-specs-28-29-review.md`.
 
 - **Spec 28 (STAC geometry fix, TODO #27 DONE):** `catalog/stac.py::cog_outputs_to_items` gained
   `geometries={cog: geometry.geojson_path}` (+ `_read_footprint_geometry` helper +
@@ -16,33 +53,41 @@ to `main`.**
   `_resolve_inference_pairs`/`_run_inference_roi` thread `geometries` from `input.csv.shapefilepath`
   for both inference modes; `geometries=None` (bare COG lists, folder/list pre-built modes) keeps the
   old raster-bbox behavior unchanged. Missing/unreadable geometry **raises** (deterministic, no
-  fallback, per the user's 2026-07-14 design revision). New `demos/regen_output_stac.py` +
-  `runbooks/28-stac-geometry-regen.md` (**not yet run** — regenerates the existing 300-item demo
-  STAC over `tests/outputs/demo_e2e/`; the user runs it). 4 new tests; `BUGS.md` BUG-003;
-  `CHANGES.md`; `specs/17` pointer; `TODO.md` #27 marked DONE.
+  fallback). New `demos/regen_output_stac.py` + `runbooks/28-stac-geometry-regen.md`. 4 new tests;
+  `BUGS.md` BUG-003; `CHANGES.md`; `specs/17` pointer; `TODO.md` #27 DONE.
 - **Spec 29 (Tier-1 pre-styled XYZ, TODO #26 Tier-1 DONE):** new `demos/titiler_serve.py` (FastAPI +
   rio-tiler; `GET /cropmap/tiles/{z}/{x}/{y}.png` over `merged.tif`, discrete colormap from
   `e2e_austria.CLASS_COLORS`/`render.json`, `nodata=255` transparent, nearest resampling, permissive
   CORS) + a new `[titiler]` pyproject extra (isolated `.venv-titiler`, kept out of `.venv`) +
   `runbooks/29-tier1-stacnotator-byo.md`. 4 new tests (`tests/test_titiler_serve.py`,
-  `pytest.importorskip("rio_tiler")` — skip cleanly in the core `.venv`). The actual STACNotator BYO
-  check (runbook step 5, needs STACNotator running locally) is **not yet run** — the user's next
-  action. `CHANGES.md`/`RECIPES.md`/`E2E_AUSTRIA.md` §3+§8/`TODO.md` #26 updated.
-- **Verified (this session):** `pytest -q` in `.venv` = **213 passed, 2 skipped** (grid + titiler,
-  both skip cleanly without their extras); `.venv-titiler` runs the 4 titiler tests green
-  (`rio-tiler` 7.9.6). `ruff check src/ tests/ demos/` clean in both venvs. One implementation note
-  beyond the spec's literal text: `rio_tiler.models.ImageData`'s masking needs a
-  `numpy.ma.MaskedArray` (not a bare second positional `mask` array — that arg is actually
-  `cutline_mask` in rio-tiler 6/7.x and does not drive transparency the way the spec's D3 pseudocode
-  implied); fixed in `_empty_png` and verified the out-of-bounds/nodata tiles render with alpha=0.
+  `pytest.importorskip("rio_tiler")` — skip cleanly in the core `.venv`). rio-tiler note: masking
+  needs a `numpy.ma.MaskedArray` (the 2nd `ImageData` positional is `cutline_mask` in rio-tiler
+  6/7.x, not an alpha mask) — fixed in `_empty_png`.
+- **Opus@high review:** clean, no changes required. Verified the spec-28 no-fallback contract is
+  atomic (all four `ValueError` paths fire inside `cog_outputs_to_items` before `write_stac_catalog`
+  → no partial STAC), `geometries=None` correctly reserved for the manifest-less folder/list modes,
+  `_resolve_inference_pairs`'s `-> (pairs, geometries)` change fully covered (one call site), the
+  ROI-mode `input.csv` always carries `shapefilepath` (`workflows/create_datacube.py:90`), and the
+  rio-tiler `MaskedArray` reasoning holds. `pytest -q` = 213 passed, 2 skipped; ruff clean.
+- **Runbooks — ALL PASS (user ran, 2026-07-14):**
+  - **28 regen:** the 300-item Austria demo STAC regenerated from `input.csv` → the slanted S2-cell
+    polygons (not raster boxes). *(Doc fix: the runbook's step-2 spot-check path was missing the
+    `fsd-inference/` collection subfolder — corrected; the regen script itself was always right.)*
+  - **29 curl + QGIS:** the pre-styled XYZ server renders the categorical crop map correctly (discrete
+    colors, nodata transparent) — confirmed visually in QGIS.
+  - **29 STACNotator BYO:** the running `titiler_serve` XYZ URL loads as a Bring-Your-Own-XYZ layer in
+    a locally-run STACNotator dev stack (`make dev-init`) — the strongest external confirmation. (GEE
+    creds are irrelevant to BYO mode; Docker daemon just had to be running.)
 
-**→ NEXT:** hand back to **Opus@high** for a review pass over the worktree diff, then the user (1)
-runs `runbooks/28-stac-geometry-regen.md` (STAC regen over the existing demo outputs) and (2) runs
-`runbooks/29-tier1-stacnotator-byo.md` (server launch + curl smoke + optional QGIS + the real
-STACNotator BYO check, pasting back a screenshot). Merge the worktree branch to `main` once
-reviewed + the user is satisfied (commit/merge only on request, per CLAUDE.md). **Still to spec
-(Opus):** TODO #28 (model-dev render config → STAC render extension) and TODO #26 **Tier 2** (local
-pgSTAC + titiler-pgstac mini-MPC); **#29** (B02/B03 band expansion — PARKED for wifi).
+**Serving pivot — Tier 1 is now fully validated.** fsd emits standard STAC (true footprints) + a
+pre-styled categorical XYZ that STACNotator consumes as-is.
+
+**→ NEXT (Opus to spec):** **TODO #26 Tier 2** — a local pgSTAC + titiler-pgstac "mini-MPC" so
+STACNotator drives fsd's STAC through the same two-API path it uses for MPC (the richer, non-BYO
+serving mode). Also open: **TODO #28** (model-dev render config → STAC render extension — the
+`render.json` seam already stubbed in `titiler_serve.build_colormap`) and **#29** (B02/B03 band
+expansion for true-color input imagery — PARKED for university wifi). Not pushed to origin (commit/push
+only on request, per CLAUDE.md).
 
 ## PRIOR (2026-07-14) — STRATEGIC PIVOT on serving: fsd emits standard STAC+COGs+render config → STACNotator (via stock pgSTAC+titiler-pgstac); the fsd Leaflet dashboard is CANCELLED
 

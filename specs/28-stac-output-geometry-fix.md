@@ -1,6 +1,7 @@
 # Spec 28 — STAC inference-output geometry: use the true S2-cell polygon, not the raster bbox
 
-> **Status: IMPLEMENTED (2026-07-14, Sonnet@medium).** `catalog/stac.py::cog_outputs_to_items`
+> **Status: DONE (2026-07-14) — reviewed (Opus@high), merged to `main` (`620441e`, not pushed), regen
+> runbook PASS.** `catalog/stac.py::cog_outputs_to_items`
 > gained `geometries=`, `_output_item_id`'s docstring untouched, new
 > `cog_outputs_to_items_from_manifest`; `api.py::_finalize_outputs`/`_resolve_inference_pairs`/
 > `_run_inference_roi` thread `geometries` from `input.csv.shapefilepath` per D1/D2; new

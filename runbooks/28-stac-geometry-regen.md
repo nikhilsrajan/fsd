@@ -53,7 +53,7 @@ rows = pd.read_csv('tests/outputs/demo_e2e/model_outputs/cells/input.csv')
 row = rows.iloc[0]
 with open(row['shapefilepath']) as f:
     truth = json.load(f)['features'][0]['geometry']
-item_fp = f\"tests/outputs/demo_e2e/model_outputs/stac/{row['id']}/{row['id']}.json\"
+item_fp = f\"tests/outputs/demo_e2e/model_outputs/stac/fsd-inference/{row['id']}/{row['id']}.json\"
 with open(item_fp) as f:
     item = json.load(f)
 assert item['geometry'] == truth, 'geometry mismatch!'
