@@ -282,3 +282,40 @@ python3.11 -m venv .venv-titiler && .venv-titiler/bin/pip install -e ".[titiler]
   distinct class colors, transparent nodata, correctly placed.
 - **STACNotator BYO:** paste the same template URL as a Bring-Your-Own-XYZ imagery slice.
 - Full runbook (incl. the STACNotator step): `runbooks/29-tier1-stacnotator-byo.md`.
+
+## Export a STAC catalog to stac-geoparquet (spec 30 Deliverable B)
+
+```bash
+python3.11 -m venv .venv-serving && .venv-serving/bin/pip install -e ".[dev,serving]"
+.venv-serving/bin/python -m demos.mini_mpc.export_stac_geoparquet \
+    --stac-dir tests/outputs/demo_e2e/model_outputs/stac
+# writes catalog.parquet next to catalog.json + a _result.json: {items, dst}
+```
+Round-trip test: `.venv-serving/bin/python -m pytest -q tests/test_stac_geoparquet.py`
+(skips cleanly in fsd's core `.venv` — `pytest.importorskip`).
+
+## Serve fsd outputs through a local pgSTAC + titiler-pgstac "mini-MPC" (Tier 2, spec 30)
+
+The register→searchId→XYZ flow MPC uses, over a stock local pgSTAC stack (`demos/mini_mpc/`):
+
+```bash
+cd demos/mini_mpc && cp -n .env.example .env && docker compose up --build -d && cd ../..
+.venv-serving/bin/pip install "pypgstac[psycopg]==0.9.11" requests   # once, into .venv-serving
+
+.venv-serving/bin/python demos/mini_mpc/load_pgstac.py \
+    --stac-dir tests/outputs/demo_e2e/model_outputs/stac \
+    --outputs-dir tests/outputs/demo_e2e/model_outputs/cells
+# -> _result.json: {collections: 1, items: 300}
+
+.venv-serving/bin/python demos/mini_mpc/register_and_url.py
+# -> prints http://127.0.0.1:8082/searches/<id>/tiles/WebMercatorQuad/{z}/{x}/{y}.png?...
+
+curl -s -o /tmp/t.png -w '%{http_code} %{content_type}\n' \
+    "<paste the URL above, z=13 x=4437 y=2823>"   # -> 200 image/png
+```
+- **QGIS quick-check:** Add Layer -> Add XYZ Layer, paste the printed template as-is
+  (`{z}/{x}/{y}` literal), pan to Austria — real class colors, **true (non-boxy) cell footprints**.
+- Teardown: `docker compose down` (keeps `./.pgdata`) or `docker compose down -v` (wipes it).
+- Full runbook (7 steps incl. the STAC search + optional STACNotator step):
+  `runbooks/30-tier2-mini-mpc.md`. What's borrowed vs. locally built + why:
+  `demos/mini_mpc/README.md`.

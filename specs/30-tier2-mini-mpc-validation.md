@@ -1,9 +1,14 @@
 # Spec 30 — Serving contract Tier 2: local pgSTAC + titiler-pgstac "mini-MPC" (+ stac-geoparquet export)
 
-> **Status: SIGNED OFF (2026-07-15) — ready to implement.** Opus@high (interview → spec → sign-off). All
-> five open-questions accepted as recommended (new `[serving]` extra; new `catalog/stac_geoparquet.py`
-> module; href-rewrite + `/data` bind-mount; geoparquet round-trip pytest only in this spec; Opus specs →
-> Sonnet implements → user runs the Docker runbook). Implements **TODO #26 Tier 2**
+> **Status: IMPLEMENTED (2026-07-15) — Deliverable B verified (pytest + a real-catalog smoke run);
+> Deliverable A is scripts + a runbook awaiting the user's Docker run.** Opus@high (interview → spec →
+> sign-off) → Sonnet@medium (implement, this pass). All five open-questions accepted as recommended (new
+> `[serving]` extra; new `catalog/stac_geoparquet.py` module; href-rewrite + `/data` bind-mount;
+> geoparquet round-trip pytest only in this spec; Opus specs → Sonnet implements → user runs the Docker
+> runbook). One implementation deviation from the draft (documented in `CHANGES.md` +
+> `register_and_url.py`'s docstring): the installed `titiler.pgstac==3.0.0` names its routes
+> `/searches/register` / `/searches/{id}/tiles/...` (not `/mosaic/register` / `searchid`) — MPC's own
+> product wraps the identical contract under different names. Implements **TODO #26 Tier 2**
 > (the second half of the serving-contract validation; Tier 1 = spec 29, DONE). Builds directly on
 > **spec 28** (inference Items now carry the true S2-cell polygon geometry — the thing pgSTAC search and
 > the tiler's `ST_Intersects` key off) and **spec 29** (the discrete crop-class colormap, reused here).

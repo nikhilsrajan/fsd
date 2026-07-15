@@ -1,0 +1,19 @@
+# Pinned, minimal image for stac-fastapi-pgstac (the STAC API) — spec 30 Deliverable A.
+#
+# No published "just pull it" image exists upstream (stac-utils/stac-fastapi-pgstac's own
+# compose.yml builds its Dockerfile from a git checkout of the whole monorepo, same as eoAPI's).
+# Rather than vendor/fork that build context, this installs the **pinned, stock PyPI package**
+# on a slim Python base and runs its own published entrypoint (`python -m stac_fastapi.pgstac.app`)
+# unmodified — no eoAPI/stac-fastapi source is copied or forked.
+FROM python:3.12-slim
+
+RUN pip install --no-cache-dir "stac-fastapi.pgstac[server]==6.3.1"
+
+ENV APP_HOST=0.0.0.0 \
+    APP_PORT=8081 \
+    ENVIRONMENT=local \
+    WEB_CONCURRENCY=1
+
+EXPOSE 8081
+
+CMD ["python", "-m", "stac_fastapi.pgstac.app"]

@@ -4,6 +4,37 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## stac-geoparquet export + Tier-2 mini-MPC harness (spec 30, 2026-07-15)
+- **New, additive module `catalog/stac_geoparquet.py`** — `items_to_stac_geoparquet(items,
+  dst_filepath)` writes a `list[pystac.Item]` to a single GeoParquet file via the `stac-geoparquet`
+  library (new optional `[serving]` extra); `stac_geoparquet_to_items(src_filepath)` is the inverse
+  (round-trip validation). Both stage through a local tmp file + the `fsd.storage` seam
+  (`fs.put`/`fs.open`), since the installed `stac-geoparquet==0.8.1` API always wants a real
+  filesystem path, not an fsspec handle. Not wired into any default write path — `run_inference`
+  still writes the JSON STAC catalog as before; the full catalog-format migration is TODO #26's
+  follow-on. Round-trip-tested (`tests/test_stac_geoparquet.py`, `pytest.importorskip`-guarded so
+  the core `.venv` skips it) and smoke-run against the real 300-item Austria catalog via the new
+  `demos/mini_mpc/export_stac_geoparquet.py` CLI.
+- **New `demos/mini_mpc/` — the Tier-2 "mini-MPC" validation harness**, a local, throwaway
+  pgSTAC + stac-fastapi-pgstac + titiler-pgstac stack proving fsd's inference outputs load and
+  serve through the same register→searchId→XYZ flow MPC uses. `docker-compose.yml` pins the
+  `pgstac:v0.9.11` DB image as-is; the two app services (`dockerfiles/Dockerfile.{stac-fastapi-pgstac,
+  titiler-pgstac}`) install the **pinned stock PyPI packages** (`stac-fastapi.pgstac==6.3.1`,
+  `titiler.pgstac==3.0.0`) on a slim Python base rather than forking a Dockerfile/source
+  checkout — no published "just pull it" app-layer image exists upstream (see the README's table
+  for the full rationale). `load_pgstac.py` converts the existing static STAC catalog to ndjson,
+  rewriting each output COG's href to the container-visible `/data/<path>` the compose bind-mount
+  exposes (the one non-obvious wiring step — 500s without it), and `pypgstac load`s it.
+  `register_and_url.py` reuses spec 29's `build_colormap`, registers a
+  `collections=["fsd-inference"]` search, and prints the XYZ tile template. **Deviates from spec
+  30's draft assumption:** the installed `titiler.pgstac==3.0.0`'s own routes are
+  `/searches/register` + `/searches/{id}/tiles/...` (response key `id`), not `/mosaic/register` /
+  `searchid` — that's MPC's own product naming around the identical underlying contract
+  (`STACNOTATOR_DIGEST.md §3`); documented in `register_and_url.py`'s docstring, à la spec 29's
+  rio-tiler pin. Scripts + `runbooks/30-tier2-mini-mpc.md` only — Claude never runs Docker; the
+  href-rewrite/ndjson-emission logic was smoke-tested directly (no Docker) against the real
+  300-item catalog before handoff.
+
 ## STAC inference-output Item geometry: true cell polygon, not raster bbox (spec 28, 2026-07-14)
 - **Behavior change:** `catalog/stac.py::cog_outputs_to_items` gains a `geometries=` kwarg — a
   `{output_cog_filepath: geometry.geojson_path}` mapping sourced from the `run_inference` build

@@ -2,9 +2,49 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-14_
+_Last updated: 2026-07-15_
 
-## LATEST (2026-07-15) — spec 30 (serving Tier 2: mini-MPC + stac-geoparquet) SIGNED OFF → hand to Sonnet
+## LATEST (2026-07-15) — spec 30 (serving Tier 2: mini-MPC + stac-geoparquet) IMPLEMENTED (Sonnet@medium) → hand to Opus for review, then the user runs the Docker runbook
+
+**Sonnet@medium implemented `specs/30-tier2-mini-mpc-validation.md`** (signed off earlier the same
+day). Implements **TODO #26 Tier 2** (the second half of the serving-contract validation; Tier 1 =
+spec 29, DONE). Builds on spec 28 (true-polygon geometry) + spec 29 (the discrete crop-class colormap).
+
+- **B — stac-geoparquet export (fsd core, additive) — DONE + verified.** New
+  `catalog/stac_geoparquet.py` (`items_to_stac_geoparquet` / `stac_geoparquet_to_items`, staged
+  through a local tmp file + the `fsd.storage` seam since the installed `stac-geoparquet==0.8.1` API
+  wants a real path), new `[serving]` extra, `demos/mini_mpc/export_stac_geoparquet.py` CLI.
+  `tests/test_stac_geoparquet.py` round-trip PASSES in a fresh `.venv-serving`
+  (`pip install -e ".[dev,serving]"`; `215 passed, 2 skipped` full suite, `ruff` clean); the core
+  `.venv` skips the test cleanly (`pytest.importorskip`). **Also smoke-run against the real 300-item
+  Austria catalog** (`tests/outputs/demo_e2e/model_outputs/stac/`) — export + read-back both verified
+  by hand (all 300 items round-tripped correctly).
+- **A — local "mini-MPC" harness — scripts + runbook written, not yet Docker-run (Claude never runs
+  Docker).** `demos/mini_mpc/` (`docker-compose.yml` pinning `ghcr.io/stac-utils/pgstac:v0.9.11`
+  as-is + two locally-built images that install the **pinned stock PyPI packages**
+  `stac-fastapi.pgstac==6.3.1` / `titiler.pgstac==3.0.0` on a slim Python base, since no published
+  "just pull it" app-layer image exists upstream — README's table documents exactly what's borrowed
+  vs. built, and why eoAPI's own compose couldn't be vendored verbatim (it `build:`s from a full
+  monorepo checkout too)); `load_pgstac.py` (ndjson + href-rewrite → `/data` bind-mount — the
+  href-rewrite logic was hand-verified against the real catalog: all 300 hrefs rewrite correctly);
+  `register_and_url.py` (reuses `titiler_serve.build_colormap`; URL-building logic hand-verified with
+  a mocked HTTP call). **One documented deviation from the spec's draft:** the installed
+  `titiler.pgstac==3.0.0` names its routes `/searches/register` + `/searches/{id}/tiles/...` (response
+  key `id`), not `/mosaic/register`/`searchid` — MPC's own product wraps the identical contract under
+  different names (`CHANGES.md` + the script's docstring have the full note, à la spec 29's rio-tiler
+  pin). `runbooks/30-tier2-mini-mpc.md` (7 steps; hard bar = steps 1–6, STACNotator-in-app a stretch).
+
+**Living docs updated:** `CHANGES.md`, `RECIPES.md` (both new recipes), `TODO.md` #26 →
+DONE-pending-runbook, `pyproject.toml` (`[serving]` extra), spec 30's banner → IMPLEMENTED.
+
+**→ NEXT:** Opus review, then the **user runs** `runbooks/30-tier2-mini-mpc.md` (one-time cost =
+building the two app images locally — small `pip install`s on a slim base, no satellite downloads;
+recommend on wifi) and pastes back each step's `_result.json` + the QGIS screenshot. **Still open
+after 30:** TODO #26 catalog-format full-migration (run_inference default → stac-geoparquet), TODO
+#28 (render config → STAC render extension — makes the categorical color turnkey, no baked-in
+`colormap` param), #29 (B02/B03 for true-color input imagery, PARKED for wifi).
+
+## PRIOR (2026-07-15) — spec 30 (serving Tier 2: mini-MPC + stac-geoparquet) SIGNED OFF → hand to Sonnet
 
 **Opus@high interview → `specs/30-tier2-mini-mpc-validation.md` SIGNED OFF (2026-07-15).** Implements
 **TODO #26 Tier 2** (the second half of the serving-contract validation; Tier 1 = spec 29, DONE). Builds
@@ -32,14 +72,6 @@ Opus specs → **Sonnet@medium implements** the export + harness scripts → the
 runbook** (Claude never runs Docker/pipeline, per CLAUDE.md). Non-goals: no Azure/production deploy (the
 `rise` deploy is propose-only, separate), no input-imagery serving (B02/B03 = #29, parked for wifi), no
 render-extension (#28), no STACNotator code change for the hard bar.
-
-**→ NEXT:** user runs `/handoff "implement spec 30 (serving Tier 2)"` → fresh **Sonnet@medium** session
-(`/model sonnet`, `/effort medium`) pointed at `specs/30-tier2-mini-mpc-validation.md`. One-time cost =
-pulling eoAPI Docker images (hundreds of MB, no satellite downloads — Docker already proven working
-2026-07-15). Then Opus reviews. **Still open after 30:** TODO #26 catalog-format full-migration
-(run_inference default → stac-geoparquet), TODO #28 (render config → STAC render extension — makes the
-categorical color turnkey, no baked-in `colormap` param), #29 (B02/B03 for true-color input imagery,
-PARKED for wifi).
 
 ## PRIOR (2026-07-14, later) — specs 28 + 29 REVIEWED (Opus@high), MERGED to `main`, all runbooks PASS ✅
 

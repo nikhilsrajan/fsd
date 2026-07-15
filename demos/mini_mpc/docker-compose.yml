@@ -1,0 +1,88 @@
+# Spec 30 (Tier 2) — a local "mini-MPC": pgSTAC + stac-fastapi-pgstac + titiler-pgstac.
+#
+# NOT an fsd deploy. A throwaway, local validation harness (see README.md + spec 30 D-A). Every
+# image/version below is version-**pinned** for reproducibility; nothing here is a fork of
+# upstream software (README.md documents exactly what's borrowed vs. locally built).
+#
+# Bring-up: `docker compose up` from this folder (see ../../runbooks/30-tier2-mini-mpc.md).
+services:
+
+  # --- pgSTAC: Postgres + PostGIS + the pgSTAC schema (published, pre-built image) -----------
+  database:
+    image: ghcr.io/stac-utils/pgstac:v0.9.11
+    container_name: fsd-mini-mpc-db
+    environment:
+      - POSTGRES_USER=username
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=postgis
+      - PGUSER=username
+      - PGPASSWORD=password
+      - PGDATABASE=postgis
+    ports:
+      - "${MY_DOCKER_IP:-127.0.0.1}:5439:5432"
+    command: postgres -N 500
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U username -d postgis"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    volumes:
+      - ./.pgdata:/var/lib/postgresql/data
+
+  # --- stac-fastapi-pgstac: the STAC API (search + CQL2) -------------------------------------
+  # No published "just pull it" image exists upstream (its own compose.yml builds from a full
+  # monorepo checkout) — dockerfiles/Dockerfile.stac-fastapi-pgstac installs the pinned stock
+  # PyPI package on a slim base and runs its unmodified entrypoint. See that file's header.
+  stac:
+    build:
+      context: .
+      dockerfile: dockerfiles/Dockerfile.stac-fastapi-pgstac
+    container_name: fsd-mini-mpc-stac
+    environment:
+      - PGUSER=username
+      - PGPASSWORD=password
+      - PGHOST=database
+      - PGPORT=5432
+      - PGDATABASE=postgis
+      - APP_HOST=0.0.0.0
+      - APP_PORT=8081
+      - ENVIRONMENT=local
+    ports:
+      - "${MY_DOCKER_IP:-127.0.0.1}:8081:8081"
+    depends_on:
+      database:
+        condition: service_healthy
+
+  # --- titiler-pgstac: the data/tiler API (register -> searchId -> XYZ mosaic tiles) ---------
+  # Same no-fork rationale; dockerfiles/Dockerfile.titiler-pgstac mirrors upstream's own
+  # gunicorn/uvicorn run command exactly, installing from PyPI instead of a source checkout.
+  raster:
+    build:
+      context: .
+      dockerfile: dockerfiles/Dockerfile.titiler-pgstac
+    container_name: fsd-mini-mpc-raster
+    environment:
+      - PGUSER=username
+      - PGPASSWORD=password
+      - PGHOST=database
+      - PGPORT=5432
+      - PGDATABASE=postgis
+      - HOST=0.0.0.0
+      - PORT=8082
+    ports:
+      - "${MY_DOCKER_IP:-127.0.0.1}:8082:8082"
+    depends_on:
+      database:
+        condition: service_healthy
+    volumes:
+      # bind-mount fsd's inference-output COGs into the container at a fixed path so GDAL can
+      # resolve the item hrefs `load_pgstac.py` rewrites to /data/<path-under-this-dir> (spec 30
+      # A2 — the one non-obvious wiring step; tiles 500 without it). This MUST be the exact same
+      # path you pass to `load_pgstac.py --outputs-dir` (default matches
+      # demos/E2E_AUSTRIA.md's output layout: model_outputs/cells/<window>/<cell>/output.tif).
+      - ${FSD_OUTPUTS_DIR:-../../tests/outputs/demo_e2e/model_outputs/cells}:/data:ro
+
+networks:
+  default:
+    name: fsd-mini-mpc-network
