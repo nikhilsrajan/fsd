@@ -41,11 +41,11 @@ redesign. `pytest -q` **234 passed, 3 skipped**, `ruff check src/ tests/` clean.
   streams cleanly over fsspec's `http` backend for signed MPC hrefs (may need `aiohttp`) — both
   surface naturally at the runbook's step 1/2.
 
-**→ NEXT:** Opus@high review pass (worktree above, or the merged diff once the user reviews/merges
-the branch), then the **user runs** `runbooks/32-mpc-baseline.md` (real MPC network, hotspot-OK —
-one tile, one band, two tiny COGs) and pastes back `_result_step2.json` + the step-3 spot-check.
-Nothing committed/merged/pushed this session (per CLAUDE.md, commit only on request) — the branch
-`spec32-mpc-implement` sits in the worktree, diffed against `030f6ac`.
+**→ NEXT:** Opus@high review pass on branch `spec32-mpc-implement` (commit `1cf1568`, worktree
+`.claude/worktrees/spec32-mpc-implement`, diffed against `030f6ac`) — Opus merges to `main` and
+pushes once review passes. Then the **user runs** `runbooks/32-mpc-baseline.md` (real MPC network,
+hotspot-OK — one tile, one band, two tiny COGs) and pastes back `_result_step2.json` + the step-3
+spot-check. Committed this session (user asked); not yet merged/pushed.
 
 ## PRIOR (2026-07-16) — STRATEGY PIVOT: MPC source + baseline harmonization → spec 32 SIGNED OFF (Opus@high); P1 split into two phases; new standing practice (spec cross-validation)
 
