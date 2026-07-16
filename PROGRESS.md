@@ -4,7 +4,50 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-16_
 
-## LATEST (2026-07-16) — STRATEGY PIVOT: MPC source + baseline harmonization → spec 32 SIGNED OFF (Opus@high); P1 split into two phases; new standing practice (spec cross-validation)
+## LATEST (2026-07-16) — spec 32 (MPC source + baseline harmonization) IMPLEMENTED (Sonnet@medium) → hand to Opus for review, then the user runs the runbook
+
+**Implemented `specs/32-mpc-source-baseline-harmonization.md`** (signed off earlier the same day)
+against baseline `030f6ac` on `main`, in an isolated worktree
+(`.claude/worktrees/spec32-mpc-implement`, branch `spec32-mpc-implement`). To the letter, no
+redesign. `pytest -q` **234 passed, 3 skipped**, `ruff check src/ tests/` clean.
+
+- **New source `sources/mpc.py`** — MPC S2 L2A discovery (`pystac_client` + `planetary_computer`
+  sign modifier, anonymous by default) and a **pure COG byte-copy** download (no `jp2->COG`
+  conversion, no convert-process-pool — MPC assets are already COG). Reuses CDSE's generic
+  `_finalize_catalog_gdf`/`_is_local_path`/`_roi_gdf` helpers (identical logic, no S3/CDSE
+  specifics). `api.download` gains `source: "cdse"|"mpc"` (default unchanged, `"cdse"`); `"mpc"`
+  does not require `creds`.
+- **New additive catalog column `boa_add_offset`** (`catalog/catalog.COLUMNS`) — the S2
+  processing-baseline reflectance offset (fixes correctness debt **#10** for MPC), derived from
+  `s2:processing_baseline` (**keyed on baseline, not date** — covers the reprocessed-pre-2022-date
+  trap). Back-compat: `TileCatalog.read`/`append` fill a missing column with `0` (old catalogs,
+  CDSE rows for now).
+- **`datacube.builder.flatten_catalog`** emits a per-band `boa_add_offset` (reflectance bands only,
+  `raster/images._is_reflectance`); **`build_datacube` applies it per source image** (new
+  `builder._apply_boa_offsets`, right after `images.load_images`, before `dst_crs`/reference/
+  resample/mosaic) via the new `raster/images.apply_boa_offset` op (`clip(DN+offset, 0, 65535)`,
+  nodata-safe). A build-time integration test proves a calendar window straddling the 2022-01-25
+  cutover harmonizes **before** the median (the exact #10 failure mode).
+- **New `[mpc]` extra** (`planetary-computer`); `runbooks/32-mpc-baseline.md` written (not run —
+  Claude never runs networked scripts): one MGRS tile (`s2grid=476da24`), band B04 only, two
+  acquisitions straddling the baseline cutover.
+- **Docs updated:** `CHANGES.md` (new top entry), `TODO.md` (#10 marked partially-done for MPC;
+  new #30–33: CDSE offset retrofit, Phase-2 stream-vs-copy fork, signed-URL re-sign, full
+  `download_resume` orchestration for MPC), `RECIPES.md` (MPC download recipe), `specs/31` banner
+  (§5 "stage-local-convert-put" flagged DELETED, retargeted to Phase 2 — not yet rewritten),
+  `specs/10` pointer (MPC is another first-class source through the same storage seam), this entry.
+- **Open items flagged for the runbook, not guessed in code** (per the spec): the live
+  `s2:processing_baseline`/`s2:mgrs_tile` STAC property names, and whether `fsd.storage.transfer`
+  streams cleanly over fsspec's `http` backend for signed MPC hrefs (may need `aiohttp`) — both
+  surface naturally at the runbook's step 1/2.
+
+**→ NEXT:** Opus@high review pass (worktree above, or the merged diff once the user reviews/merges
+the branch), then the **user runs** `runbooks/32-mpc-baseline.md` (real MPC network, hotspot-OK —
+one tile, one band, two tiny COGs) and pastes back `_result_step2.json` + the step-3 spot-check.
+Nothing committed/merged/pushed this session (per CLAUDE.md, commit only on request) — the branch
+`spec32-mpc-implement` sits in the worktree, diffed against `030f6ac`.
+
+## PRIOR (2026-07-16) — STRATEGY PIVOT: MPC source + baseline harmonization → spec 32 SIGNED OFF (Opus@high); P1 split into two phases; new standing practice (spec cross-validation)
 
 **The plan pivoted from "CDSE download-to-blob for P1" to a two-phase MPC-first approach** (agreed
 with the user via interview → grilling → doc cross-validation). Reasoning: MPC serves Sentinel-2

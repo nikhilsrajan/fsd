@@ -5,6 +5,11 @@ running download + datacube creation **on Azure at scale via Azure Batch, withou
 cloud lock-in** — is reachable *additively* from the v1 local core, never as a
 rewrite. **No Azure code ships in v1**; this spec defines the seams v1 must honor.
 
+> **Pointer (2026-07-16):** MPC (`sources/mpc.py`, spec 32) is another first-class source through
+> this same `fsd.storage` seam — its download is a pure `storage.transfer(signed_https, local)`
+> byte-copy (fsspec `http` -> local), no S3-specific transport. Its Phase-2 realization (streaming
+> MPC COGs in place on Azure vs copying to `rise`) is spec 31's retargeted scope.
+
 ## Principle
 
 Lock-in risk lives in two places: **where files are** and **what schedules

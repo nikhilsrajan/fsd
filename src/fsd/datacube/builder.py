@@ -27,6 +27,7 @@ from rasterio.crs import CRS
 from fsd import config
 from fsd.datacube import ops
 from fsd.raster import images
+from fsd.raster.images import _is_reflectance, apply_boa_offset
 from fsd.storage import fs
 
 _RASTER_EXTS = (".jp2", ".tif", ".tiff")
@@ -50,12 +51,18 @@ def flatten_catalog(catalog_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     `area_contribution` from `TileCatalog.filter`) into one row per raster band
     file — the band-flattened form `build_datacube` consumes.
 
-    Output cols: `id, filepath, band, timestamp, geometry, area_contribution`.
-    Non-raster files (e.g. `MTD_TL.xml`) are skipped; `band` = filename minus ext.
+    Output cols: `id, filepath, band, timestamp, geometry, area_contribution,
+    boa_add_offset`. Non-raster files (e.g. `MTD_TL.xml`) are skipped; `band` =
+    filename minus ext. `boa_add_offset` (spec 32) is the tile-row's additive
+    processing-baseline offset for reflectance bands (`_is_reflectance`), else 0
+    — SCL/masks are never harmonized. Missing column (older catalogs) defaults
+    to 0 for every band.
     """
     data = {k: [] for k in
-            ("id", "filepath", "band", "timestamp", "geometry", "area_contribution")}
+            ("id", "filepath", "band", "timestamp", "geometry", "area_contribution",
+             "boa_add_offset")}
     for _, row in catalog_gdf.iterrows():
+        tile_offset = row.get("boa_add_offset", 0) or 0
         for file in str(row["files"]).split(","):
             band = next((file[:-len(e)] for e in _RASTER_EXTS if file.endswith(e)),
                         None)
@@ -67,6 +74,7 @@ def flatten_catalog(catalog_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
             data["timestamp"].append(row["timestamp"])
             data["geometry"].append(row["geometry"])
             data["area_contribution"].append(row["area_contribution"])
+            data["boa_add_offset"].append(tile_offset if _is_reflectance(band) else 0)
     return gpd.GeoDataFrame(data=data, crs=catalog_gdf.crs)
 
 
@@ -137,6 +145,11 @@ def build_datacube(
             catalog_gdf=catalog_subset, shape_gdf=shape_gdf, nodata=nodata,
             njobs=njobs_load_images, write_read_log=write_read_log,
         )
+        # Harmonize the S2 processing-baseline offset (spec 32 D1/D2) per source
+        # image, HERE — before dst_crs/reference/resample/mosaic — so a calendar
+        # window straddling the baseline 04.00 cutover (2022-01-25) never medians
+        # unharmonized DN together (correctness debt #10).
+        _apply_boa_offsets(catalog_gdf, data_profile_list)
 
     # Collapse into a single UTM zone so rasterio.merge (single-CRS) can run.
     with _timed(timings, "dst_crs"):
@@ -362,6 +375,20 @@ def _load_images(catalog_gdf, shape_gdf, nodata, njobs=1, write_read_log=False):
                           for _, p in data_profile_list]
     catalog_gdf = catalog_gdf[catalog_gdf["image_index"] != -1]
     return catalog_gdf, data_profile_list, reads
+
+
+def _apply_boa_offsets(catalog_gdf, data_profile_list) -> None:
+    """Apply each row's `boa_add_offset` (spec 32) to its loaded image, in place.
+
+    `catalog_gdf` is post-filter (kept rows only), `image_index` still indexes
+    the full `data_profile_list`. Missing `boa_add_offset` column (older/CDSE
+    catalogs) is a no-op — every offset defaults to 0."""
+    if "boa_add_offset" not in catalog_gdf.columns:
+        return
+    for idx, offset in zip(catalog_gdf["image_index"], catalog_gdf["boa_add_offset"]):
+        offset = int(offset) if offset else 0
+        if offset:
+            data_profile_list[idx] = apply_boa_offset(*data_profile_list[idx], offset=offset)
 
 
 def _load_images_logged(filepaths, shape_gdf, nodata, product_ids, bands):

@@ -77,6 +77,36 @@ def test_build_datacube_end_to_end(tmp_path):
     assert md["geotiff_metadata"]["height"] == 4
 
 
+def test_build_datacube_harmonizes_boa_offset_before_median_mosaic(tmp_path):
+    """spec 32 #10 guard: a calendar window straddling the baseline-04.00 cutover
+    must align every image to the pre-baseline scale BEFORE the median, not
+    after — else the mosaic silently mixes incomparable reflectances."""
+    ts_old = pd.Timestamp("2021-06-01", tz="UTC")
+    ts_new = pd.Timestamp("2022-06-01", tz="UTC")
+    rows = []
+    for ts, tag, b04v, offset in [(ts_old, "old", 200, 0), (ts_new, "new", 1200, -1000)]:
+        p = tmp_path / f"{tag}_B04.tif"
+        _write_tile(p, np.full((4, 4), b04v, dtype=np.uint16))
+        rows.append({**_band_row(f"tile_{tag}", p, "B04", ts), "boa_add_offset": offset})
+        scl_p = tmp_path / f"{tag}_SCL.tif"
+        _write_tile(scl_p, np.full((4, 4), 4, dtype=np.uint16))  # 4 = vegetation, unmasked
+        rows.append({**_band_row(f"tile_{tag}", scl_p, "SCL", ts), "boa_add_offset": 0})
+    catalog = gpd.GeoDataFrame(rows, crs=CRS)
+    shape = gpd.GeoDataFrame({"geometry": [TILE_BOX]}, crs=CRS)
+    out = tmp_path / "cube"
+
+    builder.build_datacube(
+        catalog_subset=catalog, shape_gdf=shape,
+        startdate=datetime.datetime(2021, 1, 1), enddate=datetime.datetime(2023, 1, 1),
+        bands=["B04", "SCL"], mosaic_days=1000, scl_mask_classes=[8, 9],
+        export_folderpath=str(out), if_missing_files=None, reference_band="B04",
+    )
+    dc = fs.load_npy(str(out / "datacube.npy"))
+    assert dc.shape[0] == 1  # both dates land in the same (single) calendar window
+    # harmonized: 200 and 1200-1000=200 -> median 200; unharmonized would median to 700.
+    assert (dc[0, :, :, 0] == 200).all()
+
+
 def test_build_datacube_writes_timings_only_when_flagged(tmp_path):
     catalog, shape = _make_catalog(tmp_path)
     kw = dict(
@@ -154,6 +184,26 @@ def test_flatten_catalog_skips_non_raster(tmp_path):
     flat = builder.flatten_catalog(gdf)
     assert sorted(flat["band"]) == ["B04", "B08"]      # xml skipped
     assert flat["filepath"].iloc[0].endswith("B04.jp2")
+
+
+def test_flatten_catalog_boa_offset_exempts_non_reflectance_bands(tmp_path):
+    gdf = gpd.GeoDataFrame(
+        [{"id": "x", "local_folderpath": str(tmp_path), "timestamp": 0,
+          "files": "B04.tif,SCL.tif", "area_contribution": 50.0,
+          "boa_add_offset": -1000, "geometry": TILE_BOX}], crs=CRS,
+    )
+    flat = builder.flatten_catalog(gdf)
+    offsets = dict(zip(flat["band"], flat["boa_add_offset"]))
+    assert offsets == {"B04": -1000, "SCL": 0}
+
+
+def test_flatten_catalog_boa_offset_defaults_to_zero_when_column_missing(tmp_path):
+    gdf = gpd.GeoDataFrame(
+        [{"id": "x", "local_folderpath": str(tmp_path), "timestamp": 0,
+          "files": "B04.jp2", "area_contribution": 50.0, "geometry": TILE_BOX}], crs=CRS,
+    )
+    flat = builder.flatten_catalog(gdf)
+    assert flat["boa_add_offset"].iloc[0] == 0
 
 
 def test_get_dst_crs_picks_max_mean_area():

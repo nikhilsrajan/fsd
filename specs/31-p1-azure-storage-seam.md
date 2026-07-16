@@ -30,6 +30,16 @@
 >   it identically — **no live credential object crosses a process boundary**. Same idiom `task.py`
 >   already uses for `FSD_WRITE_TIMINGS`.
 >
+> **RETARGETED to Phase 2 (2026-07-16, spec 32 sign-off).** The plan pivoted to a two-phase,
+> MPC-first approach (`specs/32-mpc-source-baseline-harmonization.md`): Phase 1 is MPC (local,
+> already-COG, no conversion); this spec is now **Phase 2** (Azure at scale). Its **§5
+> "Download straight to blob — stage-local-convert-put (D3)" is DELETED** — that whole
+> CDSE-jp2→COG→blob dance is exactly the problem MPC (already-COG on Azure) removes. Not yet
+> rewritten to reflect that (a future spec-31-revision session's job); flagged here so nobody
+> implements §5 as drafted. The storage-seam mechanics elsewhere in this spec (fsspec-native
+> config, `to_vsi`, one `rio_open` wrapper, `DefaultAzureCredential` for `rise` writes) still
+> stand. Still DRAFT, not signed off.
+>
 > **Spec-first (spec 24):** this session writes the spec only. Implementation lands in a
 > **Sonnet@medium** session against the signed-off spec. The credentialed/networked demo is a
 > **runbook** the *user* runs (Claude never runs adlfs/az/CDSE), pasting back `_result.json`.

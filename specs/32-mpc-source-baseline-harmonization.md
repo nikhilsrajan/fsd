@@ -1,8 +1,10 @@
 # Spec 32 — MPC source (Sentinel-2 L2A) + processing-baseline harmonization
 
-> **Status: SIGNED OFF (2026-07-16) — awaiting implementation.** Opus@high (interview → grill →
-> cross-validate → spec). Implementation lands in a **Sonnet@medium** session against this spec
-> (spec 24). A new **data source**: Microsoft Planetary Computer (MPC) Sentinel-2 L2A, whose assets
+> **Status: IMPLEMENTED (Sonnet@medium, 2026-07-16) — awaiting Opus review + the user-run
+> runbook.** `pytest -q` 234 passed / 3 skipped, `ruff check src/ tests/` clean. Implemented to
+> the letter (no redesign); see `CHANGES.md` for the exact landing. Originally: **SIGNED OFF
+> (2026-07-16).** Opus@high (interview → grill → cross-validate → spec). A new **data source**:
+> Microsoft Planetary Computer (MPC) Sentinel-2 L2A, whose assets
 > are **already COGs on Azure** — so this source has **no `jp2→COG` conversion** (unlike CDSE, spec
 > 14/25), which is the point. It also fixes **correctness debt #10** (the S2 processing-baseline
 > radiometric offset that silently mixes incomparable reflectances across years) at the right layer.

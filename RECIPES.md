@@ -89,6 +89,29 @@ Full-year, multi-CRS Sentinel-2 L2A download (the `satellite_benchmark/` archive
 Script: `fsd/benchmarks/download_year_ethiopia.py`. Report:
 `benchmarks/download_report_2018_ethiopia.md`.
 
+## Download (MPC → local COG archive, spec 32)
+
+Microsoft Planetary Computer S2 L2A: anonymous discovery + a **pure COG byte-copy** download (no
+`jp2->COG` conversion — MPC assets are already COG). Install the extra once: `pip install -e ".[mpc]"`.
+
+```python
+import datetime
+import geopandas as gpd
+from fsd.catalog.catalog import TileCatalog
+from fsd.sources import mpc
+
+roi = gpd.read_file("shapefiles/s2grid=476da24.geojson")
+catalog = TileCatalog("imagery/catalog.parquet")
+result = mpc.download(
+    roi, datetime.datetime(2021, 11, 1), datetime.datetime(2022, 3, 1),
+    ["B04"], "imagery", catalog, max_tiles=10, max_cloudcover=60.0, progress=True,
+)
+# catalog rows carry boa_add_offset: 0 pre-baseline-04.00, -1000 at/after 2022-01-25
+```
+Or via the high-level API: `fsd.download(roi, start, end, ["B04"], "imagery", source="mpc",
+max_tiles=10)` (no `creds` needed). Full runbook (real network, one tile/band):
+`runbooks/32-mpc-baseline.md`.
+
 ## Datacube build
 
 - **Full-ROI year benchmark (single big ROI, `s2grid=165bca4`):**

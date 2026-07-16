@@ -55,6 +55,16 @@ CDSE_S3_REGION = "default"
 # https://documentation.dataspace.copernicus.eu/Quotas.html
 MAX_CONCURRENT_S3 = 4
 
+# --- MPC (Microsoft Planetary Computer) endpoints (spec 32) -------------------
+# STAC catalog (discovery). Anonymous by default (optional PC_SDK_SUBSCRIPTION_KEY
+# env var, read by the `planetary-computer` package itself, raises rate limits).
+# Assets are already COG on Azure — download is a pure byte-copy, no conversion.
+MPC_STAC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1"
+
+# Phase-1 default concurrency for the (no-convert) MPC transfer pool — a single
+# tile/band runbook is trivial either way; kept small and hotspot-friendly.
+MPC_MAX_CONCURRENT = 4
+
 # S3 transport timeouts (seconds). Without these a stalled connection hangs a worker
 # forever during a flaky CDSE window (BUG-001); with them it raises and our retry
 # layer handles it. read_timeout is per-socket-read, not total transfer time.

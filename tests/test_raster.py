@@ -65,6 +65,29 @@ def test_reproject_same_crs_is_noop():
     assert out_profile is profile
 
 
+def test_apply_boa_offset_zero_is_passthrough():
+    data, profile = _synthetic()
+    out_data, out_profile = images.apply_boa_offset(data, profile, offset=0)
+    assert out_data is data
+    assert out_profile is profile
+
+
+def test_apply_boa_offset_shifts_and_clamps_uint16_no_underflow():
+    data = np.array([[[1500, 500, 0]]], dtype=np.uint16)  # (1, 1, 3)
+    _, profile = _synthetic()
+    out_data, out_profile = images.apply_boa_offset(data, profile, offset=-1000)
+    assert out_data.dtype == np.uint16
+    assert list(out_data[0, 0]) == [500, 0, 0]  # 1500-1000=500; 500-1000 clamps to 0; nodata stays 0
+    assert out_profile is profile  # profile untouched
+
+
+def test_is_reflectance_exempts_non_reflectance_bands():
+    for band in ("B01", "B04", "B08", "B8A", "B12"):
+        assert images._is_reflectance(band) is True
+    for band in ("SCL", "AOT", "WVP", "visual"):
+        assert images._is_reflectance(band) is False
+
+
 def test_resample_by_ref_meta_matches_ref_grid():
     data, profile = _synthetic(width=10, height=10, res=10.0)
     # Coarser reference covering the same extent: 5x5 @ 20 m.

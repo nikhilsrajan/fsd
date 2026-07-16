@@ -4,6 +4,34 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## MPC source + S2 processing-baseline harmonization (spec 32, 2026-07-16)
+- **New source `sources/mpc.py`** — Sentinel-2 L2A discovery + download against Microsoft
+  Planetary Computer (MPC), signed via the official `planetary-computer` package (new `[mpc]`
+  extra), anonymous by default. Unlike CDSE (spec 01/14/25), MPC assets are **already COG on
+  Azure**, so `mpc.download` is a **pure byte-copy** (`fsd.storage.transfer`, signed HTTPS ->
+  local) — no `jp2->COG` conversion, no convert-process-pool. `api.download` gains
+  `source: "cdse" | "mpc"` (default `"cdse"`, unchanged); `source="mpc"` does not require `creds`.
+- **New catalog column `boa_add_offset`** (`catalog/catalog.COLUMNS`, before `geometry`) — the
+  additive S2 processing-baseline reflectance offset (fixes correctness debt #10: baseline 04.00,
+  introduced 2022-01-25, adds `BOA_ADD_OFFSET=-1000` to L2A reflectance DN; MPC serves raw,
+  unharmonized DN and does not expose the offset in STAC `raster:bands`, so it's derived from the
+  item property `s2:processing_baseline`, **keyed on baseline not acquisition date** — MPC
+  reprocessing can stamp a >=04.00 baseline on a pre-2022 date). **Backward-compatible**:
+  `TileCatalog.read`/`append` fill a missing/absent column with `0` — old catalogs and CDSE rows
+  (which don't yet set it, see `TODO.md`) are unaffected.
+- **`datacube.builder.flatten_catalog`** now emits a per-band `boa_add_offset` output column:
+  the tile-row's offset for reflectance bands (`B01`…`B12`/`B8A`), `0` for non-reflectance
+  (`SCL`/`AOT`/`WVP`/`visual`/…) — `raster/images._is_reflectance`. **`build_datacube` applies the
+  offset per source image** (new `builder._apply_boa_offsets`, called right after
+  `images.load_images` returns, before `dst_crs`/reference/resample/mosaic) via the new
+  `raster/images.apply_boa_offset(data, profile, *, offset)` op
+  (`clip(DN + offset, 0, 65535)`, dtype-preserved, nodata-safe). This guarantees a calendar window
+  straddling the baseline cutover is harmonized to one scale **before** `median_mosaic` collapses
+  it — a datacube-level op would be too late (the median would already have mixed baselines).
+- **Not yet done** (see `TODO.md`): CDSE rows still default `boa_add_offset=0` unconditionally
+  (wiring CDSE's own baseline capture is a follow-on); MPC stays local-download-only (Phase 2 /
+  spec 31 decides stream-in-place vs copy-to-`rise`).
+
 ## flatten `coords.npy` reprojected to EPSG:4326 (TODO #16, 2026-07-15)
 - **`datacube.flatten` now emits `coords.npy` as `(lon, lat)` in EPSG:4326**, not raw per-cube
   easting/northing in the cube's native UTM CRS. Each cube's kept-pixel coords are reprojected

@@ -22,6 +22,7 @@ import functools
 import multiprocessing as mp
 import os
 import random
+import re
 import string
 
 import numpy as np
@@ -43,6 +44,7 @@ __all__ = [
     "resample_by_ref_meta",
     "resample_by_ref",
     "merge_inplace",
+    "apply_boa_offset",
     # sequence runners
     "modify_image_inplace",
     "modify_images_inplace",
@@ -224,6 +226,29 @@ def resample_by_ref(
     return resample_by_ref_meta(
         data=data, profile=profile, ref_meta=ref_meta, resampling=resampling
     )
+
+
+_REFLECTANCE_BAND_RE = re.compile(r"^B\d")
+
+
+def _is_reflectance(band: str) -> bool:
+    """Whether `band` is an S2 reflectance band (`B01`…`B12`, `B8A`) vs a
+    non-reflectance product like `SCL`/`AOT`/`WVP`/`visual` (spec 32 D2/§3) —
+    the processing-baseline offset only applies to reflectance bands."""
+    return bool(_REFLECTANCE_BAND_RE.match(band)) or band == "B8A"
+
+
+def apply_boa_offset(
+    data: np.ndarray, profile: dict, *, offset: int
+) -> tuple[np.ndarray, dict]:
+    """Shift reflectance DN by an additive S2 processing-baseline offset (spec 32
+    D2): `clip(DN + offset, 0, 65535)`, dtype preserved. `offset=0` is a no-op
+    passthrough. Nodata (0) with `offset=-1000` clips to 0 (stays nodata,
+    order-independent of when this runs relative to masking)."""
+    if offset == 0:
+        return data, profile
+    out = np.clip(data.astype(np.int32) + offset, 0, 65535).astype(data.dtype)
+    return out, profile
 
 
 def merge_inplace(data_profile_list, nodata=None) -> tuple[np.ndarray, dict]:

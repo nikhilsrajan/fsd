@@ -3,7 +3,9 @@
 Spec: specs/02-catalog.md. GeoParquet, read/written via fsd.storage.
 
 Columns: id (unique), satellite, timestamp (UTC), s3url, local_folderpath,
-files (comma-joined band filenames), cloud_cover, geometry (EPSG:4326).
+files (comma-joined band filenames), cloud_cover, boa_add_offset (additive S2
+processing-baseline offset, spec 32; 0 for CDSE rows and old catalogs),
+geometry (EPSG:4326).
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ COLUMNS = [
     "local_folderpath",
     "files",
     "cloud_cover",
+    "boa_add_offset",
     "geometry",
 ]
 
@@ -56,6 +59,10 @@ class TileCatalog:
         new = gpd.GeoDataFrame(rows, crs=CRS)
         # Normalize timestamp to tz-aware UTC for a stable on-disk dtype.
         new["timestamp"] = pd.to_datetime(new["timestamp"], utc=True)
+        # boa_add_offset is additive (spec 32); rows from a source that doesn't set
+        # it (CDSE, for now) default to 0 rather than fail column selection below.
+        if "boa_add_offset" not in new.columns:
+            new["boa_add_offset"] = 0
 
         if fs.exists(self.filepath):
             existing = self.read()
@@ -78,9 +85,15 @@ class TileCatalog:
         fs.write_parquet(self.filepath, out)
 
     def read(self) -> gpd.GeoDataFrame:
-        """Return the full catalog as a GeoDataFrame."""
+        """Return the full catalog as a GeoDataFrame.
+
+        Back-compat (spec 32): a catalog written before `boa_add_offset` existed
+        gets the column filled with 0 (no processing-baseline offset applied).
+        """
         gdf = fs.read_parquet(self.filepath)
         gdf["timestamp"] = pd.to_datetime(gdf["timestamp"], utc=True)
+        if "boa_add_offset" not in gdf.columns:
+            gdf["boa_add_offset"] = 0
         return gdf
 
     def to_stac(self, dst_folderpath: str, **kwargs) -> str:

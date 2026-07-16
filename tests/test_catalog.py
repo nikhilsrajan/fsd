@@ -131,3 +131,45 @@ def test_append_empty_is_noop(tmp_path):
     from fsd.storage import fs
 
     assert not fs.exists(cat.filepath)
+
+
+# --- boa_add_offset (spec 32) --------------------------------------------------
+
+
+def test_append_rows_without_boa_add_offset_default_to_zero(tmp_path):
+    # CDSE-shaped rows (no boa_add_offset key) must not KeyError on write.
+    cat = TileCatalog(str(tmp_path / "catalog.parquet"))
+    cat.append([_row("t1", "2024-08-01T10:00:00Z", "B02.jp2", _box(0, 0, 1, 1))])
+    gdf = cat.read()
+    assert gdf["boa_add_offset"].iloc[0] == 0
+
+
+def test_boa_add_offset_round_trips(tmp_path):
+    cat = TileCatalog(str(tmp_path / "catalog.parquet"))
+    cat.append([
+        _row("t1", "2024-08-01T10:00:00Z", "B04.tif", _box(0, 0, 1, 1),
+             boa_add_offset=-1000),
+    ])
+    gdf = cat.read()
+    assert gdf.loc[gdf["id"] == "t1", "boa_add_offset"].iloc[0] == -1000
+
+
+def test_read_fills_missing_boa_add_offset_column(tmp_path):
+    # Simulate an old catalog written before the column existed: write directly,
+    # bypassing TileCatalog.append's own back-compat fill.
+    import geopandas as gpd
+    import pandas as pd
+
+    from fsd.catalog.catalog import COLUMNS
+    from fsd.storage import fs
+
+    old_cols = [c for c in COLUMNS if c != "boa_add_offset"]
+    row = _row("t1", "2024-08-01T10:00:00Z", "B02.jp2", _box(0, 0, 1, 1))
+    gdf = gpd.GeoDataFrame([row], geometry="geometry", crs="EPSG:4326")
+    gdf["timestamp"] = pd.to_datetime(gdf["timestamp"], utc=True)
+    gdf = gdf[old_cols]
+    fp = str(tmp_path / "old_catalog.parquet")
+    fs.write_parquet(fp, gdf)
+
+    read_back = TileCatalog(fp).read()
+    assert read_back["boa_add_offset"].iloc[0] == 0

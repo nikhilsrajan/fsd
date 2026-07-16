@@ -39,6 +39,7 @@ from fsd.model.features import resolve_aggregate as _resolve_aggregate
 from fsd.raster.cog import to_cog as _to_cog
 from fsd.sources.cdse import CdseCredentials
 from fsd.sources.cdse import download as _cdse_download
+from fsd.sources.mpc import download as _mpc_download
 from fsd.storage import fs
 from fsd.workflows import create_datacube as _create_datacube
 
@@ -174,8 +175,9 @@ def download(
     enddate: datetime.datetime,
     bands: list[str],
     dst_folderpath: str,
-    creds: CdseCredentials,
+    creds: CdseCredentials | None = None,
     *,
+    source: str = "cdse",
     max_tiles: int,
     max_cloudcover: float | None = None,
     cog: bool = True,
@@ -185,24 +187,35 @@ def download(
     """Fetch S2 L2A tiles for the ROI/date range into `dst_folderpath`, build/append its
     TileCatalog, and return the catalog filepath (feed it to `create_training_data`).
 
-    Thin wrapper over `sources.cdse.download`. Preflighted. `storage` is a seam (local only
-    in P0). See specs/16.
+    `source` (spec 32): `"cdse"` (default) wraps `sources.cdse.download` and requires
+    `creds`; `"mpc"` wraps `sources.mpc.download` (Microsoft Planetary Computer,
+    anonymous by default — `creds` is not required and `cog` is ignored, MPC assets
+    are already COG). Preflighted. `storage` is a seam (local only in P0). See specs/16.
     """
     errs = _check_local_seams("local", storage) + _check_window(startdate, enddate, 20, bands)
+    if source not in ("cdse", "mpc"):
+        errs.append(f"source={source!r} must be one of 'cdse', 'mpc'.")
     if max_tiles < 1:
         errs.append(f"max_tiles ({max_tiles}) must be >= 1.")
-    if creds is None:
-        errs.append("creds (CdseCredentials) required for download.")
+    if source == "cdse" and creds is None:
+        errs.append("creds (CdseCredentials) required for source='cdse'.")
     _raise_preflight(errs)
 
     fs.makedirs(dst_folderpath)
     catalog_filepath = os.path.join(dst_folderpath, "catalog.parquet")
     catalog = TileCatalog(catalog_filepath)
-    _cdse_download(
-        roi=roi, startdate=startdate, enddate=enddate, bands=bands,
-        root_folderpath=dst_folderpath, catalog=catalog, creds=creds,
-        max_tiles=max_tiles, max_cloudcover=max_cloudcover, cog=cog, progress=progress,
-    )
+    if source == "mpc":
+        _mpc_download(
+            roi=roi, startdate=startdate, enddate=enddate, bands=bands,
+            root_folderpath=dst_folderpath, catalog=catalog,
+            max_tiles=max_tiles, max_cloudcover=max_cloudcover, progress=progress,
+        )
+    else:
+        _cdse_download(
+            roi=roi, startdate=startdate, enddate=enddate, bands=bands,
+            root_folderpath=dst_folderpath, catalog=catalog, creds=creds,
+            max_tiles=max_tiles, max_cloudcover=max_cloudcover, cog=cog, progress=progress,
+        )
     return catalog_filepath
 
 
