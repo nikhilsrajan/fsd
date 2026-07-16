@@ -54,8 +54,60 @@ replaced the vague check with the A/B above.
 - **Pin `planetary-computer`** — the spec's open item; the resolved version is now observable from
   the runbook's install.
 
-**Uncommitted** (no commit requested): runbook v2, spec 32 §Tests correction + banner, TODO #34–36,
-this entry.
+**All committed + pushed** — `main` @ `8d91510`, in sync with `origin`. Spec 32's last open item
+closed too: **`planetary-computer>=1,<2`** pinned (the runbook's install resolved **1.0.0**, so the
+bound came from a verified fact, not a guess; verified it accepts 1.0.0/1.x and rejects 0.9.0/2.0.0).
+Uncommitted WIP, deliberately untouched: the `TODO.md` item-#26 reflow + the two notebooks.
+
+---
+
+## → NEXT (decided 2026-07-16): **spec 33 = TODO #34 (MPC reprocessing dedup), THEN spec 31 (Phase 2 Azure)**
+
+**Sequence: Opus@high writes spec 33 → sign-off → Sonnet@medium implements → then spec 31.**
+Per spec 24 / CLAUDE.md this is **spec-first**: #34 is *not* a "just fix it" task — it carries real
+design forks (below), so it gets a spec before any implementation.
+
+**Why #34 first:** its own note says *do it before any at-scale MPC download* — and Phase 2 **is**
+that download. A dedup bug multiplies byte cost exactly when bytes start to matter.
+
+**Spec 33's open design questions (the reason it needs a spec, not a patch):**
+1. **Where does dedup live?** `sources.cdse._finalize_catalog_gdf` is **shared** with the MPC path
+   (spec 32 reuses it) — fixing it there silently changes **CDSE** behavior too; MPC-only avoids
+   that but duplicates logic. Pick deliberately.
+2. **The key `(sensing_time, mgrs_tile)` is not available today.** The catalog has **no `mgrs_tile`
+   column** (`catalog.COLUMNS`); `builder._mgrs_tile` parses it from the product id instead. So this
+   needs either a new catalog column or id-parsing — and it would give **`mpc._mgrs_tile_from_item`
+   its first real caller** (currently dead code, flagged in the spec-32 review banner).
+3. **Which copy wins?** "Latest processing date" — parse the item id's last field, or is there a
+   STAC property carrying it? **Cross-validate against a live item; don't assume.**
+4. **Does CDSE have the same duplication?** Unknown — and the answer changes fork (1).
+5. **Existing artifacts:** `tests/outputs/mpc_baseline/` already holds 9 rows including the
+   duplicate pair — does dedup apply on read, on append, or only at query?
+
+**The evidence (from the spec-32 runbook run, 2026-07-16):** MPC returned **two items for one
+acquisition** — `S2B_MSIL2A_20220301T100029_R122_T33UWP_20220303T182540` (original) and
+`..._20240604T180322` (2024 reprocessing): same sensing time + MGRS tile, different item ids, so
+`_finalize_catalog_gdf`'s **id**-uniqueness assert passes. Both downloaded (**224 + 272 MB**), both
+catalogued; `_stack_datacube` then merges two copies of one scene with an arbitrary tie-break
+(`dst_crs`-native, then `image_index`). **Not radiometrically wrong** — spec 32 offsets each
+processing on its own baseline before the merge — but wasted bytes + a silent arbitrary pick.
+
+**Then spec 31 (Phase 2, Azure at scale) — the north star.** Status: **DRAFT, awaiting sign-off**,
+already **de-risked by a green access probe** (`runbooks/31-p1-access-probe.md`, 2026-07-15:
+`az login` done, personal identity has **Storage Blob Data Contributor**, adlfs
+`DefaultAzureCredential` round-trips, GDAL 3.10.3 opens via `/vsiadls/` **and** `/vsiaz/`).
+⚠️ **The 2026-07-15 diagnostic's "P1 blocked on user" is STALE — that blocker cleared.** The rewrite
+must: (a) rewrite **§5**, flagged deleted/retargeted when MPC removed the `jp2→COG` conversion
+problem but never actually rewritten; (b) **decide TODO #31's stream-in-place (`/vsicurl`) vs
+copy-to-`rise` fork** — spec 32 explicitly deferred it to *this* Phase-1→2 boundary, which is now;
+(c) note that **TODO #36** (CDSE-vs-MPC speed) becomes answerable here, since a local measurement is
+link-bound and doesn't generalize (TODO #24's precedent). The **rslearn Plan B/C call does not gate
+this** — the comparison concluded **scale-out is ours regardless** ([[fsd-rslearn-comparison]]).
+Concrete `rise` names/IDs live **only** in `../P1_AZURE_SETUP.md` + `../AZURE_INFRA_PRIVATE.md`
+(workspace root, never in the public repo).
+
+**Parked, named so they don't get re-derived:** #35 (optional SCL — own spec; gates #11's SCL-less
+CHIRPS/ERA5), #36 (source speed — parked by the user, confounds recorded), rslearn Plan B/C.
 
 ### Previous entry (spec 32 runbook v1 run — step 3 crash + diagnosis)
 
