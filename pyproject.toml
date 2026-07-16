@@ -46,7 +46,14 @@ azure = [          # Phase 2, not used in v1 code
     "adlfs",       # fsspec Azure Blob backend
 ]
 mpc = [            # MPC source (spec 32): Microsoft Planetary Computer signing
-    "planetary-computer",   # official signing package (pc.sign_inplace)
+    # Official signing package. We call `pc.sign_inplace` (sources/mpc.py) as the
+    # pystac_client Client modifier — spec 32 D4. Pinned to the major we validated
+    # against real MPC traffic (1.0.0, runbook 32 v2, 2026-07-16); <2 guards the next
+    # major, which is where that API is allowed to break. Same discipline as
+    # rio-tiler>=6,<8 below. Unbounded, this breaks on a FRESH install (new dev, CI,
+    # an Azure Batch node) long after the change that caused it — never on a machine
+    # that already has it.
+    "planetary-computer>=1,<2",
 ]
 titiler = [        # P5 serving validation (spec 29 Tier 1; grows for Tier 2). NOT fsd core.
     "rio-tiler>=6,<8",       # the COG tile read + render (the pre-styled route)

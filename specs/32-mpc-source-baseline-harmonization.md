@@ -313,8 +313,14 @@ Per-source credit — **exactly what each reliable source contributed to a decis
 
 - **Exact STAC keys on a live MPC item** — verify `s2:processing_baseline` and `s2:mgrs_tile`
   property names against a real item (the runbook's first download naturally surfaces them).
-- **`planetary-computer` signing API** — `pc.sign_inplace` as a `Client(..., modifier=…)` vs signing
-  items post-search; pick one and pin the version (mirror the rio-tiler/pin discipline).
+- ~~**`planetary-computer` signing API** — `pc.sign_inplace` as a `Client(..., modifier=…)` vs signing
+  items post-search; pick one and pin the version (mirror the rio-tiler/pin discipline).~~
+  ✅ **RESOLVED (2026-07-16).** `pc.sign_inplace` as the `Client(..., modifier=…)` modifier
+  (`sources/mpc.py::_search_items`), **validated against real MPC traffic** by runbook 32 v2. Version
+  **pinned `planetary-computer>=1,<2`** — the runbook's install resolved **1.0.0**, so the bound is
+  set from a verified fact rather than a guess (that was why the pin was deliberately left open at
+  code review). `<2` guards the next major, where `sign_inplace` would be allowed to change; mirrors
+  `rio-tiler>=6,<8`.
 - **`http` transport for `transfer`** — confirm `storage.transfer(signed_https, local)` streams via
   the fsspec `http` backend cleanly (large-file streaming, no full in-memory buffer); if not, a
   `/vsicurl`-based or `requests`-stream `get` is the fallback.
