@@ -1,9 +1,24 @@
 # Spec 32 — MPC source (Sentinel-2 L2A) + processing-baseline harmonization
 
-> **Status: IMPLEMENTED (Sonnet@medium, 2026-07-16) — awaiting Opus review + the user-run
-> runbook.** `pytest -q` 234 passed / 3 skipped, `ruff check src/ tests/` clean. Implemented to
-> the letter (no redesign); see `CHANGES.md` for the exact landing. Originally: **SIGNED OFF
-> (2026-07-16).** Opus@high (interview → grill → cross-validate → spec). A new **data source**:
+> **Status: REVIEWED + MERGED (Opus@high, 2026-07-16) — verdict PASS, no code changes required;
+> awaiting only the user-run runbook.** Merged to `main` (fast-forward, `1cf1568`+`0da4d15`).
+> Re-verified independently at review: `pytest -q` **234 passed / 3 skipped**, `ruff check
+> src/ tests/` clean. **The #10 guard test is not vacuous** — mutation-tested: removing the
+> `_apply_boa_offsets` call makes `test_build_datacube_harmonizes_boa_offset_before_median_mosaic`
+> fail; and applying the offset *after* the median would yield `clip(median(200,1200)−1000)=0`,
+> not the asserted 200. Ordering (D1/D2), baseline-not-date keying (D3), band exemption,
+> catalog back-compat, and `api.download` positional back-compat all confirmed against the spec.
+> **Three minor non-blocking notes** (deliberately not fixed — logged, not silently redesigned):
+> (1) `sources/mpc._mgrs_tile_from_item` is **dead code** — defined + unit-tested but never called
+> (the catalog has no `mgrs_tile` column; `builder._mgrs_tile` derives it from the product id
+> instead); harmless, kept for the Phase-2 caller the spec's §1 implies. (2) The reused
+> `cdse._finalize_catalog_gdf` raises a **CDSE-worded** message ("CDSE returned non-unique tile
+> ids") reachable from the MPC path — cosmetic only (message not asserted anywhere; MPC item ids
+> are unique). (3) **`planetary-computer` is unpinned** in the `[mpc]` extra, whereas this spec's
+> "Open items" asked to *pin the version* (cf. the `rio-tiler>=6,<8` discipline) — best resolved
+> with real data: the runbook's step-1 `pip install -e ".[dev,mpc]"` reports the resolved version;
+> pin it then. Implemented to the letter (no redesign); see `CHANGES.md` for the exact landing.
+> Originally: **SIGNED OFF (2026-07-16).** Opus@high (interview → grill → cross-validate → spec). A new **data source**:
 > Microsoft Planetary Computer (MPC) Sentinel-2 L2A, whose assets
 > are **already COGs on Azure** — so this source has **no `jp2→COG` conversion** (unlike CDSE, spec
 > 14/25), which is the point. It also fixes **correctness debt #10** (the S2 processing-baseline

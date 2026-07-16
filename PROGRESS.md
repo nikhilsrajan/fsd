@@ -4,7 +4,40 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-16_
 
-## LATEST (2026-07-16) — spec 32 (MPC source + baseline harmonization) IMPLEMENTED (Sonnet@medium) → hand to Opus for review, then the user runs the runbook
+## LATEST (2026-07-16) — spec 32 REVIEWED (Opus@high): PASS, merged to `main` + pushed → **next: the user runs `runbooks/32-mpc-baseline.md`**
+
+**Review verdict: PASS — no code changes required.** Reviewed the spec-32 implementation
+(`1cf1568` + `0da4d15`) against the signed-off spec, then **fast-forward merged
+`spec32-mpc-implement` → `main`** and pushed to `origin/main`; the worktree was removed.
+
+- **Independently re-verified** the implementer's claims (not taken on trust): `pytest -q` **234
+  passed, 3 skipped**; `ruff check src/ tests/` clean. (Note for future sessions: the `.venv`
+  editable install points at **main's** `src/`, so running a worktree's tests needs
+  `PYTHONPATH=src` from inside the worktree — otherwise it silently imports the wrong `fsd`.)
+- **The #10 guard test is real, not vacuous** — confirmed by mutation: deleting the
+  `_apply_boa_offsets` call makes `test_build_datacube_harmonizes_boa_offset_before_median_mosaic`
+  fail (restored immediately). Offset-after-median would give `clip(median(200,1200)−1000)=0` ≠ 200.
+- **Confirmed against the spec:** D1/D2 ordering (offset applied right after `load_images`, before
+  `dst_crs`/reference/resample/`median_mosaic`); D3 keys on `s2:processing_baseline`, not
+  `item.datetime`, and **raises** on a missing baseline; `_is_reflectance` matches `^B\d`/`B8A` and
+  exempts SCL/AOT/WVP/visual; catalog back-compat fills 0 on both `read` and `append`;
+  `api.download`'s `creds` relaxation stays positionally back-compatible and still requires creds
+  for `source="cdse"`; no out-of-scope creep (no Azure code, CDSE offset retrofit correctly left
+  as TODO #30).
+- **A subtle trap the implementation avoided:** rows dropped by `_load_images` get
+  `image_index = -1` and are filtered out *before* `_apply_boa_offsets` iterates, so an unreadable
+  image can never cause a `data_profile_list[-1]` mis-write.
+- **Three minor, non-blocking notes** (logged in spec 32's banner, not fixed — none affect
+  correctness): dead `mpc._mgrs_tile_from_item`; a CDSE-worded error message reachable from the MPC
+  path via the reused `_finalize_catalog_gdf`; and **`planetary-computer` left unpinned** though the
+  spec's open items asked to pin it — **pin it after the runbook's step-1 install reports the
+  resolved version** (the one small follow-up worth doing).
+- **Merge hygiene:** main's unrelated WIP (the `TODO.md` reflow + the two notebooks) was stashed
+  before the merge and popped after — `TODO.md` auto-merged with **no conflict**, and both sides
+  survived (reflow of item #26 intact; committed #30–33 + the #10 update present). The reflow and
+  notebooks remain **uncommitted WIP**, per CLAUDE.md.
+
+### Previous entry (Sonnet@medium implementation of spec 32)
 
 **Implemented `specs/32-mpc-source-baseline-harmonization.md`** (signed off earlier the same day)
 against baseline `030f6ac` on `main`, in an isolated worktree
