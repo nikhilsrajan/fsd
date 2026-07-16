@@ -4,7 +4,7 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-16_
 
-## LATEST (2026-07-16) — ✅ spec 32 DONE: runbook v2 FULLY VALIDATED on real MPC data. **Correctness debt #10 is fixed for MPC and proven end to end.**
+## PRIOR (2026-07-16) — ✅ spec 32 DONE: runbook v2 FULLY VALIDATED on real MPC data. **Correctness debt #10 is fixed for MPC and proven end to end.**
 
 **All three steps PASS.** Verified independently from the artifacts on disk (not from the `pass`
 flag — v1 proved that flag could lie):
@@ -61,36 +61,55 @@ Uncommitted WIP, deliberately untouched: the `TODO.md` item-#26 reflow + the two
 
 ---
 
-## → NEXT (decided 2026-07-16): **spec 33 = TODO #34 (MPC reprocessing dedup), THEN spec 31 (Phase 2 Azure)**
+## LATEST (2026-07-16) — ✅ spec 33 (MPC reprocessing dedup, TODO #34) SIGNED OFF (Opus@high) — hand to Sonnet@medium
 
-**Sequence: Opus@high writes spec 33 → sign-off → Sonnet@medium implements → then spec 31.**
-Per spec 24 / CLAUDE.md this is **spec-first**: #34 is *not* a "just fix it" task — it carries real
-design forks (below), so it gets a spec before any implementation.
+**`specs/33-mpc-reprocessing-dedup.md` SIGNED OFF.** Interview → grill → cross-validate (standing
+practice) → spec, per the handoff `/tmp/fsd-handoff-spec33-mpc-dedup.md`. **All 5 design forks
+resolved, no open items blocked sign-off:**
 
-**Why #34 first:** its own note says *do it before any at-scale MPC download* — and Phase 2 **is**
-that download. A dedup bug multiplies byte cost exactly when bytes start to matter.
+1. **Where dedup lives → MPC-only (`sources/mpc.py`), not shared `cdse._finalize_catalog_gdf`.**
+   Decided by researching Fork 4 first: CDSE has its **own**, structurally different multi-item
+   issue (ESA-confirmed datastrip-split near-duplicates that can carry legitimate different pixel
+   coverage/border artefacts) — a shared dedup rule risked silently dropping real CDSE data, so
+   CDSE stays untouched.
+2. **Key → in-memory `(item.datetime, mgrs_tile)`, no new catalog column.** Dedup runs on the raw
+   STAC item list before any catalog row exists (right after `_search_items`, before
+   `_items_to_gdf`), so `_mgrs_tile_from_item` (spec-32 dead code) gets its first real caller
+   in-memory only — no `catalog.COLUMNS` change, no back-compat migration.
+3. **Winner → latest `s2:generation_time`, NOT the item id's trailing field.** Reverses the
+   handoff's suspected id-string-parsing approach: a live MPC STAC query confirmed
+   `s2:generation_time` is a real, populated RFC-3339 property, while ESA's own SentiWiki
+   naming-convention page explicitly declines to guarantee the id's trailing "Product
+   Discriminator" field is monotonically increasing.
+4. **Does CDSE have the same duplication? Yes, but differently** (see #1) — CDSE's own mechanism
+   is catalogue-level deletion of old-baseline products, not a queryable "pick latest" property;
+   confirms the two providers' problems aren't the same fix.
+5. **Applied at discovery time** (both `query_catalog` and `download`, right after
+   `_search_items`) — the loser is never even queued for transfer, which is the actual byte
+   savings TODO #34 asked for. Existing test artifacts with a stale duplicate (e.g.
+   `tests/outputs/mpc_baseline/catalog.parquet`) are **not migrated** — discovery-time fix only,
+   explicitly out of scope.
 
-**Spec 33's open design questions (the reason it needs a spec, not a patch):**
-1. **Where does dedup live?** `sources.cdse._finalize_catalog_gdf` is **shared** with the MPC path
-   (spec 32 reuses it) — fixing it there silently changes **CDSE** behavior too; MPC-only avoids
-   that but duplicates logic. Pick deliberately.
-2. **The key `(sensing_time, mgrs_tile)` is not available today.** The catalog has **no `mgrs_tile`
-   column** (`catalog.COLUMNS`); `builder._mgrs_tile` parses it from the product id instead. So this
-   needs either a new catalog column or id-parsing — and it would give **`mpc._mgrs_tile_from_item`
-   its first real caller** (currently dead code, flagged in the spec-32 review banner).
-3. **Which copy wins?** "Latest processing date" — parse the item id's last field, or is there a
-   STAC property carrying it? **Cross-validate against a live item; don't assume.**
-4. **Does CDSE have the same duplication?** Unknown — and the answer changes fork (1).
-5. **Existing artifacts:** `tests/outputs/mpc_baseline/` already holds 9 rows including the
-   duplicate pair — does dedup apply on read, on append, or only at query?
+**Cross-validation** — full detail + per-source credit in the spec's own §"Best-practice
+alignment" + supporting file `specs/research-s2-reprocessing-dedup.md`: live MPC STAC item query,
+`stac-extensions/sentinel-2` + `stac-extensions/processing`, the CDSE community forum
+duplicate-products thread, CDSE's old-baseline-deletion notices, SentiWiki's S2 Products page,
+`stactools-packages/sentinel2` issues #130/#5, and `microsoft/PlanetaryComputer` discussion #275.
 
-**The evidence (from the spec-32 runbook run, 2026-07-16):** MPC returned **two items for one
-acquisition** — `S2B_MSIL2A_20220301T100029_R122_T33UWP_20220303T182540` (original) and
-`..._20240604T180322` (2024 reprocessing): same sensing time + MGRS tile, different item ids, so
-`_finalize_catalog_gdf`'s **id**-uniqueness assert passes. Both downloaded (**224 + 272 MB**), both
-catalogued; `_stack_datacube` then merges two copies of one scene with an arbitrary tie-break
-(`dst_crs`-native, then `image_index`). **Not radiometrically wrong** — spec 32 offsets each
-processing on its own baseline before the merge — but wasted bytes + a silent arbitrary pick.
+**No runbook needed** — pure in-memory filter over STAC search results, fully synthetic-testable
+(duck-typed fake items matching `tests/test_mpc.py`'s existing fixtures); no new network behavior.
+
+**→ NEXT:** hand to a **Sonnet@medium** session to implement `specs/33-mpc-reprocessing-dedup.md`
+(new `_generation_time` + `_dedupe_reprocessed_items` in `sources/mpc.py`, one call-site edit each
+in `query_catalog`/`download`, tests per its §Tests, living-doc updates per its §Deliverables).
+Then Opus review, then **spec 31** (Phase 2, Azure at scale) — the task after this one (unchanged
+from the prior entry below). `TODO.md` #34 updated to point at the signed-off spec; nothing
+committed this session (user asked only for the TODO/PROGRESS update, not a commit — per
+CLAUDE.md's "commit only when asked").
+
+---
+
+## PRIOR (2026-07-16) — spec 33 scoped: TODO #34 (MPC reprocessing dedup), THEN spec 31 (Phase 2 Azure)
 
 **Then spec 31 (Phase 2, Azure at scale) — the north star.** Status: **DRAFT, awaiting sign-off**,
 already **de-risked by a green access probe** (`runbooks/31-p1-access-probe.md`, 2026-07-15:
