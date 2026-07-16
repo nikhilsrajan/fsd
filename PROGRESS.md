@@ -2,9 +2,110 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-15_
+_Last updated: 2026-07-16_
 
-## LATEST (2026-07-15) — spec 30 (serving Tier 2: mini-MPC + stac-geoparquet) REVIEWED (Opus@high) + runbook RAN GREEN (user) → Tier 2 VALIDATED; TODO #16 also fixed
+## LATEST (2026-07-16) — STRATEGY PIVOT: MPC source + baseline harmonization → spec 32 SIGNED OFF (Opus@high); P1 split into two phases; new standing practice (spec cross-validation)
+
+**The plan pivoted from "CDSE download-to-blob for P1" to a two-phase MPC-first approach** (agreed
+with the user via interview → grilling → doc cross-validation). Reasoning: MPC serves Sentinel-2
+L2A as **already-COG on Azure**, so the whole `jp2→COG` conversion problem (spec 25 / the ugliest
+part of the draft spec 31 §5) **evaporates**, and we get real Azure-native COGs to test datacube
+creation fast.
+
+**Two-phase shape:**
+- **Phase 1 (local, hotspot-friendly) = `specs/32-mpc-source-baseline-harmonization.md` — SIGNED
+  OFF (2026-07-16).** A new fsd-native **MPC source** (`sources/mpc.py`, reuses `pystac-client`
+  discovery + `planetary-computer` signing behind a new `[mpc]` extra; download = **pure COG
+  byte-copy**, no re-encode). Fixes **correctness debt #10** (the S2 processing-baseline
+  `BOA_ADD_OFFSET`): MPC serves **raw unharmonized DN** and exposes **no `raster:bands`** offset, so
+  fsd derives the offset from **`s2:processing_baseline`** (keyed on baseline, *not* date —
+  reprocessing stamps ≥04.00 on old dates), stores it as an additive **`boa_add_offset`** catalog
+  column, and harmonizes **at build, per source image, before the median mosaic** (a calendar window
+  can straddle 2022-01-25) via `clip(DN−1000,0,65535)` for reflectance bands (SCL exempt) — keeping
+  the **uint16 + nodata=0** datacube contract. Test = pytest (synthetic offset/clamp/flatten) + a
+  **single-tile / single-band** runbook straddling 2022-01-25 (hotspot-sized).
+- **Phase 2 (Azure at scale) = `specs/31` retargeted.** Its old §5 (CDSE stage-local-convert-put)
+  is **to be deleted** (MPC removes conversion). The storage-seam mechanics (fsspec-native config,
+  `to_vsi`, one `rio_open` wrapper, `DefaultAzureCredential` for `rise` writes) survive. **Open
+  Phase-2 fork:** stream MPC COGs in-place via `/vsicurl` vs bulk-copy MPC→`rise` and stream from
+  `rise` — **consciously deferred** to be *measured* after at-scale cloud build exists (user's call
+  2026-07-16), not argued now. (fsd reads only a ~5 km window from a ~110 km tile; full-tile
+  download amortizes only under high per-tile cell reuse.)
+
+**Spec 31 status:** still DRAFT; it was improved this session (fsspec-native config + adlfs
+auto-credential + SDK token-cache replaced the bespoke registry/refresh-margin — cross-validated
+against Azure/adlfs/fsspec/GDAL docs) but is now **Phase 2** and not yet signed off.
+
+**New STANDING PRACTICE (encoded in `CLAUDE.md` + memory [[spec-cross-validation-practice]]):**
+every spec leaning on external facts must be **cross-validated against reliable online sources
+before sign-off**, carrying a **per-source-credit** "Best-practice alignment / sources" section
+(what *specific* fact each source contributed, named inline — not a bare URL list). **Spec-
+validation web searches now have standing permission** (no prior ask); all *other* searches still
+follow [[ask-before-websearch]].
+
+**Governance flag (consciously accepted):** an MPC source is the "build more data sources
+(#11/#21)" work the 2026-07-15 diagnostic parked pending the **rslearn Plan B/C** call — accepted
+eyes-open (small, reuses STAC discovery, fastest unblock). rslearn decision still parked.
+
+**→ NEXT:** user runs `/handoff` → **Sonnet@medium** session implements **spec 32** against the
+signed-off text (Opus does not implement). Then Opus review, then the user runs
+`runbooks/32-mpc-baseline.md`. Nothing committed this session (specs 31/32, CLAUDE.md, memory edits
+all on disk, uncommitted — user may want to commit).
+
+## PRIOR (2026-07-15) — project-state DIAGNOSTIC done (Opus@high) → verdict + P1-kickoff staged (access probe written, spec-first handoff next)
+
+**The diagnostic (interview → exhaustive corpus read → grilling) is complete.** Deliverables:
+memory [[fsd-diagnostic-triage]]; a one-page visual state map (Artifact:
+`https://claude.ai/code/artifact/bcc50b17-914b-486d-a66b-102661ea34ca`); this PROGRESS entry.
+
+**Verdict (user's Q = "am I accreting, or is there a critical path? and am I managing this well?"):**
+NOT random scope-creep — TODO.md is well-triaged, nearly every item real. The pattern is: the project
+keeps finishing *locally-completable* work *around* its critical path (P1) instead of *through* it,
+because **P1 is blocked and the blocker was never named.** The rail literally shows it — solid through
+P0.9, skips the blocked P1, lands on a *partial* P5 (serving 27–30). **User confirmed both:** the
+serving PoC was legitimate + well-timed (active-learning/STACNotator interconnect talk had just
+happened — fsd needed to prove it can connect), AND real procrastination on Azure (new/unfamiliar).
+
+**Decisions reached (grilling):** (1) **P1 stays the goal**; serving is *banked*, not relabeled — do
+NOT continue that thread (#28/#29 deferrable). (2) Move #1 = **clear the P1 blocker**; the blocker is
+100% activation energy — user is at state (a): `az login` done, working access, just hadn't sat down.
+(3) rslearn Plan B/C call **consciously parked** (orthogonal to P1) — *but do not build more data
+sources (#11/#21) until it's made.* (4) Promote correctness debt **#10** (STAC raster:offset/scale
+across S2 baselines — silent wrong-answers) above the serving/feature long tail. (5) **Spec-first
+handoff:** the next session *writes* spec 31, it does NOT code.
+
+**P1 access facts nailed down (from `../AZURE_INFRA_PRIVATE.md`, filled into `../P1_AZURE_SETUP.md`):**
+storage = **`strisewesteurope`, ADLS Gen2 (HNS)**, filesystem `data`; **account keys DISABLED** →
+auth is **`DefaultAzureCredential` (az-login token), FORCED** (no key/SAS); GDAL driver = **`/vsiadls/`**,
+NOT `/vsiaz/`. The real unknown = whether the user's **personal** identity has **Storage Blob Data
+Contributor** (private doc only confirms the *compute UAMI* does) — the access probe is the definitive test.
+
+**PROBE RAN GREEN (user, 2026-07-15): `"pass": true`, all 3 steps.** P1 ACCESS IS READY — confirmed
+end to end over VPN through the exact seams fsd uses. Facts for spec 31 (also in `../P1_AZURE_SETUP.md`,
+now fully green):
+- Identity **`nsasiraj@raapid.org`**, subscription **`UniStra_RAAPID`** (`f3ad55ae-d72a-4cce-aa07-ccefed436a79`),
+  RG `rg-rise-westeurope`.
+- **adlfs `DefaultAzureCredential` round-trip works** to `az://data/fsd-p1-scratch/` (370 B write=read)
+  → the user's **personal identity HAS Storage Blob Data Contributor** (no admin grant needed — the 403
+  risk is dead).
+- **GDAL 3.10.3 opens the object via BOTH `/vsiadls/` and `/vsiaz/`** with `AZURE_STORAGE_ACCESS_TOKEN`
+  → use `/vsiadls/` as canonical (ADLS Gen2), `/vsiaz/` fallback. Auth = `az account get-access-token
+  --resource https://storage.azure.com/`, Entra-only (keys disabled).
+
+**Also this session — raapid-infra tfvars refreshed (2026-07-15):** `rise` AML is now a **list of
+clusters** — `default` (E64ds_v4 ×4 = 256 cores) **+ NEW `d16`** (D16d_v5 ×32 = **512 cores**); Batch
+pool unchanged (128 cores). Concrete values in `../AZURE_INFRA_PRIVATE.md` + [[fsd-azure-infra]] memory.
+**New parked fork (P2/P4, NOT P1):** runner seam targets Batch (128) but the big fleet is AML `d16`
+(512) — a Batch-vs-AML dispatch choice for when P2 lands; parked alongside rslearn.
+
+**→ NEXT:** user runs `/handoff "write + sign off spec 31 (P1 storage seam) from the probe results"`
+→ fresh **Opus@high** session writes **spec 31** (spec-first — it does NOT code): add `azure-identity`
+to the `[azure]` extra; thread `storage_options`/`storage=` through the verbs; adlfs `abfs://` + GDAL
+`/vsiadls/` reads in fsd code; demo a **local datacube build doing all I/O against `rise` blob** over
+VPN. Then Sonnet@medium implements against the signed-off spec. Nothing committed this session (docs
+only: `P1_AZURE_SETUP.md`, `runbooks/31-p1-access-probe.md`, `../AZURE_INFRA_PRIVATE.md`, this entry).
+
+## PRIOR (2026-07-15) — spec 30 (serving Tier 2: mini-MPC + stac-geoparquet) REVIEWED (Opus@high) + runbook RAN GREEN (user) → Tier 2 VALIDATED; TODO #16 also fixed
 
 **Opus@high review of `faf8382` = PASS** (storage-seam staging, href-rewrite, both documented
 deviations all sound; no floating tags). Three minor fixes applied on top: README route-naming line
@@ -30,10 +131,18 @@ concatenation (`flatten._to_lonlat`), so a multi-UTM-zone training set no longer
 eastings/northings. Behavior change to `coords.npy` (CHANGES.md); new multi-zone test; **214 passed,
 3 skipped**, ruff clean.
 
-**→ NEXT:** commit the accumulated work (all on top of `faf8382`, uncommitted, not pushed) if the
-user wants. **Still open after 30:** TODO #26 catalog-format full-migration (run_inference default →
-stac-geoparquet), #28 (render config → STAC render extension), #29 (B02/B03 true-color input imagery,
-PARKED for wifi). Optional polish: bump titiler `WEB_CONCURRENCY` (>1) to speed up the QGIS mosaic view.
+**Committed + pushed:** all the above is on **`origin/main` @ `60e5cc2`** (`WEB_CONCURRENCY=4` set;
+review + runbook fixes; TODO #16 coords→4326). Upstream now tracked.
+
+**→ NEXT (redirected 2026-07-15):** the user paused feature-work for a **project-state DIAGNOSTIC
+walkthrough** — a fresh Opus@high session reads the whole corpus (all specs 00–30, ROADMAP, TODO,
+every `.md`) to reconstruct *where we started → where we're going → where we are*, and answer the
+user's core question: **am I accreting endless TODOs, or is there a critical path to P1?** The
+diagnostic session must **interview the user first** about what they want out of it. Baton:
+**`/tmp/fsd-handoff-project-diagnostic.md`**. **TODO #28 (render config → STAC render extension) is
+deferred back into the queue** — it was the next feature but got redirected. Also still open after 30:
+TODO #26 catalog-format full-migration, #29 (B02/B03, PARKED for wifi). **P1 = the Azure storage seam**
+(`specs/10`; prereqs in `../P1_AZURE_SETUP.md`) has not started.
 
 ## PRIOR (2026-07-15) — spec 30 (serving Tier 2: mini-MPC + stac-geoparquet) IMPLEMENTED (Sonnet@medium) → hand to Opus for review, then the user runs the Docker runbook
 
