@@ -1,7 +1,36 @@
 # Spec 32 — MPC source (Sentinel-2 L2A) + processing-baseline harmonization
 
-> **Status: REVIEWED + MERGED (Opus@high, 2026-07-16) — verdict PASS, no code changes required;
-> awaiting only the user-run runbook.** Merged to `main` (fast-forward, `1cf1568`+`0da4d15`).
+> **Status: ✅ DONE — CODE REVIEWED + MERGED + RUNBOOK v2 FULLY VALIDATED ON REAL MPC DATA
+> (2026-07-16).** All three steps PASS; correctness debt **#10 is fixed for MPC and proven end to
+> end**. Verified independently from the artifacts, not from the `pass` flag (v1 taught us that flag
+> could lie):
+> - **The cutover boundary was hit exactly** — the real items came back with baselines **`03.00`
+>   (pre) → offset `0`** and **`04.00` (post) → offset `−1000`**. `04.00` *is* the first offset
+>   baseline, so this exercises `_baseline_tuple(...) >= (4, 0)` **precisely on the boundary**: had
+>   the code written `>` instead of `>=`, it would have returned `0` and been silently wrong. Real
+>   data landed on the one value that distinguishes them.
+> - **Step 3 A/B vs an unharmonized control** (`_result_step3.json`, cube `(2, 550, 606, 1)`):
+>   `pre_identical_to_control = true` (offset 0 → bit-identical), and the post-baseline slice equals
+>   the control **exactly −1000** across all **202 831** non-clipping pixels (`np.array_equal`, not a
+>   tolerance). **Zero** pixels fell in `(0, 1000]`, so nothing clipped and the mean delta is exactly
+>   **1000.0**.
+> - **The science:** the pre-vs-post gap was **2187.1 DN** unharmonized → **1187.1 DN** harmonized.
+>   The fix removed exactly the 1000 DN baseline artifact; the 1187 remainder is real scene change
+>   (two January Austria dates). That is precisely the silent error #10 described — a median mosaic
+>   over a window spanning both dates would have blended 400 with 2587 where the comparable values
+>   are 400 and 1587.
+> - **Both spec-flagged open items confirmed live:** `s2:processing_baseline` + `s2:mgrs_tile` exist
+>   as assumed, and `storage.transfer` streamed signed MPC HTTPS cleanly (**no `aiohttp` fallback
+>   needed** → the fsspec `http` transport open item resolves in our favour).
+>
+> **Follow-ons logged (none blocking):** **TODO #34** (MPC serves duplicate reprocessed
+> acquisitions; fsd doesn't dedup), **TODO #35** (`build_datacube` requires SCL even when masking
+> isn't wanted — the v1 step-3 crash), **TODO #36** (CDSE-vs-MPC speed — parked; the local reading is
+> confounded by VPN + full-tile copy for a 0.18 % ROI), plus **pinning `planetary-computer`**
+> (resolved version now observable from the runbook's install).
+>
+> **Code review: PASS (Opus@high, 2026-07-16), no code changes required.** Merged to `main`
+> (fast-forward, `1cf1568`+`0da4d15`).
 > Re-verified independently at review: `pytest -q` **234 passed / 3 skipped**, `ruff check
 > src/ tests/` clean. **The #10 guard test is not vacuous** — mutation-tested: removing the
 > `_apply_boa_offsets` call makes `test_build_datacube_harmonizes_boa_offset_before_median_mosaic`
@@ -198,13 +227,42 @@ download→datacube→flatten core consumes MPC catalog rows unchanged once §1�
   column preserves it.
 - **regression** — full existing suite stays green (CDSE rows default to 0; op is a no-op at 0).
 
-**Runbook (real MPC, user-run, hotspot-friendly) — `runbooks/32-mpc-baseline.md`:**
-- One MGRS tile, **band B04 only**, two acquisitions **straddling 2022-01-25** (one baseline <04.00,
-  one ≥04.00). Steps: install `.[mpc]`; `download(source="mpc", …)` those two items (tiny COGs);
-  assert the **catalog** records `boa_add_offset` 0 and −1000 respectively; build a 2-timestamp
-  datacube; assert the harmonized post-baseline slice is DN-shifted vs the raw asset (a spot-check
-  pixel), and (visual) the two dates are on a consistent reflectance scale. `_result.json` per spec
-  24 with a self-contained `expected` block. No conversion, no scale, hotspot-sized.
+**Runbook (real MPC, user-run) — `runbooks/32-mpc-baseline.md`:**
+
+> **⚠️ CORRECTED 2026-07-16 (runbook v2) — this paragraph as originally signed off was defective,
+> and the defect was mine (Opus), not the implementer's.** It survived sign-off, cross-validation,
+> implementation, *and* the Opus review. The first real run exposed four errors:
+> 1. **"band B04 only" + "build a 2-timestamp datacube" are mutually impossible.** `build_datacube`
+>    hardcodes `apply_cloud_mask_scl` → `drop_bands(["SCL"])`, so **SCL is structurally required**;
+>    `bands=['B04']` always raises `ValueError: SCL band not present in datacube`. → v2 downloads
+>    and builds **B04 + SCL**, which also makes the band exemption **live** (SCL must come back `0`
+>    while B04 comes back `−1000`) rather than "moot". The underlying builder limitation is real and
+>    deferred to **TODO #35** (needs its own spec — it changes a core contract, and TODO #11's
+>    non-optical sources have no SCL at all).
+> 2. **"tiny COGs" / "hotspot-sized" was false.** MPC assets are **full-tile (~110 km) COGs** —
+>    a single B04 measured **96–272 MB**. v1 also downloaded *the whole date range between* the two
+>    chosen items → **9 items / 1.7 GB**, not 2. → v2 uses two **tight ±1 h windows**.
+> 3. **The 2-timestamp claim was arithmetically wrong:** `mosaic_days=120` over a 120-day window
+>    gives **T=1**. → v2 computes `mosaic_days` from the two acquisitions so each gets its own
+>    calendar window.
+> 4. **The PASS criteria could not fail:** step 2's `pass` only checked `failed_count == 0` (never
+>    the offsets it claimed to test), and step 3's was a "plausible range" judgement. → v2 asserts
+>    the offsets explicitly, and replaces the vague check with an **A/B against an unharmonized
+>    control** (same cube built twice, offsets forced to 0 in the control): the post-baseline slice
+>    must equal the control **exactly −1000** on non-clipping pixels, the pre-baseline slice must be
+>    **bit-identical**. A real measurement, not a plausibility call.
+>
+> **Lesson:** the spec's Tests section was never traced against `build_datacube`'s actual op chain
+> or against a real asset size. Cross-validating external facts (§7) did not catch an
+> *internal* inconsistency with our own code.
+
+- One MGRS tile, **bands B04 + SCL**, two acquisitions **straddling 2022-01-25** (one baseline
+  <04.00, one ≥04.00). Steps: install `.[mpc]`; `download(source="mpc", …)` those two items
+  (~320 MB — full-tile COGs); assert the **catalog** records `boa_add_offset` 0 and −1000
+  respectively and that flatten exempts SCL (0) while B04 carries the offset; build a 2-timestamp
+  datacube **plus an unharmonized control**; assert the harmonized post-baseline slice is the
+  control shifted by exactly −1000 DN. `_result.json` per spec 24 with a self-contained `expected`
+  block. No conversion, no scale.
 
 ## Deliverables (for the Sonnet@medium implement session)
 

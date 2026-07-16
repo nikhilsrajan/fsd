@@ -4,7 +4,110 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-16_
 
-## LATEST (2026-07-16) — spec 32 REVIEWED (Opus@high): PASS, merged to `main` + pushed → **next: the user runs `runbooks/32-mpc-baseline.md`**
+## LATEST (2026-07-16) — ✅ spec 32 DONE: runbook v2 FULLY VALIDATED on real MPC data. **Correctness debt #10 is fixed for MPC and proven end to end.**
+
+**All three steps PASS.** Verified independently from the artifacts on disk (not from the `pass`
+flag — v1 proved that flag could lie):
+
+- **The cutover boundary was hit exactly.** Real items: `20220107` baseline **`03.00`** → offset
+  `0`; `20220127` baseline **`04.00`** → offset `−1000`. `04.00` is the *first* offset baseline, so
+  this exercises `_baseline_tuple(...) >= (4, 0)` **precisely on the boundary** — `>` instead of
+  `>=` would have silently returned 0. Real data landed on the one value that tells them apart.
+- **Step 3 A/B vs unharmonized control** (cube `(2, 550, 606, 1)`): `pre_identical_to_control =
+  true`; post slice equals the control **exactly −1000** across **202 831** non-clipping pixels
+  (`np.array_equal`, no tolerance); **zero** pixels in `(0, 1000]` → nothing clipped → mean delta
+  exactly **1000.0**.
+- **The science:** pre-vs-post gap **2187.1 DN** unharmonized → **1187.1 DN** harmonized. The fix
+  removed exactly the 1000 DN artifact; the 1187 remainder is real January scene change. That *is*
+  #10: a mosaic spanning both dates would have blended 400 with 2587 where the truth is 400/1587.
+- **Both open items resolved:** `s2:processing_baseline` + `s2:mgrs_tile` confirmed live;
+  `storage.transfer` streamed signed MPC HTTPS cleanly — **no `aiohttp` fallback needed**.
+
+**Getting here took a runbook v2** — v1's steps 2–3 were defective, and the fault was **spec 32's
+Tests section (mine), not the implementation**: it prescribed "band B04 only" *and* "build a
+2-timestamp datacube", which are mutually impossible since `build_datacube` hardcodes
+`apply_cloud_mask_scl` → `drop_bands(["SCL"])`. That survived sign-off, cross-validation,
+implementation **and the Opus code review** (which checked code-vs-spec but never traced the runbook
+against the builder's op chain — the guard test's own B04+SCL was the tell). **Lesson: cross-
+validating *external* facts doesn't catch inconsistency with our *own* code.** v1's other three
+defects: it over-fetched **9 items / 1.7 GB** (downloaded the whole range *between* pre and post);
+claimed "a few MB / no full-tile download" when **MPC assets are full-tile COGs (one B04 = 96–272
+MB)**; and had PASS criteria that couldn't fail (`pass` only checked `failed_count`;
+`mosaic_days=120` over 120 days gives **T=1**, not the 2 it compared). v2 fixed all four and
+replaced the vague check with the A/B above.
+
+**Follow-ons logged (none blocking):**
+- **#34 — MPC serves duplicate reprocessed acquisitions.** `20220301T100029` came back **twice**
+  (processed `20220303` *and* reprocessed `20240604`) — same sensing time + tile, different item
+  ids, so the id-uniqueness check passes. Both downloaded (224+272 MB), both catalogued;
+  `_stack_datacube` merges two copies of one scene with an arbitrary tie-break. **Not
+  radiometrically wrong** — spec 32 offsets each processing on its own baseline before the merge
+  (the design earning its keep) — but wasted bytes + a silent arbitrary pick.
+- **#35 — `build_datacube` requires SCL even when masking isn't wanted** (root of the v1 crash).
+  Own spec needed: it changes a core contract, and TODO #11's non-optical sources (CHIRPS/ERA5) have
+  **no SCL at all**, so they're blocked on it.
+- **#36 — CDSE-vs-MPC speed: PARKED by the user.** Recorded with confounds so they aren't
+  re-derived: VPN × 9-items-not-2 × a duplicate × **full-tile copy for a 0.18 % ROI** (21.5 km² read
+  from a 12 100 km² tile). TODO #24 already establishes the local result is link-bound and **doesn't
+  generalize to Azure**; the dominant lever is plausibly windowed `/vsicurl` vs full-tile copy
+  (TODO #31), not the source choice.
+- **Pin `planetary-computer`** — the spec's open item; the resolved version is now observable from
+  the runbook's install.
+
+**Uncommitted** (no commit requested): runbook v2, spec 32 §Tests correction + banner, TODO #34–36,
+this entry.
+
+### Previous entry (spec 32 runbook v1 run — step 3 crash + diagnosis)
+
+**The fix works on real MPC data.** Step 2's live catalog is the proof of D3: `20220107` (baseline
+<04.00) → `boa_add_offset = 0`; `20220127`, two days after the cutover → `−1000`. The spec's two
+flagged open items are also confirmed live: `s2:processing_baseline` and `s2:mgrs_tile` exist as
+assumed, and `storage.transfer` streamed signed MPC HTTPS fine (no `aiohttp` fallback needed).
+
+**Step 3 crashed — and the fault is spec 32's, not the implementation's.** `ValueError: SCL band
+not present in datacube`. `build_datacube` hardcodes `apply_cloud_mask_scl` → `drop_bands(["SCL"])`,
+so SCL is structurally required, but the spec's Tests section prescribed **"band B04 only"** *and*
+"build a 2-timestamp datacube" — mutually impossible. That inconsistency survived sign-off,
+cross-validation, implementation, **and the Opus code review** (which checked code-vs-spec but never
+traced the runbook against `build_datacube`'s op chain — the reviewed guard test uses B04+SCL, which
+was the tell). The implementer followed the spec faithfully. **No implementation defect was found by
+the real run; the code verdict stands.**
+
+**Runbook v2 issued** (`runbooks/32-mpc-baseline.md`) — v1 had four defects, all now fixed:
+- **B04-only → `['B04','SCL']`.** Bonus: the band exemption goes from "moot" (the spec's word) to
+  **live** — SCL must return `0` while B04 returns `−1000` on real data.
+- **Over-fetch.** v1 downloaded the whole date range *between* `pre` and `post` → **9 items /
+  1.7 GB**, not the promised 2. v2 uses two tight ±1 h windows.
+- **"a few MB / no full-tile download" was false.** MPC assets are **full-tile (~110 km) COGs** —
+  a single B04 measured **96–272 MB**. Prerequisites now state ~320 MB honestly.
+- **PASS criteria that couldn't fail.** Step 2's `pass` only checked `failed_count == 0` (never the
+  offsets); step 3's was a "plausible range" judgement, and its `mosaic_days=120` over a 120-day
+  window gives **T=1**, not the "2 timestamps" it compared. v2 asserts the offsets explicitly and
+  replaces the vague check with an **A/B against an unharmonized control** (same cube built twice,
+  offsets forced to 0 in the control): post-baseline slice must equal control **exactly −1000** on
+  non-clipping pixels; pre-baseline slice **bit-identical**. Writes `_result_step3.json`.
+
+**Three findings logged as TODOs:**
+- **#34 — MPC serves duplicate reprocessed acquisitions.** `20220301T100029` came back **twice**
+  (processed `20220303` *and* reprocessed `20240604`) — same sensing time + MGRS tile, different
+  item ids, so `_finalize_catalog_gdf`'s id-uniqueness check passes. Both downloaded (224+272 MB),
+  both catalogued; `_stack_datacube` then merges two copies of one scene with an arbitrary
+  tie-break. **Not radiometrically wrong** — spec 32 offsets each processing on its own baseline
+  before the merge (the design earning its keep) — but wasted bytes + a silent arbitrary pick.
+- **#35 — `build_datacube` requires SCL even when masking isn't wanted** (the root of the step-3
+  crash). Deferred to its own spec: it changes a core contract, and TODO #11's non-optical sources
+  (CHIRPS/ERA5) have **no SCL at all**, so they're blocked on it.
+- **#36 — CDSE-vs-MPC speed comparison: PARKED by the user** (nothing to do now). Recorded with its
+  confounds so they aren't re-derived: the "MPC is slow" reading is VPN × 9-items-not-2 × a
+  duplicate × **full-tile copy for a 0.18 % ROI** (21.5 km² read out of a 12 100 km² tile). TODO #24
+  already records that the local CDSE result was **link-bound and does not generalize to Azure** —
+  so the honest version of this benchmark is an Azure-side one, and the dominant lever is plausibly
+  windowed `/vsicurl` vs full-tile copy (TODO #31), not the source choice.
+
+**Uncommitted** (no commit requested): runbook v2, spec 32 §Tests correction + banner, TODO #34–36,
+this entry.
+
+### Previous entry (spec 32 code review — PASS, merged + pushed)
 
 **Review verdict: PASS — no code changes required.** Reviewed the spec-32 implementation
 (`1cf1568` + `0da4d15`) against the signed-off spec, then **fast-forward merged
