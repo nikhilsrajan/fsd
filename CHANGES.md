@@ -4,6 +4,25 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## MPC discovery dedupes reprocessed acquisitions (spec 33, 2026-07-16)
+- **`sources/mpc.py`** now de-duplicates STAC items at discovery time: `query_catalog` and
+  `download` both call a new `_dedupe_reprocessed_items(items)` immediately after `_search_items`,
+  before any catalog row is built. MPC can serve >1 STAC item for the same physical acquisition
+  (a one-off `sen2cor` reprocessing pipeline bug, since cleaned up on MPC's side, per spec 33's
+  cross-validation) — same sensing `item.datetime` + same `s2:mgrs_tile`, different item id. Prior
+  behavior: both items downloaded (redundant bytes) and both catalogued, with
+  `datacube.builder._stack_datacube`'s CRS/`image_index` tie-break arbitrarily picking a winner at
+  merge time. Grouping key is in-memory `(item.datetime, _mgrs_tile_from_item(item))` — no new
+  catalog column. Winner = the item with the latest `s2:generation_time` (a populated STAC
+  property; reversing the id-string-parsing approach the runbook originally suspected, since ESA's
+  naming-convention doc does not guarantee the id's trailing field is monotonic). A duplicate group
+  missing `s2:generation_time` on any member raises (deterministic, no silent pick); a singleton
+  item is never affected even if it lacks the property. **MPC-only** — `sources/cdse.py` and
+  `_finalize_catalog_gdf` are untouched; CDSE's own multi-item surfacing (datastrip-split
+  near-duplicates) is a structurally different, ESA-by-design case that can carry legitimate
+  different pixel coverage, so a shared rule risked dropping real CDSE data. See
+  `specs/33-mpc-reprocessing-dedup.md`.
+
 ## MPC source + S2 processing-baseline harmonization (spec 32, 2026-07-16)
 - **New source `sources/mpc.py`** — Sentinel-2 L2A discovery + download against Microsoft
   Planetary Computer (MPC), signed via the official `planetary-computer` package (new `[mpc]`

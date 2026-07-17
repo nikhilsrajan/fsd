@@ -63,6 +63,20 @@ no need for a new `mgrs_tile` catalog column (avoiding a `COLUMNS`/back-compat c
 helper, currently dead code per the spec-32 review banner — **this gives it its first real
 caller**) together form the in-memory grouping key.
 
+> **⚠️ Divergence from this spec's own research, made explicit at the Opus review (finding F2,
+> 2026-07-16).** `specs/research-s2-reprocessing-dedup.md`'s concluding recommendation is a
+> **three-part** key — *"(mgrs_tile, datatake/sensing start time, **relative_orbit**)"*. This
+> spec silently narrowed it to the two-part `(datetime, mgrs_tile)` without recording that it
+> was departing from the cited recommendation. **The narrowing is judged correct and stands:**
+> `relative_orbit` is fully determined by the other two — two acquisitions sharing an exact
+> sensing instant *and* an MGRS tile necessarily share an orbit (S2's revisit geometry rules out
+> a same-instant same-tile pass from a different orbit or platform), so the third component can
+> only ever be redundant, never discriminating. Adding it would cost nothing but buy nothing.
+> **What was wrong was the silence, not the call** — dropping a cross-validated recommendation is
+> exactly the kind of drift this spec's own "flag it instead of improvising" rule exists to
+> surface. Recorded here so a future reader diffing the spec against its research doc doesn't
+> re-litigate it or assume an oversight.
+
 ### Fork 3 — which copy wins: **`s2:generation_time`, not the item id's trailing field**
 
 **Cross-validated (§ below) — this reverses the handoff's suggested "parse the id's last field"

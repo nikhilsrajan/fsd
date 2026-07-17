@@ -91,6 +91,37 @@ def _mgrs_tile_from_item(item) -> str:
     return item.properties.get("s2:mgrs_tile") or item.id
 
 
+def _generation_time(item) -> str:
+    """`s2:generation_time` (RFC-3339 str) — the reliable "which processing pass"
+    property (cross-validated over the id's trailing field, which ESA's own
+    naming-convention doc does not guarantee is monotonic). Raises if missing -
+    only called when a duplicate group actually needs a tie-break (spec 33)."""
+    gt = item.properties.get("s2:generation_time")
+    if gt is None:
+        raise ValueError(
+            f"MPC item {item.id!r} is one of >1 items for the same "
+            "acquisition (same sensing time + MGRS tile) but has no "
+            "'s2:generation_time' property; cannot pick the latest processing "
+            "(spec 33 Fork 3)."
+        )
+    return gt
+
+
+def _dedupe_reprocessed_items(items: list) -> list:
+    """Collapse multiple STAC items covering the SAME acquisition (identical
+    sensing `item.datetime` + MGRS tile, spec 33) down to one - the item with
+    the latest `s2:generation_time` wins. A no-op for items with distinct
+    (timestamp, tile) keys (the overwhelmingly common case)."""
+    groups: dict[tuple, list] = {}
+    for it in items:
+        key = (it.datetime, _mgrs_tile_from_item(it))
+        groups.setdefault(key, []).append(it)
+    return [
+        group[0] if len(group) == 1 else max(group, key=_generation_time)
+        for group in groups.values()
+    ]
+
+
 def _search_items(roi_gdf: gpd.GeoDataFrame, startdate, enddate, max_cloudcover=None):
     """Query the MPC STAC API for S2 L2A items intersecting the ROI, signed via
     the official `planetary-computer` package (spec 32 D4)."""
@@ -152,6 +183,7 @@ def query_catalog(
     """
     roi_gdf = _roi_gdf(roi)
     items = _search_items(roi_gdf, startdate, enddate, max_cloudcover=max_cloudcover)
+    items = _dedupe_reprocessed_items(items)  # spec 33
     gdf = _items_to_gdf(items)
     return _finalize_catalog_gdf(gdf, roi_gdf, max_cloudcover)
 
@@ -270,6 +302,7 @@ def download(
 
     roi_gdf = _roi_gdf(roi)
     items = _search_items(roi_gdf, startdate, enddate, max_cloudcover=max_cloudcover)
+    items = _dedupe_reprocessed_items(items)  # spec 33
     tiles = _finalize_catalog_gdf(_items_to_gdf(items), roi_gdf, max_cloudcover)
 
     if len(tiles) > max_tiles:
