@@ -61,7 +61,7 @@ Uncommitted WIP, deliberately untouched: the `TODO.md` item-#26 reflow + the two
 
 ---
 
-## LATEST (2026-07-16) — ✅ spec 33 (MPC reprocessing dedup, TODO #34) IMPLEMENTED (Sonnet@medium) + **Opus@high review PASS → merged to `main`**; live-data runbook 33 ready for the user. NEXT = spec 31 (P1 Azure seam)
+## LATEST (2026-07-17) — ✅ spec 33 (MPC reprocessing dedup, TODO #34) CLOSED: implemented (Sonnet@medium) + Opus@high review PASS + **runbook 33 VALIDATED on live MPC data** (`"pass": true`, duplicate still live upstream so the test was real). NEXT = spec 31 (P1 Azure seam)
 
 **Implemented to the letter of `specs/33-mpc-reprocessing-dedup.md`** — no redesign, no forks
 reopened. `sources/mpc.py`: new `_generation_time(item) -> str` (reads `s2:generation_time`,
@@ -138,6 +138,37 @@ false pass) if MPC has since cleaned the duplicate upstream.
 files applied as a 3-way patch; `TODO.md` #34 swapped by hand so `main`'s uncommitted item-#26
 reflow WIP survived. Runbook rewritten to run from `main` + the normal `.venv` (no `PYTHONPATH`).
 **Still uncommitted** — awaiting the user's ask.
+
+## ✅ runbook 33 VALIDATED on live MPC data (2026-07-17) — dedup proven end to end
+
+**`runbooks/33-mpc-dedup-live.md` ran green: `"pass": true`, every criterion met.** Discovery-only,
+zero imagery bytes. The result is **not** the `inconclusive` fallback — **the duplicate is still
+live upstream**, so this genuinely exercised the fix rather than passing vacuously:
+
+- **`duplicate_groups_upstream: 1`** — MPC still serves both `..._20220303T182540` (original) and
+  `..._20240604T180322` (2024 reprocessing) for sensing instant `2022-03-01 10:00:29.024+00:00` on
+  tile `33UWP`. (So MPC's cleanup per discussion #275 did **not** remove this pair — the spec's
+  premise still holds on live data today.)
+- **`raw_item_count: 2` → `catalog_row_count: 1`** — dedup collapsed the pair; `catalog_ids` equals
+  `independently_expected_ids` (recomputed by the probe, not taken from fsd's own answer).
+  `known_winner_present: true`, `known_loser_present: false` — the 2024 reprocessing won, the
+  original's ~224 MB is never queued.
+- **Finding F3 empirically resolved (for this data):** `generation_time_format_shapes` = exactly
+  one shape, `NNNN-NN-NNTNN:NN:NN.NNNNNNZ`. Live values are uniform RFC-3339 with microseconds +
+  `Z`, so the string tie-break is sound — and it's a real ordering test, since the winner's
+  `.000000Z` vs the loser's `.834434Z` differ in precision-of-content while sharing a format.
+  Caveat: n=2. F3 stays noted (not reopened) as "verified on the only live pair we have".
+- **Guard confirmed:** `mpc_module_loaded_from` = `.../fsd/src/fsd/sources/mpc.py` — `main`'s code,
+  not a worktree's.
+
+**New real-data fact (no action needed, recorded so nobody re-derives it):** live MPC's
+`s2:mgrs_tile` is **`"33UWP"` — no `T` prefix** (the `T` lives only in the item id). This is
+**consistent with fsd's own convention**: both `catalog.stac._parse_mgrs` and
+`datacube.builder._mgrs_tile` also yield `33UWP` (verified directly). So there is **no mismatch and
+no latent bug** — the three representations agree. The one wart is that `tests/test_mpc.py`'s
+fixtures use the *unrealistic* `"T33UWP"`; harmless (dedup only needs the key self-consistent within
+a run, and the tests still exercise the real path), but a reader could wrongly infer live MPC
+returns a `T` prefix. Fixture-realism nit only — **not** a defect, logged here rather than as a TODO.
 
 **→ NEXT:** **spec 31** (`specs/31-p1-azure-storage-seam.md`, DRAFT awaiting sign-off) — the P1
 Azure storage seam. This is the critical path the 2026-07-15 diagnostic named (the project keeps
