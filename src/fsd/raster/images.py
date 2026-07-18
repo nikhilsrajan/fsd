@@ -34,6 +34,8 @@ import rasterio.transform
 import rasterio.warp
 import tqdm
 
+from fsd.raster import rio_open
+
 NEAREST = rasterio.warp.Resampling.nearest
 
 __all__ = [
@@ -221,7 +223,7 @@ def resample_by_ref(
     resampling=NEAREST,
 ) -> tuple[np.ndarray, dict]:
     """``resample_by_ref_meta`` with the reference grid read from a file."""
-    with rasterio.open(ref_filepath) as ref:
+    with rio_open(ref_filepath) as ref:
         ref_meta = ref.meta.copy()
     return resample_by_ref_meta(
         data=data, profile=profile, ref_meta=ref_meta, resampling=resampling
@@ -329,7 +331,7 @@ def crop_tif(
 ) -> tuple[np.ndarray, dict]:
     """Crop straight from a file. Cheaper than load-then-crop: rasterio only
     reads the windowed region rather than the whole raster."""
-    with rasterio.open(src_filepath) as src:
+    with rio_open(src_filepath) as src:
         out_meta = src.meta.copy()
         if nodata is None:
             nodata = out_meta["nodata"]
@@ -359,7 +361,7 @@ def load_image(
     profile)``. On failure with ``raise_error=False`` returns ``(None, None)``."""
     try:
         if shapes_gdf is None:
-            with rasterio.open(src_filepath) as src:
+            with rio_open(src_filepath) as src:
                 return src.read(), src.meta.copy()
         return crop_tif(
             src_filepath=src_filepath,
@@ -426,7 +428,7 @@ def modify_image(
                 raise
             failed = True
     else:
-        with rasterio.open(src_filepath) as src:
+        with rio_open(src_filepath) as src:
             data = src.read()
             profile = src.meta.copy()
 
@@ -441,7 +443,7 @@ def modify_image(
         if dst_folderpath:
             os.makedirs(dst_folderpath, exist_ok=True)
         profile.update(count=data.shape[0])
-        with rasterio.open(dst_filepath, "w", **profile) as dst:
+        with rio_open(dst_filepath, "w", **profile) as dst:
             dst.write(data)
         delete_aux_xml(dst_filepath)
 
@@ -476,7 +478,7 @@ def modify_images(
 
 
 def read_tif(filepath: str) -> tuple[np.ndarray, dict]:
-    with rasterio.open(filepath) as src:
+    with rio_open(filepath) as src:
         return src.read(), src.meta.copy()
 
 
@@ -494,7 +496,7 @@ def save_geotiff(dst_filepath: str, data: np.ndarray, profile: dict) -> None:
     parent = os.path.dirname(dst_filepath)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    with rasterio.open(dst_filepath, "w", **out_profile) as dst:
+    with rio_open(dst_filepath, "w", **out_profile) as dst:
         dst.write(data)
     delete_aux_xml(dst_filepath)
 

@@ -84,9 +84,9 @@ def _asset_href(local_folderpath: str, filename: str) -> str:
 
 def _read_proj_fields(href: str) -> dict:
     """Open a raster to read per-asset proj:shape / proj:transform (opt-in; I/O)."""
-    import rasterio
+    from fsd.raster import rio_open
 
-    with rasterio.open(href) as src:
+    with rio_open(href) as src:
         return {"shape": [src.height, src.width], "transform": list(src.transform)[:6]}
 
 
@@ -190,15 +190,16 @@ def cog_outputs_to_items(cog_filepaths, *, geometries=None, collection_id="fsd-i
     """
     import datetime as _datetime
 
-    import rasterio
     from rasterio.warp import transform_bounds
+
+    from fsd.raster import rio_open
 
     if dt is None:
         dt = _datetime.datetime.now(_datetime.timezone.utc)
 
     items: list[pystac.Item] = []
     for fp in cog_filepaths:
-        with rasterio.open(fp) as src:
+        with rio_open(fp) as src:
             epsg = src.crs.to_epsg() if src.crs else None
             shape = [src.height, src.width]
             transform = list(src.transform)[:6]

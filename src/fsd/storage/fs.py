@@ -28,6 +28,8 @@ from typing import Any
 import fsspec
 import numpy as np
 
+from fsd.storage.azure import to_vsi
+
 __all__ = [
     "open",
     "exists",
@@ -41,6 +43,8 @@ __all__ = [
     "read_parquet",
     "write_parquet",
     "transfer",
+    "to_vsi",
+    "is_local",
 ]
 
 
@@ -50,6 +54,15 @@ __all__ = [
 def _fs_and_path(url: str, storage_options: dict | None = None):
     """Resolve a URL/path to (filesystem, path-on-that-filesystem)."""
     return fsspec.core.url_to_fs(url, **(storage_options or {}))
+
+
+def is_local(path: str) -> bool:
+    """True if `path` resolves to the local filesystem (vs. an `abfss://`/`s3://`/...
+    URL). Guards code that must not apply local-path-only operations (`os.path.abspath`,
+    `os.makedirs`, bare `open`) to a remote URL — see specs/31 §6."""
+    import fsspec.utils
+
+    return fsspec.utils.get_protocol(path) in ("file", "local")
 
 
 def _ensure_parent(fs, path: str) -> None:

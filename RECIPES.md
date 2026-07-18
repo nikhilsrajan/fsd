@@ -85,7 +85,10 @@ Module = `src/fsd/catalog/stac.py`. `read_proj=True` adds per-asset `proj:shape/
 
 ## Download (CDSE → local COG archive)
 
-Full-year, multi-CRS Sentinel-2 L2A download (the `satellite_benchmark/` archive).
+Full-year, multi-CRS Sentinel-2 L2A download (produced the `satellite_benchmark/` archive —
+**⚠️ that archive was since DELETED for disk space; this recipe is kept as the how-to, but the
+data it made is gone.** The current real-data archive is `fsd/tests/outputs/demo_e2e/imagery/`,
+Austria — see CLAUDE.md).
 Script: `fsd/benchmarks/download_year_ethiopia.py`. Report:
 `benchmarks/download_report_2018_ethiopia.md`.
 
@@ -342,3 +345,42 @@ curl -s -o /tmp/t.png -w '%{http_code} %{content_type}\n' \
 - Full runbook (7 steps incl. the STAC search + optional STACNotator step):
   `runbooks/30-tier2-mini-mpc.md`. What's borrowed vs. locally built + why:
   `demos/mini_mpc/README.md`.
+
+## Azure compute seam — `storage="azure"` (spec 31, P1)
+
+`create_training_data`/`download` now accept `storage="azure"` (or `{"backend": "azure"}`):
+it sets `FSSPEC_ABFSS_ANON=false` for the process (env + `fsspec.config.conf`), the one
+config key adlfs needs — it then auto-resolves `DefaultAzureCredential` and every
+`fs.*`/`rio_open` call against an `abfss://…` URL just works. No account/key config: the
+storage account comes from the URL host itself (`abfss://<fs>@<account>.dfs.core.windows.net/<path>`).
+
+```bash
+# opt-in — core stays lean, this is NOT in [dev]
+fsd/.venv/bin/pip install -e ".[dev,azure]"
+az login   # or rely on the node's managed identity at P4 — DefaultAzureCredential tries both
+export FSSPEC_ABFSS_ANON=false   # belt-and-suspenders; storage="azure" also sets this in-process
+```
+
+```python
+import fsd
+training = fsd.create_training_data(
+    label_polygons, catalog_filepath="abfss://data@<account>.dfs.core.windows.net/p1-demo/imagery/catalog.parquet",
+    startdate=..., enddate=..., mosaic_days=30, bands=["B08", "SCL"],   # SCL mandatory, TODO #35
+    id_col="id", label_col="label",
+    export_folderpath="abfss://data@<account>.dfs.core.windows.net/p1-demo/out/",
+    storage="azure",
+)
+```
+
+- `fsd.storage.azure.to_vsi(url)` — the deterministic `abfss://… -> /vsiadls/…` translation
+  GDAL's pixel reads need (adlfs is not on GDAL's VSI path); local paths pass through unchanged.
+- `fsd.raster.rio_open` is the one place that actually opens a raster — swapped in for bare
+  `rasterio.open` at the 3 pixel-read sites (`raster/images.py`, `raster/cog.py`,
+  `catalog/stac.py`). Nothing else in fsd needs to change to read/write blob.
+- Real credentialed proof (staged data + a GDAL `/vsiadls/` read, before any of the above code
+  existed): `runbooks/31-p1-upload-slice.md` + `runbooks/scripts/31_upload_slice.py` (ran green
+  2026-07-17). Full compute-seam demo (build a datacube reading/writing blob):
+  `runbooks/31-p1-datacube-on-blob.md`.
+- **Not wired**: `download`-to-blob (`sources/mpc.py`/`sources/cdse.py` keep their local-only
+  guards — suspended into the ingest/normalization contract spec, TODO #38) and
+  `run_inference`/`deploy` (`storage_allowed=False` — P4/P5, TODO #39).

@@ -2,7 +2,328 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-16_
+_Last updated: 2026-07-17_
+
+## ✅ Opus@high REVIEW (2026-07-17): **PASS with one fixed bug** — spec 31 P1 compute-seam implementation is sound; the demo script's success criterion was wrong (`EXPECTED_T=2` vs the real `3`), fixed here. Tree left uncommitted. **→ NEXT: user runs `runbooks/31-p1-datacube-on-blob.md`.**
+
+**Reviewed** code-vs-spec + independent re-verification + 2 mutation tests (spec 24 D5 / spec 33 precedent), from **inside the worktree** `spec31-p1-azure-compute-seam` against its own `[dev,azure]` `.venv`. **Verdict: PASS.** The compute seam (`azure.py`/`rio_open`/`configure_storage`/the §6 abspath fix) matches the pivoted spec (§1–4/§6/§7); §5 correctly untouched (`git diff --stat` on `sources/mpc.py`+`cdse.py` = empty, verified, not taken on report); scope discipline clean.
+
+**Verified independently, reproduced not trusted:**
+- `pytest -q` → **269 passed / 3 skipped**; `ruff check src/ tests/` clean.
+- Degrades cleanly without the `[azure]` extra: uninstalled `adlfs`/`azure-identity`/`azure-core`/`azure-storage-blob` → **244 passed / 4 skipped** (25 azure-seam tests skip via module-level `importorskip`), then reinstalled → back to 269/3.
+- **Mutation A** (implementer's, re-run not trusted): reverted the `fs.is_local` guard in `create_datacube.setup()` → `os.path.abspath` unconditional → `test_setup_does_not_corrupt_a_remote_run_folderpath` fails, showing the exact corruption (`<cwd>/abfss:/data@acct.../s1`). Guard is load-bearing.
+- **Mutation B** (my own choosing): dropped the `storage == "local"` no-op arm in `configure_storage` → `test_configure_storage_local_string_is_noop` fails (wrongly raises). The "third thing" (local-as-noop) is genuinely pinned. `storage=object()` still correctly raises (regression intact).
+
+**Finding R1 (FIXED here) — demo success criterion was wrong (would false-fail a green run).** `runbooks/scripts/31_datacube_on_blob.py` asserted `EXPECTED_T = 2` and `runbooks/31-p1-datacube-on-blob.md` listed `timestamps_len == 2`. Calendar windows tile `[startdate, enddate)` in `mosaic_days` steps anchored at startdate, so 2018-07-01..2018-09-01 (62 days) at `mosaic_days=30` = **`ceil(62/30)=3`** windows, **not 2** — verified against `fsd.datacube.ops._calendar_windows` and `api.compute_n_timestamps` (both return 3). The spec's own "T=2 at mosaic_days=30" prose is an arithmetic slip that propagated into the implementer's PROGRESS entry (below) and the script. A perfectly successful demo run would have reported `"pass": false`. **Fixed** the script (`EXPECTED_T=3` + a comment explaining the data-independent count) and the run-book table (`3`, with a note). Count is deterministic regardless of granule dates (the calendar scheme emits every window, empty trailing one as an all-mask slice). **Also patched the two "T=2" references in the spec body (`specs/31`, §The demo slice-rationale + step 2) to "T=3" with a dated correction note (user-approved 2026-07-17); the upload run-book has no T claim to fix.**
+
+**Finding R2 (ACCEPT — no new spec needed) — the Snakemake-sentinel gap (implementer's finding #2 / TODO #41).** The two-build demo workaround **adequately proves spec 31's intent.** Build 1 (`python -m fsd.workflows.task` as a real subprocess, remote `--export-folderpath`) proves the whole compute seam *including the write side* — D1 (`abfss://` artifacts), D2/§4 (GDAL `/vsiadls/` streaming reads), §3 (`fs.save_npy` writes to blob), D4 (`FSSPEC_*` inherited across the subprocess boundary — this *is* the exact CLI the Snakemake runner shells out to). Build 2 (`create_training_data(storage="azure")` through the real Snakemake runner, blob catalog, local export) proves the normal entrypoint reads blob through the child subprocess. The uncovered piece — Snakemake's own `start.txt`/`done.txt` bookkeeping can't live on blob — is a **runner-seam (spec 10 Seam 2) concern, which spec 31 explicitly scopes OUT** (P1 = local runner + blob storage). Making it fail-loud (`RuntimeError`) instead of silent-corrupt + logging TODO #41 (folded into the Batch-runner redesign) is the correct handling. **P1 is genuinely "done" for what it claims; this does not block sign-off.**
+
+**Also spot-checked:** `rio_open` keeps the `rasterio.Env` alive for the dataset lifetime + tears it down on `close()` (correct — GDAL range-reads after open); `configure_storage` sets both `os.environ` and `fsspec.config.conf` (the import-time-vs-runtime hazard); `_check_local_seams(storage_allowed=False)` on `run_inference`/`deploy` keeps inference local. Band list `['B08','SCL']` correct per TODO #35 (SCL mandatory via `build_datacube`'s hardcoded mask→drop; B08 = `config.REFERENCE_BAND`).
+
+## PRIOR (2026-07-17, implementation) — ✅ **spec 31 P1 Azure COMPUTE SEAM IMPLEMENTED (Sonnet@medium)** — 269 passed/3 skipped, ruff clean. **→ Opus@high review** (done above), then the user runs the datacube-on-blob demo.
+
+**Implemented to the pivoted spec** (`specs/31-p1-azure-storage-seam.md` §1–4/§6/§7; **§5 NOT
+implemented**, as instructed — download-to-blob stays suspended). Deliverables: `fsd/storage/
+azure.py` (new — `to_vsi`, `account_from_url`, `storage_token` off a single module-cached
+`DefaultAzureCredential`, `configure_storage`); `fsd/storage/fs.py` re-exports `to_vsi` + gained
+`is_local` (see finding below); `fsd/raster/__init__.py` gained `rio_open` (local passthrough;
+`abfss://`/`az://` → GDAL `/vsiadls/` under a fresh-token `rasterio.Env` kept alive for the
+dataset's lifetime; `mode="w"` on remote raises), swapped into the 3 pixel-read sites
+(`raster/images.py`, `raster/cog.py`, `catalog/stac.py`); `api.py`'s `_check_local_seams` gained
+`storage_allowed` (default True; `download`/`create_training_data` accept `storage="azure"` +
+call the new `configure_storage`; `run_inference`/`deploy` pass `storage_allowed=False` — stay
+local, per §Scope); `pyproject.toml` gained `azure-identity` in `[azure]`. 27 new tests
+(`tests/test_azure_seam.py` + 2 in `test_workflows.py`), all mutation-tested non-vacuous (mutated
+`to_vsi`, `rio_open`, the `os.path.abspath` guard, and the Snakefile guard — each mutation broke
+exactly the test meant to catch it). `[dev,azure]` installed into this session's `.venv` so the
+adlfs-introspection tests (pinning the installed `adlfs 2026.5.0`/`fsspec 2026.6.0` facts §1
+cites) actually run rather than skip; also verified the suite degrades cleanly to **244
+passed/4 skipped** with `adlfs`/`azure-identity` **uninstalled** (the `[dev]`-only baseline a
+fresh clone would actually have), then reinstalled.
+
+**Also caught by re-tracing the spec's own §Tests wording (not just "does the function exist"):
+`storage="local"` was being REJECTED, not treated as a no-op like `None`.** The spec's Tests
+section says explicitly `storage="local"`/`None` leaves `FSSPEC_ABFSS_*` unset — my first pass of
+`_check_local_seams`/`configure_storage` only special-cased `None`, so `storage="local"` fell
+through to "not 'azure' → raise". Fixed (`storage != "local"` added to both guards); a test now
+pins it (`storage=object()` still correctly raises, confirmed unaffected).
+
+**⚠️ New finding beyond the spec's own §6 grep head-start (which only checked `os.path.exists`/
+`os.makedirs`/bare `open(` and missed both of these):**
+1. **`workflows/create_datacube.py`'s `setup()` + its Snakefile both called `os.path.abspath()`
+   on `export_folderpath` unconditionally.** `os.path.isabs("abfss://...")` is `False`, so
+   `abspath` silently prepended the local cwd and mangled the scheme into `abfss:/` — a real
+   **silent corruption bug**, not a style nit, that would have broken the datacube-on-blob demo
+   at the first URL it touched. **Fixed** with a new `fsd.storage.fs.is_local(path)` guard at
+   both sites (mirrors `sources/cdse._is_local_path`'s existing `fsspec.utils.get_protocol`
+   pattern) — zero behavior change for local paths (mutation-tested).
+2. **Deeper, NOT fixed: the local Snakemake runner's own `start.txt`/`done.txt` resumability
+   sentinels (`Snakefile`'s `touch()`) are plain `os.makedirs`/`open`, not `fsd.storage`-routed.**
+   Even with (1) fixed, a remote `export_folderpath` would make Snakemake's own DAG tracking
+   silently create a garbage **local** sentinel directory (a valid-if-bizarre local relative path
+   like `./abfss:/data@acct.dfs.core.windows.net/.../done.txt`) rather than crash — worse than a
+   raise. This is a genuine limitation of the local runner (where does Snakemake's own bookkeeping
+   live when artifacts are remote?), not something a "swap bare `rasterio.open`" pass can fix, and
+   not in spec 31's stated scope. **Made it fail loud instead of silently corrupting**: the
+   Snakefile now raises a clear `RuntimeError` for a remote `export_folderpath`. Logged as
+   **TODO #41** (folded into the Batch-runner item — a real fix likely arrives with that redesign).
+
+**Spec-section → implementation trace** (the spec-32 lesson: check the call chain, not just
+that functions exist):
+- **§1 config seam** → `storage/azure.py::configure_storage` sets both `os.environ` and
+  `fsspec.config.conf["abfss"]["anon"]`; `test_configure_storage_azure_string_sets_env_and_conf`
+  + the `[dev,azure]`-only adlfs-introspection tests pin the exact library facts (`protocol`
+  tuple, `apply_config`, `_get_kwargs_from_urls`) §1 cites, against the *installed* versions, not
+  assumed ones.
+- **§2 `to_vsi`** → `storage/azure.py::to_vsi`/`account_from_url`; traced against
+  `31_upload_slice.py`'s own `_to_vsi` (the pre-existing, real-data-proven reference) —
+  same regex shape, same translation. `os.path.join` URL-safety pinned by a direct unit test.
+- **§3 adlfs reads/writes** → "no new code" per the spec; confirmed true — `fs.*`'s 94 call
+  sites are untouched (`git diff` on `storage/fs.py` shows only the `to_vsi`/`is_local`
+  additions, no edits to `_fs_and_path` or any existing function body).
+- **§4 `rio_open` + token** → `raster/__init__.py::rio_open`/`storage/azure.py::storage_token`;
+  traced call-by-call against the 3 named sites (`raster/images.py` 7 call sites,
+  `raster/cog.py` 2, `catalog/stac.py` 2 — every bare `rasterio.open(` in those files, confirmed
+  by `grep`, none left). Local-passthrough + remote-Env-with-parsed-account + write-guard each
+  have a dedicated mutation-tested unit test.
+- **§5** → not implemented, confirmed by `git diff` showing zero changes to `sources/mpc.py`/
+  `sources/cdse.py`.
+- **§6 audit** → confirmed the reviewer's grep head-start (builder.py/workflows/*.py clean of
+  `os.path.exists`/`os.makedirs`/bare `open(`) AND found what it missed (`os.path.abspath`,
+  finding 1 above — a different grep pattern than the one the head-start ran). The remaining
+  `rasterio.open(` sites (`api.py`'s inference-merge, `model/engine.py`'s inference write) are
+  confirmed out-of-P1-scope by tracing `_check_local_seams(..., storage_allowed=False)` on both
+  `run_inference` and `deploy`.
+- **§7 packaging** → `azure-identity` added to `[azure]`; confirmed importable + functional by
+  actually installing `[dev,azure]` into `.venv` and running the full suite against it (not just
+  reading the toml).
+- **Deliverables' Tests list** → every named test scenario has a corresponding test in
+  `tests/test_azure_seam.py`/`test_workflows.py`, cross-checked line-by-line against the spec's
+  §Tests bullet list while writing them (not written from memory of the summary above).
+
+**Consequence for the demo run-book** (`runbooks/31-p1-datacube-on-blob.md` +
+`runbooks/scripts/31_datacube_on_blob.py`, written, **not yet run** — that's the user's next
+step): it proves every claim spec 31's demo cares about via **two builds** instead of the
+spec's literal "run one cell through the Snakemake runner writing to blob" — (1) `python -m
+fsd.workflows.task` invoked **directly as a real subprocess** with a remote
+`export_folderpath` (this *is* the exact CLI unit-of-work Snakemake shells out to, so it still
+proves D4's env-inheritance-across-subprocess claim, plus D1/D2/§3/§4 on the write side); (2)
+`create_training_data(storage="azure")` through the **real** Snakemake runner, catalog on blob
+but the per-cell working directory kept local (proves the same D2/D4 claims through the normal
+entrypoint, avoiding finding #2 above). Both builds assert `timestamps` axis length `== 3`
+(**corrected from `== 2` by the Opus review — R1 above; `ceil(62/30)=3` for the Jul 1–Sep 1 window**)
+— the `mosaic_days=30` calendar-mosaic contract, a criterion that can actually fail, not the
+degenerate T=1 runbook 32 v1 tripped on. Band list `['B08','SCL']` per TODO #35 (unchanged).
+
+**Traced against the spec's own de-risking, not re-derived:** the upload run-book (below) already
+proved D1 (catalog paths `abfss://`) and D2/§4 (GDAL `/vsiadls/` read of an uploaded COG) on real
+blob data before this session started — this implementation's job was the *code*, not
+re-verifying those claims, so `rio_open`/`to_vsi`/`storage_token` are a faithful port of
+`31_upload_slice.py`'s own `_to_vsi` + `rasterio.Env(...)` block (same shape, same library facts).
+
+**Living docs updated:** `CHANGES.md` (the seam + the two §6 findings), `TODO.md` (#38 ingest
+spec, #39 inference/serving-on-blob, #40 ROI-geometry-on-blob, #41 Batch runner + the sentinel
+finding), `RECIPES.md` (a `storage="azure"` recipe), `specs/10-storage-and-scale.md` (pointers to
+spec 31 realizing Seam 1). Tree left **uncommitted** (commit only when asked).
+
+**→ NEXT:** the user runs `/handoff` → a fresh **Opus@high** session reviews (code-vs-spec +
+independent re-verification + a mutation test, per spec 33's review precedent — this session
+already ran the mutation tests inline, but an independent pass should re-check them, not take
+the report on faith) — **and should look hard at finding #2 above**, since it's a real,
+newly-discovered scope question (does the demo's two-build workaround adequately prove the
+spec's intent, or does the Snakemake-sentinel gap need its own follow-up spec before P1 is truly
+"done"?). Then the user runs `runbooks/31-p1-datacube-on-blob.md` (not yet run) and pastes back
+its `_result.json`. Then Opus writes the **ingest/normalization contract spec** (TODO #38 —
+§5-ARCHIVE + the `clip(DN-1000,0)` vs `NODATA=0` encoding question + TODO #35 are its inputs).
+
+---
+
+## PRIOR (2026-07-17, later) — 🔄 **ROADMAP PIVOT (user): the DOWNLOADER should normalize, not the datacube builder.** Spec 31's seam survives; its §5 + download-demo are SUSPENDED into a new ingest-contract spec. **Run-book `31-p1-upload-slice.md` is written and ready for the user to run NOW (on wifi).**
+
+**The user's argument, and it is correct** (verified against the code, not accepted on assertion):
+`build_datacube`'s chain is
+`load_images → _apply_boa_offsets → dst_crs → reference(B08) → resample → stack →
+apply_cloud_mask_scl → drop_bands(["SCL"]) → median_mosaic`
+— steps 2, 7, 8 are **Sentinel-2 semantics hardcoded into the generic builder**, plus
+`REFERENCE_BAND="B08"`. It is an S2 L2A builder wearing a generic name, so every new source must
+either cosplay as S2 or force a builder rewrite. **We already logged the consequence without seeing
+the pattern: TODO #35 (CHIRPS/ERA5 have no SCL) is this same issue, filed as a one-off.**
+
+**The sharpest version, from our own history:** spec 31's original §5 was `stage-local → convert →
+put-to-blob`. The MPC pivot **deleted** it ("MPC is already COG, no conversion needed") — but MPC
+didn't remove normalization, it **moved** it from *format* (jp2→COG) to *radiometry* (baseline
+offset), and we put the radiometry in the **builder** instead of keeping §5's shape. So §5's shape
+was right and deleting it was the error. The user's "intermediate process" = generalize it:
+`stage → normalize → put`, per source (CDSE=format, MPC=radiometry, ERA5=netCDF→COG).
+
+**Direction agreed:** ship the seam (architecture-neutral — it's about *where bytes live*, not what
+they contain, and the user's own "pull → process → upload to Azure" **requires** it), suspend §5 +
+the download demo into a new **ingest/normalization contract spec**, and prove the seam against
+**data we upload by hand** rather than a download. Open design questions for that spec, **not
+settled**: bake-at-ingest vs a per-source read adapter (baking kills MPC's byte-copy advantage);
+the normalized **encoding** (`clip(DN-1000,0,65535)` vs `NODATA=0` **eats real pixels in (0,1000]**
+— baking makes that permanent and silent); absorbing TODO #35. Note **normalize-at-ingest forecloses
+TODO #31's `/vsicurl` stream arm — but ERA5 forecloses it anyway** (you cannot stream a netCDF as a
+COG), which strengthens the case rather than weakening it.
+
+**⚠️ Governance note:** the 2026-07-15 diagnostic found this project keeps working *around* P1. A
+well-argued "redesign ingest first" is exactly that pattern's shape. **Guard: the seam still ships.**
+This is not the avoidance pattern *provided* the upload + seam land before the ingest spec.
+
+### ⚠️ `satellite_benchmark/` IS GONE — docs were stale, and a session planned against it
+
+Discovered when sizing the upload: **`satellite_benchmark/` does not exist on any mounted volume**
+(no external drives). Deleted deliberately for disk pressure (it was 159 GiB; disk is at **96%, 36
+GiB free**), and **CLAUDE.md + memory both still described it as the test set** — so this session
+built a plan on data that wasn't there. **Now corrected in CLAUDE.md + RECIPES.md.**
+
+**What survives** (`fsd/tests/outputs/`, 83 GB, gitignored):
+- **`demo_e2e/imagery/` = the real-data test set now** — Austria e2e: **207 granules, 74 GB**,
+  Apr–Sep 2018, 4 MGRS tiles (T33UVP 54 / T33UWP 52 / T33UVQ 52 / T33UWQ 49), B04/B08/B8A/SCL,
+  already COG, with `catalog.parquet`.
+- `mpc_baseline/imagery/` — 1.7 GB, 9 granules, 33UWP, B04+SCL (runbook 32's over-fetch).
+- **Verified geometry:** `s2grid=476da24` is **100% inside T33UWP**; `AT_ROI` straddles all four
+  tiles ~evenly (32.7/32.7/32.7/32.6%) → **AT_ROI is now the multi-tile/multi-CRS case**, since
+  Ethiopia's `s2grid=165bca4` has **no imagery behind it any more**.
+- Per-band totals across 207 granules: B08 34.2 GB (avg 165 MB), B04 31.7 GB, B8A 9.2 GB,
+  **SCL 0.54 GB (avg 2.6 MB)**.
+
+### ⚠️ NEW FINDING — our Austria archive is radiometrically WRONG (#10/#30, live)
+
+**Every granule is baseline `N0500`** (05.00 ≥ 04.00 → ESA `BOA_ADD_OFFSET = -1000`), but
+`sources/cdse.py:514` writes **`boa_add_offset = 0`** for every CDSE row (TODO #30 open), and this
+catalog **predates the column entirely** so `TileCatalog.read` fills 0. **So every datacube ever
+built from the Austria archive is ~1000 DN too high** — including the 300-cell e2e crop map. Not a
+seam problem (harmless for P1, whose PASS criteria are all seam properties), but it is **correctness
+debt #10 sitting live in our own test data**, and it is the single best exhibit for the pivot above:
+the downloader didn't normalize, the wrongness got baked into an artifact, and the catalog asserts
+it needs no fix.
+
+### → The thing to run NOW (user, on wifi): `runbooks/31-p1-upload-slice.md`
+
+Uploads **T33UWP × Jul–Aug 2018 × [B08, SCL] = 20 granules / 40 files / 2.27 GB** to the `rise`
+blob and writes a `catalog.parquet` **on blob with every band path an `abfss://` URL**. Chosen
+because 476da24 is 100% inside T33UWP and two months gives a real **T=2** mosaic axis at
+`mosaic_days=30` (not a degenerate T=1 — the trap runbook 32 v1 fell into).
+
+- **Needs NO spec-31 code:** `fs.put`/`fs.write_parquet` already route fsspec→adlfs; only
+  `azure-identity` + **`FSSPEC_ABFSS_ANON=false`** are required (the account is parsed from the URL).
+- Script `runbooks/scripts/31_upload_slice.py` follows the committed-script pattern (no
+  `export`+heredoc), is **idempotent/resumable**, prints live MB/s + ETA ([[long-process-progress]]),
+  and writes `_result.json` **unconditionally**. **Verified offline:** ruff clean; `--dry-run`
+  reports exactly 20/40/2.27 GB; the missing-`FSSPEC_ABFSS_ANON` guard and the bad-URL guard both
+  fire and still write `_result.json`; `_to_vsi` translates correctly.
+- **It also proves spec 31 D2/§4 before any code is written for it** — reads our own uploaded COG
+  through `/vsiadls/` + a fresh `AZURE_STORAGE_ACCESS_TOKEN` (`gdal_vsiadls_read_ok` +
+  `gdal_sample_nonzero` are the load-bearing PASS keys).
+- **A seam finding the spec got wrong:** the catalog column is **`local_folderpath`** (name becomes a
+  lie on blob) and `builder.py:72` joins it with `files` to make each band path. **Spec 31 §2 claims a
+  catalog `filepath` column — there is none**; `filepath` is derived in `flatten_catalog`. The upload
+  script rewrites `local_folderpath` → the blob folder and narrows `files` to `B08.tif,SCL.tif` so the
+  blob catalog is self-consistent.
+
+**✅ UPLOAD RAN GREEN (user, 2026-07-17): `"pass": true`.** 20 granules / 40 files / **2.27 GB** on
+`rise` at `data@…/fsd-tests/p1-demo/imagery/`, ~13.4 MB/s over VPN (170 s). All 20 catalog rows on
+blob carry `abfss://` paths (`every_catalog_path_is_abfss: true`); **GDAL read our uploaded COG via
+`/vsiadls/`** and got real uint16 256×256 pixels (`gdal_vsiadls_read_ok` + `gdal_sample_nonzero`).
+So **D1 + D2/§4 — the spec's riskiest claims — are proven on real data before any seam code exists.**
+(One untested path: `files_skipped_already_present: 0`, so idempotent-resume never fired in the wild.)
+
+**✅ Spec 31 rewritten end-to-end for the pivot (same session).** The spec was signed off with §5 =
+MPC-copy-to-blob + a download demo; the pivot suspends both. Now consistent throughout: a **⚠️ pivot
+banner** at the top of the status block (download-to-blob OUT → ingest spec; this is a *compute-seam*
+spec); **D3 marked obsolete**; **§5 SUSPENDED** with the MPC-copy design preserved as **§5-ARCHIVE**
+for the ingest spec; **Scope, Tests, the demo, and Deliverables** all rewritten to "build over
+hand-staged blob data, no download" (`mpc.py`/`cdse.py` **not touched**, both guards stay); the demo
+gained an explicit **D4 subprocess-safety** step (run one cell through the Snakemake runner). Also
+fixed a real spec error the upload surfaced: **there is no catalog `filepath` column** — it's
+`local_folderpath` (joined at `builder.py:72`); `filepath` is only `flatten_catalog`'s transient
+output. Suite still 242/3, ruff clean.
+
+**→ NEXT:** **Sonnet@medium implements the spec-31 compute seam** (§1 config, §2 `to_vsi`, §3 adlfs,
+§4 `rio_open`/`/vsiadls/`, §6 audit, §7 packaging — **not** §5) against the uploaded blob data → then
+the user runs the datacube-on-blob demo run-book → then **Opus writes the ingest/normalization
+contract spec** (§5-ARCHIVE + the encoding/`(0,1000]`-clip question + TODO #35 are its inputs).
+Nothing committed (no ask).
+
+---
+
+## PRIOR (2026-07-17) — ✅ **spec 31 (P1 Azure storage seam) REVIEWED, REWRITTEN, SIGNED OFF** (Opus@high, independent of the draft's author) → NEXT = **Sonnet@medium implements**. ⚠️ **Also found: concrete `rise` values leaked into the PUBLIC repo — user decision needed.**
+
+**Sign-off is real this time and independently checked:** the draft was Opus (`030f6ac`, trailer
+verified `Claude Opus 4.8` — not a repeat of spec 33's F1); this review was a **separate** Opus@high
+session that did not write it. Draft → **revised** → signed off.
+
+**The review caught the spec-32 failure mode recurring verbatim: the demo was structurally impossible
+against our own code.** Spec 31's exit demo downloads to blob, but **both** sources hard-refuse a
+remote dst today — `mpc.py:294` raises *"MPC source is local-only in Phase 1"*, and `cdse.py:645`
+raises on remote + `cog=True`. Meanwhile the one section that would have fixed it (**§5**) had been
+marked **DELETED** by the 2026-07-16 retarget banner and **never rewritten** ("a future session's
+job"). So the spec deleted its own download-to-blob design and still depended on it — and its Scope /
+Tests / Demo / Deliverables all still encoded the deleted CDSE design. Handed to Sonnet (which
+implements to the letter, as 32 and 33 both did) it would have implemented the deleted §5.
+
+**Two user decisions taken (2026-07-17), both as recommended:**
+1. **Demo copies MPC → `rise` blob, then streams back via `/vsiadls/`.** Streaming MPC in place via
+   `/vsicurl` would be smaller but would **never exercise `/vsiadls/`** — i.e. would not test D2/§4
+   at all. TODO #31's *production* stream-vs-copy question stays **"measure, don't argue"**; this
+   just builds the copy arm so the later measurement has a comparison.
+2. **CDSE download-to-blob dropped from P1** → new TODO (next to #30). MPC is already-COG, so the
+   jp2→COG dance the MPC pivot removed is not reimported. `sources/cdse.py` is not to be touched.
+
+**What the rewrite changed:** §5 is now **"MPC copy straight to blob — pure byte-copy"**, written
+against the actual guard it must lift (delete `mpc.py:294`; everything else in that path — `fs.makedirs`,
+`_select_item_files`'s `os.path.join`, `_transfer_one`'s already-cross-backend, `.part`-atomic
+`fs.transfer` — is already URL-safe, traced claim by claim). §1/§3's "registry + credential object"
+language removed. **Demo band list pinned to `['B08','SCL']`** — TODO #35 (hardcoded SCL mask/drop)
+is still open and `config.REFERENCE_BAND == 'B08'`, so any other list reproduces runbook 32 v1's
+crash. Byte budget stated honestly (~0.5–1 GB, full-tile COGs) rather than v1's false "a few MB".
+
+**All 5 open items RESOLVED at sign-off** — none left for the implementer. The two fsspec ones were
+closed by **direct introspection of the installed libraries** (`fsspec 2026.6.0`, `adlfs 2026.5.0`),
+now a "Verified against the installed libraries" section in the spec with per-fact credit:
+- **`AzureBlobFileSystem.protocol == ('abfs','az','abfss')`** and `apply_config` keys on the **class's**
+  protocol tuple, not the URL scheme → **set exactly one key, `FSSPEC_ABFSS_ANON=false`**. Setting
+  several is a *hazard* (last proto silently wins), not thoroughness.
+- **`_get_kwargs_from_urls('abfss://data@acct.dfs.core.windows.net/…') == {'account_name': 'acct'}`**
+  → **D1 confirmed**; the account rides in the URL and beats conf, so `FSSPEC_ABFSS_ACCOUNT_NAME` is
+  redundant. **D1–D4 all survive independent review** (D2's token handling and D3's "GDAL never
+  writes `/vsiadls/`" both hold — with MPC, GDAL is never on the write path at all).
+- Scratch-dir question **moot** (no staging without conversion); atomicity question **resolved** by
+  `fs.transfer` already doing `.part`+rename (the residual — is adlfs's `mv` atomic on HNS — is a
+  runbook *observation*, step 2's "no `.part` leftovers").
+
+### ⚠️ LEAK — concrete `rise` values are in the PUBLIC repo (`git@github.com:nikhilsrajan/fsd.git`)
+
+Found while auditing spec 31 for placeholder discipline. **The handoff's claim that spec 31 was
+verified clean was wrong** — and `PROGRESS.md` was worse:
+- `specs/31…md` §1 named the **storage account**. → **scrubbed** to a pointer.
+- `PROGRESS.md` (this file, 2026-07-15 entry) named the **storage account, the user's identity
+  (`…@raapid.org`), the subscription name AND its GUID, and the resource group**. → **scrubbed** to
+  pointers at `../P1_AZURE_SETUP.md`.
+- **Introduced by `030f6ac`, which is an ancestor of `origin/main` → already on GitHub.** Scrubbing
+  the working copy does **not** remove it from history; `git show 030f6ac:PROGRESS.md` still has it.
+
+**Severity, stated honestly: no credential leaked.** Account keys are disabled (Entra-only), storage
+is RBAC-gated and VPN/firewalled, and subscription/RG/account names are identifiers, not secrets. The
+most sensitive item is the **identity email** — a valid Entra username is a phishing/spray target. So
+this is a genuine **hard-constraint violation** to decide on deliberately, not an emergency.
+**Open for the user:** leave history as-is (scrub going forward), or rewrite history / rotate the repo.
+Claude did not touch git history — that is destructive and the repo is public/shared.
+
+**Also corrected:** the handoff said "3 unpushed commits, nothing has been pushed." **False** —
+`origin/main` is at `14781c1`; all three spec-33 commits are pushed.
+
+**Nothing committed** (no ask). Working tree still carries the deliberate `TODO.md` #26-reflow WIP +
+the two notebooks, untouched.
+
+**→ NEXT:** `/handoff` → **Sonnet@medium** implements `specs/31-p1-azure-storage-seam.md` against the
+signed-off text (§Deliverables is the checklist; the runbook must follow the **committed-script**
+pattern of `runbooks/scripts/33_probe_dedup.py`, not v1's `export`+heredoc that silently produced
+nothing). Then Opus review, then the **user runs** `runbooks/31-p1-datacube-on-blob.md` (VPN on,
+~0.5–1 GB). **Decide the leak question** at some point before the next push.
+
+---
 
 ## PRIOR (2026-07-16) — ✅ spec 32 DONE: runbook v2 FULLY VALIDATED on real MPC data. **Correctness debt #10 is fixed for MPC and proven end to end.**
 
@@ -61,7 +382,7 @@ Uncommitted WIP, deliberately untouched: the `TODO.md` item-#26 reflow + the two
 
 ---
 
-## LATEST (2026-07-17) — ✅ spec 33 (MPC reprocessing dedup, TODO #34) CLOSED: implemented (Sonnet@medium) + Opus@high review PASS + **runbook 33 VALIDATED on live MPC data** (`"pass": true`, duplicate still live upstream so the test was real). NEXT = spec 31 (P1 Azure seam)
+## PRIOR (2026-07-17) — ✅ spec 33 (MPC reprocessing dedup, TODO #34) CLOSED: implemented (Sonnet@medium) + Opus@high review PASS + **runbook 33 VALIDATED on live MPC data** (`"pass": true`, duplicate still live upstream so the test was real). NEXT = spec 31 (P1 Azure seam)
 
 **Implemented to the letter of `specs/33-mpc-reprocessing-dedup.md`** — no redesign, no forks
 reopened. `sources/mpc.py`: new `_generation_time(item) -> str` (reads `s2:generation_time`,
@@ -460,18 +781,19 @@ sources (#11/#21) until it's made.* (4) Promote correctness debt **#10** (STAC r
 across S2 baselines — silent wrong-answers) above the serving/feature long tail. (5) **Spec-first
 handoff:** the next session *writes* spec 31, it does NOT code.
 
-**P1 access facts nailed down (from `../AZURE_INFRA_PRIVATE.md`, filled into `../P1_AZURE_SETUP.md`):**
-storage = **`strisewesteurope`, ADLS Gen2 (HNS)**, filesystem `data`; **account keys DISABLED** →
-auth is **`DefaultAzureCredential` (az-login token), FORCED** (no key/SAS); GDAL driver = **`/vsiadls/`**,
+**P1 access facts nailed down** — **concrete values live ONLY in `../P1_AZURE_SETUP.md` §3 +
+`../AZURE_INFRA_PRIVATE.md`** (workspace root, uncommitted). Shape only, for the public repo:
+the target storage account is **ADLS Gen2 (HNS)**; **account keys DISABLED** → auth is
+**`DefaultAzureCredential` (az-login token), FORCED** (no key/SAS); GDAL driver = **`/vsiadls/`**,
 NOT `/vsiaz/`. The real unknown = whether the user's **personal** identity has **Storage Blob Data
 Contributor** (private doc only confirms the *compute UAMI* does) — the access probe is the definitive test.
 
 **PROBE RAN GREEN (user, 2026-07-15): `"pass": true`, all 3 steps.** P1 ACCESS IS READY — confirmed
 end to end over VPN through the exact seams fsd uses. Facts for spec 31 (also in `../P1_AZURE_SETUP.md`,
 now fully green):
-- Identity **`nsasiraj@raapid.org`**, subscription **`UniStra_RAAPID`** (`f3ad55ae-d72a-4cce-aa07-ccefed436a79`),
-  RG `rg-rise-westeurope`.
-- **adlfs `DefaultAzureCredential` round-trip works** to `az://data/fsd-p1-scratch/` (370 B write=read)
+- Identity / subscription / resource group confirmed — **names + IDs in `../P1_AZURE_SETUP.md` §2**,
+  deliberately not repeated here (public repo).
+- **adlfs `DefaultAzureCredential` round-trip works** to the scratch prefix (370 B write=read)
   → the user's **personal identity HAS Storage Blob Data Contributor** (no admin grant needed — the 403
   risk is dead).
 - **GDAL 3.10.3 opens the object via BOTH `/vsiadls/` and `/vsiaz/`** with `AZURE_STORAGE_ACCESS_TOKEN`

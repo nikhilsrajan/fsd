@@ -17,6 +17,11 @@ compute**. Put both behind seams; keep everything else cloud-unaware.
 
 ## Seam 1 — Storage (`fsd/storage/fs.py`, via `fsspec`)
 
+> **Realized for Azure by spec 31 (P1, 2026-07-17)** — the compute half (build + flatten
+> reading/writing blob via `abfss://` + GDAL `/vsiadls/`; `fsd/storage/azure.py` +
+> `fsd/raster/rio_open`). Download-to-blob is **suspended** into the ingest/normalization
+> contract spec (fsd's own `mpc.py`/`cdse.py` keep their local-only guards in P1).
+
 - Every read/write in the package goes through this module — no other module calls
   `open`, `os.path.exists`, `np.save(path)`, `gpd.read_*(path)` on a raw path.
 - `fsspec` gives one API over `file://` (local, v1), `az://`/`abfs://` (Azure Blob
@@ -52,7 +57,12 @@ Any S3-compatible store is just an fsspec filesystem (`s3fs`) configured with
 - **rasterio caveat:** rasterio reads remote rasters via GDAL VSI (`/vsicurl/`,
   `/vsiaz/`), not fsspec. The raster module (`07`) must accept either a real local
   path or a VSI path; the task may `get()` a tile to local scratch before heavy
-  rasterio work. Document this explicitly when implementing.
+  rasterio work. Document this explicitly when implementing. **Realized (spec 31,
+  P1): `fsd.raster.rio_open`** — a thin `rasterio.open` wrapper in the three
+  pixel-read sites (`raster/images.py`, `raster/cog.py`, `catalog/stac.py`); local
+  paths pass straight through, an `abfss://`/`az://` path routes to GDAL's
+  `/vsiadls/` handler under a per-open refreshed token. No `get()`-to-scratch path
+  was needed — streaming range-reads via VSI is the P4 Batch-node behavior wanted.
 
 ## Seam 2 — Compute (task + runner, see `08-workflows.md`)
 

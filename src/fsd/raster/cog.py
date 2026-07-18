@@ -24,6 +24,7 @@ import rasterio
 import rasterio.shutil
 
 from fsd import config
+from fsd.raster import rio_open
 
 __all__ = ["to_cog", "cog_creation_opts"]
 
@@ -39,7 +40,7 @@ def cog_creation_opts(
     """COG driver creation options for `src_path`. Adds `NBITS=16` for uint16 sources
     (PREDICTOR=2 needs an 8/16/32/64-bit declared depth; S2 declares NBITS=15) — a
     lossless promotion of the *declared* depth only."""
-    with rasterio.open(src_path) as s:
+    with rio_open(src_path) as s:
         dtype = s.dtypes[0]
     opts = dict(
         driver="COG",
@@ -97,7 +98,7 @@ def to_cog(
         raise
 
     if verify:
-        with rasterio.open(src_path) as s, rasterio.open(dst_path) as d:
+        with rio_open(src_path) as s, rio_open(dst_path) as d:
             if not np.array_equal(s.read(), d.read()):
                 raise ValueError(f"to_cog: {dst_path} is not bit-identical to {src_path}")
 

@@ -75,11 +75,15 @@ def setup(
 
         actual_start = subset[timestamp_col].min()
         actual_end = subset[timestamp_col].max()
-        export_folderpath = os.path.abspath(os.path.join(
+        export_folderpath = os.path.join(
             run_folderpath,
             f"{actual_start.strftime('%Y%m%d')}_{actual_end.strftime('%Y%m%d')}",
             str(srow[id_col]),
-        ))
+        )
+        if fs.is_local(export_folderpath):
+            # os.path.abspath is only meaningful (and safe) for a local path — on a
+            # URL (e.g. abfss://...) it would corrupt the host/scheme (specs/31 §6).
+            export_folderpath = os.path.abspath(export_folderpath)
         fs.makedirs(export_folderpath)
         shape_path = os.path.join(export_folderpath, "geometry.geojson")
         catalog_path = os.path.join(export_folderpath, "catalog.parquet")

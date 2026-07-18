@@ -41,6 +41,7 @@ from fsd.sources.cdse import CdseCredentials
 from fsd.sources.cdse import download as _cdse_download
 from fsd.sources.mpc import download as _mpc_download
 from fsd.storage import fs
+from fsd.storage.azure import configure_storage as _configure_storage
 from fsd.workflows import create_datacube as _create_datacube
 
 __all__ = [
@@ -78,13 +79,30 @@ def compute_n_timestamps(
     return math.ceil(total_days / mosaic_days)
 
 
-def _check_local_seams(runner: str, storage) -> list[str]:
-    """P0 wires only local execution/storage; anything else is a clear, early error."""
+def _check_local_seams(runner: str, storage, *, storage_allowed: bool = True) -> list[str]:
+    """`runner` is local-only through P1 (Batch lands in P2). `storage` is wired to the
+    Azure compute seam in P1 (spec 31) for the verbs that read/write the pipeline's own
+    artifacts (`download`, `create_training_data`) — pass `storage_allowed=False` for verbs
+    that are explicitly out of P1 scope (`run_inference`/`deploy`: inference/serving-on-blob
+    is P4/P5, stays local for now)."""
     errs = []
     if runner != "local":
         errs.append(f"runner={runner!r} not supported in P0 (only 'local'; Batch lands in P2).")
-    if storage is not None:
-        errs.append("non-local storage not supported in P0 (local only; blob lands in P1).")
+    if storage is not None and storage != "local":
+        if not storage_allowed:
+            errs.append(
+                "non-local storage not supported here yet (inference/serving-on-blob is "
+                "P4/P5; storage= is wired for download/create_training_data in P1)."
+            )
+        else:
+            if isinstance(storage, str):
+                backend = storage
+            elif isinstance(storage, dict):
+                backend = storage.get("backend")
+            else:
+                backend = None
+            if backend != "azure":
+                errs.append(f"storage backend {backend!r} not supported (only 'azure' in P1).")
     return errs
 
 
@@ -201,6 +219,7 @@ def download(
         errs.append("creds (CdseCredentials) required for source='cdse'.")
     _raise_preflight(errs)
 
+    _configure_storage(storage)
     fs.makedirs(dst_folderpath)
     catalog_filepath = os.path.join(dst_folderpath, "catalog.parquet")
     catalog = TileCatalog(catalog_filepath)
@@ -307,6 +326,7 @@ def create_training_data(
             ))
     _raise_preflight(errs)
 
+    _configure_storage(storage)
     if run_folderpath is None:
         run_folderpath = os.path.join(export_folderpath, "run")
     fs.makedirs(run_folderpath)
@@ -628,7 +648,7 @@ def run_inference(
     CRS — ``merge_crs`` if given, else the max-total-area zone; lossless where a cell already
     matches the target). `runner`/`storage` are local-only here.
     """
-    errs = _check_local_seams(runner, storage)
+    errs = _check_local_seams(runner, storage, storage_allowed=False)
     if output_folderpath is None:
         errs.append("output_folderpath is required.")
     if merge not in (False, True, "reproject"):

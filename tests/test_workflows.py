@@ -103,6 +103,61 @@ def test_setup_writes_workunits(tmp_path):
         "id", "timestamp", "files", "local_folderpath", "area_contribution"}
 
 
+def test_setup_does_not_corrupt_a_remote_run_folderpath(tmp_path, monkeypatch):
+    """specs/31 §6 finding: os.path.abspath must not be applied to a URL (it would
+    turn `abfss://fs@acct.../x` into a mangled local-cwd-prefixed string). setup()'s
+    per-shape export_folderpath must stay a clean abfss:// URL when run_folderpath is
+    remote. Real adlfs I/O is mocked out (no credentials/network in this test)."""
+    cat = tmp_path / "catalog.parquet"
+    shapes = tmp_path / "shapes.geojson"
+    _make_catalog(cat, tmp_path)
+    _two_shapes(shapes)
+
+    remote_root = "abfss://data@acct.dfs.core.windows.net/p1-demo/run"
+    written = {}
+
+    monkeypatch.setattr(fs, "makedirs", lambda *a, **kw: None)
+    monkeypatch.setattr(fs, "write_parquet", lambda path, df, **kw: written.setdefault("parquet", path))
+    monkeypatch.setattr(gpd.GeoDataFrame, "to_file", lambda self, path, **kw: written.setdefault("geojson", path))
+
+    csv_local = tmp_path / "input.csv"  # the work-unit ledger itself can stay local
+    create_datacube.setup(
+        catalog_filepath=str(cat), timestamp_col="timestamp",
+        shapefilepath=str(shapes), id_col="id", run_folderpath=remote_root,
+        startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
+        bands=["B04", "B08", "SCL"], scl_mask_classes=[8, 9], mosaic_days=20,
+        csv_filepath=str(csv_local), label_col="label",
+    )
+
+    df = pd.read_csv(csv_local)
+    assert len(df) == 2
+    for p in df["export_folderpath"]:
+        assert p.startswith(remote_root + "/")
+        assert "abfss:/" + "/" not in p.replace(remote_root, "")  # no mangled second scheme
+        assert str(tmp_path) not in p  # no local-cwd prefix leaked in (the abspath bug)
+
+
+@pytest.mark.skipif(importlib.util.find_spec("snakemake") is None,
+                    reason="snakemake not installed")
+def test_snakefile_raises_clearly_for_remote_export_folderpath(tmp_path):
+    """The local Snakemake runner's own start.txt/done.txt sentinels are plain local
+    file operations (specs/31 §6) — a remote export_folderpath must fail loud (dry-run
+    still parses the rule graph, which is where the guard lives), not silently create
+    garbage local sentinel dirs."""
+    csv = tmp_path / "input.csv"
+    pd.DataFrame([{
+        "shapefilepath": str(tmp_path / "geometry.geojson"),
+        "catalog_filepath": str(tmp_path / "catalog.parquet"),
+        "startdate": "2018-01-01", "enddate": "2019-01-01",
+        "export_folderpath": "abfss://data@acct.dfs.core.windows.net/p1-demo/run/x/s1",
+        "mosaic_days": 20, "mosaic_scheme": "calendar", "scl_mask_classes": "8,9",
+        "bands": "B04,B08,SCL",
+    }]).to_csv(csv, index=False)
+
+    result = runners.run_local(str(csv), cores=1, dry_run=True)
+    assert result.returncode != 0
+
+
 def test_setup_raises_when_no_workunits(tmp_path):
     cat = tmp_path / "catalog.parquet"
     _make_catalog(cat, tmp_path)

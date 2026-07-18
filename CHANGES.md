@@ -4,6 +4,75 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## P1 Azure compute seam: `storage=` is now meaningful (spec 31, 2026-07-17)
+- **`storage=` on `download`/`create_training_data` now does something** — previously
+  `_check_local_seams` (`api.py`) rejected any non-`None` `storage` unconditionally ("blob lands
+  in P1"). It now accepts `storage="azure"` or `{"backend": "azure", ...}`, which sets
+  `FSSPEC_ABFSS_ANON=false` in **both** `os.environ` (for Snakemake-subprocess children, which
+  re-read `FSSPEC_*` at their own import) and `fsspec.config.conf` (for the already-imported
+  parent — fsspec only reads env at import time, so a later `os.environ` mutation alone would not
+  be seen in-process). `runner!="local"` and any other `storage` backend still raise.
+  `run_inference`/`deploy` are **unchanged** — `_check_local_seams` gained a `storage_allowed`
+  flag and those two verbs pass `storage_allowed=False`: inference/serving-on-blob is P4/P5, out
+  of P1 scope, and stays rejected exactly as before.
+- **No new registry, no credential object.** adlfs, given only `account_name` (parsed from the
+  `abfss://` URL host) + `anon=False`, builds its own `DefaultAzureCredential`. All ~94 existing
+  `fs.<fn>` call sites in `fsd.storage.fs` are untouched — an `abfss://…` URL now simply resolves
+  through `fsspec.core.url_to_fs` to a credentialed adlfs filesystem, no fsd code in the path.
+- **New `fsd/storage/azure.py`**: `to_vsi(url)` (deterministic `abfss://<fs>@<account>.dfs.core
+  .windows.net/<path>` -> `/vsiadls/<fs>/<path>`; local paths pass through unchanged; `az://<fs>/
+  <path>` accepted as an alias), `account_from_url(url)`, `storage_token()` (a fresh
+  Storage-scoped bearer token from a single **module-cached** `DefaultAzureCredential` — reused
+  across calls per the documented best practice; the SDK's own token cache/refresh means "fetch a
+  fresh one per open" is cheap and correct, no hand-rolled expiry margin), and
+  `configure_storage(storage)` (the `storage=` -> env/`conf` helper above). `fsd.storage.fs.to_vsi`
+  re-exports it.
+- **Raster pixel reads now route through `fsd.raster.rio_open`** in the three pixel-read modules
+  (`raster/images.py`, `raster/cog.py`, `catalog/stac.py`), replacing bare `rasterio.open`. For a
+  local path it is a **byte-for-byte passthrough** (no `Env`, no translation — the regression
+  hinge). For an `abfss://`/`az://` path it opens via GDAL's `/vsiadls/` handler inside a
+  `rasterio.Env(AZURE_STORAGE_ACCESS_TOKEN=…, AZURE_STORAGE_ACCOUNT=…)` — the account comes from
+  the URL host (D1), not ambient config — and keeps that `Env` alive for the dataset's lifetime
+  (closed when the dataset is closed), since GDAL may issue further range-reads after open.
+  `mode="w"` on a remote path **raises** rather than silently half-writing: P1 has no write path
+  to blob (MPC-to-blob, when it lands, is a byte-copy via `fs.transfer`, never a GDAL write; CDSE-
+  to-blob is out of P1 scope). `raster/cog.py`'s `to_cog` **write** path (`rasterio.shutil.copy`)
+  is unchanged — it is local-only by design (CDSE's jp2->COG conversion; CDSE is untouched by P1).
+- **Not changed, deliberately**: `sources/mpc.py` (`mpc.py:294`'s local-only guard stays) and
+  `sources/cdse.py` (its `cog=True`-needs-local guard stays) — download-to-blob is **suspended**
+  into the next spec (the ingest/normalization contract); P1's blob data is hand-staged
+  (`runbooks/31-p1-upload-slice.md`). `datacube/builder.py` and `workflows/*.py` needed **no**
+  fixes for the §6 URL-safety audit — both were already clean (`fs.*` throughout, `os.path.join`
+  on catalog rows is posix-safe on an `abfss://…` host per §2). The remaining bare
+  `rasterio.open(...)` sites (`api.py`'s inference-merge path, `model/engine.py`'s inference-output
+  write) are **out of P1 scope** (inference/serving-on-blob is P4/P5) and were not touched.
+- **New optional dependency**: `azure-identity` added to the `[azure]` extra (alongside `adlfs`) —
+  `DefaultAzureCredential` construction needs it directly for the GDAL VSI token path (adlfs
+  resolves its own copy internally, but `fsd.storage.azure` also needs one for `rio_open`).
+- **New §6 audit finding + fix (beyond the spec's own grep head-start, which only checked
+  `os.path.exists`/`os.makedirs`/bare `open(` and missed this): `workflows/create_datacube.py`'s
+  `setup()` and its Snakefile both called `os.path.abspath()` on `export_folderpath` unconditionally.**
+  `os.path.abspath` does not recognize a URL as absolute (`os.path.isabs("abfss://...")` is `False`),
+  so it silently prepended the local cwd and mangled the `abfss://` scheme into `abfss:/` — a real,
+  silent corruption bug for a blob `export_folderpath`, not just a style nit. Fixed with a new
+  `fsd.storage.fs.is_local(path)` guard (both call sites) — no behavior change for local paths.
+- **New, deliberately-not-fixed finding: the local Snakemake runner's own `start.txt`/`done.txt`
+  sentinel bookkeeping (`create_datacube/Snakefile`'s `touch()`) is plain `os.makedirs`/`open`, not
+  routed through `fsd.storage`.** Even with the `os.path.abspath` bug fixed, a remote
+  `export_folderpath` would make Snakemake's own DAG/resumability tracking silently create a garbage
+  local sentinel directory (not a crash — `open("abfss://.../done.txt", "w")` is a valid, if bizarre,
+  *local* relative path). This is a **real limitation of the local runner**, not something spec 31's
+  scope (§1–§4/§6/§7) covers or that a "swap bare `rasterio.open`" pass can fix — it needs a design
+  decision about where Snakemake's own bookkeeping lives when artifacts are remote (candidates: keep
+  it always-local via a separate scratch dir, or a proper Snakemake remote-storage plugin). **The
+  Snakefile now raises a clear `RuntimeError` instead of silently corrupting** (fail loud, per the
+  project's `rio_open`-write-guard precedent) — the workaround today is to keep `run_folderpath` local
+  (the datacube/flatten artifact writes themselves are fully storage-seam-safe on blob regardless) or
+  to invoke `python -m fsd.workflows.task` directly for a single remote build (no Snakemake
+  involved — this is exactly what the demo run-book does). Logged as TODO #41 (folded into the Batch
+  runner item, since a real fix likely arrives with that redesign anyway).
+- See `specs/31-p1-azure-storage-seam.md` (realizes spec 10 Seam 1: storage = config, not code).
+
 ## MPC discovery dedupes reprocessed acquisitions (spec 33, 2026-07-16)
 - **`sources/mpc.py`** now de-duplicates STAC items at discovery time: `query_catalog` and
   `download` both call a new `_dedupe_reprocessed_items(items)` immediately after `_search_items`,
