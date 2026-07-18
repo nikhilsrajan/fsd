@@ -13,12 +13,16 @@ so this proves the seam independently of the ingest/normalization redesign that 
 **Two builds** (see `runbooks/scripts/31_datacube_on_blob.py`'s docstring for the full
 rationale):
 
-1. **`python -m fsd.workflows.task` invoked directly, as a real subprocess, writing
-   `datacube.npy`/`metadata.pickle.npy` to blob.** This is the actual CLI unit-of-work
-   the Snakemake runner shells out to (spec 10 Seam 2) — running it as a genuine
-   subprocess proves **D4** (the `FSSPEC_ABFSS_ANON` env var crosses the subprocess
-   boundary and is re-read by the child) alongside **D2/§4** (GDAL streams blob COGs
-   via `/vsiadls/` with a fresh token).
+1. **A filtered catalog slice on blob, then `python -m fsd.workflows.task` invoked
+   directly, as a real subprocess, writing `datacube.npy`/`metadata.pickle.npy` to blob.**
+   `workflows.task` consumes a per-shape *filtered* slice (the `TileCatalog.filter` output
+   — date+overlap filtered, carrying the `area_contribution` column the builder requires),
+   not the raw imagery catalog, so the script first filters the blob catalog against the
+   ROI and writes that slice back to blob (`fs.write_parquet` → adlfs), then runs `task` on
+   it. `task` is the actual CLI unit-of-work the Snakemake runner shells out to (spec 10
+   Seam 2) — running it as a genuine subprocess proves **D4** (the `FSSPEC_ABFSS_ANON` env
+   var crosses the subprocess boundary and is re-read by the child) alongside **D2/§4**
+   (GDAL streams blob COGs via `/vsiadls/` with a fresh token).
 2. **`fsd.create_training_data(..., storage="azure")` through the real local Snakemake
    runner**, catalog on blob but the build's own working directory kept **local**.
 

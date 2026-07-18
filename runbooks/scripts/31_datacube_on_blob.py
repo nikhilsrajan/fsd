@@ -123,12 +123,36 @@ def main():
 
     out = args.out.rstrip("/")
     remote_export = f"{out}/task-direct/cube"
+    slice_path = f"{out}/task-direct/catalog.parquet"
+
+    import geopandas as gpd
+
+    from fsd.catalog.catalog import TileCatalog
+    from fsd.storage import fs
+
+    # `workflows.task` consumes a per-shape *filtered* catalog slice -- the output of
+    # setup()'s `TileCatalog.filter` (date+overlap filtered against the ROI, carrying
+    # the `area_contribution` column the builder requires) -- NOT the raw imagery
+    # catalog. Produce that slice from the blob catalog + ROI here (a catalog
+    # read+write on blob, no pixel reads) and hand THAT to task -- this mirrors what
+    # `create_training_data` (build 2) does internally via setup(). Writing the slice
+    # to blob also exercises `fs.write_parquet` -> adlfs on the write side (§3).
+    print(f"[1/2] filter blob catalog + write slice -> {slice_path}")
+    roi_gdf = gpd.read_file(roi_path)
+    slice_gdf = TileCatalog(args.catalog).filter(roi_gdf, STARTDATE, ENDDATE)
+    if len(slice_gdf) == 0:
+        raise RuntimeError(
+            f"catalog filter returned 0 rows for ROI {roi_path.name} over "
+            f"{STARTDATE}..{ENDDATE} -- wrong --catalog, ROI, or date window?"
+        )
+    fs.write_parquet(slice_path, slice_gdf)
+    result["metrics"]["task_slice_rows"] = int(len(slice_gdf))
 
     # --- build 1: `workflows.task` invoked directly, as a real subprocess, writing to blob
     print(f"[1/2] python -m fsd.workflows.task -> {remote_export}")
     cmd = [
         sys.executable, "-m", "fsd.workflows.task",
-        str(roi_path), args.catalog, STARTDATE, ENDDATE, remote_export,
+        str(roi_path), slice_path, STARTDATE, ENDDATE, remote_export,
         "--bands", BANDS, "--mosaic-days", str(MOSAIC_DAYS),
     ]
     # No env= override: this subprocess inherits os.environ as-is, so a successful run
@@ -138,8 +162,6 @@ def main():
     result["metrics"]["task_subprocess_stderr_tail"] = proc.stderr[-2000:]
     if proc.returncode != 0:
         raise RuntimeError("workflows.task subprocess failed (see task_subprocess_stderr_tail)")
-
-    from fsd.storage import fs
 
     cube_path = f"{remote_export}/datacube.npy"
     meta_path = f"{remote_export}/metadata.pickle.npy"
@@ -160,8 +182,6 @@ def main():
     # blob, export_folderpath LOCAL (the sentinel-bookkeeping limitation -- see module
     # docstring). Proves D2/D4 through the normal entrypoint, not just a bare CLI call.
     print("[2/2] fsd.create_training_data(storage='azure') via the local Snakemake runner")
-    import geopandas as gpd
-
     import fsd
 
     roi_gdf = gpd.read_file(roi_path)
