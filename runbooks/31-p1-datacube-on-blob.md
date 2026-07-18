@@ -68,13 +68,16 @@ The storage account comes from the URL itself; there is no account env var.
 
 ```bash
 .venv/bin/python runbooks/scripts/31_datacube_on_blob.py \
-  --catalog "abfss://<filesystem>@<account>.dfs.core.windows.net/p1-demo/imagery/catalog.parquet" \
-  --out "abfss://<filesystem>@<account>.dfs.core.windows.net/p1-demo/build/"
+  --catalog "abfss://<filesystem>@<account>.dfs.core.windows.net/<path>/imagery/catalog.parquet" \
+  --out "abfss://<filesystem>@<account>.dfs.core.windows.net/<path>/build/"
 ```
 
-(`--catalog` = the URL `runbooks/31-p1-upload-slice.md` printed as `wrote catalog -> ...`;
-`--out` = any blob prefix this run can write scratch output under — take the account/
-filesystem from `../P1_AZURE_SETUP.md` §3, never commit the concrete values.)
+(`--catalog` = the URL `runbooks/31-p1-upload-slice.md` printed as `wrote catalog -> ...`
+— e.g. `.../fsd-tests/p1-demo/imagery/catalog.parquet`; `--out` = any blob prefix this run
+can write scratch output under — take the account/filesystem/path from `../P1_AZURE_SETUP.md`
+§3, never commit the concrete values.) The ROI geometry is auto-located from the workspace-root
+`shapefiles/` (works from the main checkout **or** a worktree); pass `--roi <path.geojson>`
+to override.
 
 **Progress:** two stages printed to stdout (`[1/2]`, `[2/2]`); each is seconds, not
 minutes — small ROI, imagery already local to Azure. No background process, nothing to
@@ -99,9 +102,9 @@ non-degenerate datacube without successfully reading the blob pixels.
 
 - **`FSSPEC_ABFSS_ANON is not set`** → `export FSSPEC_ABFSS_ANON=false` in *this* shell
   (the script checks its own process env, not a file).
-- **`ROI geometry not found`** → run from the `fsd/` package root; the script derives
-  `shapefiles/s2grid=476da24.geojson`'s path from its own location (workspace-root
-  sibling of `fsd/`).
+- **`ROI geometry not found`** → the script walks up from its own location to find the
+  workspace-root `shapefiles/s2grid=476da24.geojson` (works from the main checkout or a
+  `.claude/worktrees/` copy). If your `shapefiles/` lives elsewhere, pass `--roi <path>`.
 - **403 / `AuthorizationPermissionMismatch`** → VPN down or `az login` expired
   (`az account show -o table`).
 - **`task_subprocess_returncode` non-zero** → read `task_subprocess_stderr_tail` in

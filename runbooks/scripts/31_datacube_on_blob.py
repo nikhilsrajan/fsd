@@ -45,10 +45,26 @@ import subprocess
 import sys
 import traceback
 
-# fsd/runbooks/scripts/31_datacube_on_blob.py -> parents[2] == fsd/
+# fsd/runbooks/scripts/31_datacube_on_blob.py -> parents[2] == the fsd package root
+# (works for both the main `fsd/` checkout and a `.claude/worktrees/<wt>` copy).
 FSD_ROOT = pathlib.Path(__file__).resolve().parents[2]
-ROI_PATH = FSD_ROOT.parent / "shapefiles" / "s2grid=476da24.geojson"
 OUT = FSD_ROOT / "tests" / "outputs" / "spec31_datacube_on_blob"
+ROI_NAME = "s2grid=476da24.geojson"
+
+
+def _find_roi() -> pathlib.Path:
+    """Locate the workspace-root `shapefiles/<ROI>` regardless of checkout depth.
+
+    In the main checkout the fsd root's parent holds `shapefiles/`; in a
+    `.claude/worktrees/<wt>` copy the worktree sits several levels deeper, so a
+    fixed `FSD_ROOT.parent` guess is wrong. Walk up from this file to the first
+    ancestor that actually contains `shapefiles/<ROI>` (the real workspace root,
+    shared by main and every worktree)."""
+    for base in pathlib.Path(__file__).resolve().parents:
+        cand = base / "shapefiles" / ROI_NAME
+        if cand.exists():
+            return cand
+    return FSD_ROOT.parent / "shapefiles" / ROI_NAME  # historical path -> clearest error
 
 # Must match the uploaded slice (runbooks/31-p1-upload-slice.md): T33UWP, Jul-Aug 2018,
 # B08+SCL. Calendar windows tile [startdate, enddate) in mosaic_days steps anchored at
@@ -91,14 +107,19 @@ def main():
     ap.add_argument("--out", required=True,
                     help="abfss://<fs>@<account>.dfs.core.windows.net/<prefix>/ "
                          "(trailing / optional) -- a scratch prefix this run owns")
+    ap.add_argument("--roi", default=None,
+                    help="local ROI geojson (default: auto-locate workspace-root "
+                         f"shapefiles/{ROI_NAME})")
     args = ap.parse_args()
+
+    roi_path = pathlib.Path(args.roi).resolve() if args.roi else _find_roi()
 
     if os.environ.get("FSSPEC_ABFSS_ANON", "").lower() not in ("false", "0", "f"):
         raise RuntimeError(
             "FSSPEC_ABFSS_ANON is not set to 'false'. Run: export FSSPEC_ABFSS_ANON=false"
         )
-    if not ROI_PATH.exists():
-        raise FileNotFoundError(f"ROI geometry not found: {ROI_PATH}")
+    if not roi_path.exists():
+        raise FileNotFoundError(f"ROI geometry not found: {roi_path}")
 
     out = args.out.rstrip("/")
     remote_export = f"{out}/task-direct/cube"
@@ -107,7 +128,7 @@ def main():
     print(f"[1/2] python -m fsd.workflows.task -> {remote_export}")
     cmd = [
         sys.executable, "-m", "fsd.workflows.task",
-        str(ROI_PATH), args.catalog, STARTDATE, ENDDATE, remote_export,
+        str(roi_path), args.catalog, STARTDATE, ENDDATE, remote_export,
         "--bands", BANDS, "--mosaic-days", str(MOSAIC_DAYS),
     ]
     # No env= override: this subprocess inherits os.environ as-is, so a successful run
@@ -143,7 +164,7 @@ def main():
 
     import fsd
 
-    roi_gdf = gpd.read_file(ROI_PATH)
+    roi_gdf = gpd.read_file(roi_path)
     roi_gdf["label"] = "na"
 
     local_out = OUT / "snakemake-run"
