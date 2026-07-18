@@ -2,7 +2,19 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-17_
+_Last updated: 2026-07-18_
+
+## 🎉 P1 STORAGE SEAM PROVEN END TO END (2026-07-18) — `runbooks/31-p1-datacube-on-blob.md` ran GREEN (`"pass": true`). Spec 31 DONE.
+
+The fsd core pipeline (build + flatten) ran with **every byte on the `rise` Azure blob**, switched on by config alone (`storage="azure"` / `FSSPEC_ABFSS_ANON=false`; account from the URL). `_result.json` all-green, verified against the corrected criteria (independently, not the `pass` flag):
+- **Build 1** (`python -m fsd.workflows.task` as a real subprocess, remote `--export-folderpath`): wrote `datacube.npy`/`metadata.pickle.npy` to `abfss://` (D1/§3), streamed blob COGs via GDAL `/vsiadls/` + fresh token (D2/§4), and — inheriting `os.environ` unmodified — proved `FSSPEC_ABFSS_ANON` crosses the subprocess boundary (D4). Cube `[3,550,606,1]` uint16 (**T=3**, 1 band = B08 after SCL mask→drop); `task_slice_rows=9`.
+- **Build 2** (`create_training_data(storage="azure")` via the real Snakemake runner, blob catalog, local export): T=3, `n_pixels=216583` — the normal entrypoint against a blob catalog.
+
+Only stderr = a benign "time gaps (10 days)" S2-revisit warning. **This is the P1 exit criterion — spec 10 Seam 1 (storage = config, not code) realized on real Azure.** **→ NEXT: the ingest/normalization contract spec (TODO #38 — §5-ARCHIVE + the `clip(DN−1000,0)` vs `NODATA=0` encoding question + TODO #35), which re-opens download-to-blob for all sources.**
+
+## 🧹 CONSOLIDATED TO `main` (2026-07-18) — all spec-31 worktrees merged + removed; **work from the `fsd/` checkout now, no more worktrees.**
+
+Spec-31 work is now on **`main`** (`b24e6a2`, 3 commits: `6f3435f` compute seam + review, `1583ced` ROI-locate fix, `b24e6a2` build-1 filtered-slice fix), ahead of `origin/main` by 3 (**unpushed** — push only on request). Both worktrees (`spec31-p1-azure-compute-seam`, the stale `spec33-docs-update`) were removed; their content was verified fully present on `main` before removal (notebooks preserved as WIP; a `git stash` on `main` — "main-wip-pre-spec31-merge" — still holds the pre-merge state as a safety net, droppable with `git stash drop`). Two orphan branch refs remain (`worktree-spec31-p1-azure-compute-seam`, `worktree-spec33-docs-update`) — harmless; delete with `git branch -D` when convenient. Suite from `fsd/.venv`: **269 passed / 3 skipped, ruff clean** (venv has `[dev,azure]`). Two demo bugs fixed post-review while debugging the user's run: (1) the ROI path assumed a non-worktree layout; (2) build 1 fed `workflows.task` the raw catalog instead of a `TileCatalog.filter` slice → `KeyError: 'area_contribution'`. **→ NEXT: user re-runs `runbooks/31-p1-datacube-on-blob.md` from `fsd/`, pastes back `_result.json`.**
 
 ## ✅ Opus@high REVIEW (2026-07-17): **PASS with one fixed bug** — spec 31 P1 compute-seam implementation is sound; the demo script's success criterion was wrong (`EXPECTED_T=2` vs the real `3`), fixed here. Tree left uncommitted. **→ NEXT: user runs `runbooks/31-p1-datacube-on-blob.md`.**
 
