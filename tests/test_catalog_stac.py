@@ -13,6 +13,7 @@ import pystac
 import pytest
 import shapely.geometry
 from pystac.extensions.projection import ProjectionExtension
+from pystac.extensions.raster import RasterExtension
 
 from fsd.catalog import stac
 from fsd.catalog.catalog import TileCatalog
@@ -30,6 +31,8 @@ def _catalog_gdf():
             "local_folderpath": "/data/s2/T37PBP_20181231",
             "files": "B04.tif,B08.tif,MTD_TL.xml,SCL.tif",
             "cloud_cover": 1.5,
+            "offset": -1000,
+            "nodata": 0,
             "geometry": shapely.geometry.box(36.6, 12.6, 37.0, 13.0),
         },
         {
@@ -40,6 +43,8 @@ def _catalog_gdf():
             "local_folderpath": "/data/s2/T36PZU_20180601",
             "files": "B04.tif,B08.tif,SCL.tif",
             "cloud_cover": 0.0,
+            "offset": 0,
+            "nodata": 0,
             "geometry": shapely.geometry.box(35.6, 11.6, 36.0, 12.0),
         },
     ]
@@ -72,7 +77,11 @@ def test_tile_catalog_to_items_core_and_assets():
     # one asset per file, correct media types + roles.
     assert set(it.assets) == {"B04", "B08", "MTD_TL", "SCL"}
     assert it.assets["B04"].media_type == pystac.MediaType.COG
-    assert it.assets["B04"].roles == ["data"]
+    # spec 34 §2a: role classification rides alongside "data" (reflectance/mask/
+    # reference); B08 is the reference band by default.
+    assert it.assets["B04"].roles == ["data", "reflectance"]
+    assert it.assets["B08"].roles == ["data", "reference"]
+    assert it.assets["SCL"].roles == ["data", "mask"]
     assert it.assets["B04"].extra_fields["eo:bands"] == [{"name": "B04"}]
     assert it.assets["MTD_TL"].media_type == pystac.MediaType.XML
     assert it.assets["MTD_TL"].roles == ["metadata"]
@@ -80,6 +89,20 @@ def test_tile_catalog_to_items_core_and_assets():
     assert "proj:shape" not in it.assets["B04"].extra_fields
     # source link recorded.
     assert it.get_links("via")[0].get_href().endswith("T37PBP.SAFE")
+
+
+def test_tile_catalog_to_items_raster_bands_carry_declared_offset_scale_nodata():
+    """spec 34 §1a: reflectance/reference bands get the row's declared offset +
+    the constant reflectance scale; the mask band (SCL) gets offset=0/scale=1
+    (a no-op) — both in the COG-analog GDAL tag AND here, the STAC interchange."""
+    it = stac.tile_catalog_to_items(_catalog_gdf())[0]  # row declares offset=-1000
+    b04_bands = RasterExtension.ext(it.assets["B04"]).bands
+    assert b04_bands[0].offset == -1000
+    assert b04_bands[0].scale == pytest.approx(1 / 10000)
+    assert b04_bands[0].nodata == 0
+    scl_bands = RasterExtension.ext(it.assets["SCL"]).bands
+    assert scl_bands[0].offset == 0
+    assert scl_bands[0].scale == 1
 
 
 def test_items_are_structurally_valid():
@@ -97,7 +120,7 @@ def test_items_are_structurally_valid():
 def test_round_trip_reconstructs_catalog_columns():
     gdf = _catalog_gdf()
     back = stac.items_to_rows(stac.tile_catalog_to_items(gdf))
-    for col in ["id", "satellite", "s3url", "files", "cloud_cover"]:
+    for col in ["id", "satellite", "s3url", "files", "cloud_cover", "offset", "nodata"]:
         assert list(back[col]) == list(gdf[col]), col
     assert list(back["timestamp"]) == list(gdf["timestamp"])
     # local_folderpath reconstructed from the (single) asset folder.

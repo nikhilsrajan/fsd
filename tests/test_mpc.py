@@ -1,4 +1,4 @@
-"""Tests for fsd.sources.mpc (spec 32).
+"""Tests for fsd.sources.mpc (spec 32/34).
 
 No network — duck-typed fake items (mirrors tests/test_cdse.py's `_FakeItem`).
 """
@@ -9,8 +9,9 @@ import types
 import geopandas as gpd
 import pytest
 import shapely.geometry as sg
+from pystac.extensions.raster import RasterExtension
 
-from fsd.sources import mpc
+from fsd.sources import _s2_radiometry, mpc
 
 
 class _FakeItem:
@@ -40,20 +41,20 @@ def _fake_item(id, dt, lon, lat, cloud, baseline="05.09", mgrs_tile=None, assets
                      mgrs_tile=mgrs_tile, assets=assets, generation_time=generation_time)
 
 
-# --- baseline -> offset (spec 32 D2/D3, correctness debt #10) ----------------
+# --- baseline -> offset (spec 34 §1, generalizing spec 32 D2/D3) -------------
 
 
 def test_baseline_tuple_parses_major_minor():
-    assert mpc._baseline_tuple("04.00") == (4, 0)
-    assert mpc._baseline_tuple("05.09") == (5, 9)
-    assert mpc._baseline_tuple("02.14") == (2, 14)
+    assert _s2_radiometry.baseline_tuple("04.00") == (4, 0)
+    assert _s2_radiometry.baseline_tuple("05.09") == (5, 9)
+    assert _s2_radiometry.baseline_tuple("02.14") == (2, 14)
 
 
 def test_offset_for_item_pre_and_post_04():
     pre = _fake_item("pre", "2021-06-01T00:00:00Z", 0, 0, 5.0, baseline="02.14")
     post = _fake_item("post", "2022-06-01T00:00:00Z", 0, 0, 5.0, baseline="04.00")
-    assert mpc._offset_for_item(pre) == 0
-    assert mpc._offset_for_item(post) == -1000
+    assert mpc.offset_for_item(pre) == 0
+    assert mpc.offset_for_item(post) == -1000
 
 
 def test_offset_for_item_reprocessed_pre_2022_date_still_yields_offset():
@@ -62,26 +63,27 @@ def test_offset_for_item_reprocessed_pre_2022_date_still_yields_offset():
     reprocessed = _fake_item(
         "old-but-reprocessed", "2019-01-01T00:00:00Z", 0, 0, 5.0, baseline="05.09",
     )
-    assert mpc._offset_for_item(reprocessed) == -1000
+    assert mpc.offset_for_item(reprocessed) == -1000
 
 
 def test_offset_for_item_missing_baseline_raises():
     it = _fake_item("no-baseline", "2021-06-01T00:00:00Z", 0, 0, 5.0, baseline=None)
     with pytest.raises(ValueError, match="s2:processing_baseline"):
-        mpc._offset_for_item(it)
+        mpc.offset_for_item(it)
 
 
 # --- items -> catalog gdf -----------------------------------------------------
 
 
-def test_items_to_gdf_carries_boa_add_offset():
+def test_items_to_gdf_carries_offset_and_nodata():
     items = [
         _fake_item("pre", "2021-06-01T00:00:00Z", 16.0, 48.0, 5.0, baseline="02.14"),
         _fake_item("post", "2022-06-01T00:00:00Z", 16.0, 48.0, 5.0, baseline="04.00"),
     ]
     gdf = mpc._items_to_gdf(items)
     assert list(gdf["id"]) == ["pre", "post"]
-    assert list(gdf["boa_add_offset"]) == [0, -1000]
+    assert list(gdf["offset"]) == [0, -1000]
+    assert list(gdf["nodata"]) == [0, 0]
     assert gdf.crs.to_epsg() == 4326
     assert str(gdf["timestamp"].dt.tz) == "UTC"
 
@@ -173,8 +175,8 @@ def test_select_item_files_maps_requested_bands_to_asset_hrefs(tmp_path):
     )
     selected = mpc._select_item_files(it, ["B04", "SCL", "B02"], str(tmp_path))
     assert selected == [
-        ("https://example/t1/B04.tif?sig=1", str(tmp_path / "t1" / "B04.tif")),
-        ("https://example/t1/SCL.tif?sig=2", str(tmp_path / "t1" / "SCL.tif")),
+        ("https://example/t1/B04.tif?sig=1", str(tmp_path / "t1" / "B04.tif"), "B04"),
+        ("https://example/t1/SCL.tif?sig=2", str(tmp_path / "t1" / "SCL.tif"), "SCL"),
     ]  # B02 not in assets -> skipped, no KeyError
 
 
@@ -189,15 +191,67 @@ def test_finalize_filters_cloud_and_roi_reused_from_cdse():
     assert list(out["id"]) == ["hit"]
 
 
-# --- download (pure copy, mocked transfer) ------------------------------------
+# --- download (byte-copy + GDAL tag stamp, spec 34 §3) -----------------------
+
+
+def _write_fake_cog(path, value=100, nodata=None):
+    """A minimal real single-band uint16 GeoTIFF — stand-in for an MPC asset,
+    so `stamp_or_reencode` (real GDAL open) has something valid to open."""
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_origin
+
+    with rasterio.open(
+        str(path), "w", driver="GTiff", height=2, width=2, count=1,
+        dtype="uint16", crs="EPSG:32633", transform=from_origin(0, 2, 1, 1),
+        nodata=nodata,
+    ) as dst:
+        dst.write(np.full((1, 2, 2), value, dtype="uint16"))
 
 
 def test_transfer_one_skips_existing_final(tmp_path):
     dst = tmp_path / "B04.tif"
     dst.write_bytes(b"already-here")
-    ok, reason = mpc._transfer_one("https://example/B04.tif", str(dst))
+    ok, reason = mpc._transfer_and_stamp_one(
+        "https://example/B04.tif", str(dst), band="B04", offset=0,
+    )
     assert ok is True
     assert reason == "skipped"
+
+
+def test_transfer_and_stamp_one_stamps_reflectance_offset_and_nodata(tmp_path, monkeypatch):
+    dst = tmp_path / "B04.tif"
+
+    def _fake_transfer(src_url, dst_url, **kw):
+        _write_fake_cog(dst_url, value=1500)
+
+    monkeypatch.setattr(mpc.fs, "transfer", _fake_transfer)
+    ok, reason = mpc._transfer_and_stamp_one(
+        "https://example/B04.tif", str(dst), band="B04", offset=-1000,
+    )
+    assert ok is True and reason == "ok"
+    import rasterio
+
+    with rasterio.open(str(dst)) as d:
+        assert d.offsets[0] == -1000
+        assert d.nodata == 0  # stamped, was missing
+
+
+def test_transfer_and_stamp_one_never_offsets_mask_band(tmp_path, monkeypatch):
+    dst = tmp_path / "SCL.tif"
+
+    def _fake_transfer(src_url, dst_url, **kw):
+        _write_fake_cog(dst_url, value=4)
+
+    monkeypatch.setattr(mpc.fs, "transfer", _fake_transfer)
+    ok, _ = mpc._transfer_and_stamp_one(
+        "https://example/SCL.tif", str(dst), band="SCL", offset=-1000,
+    )
+    assert ok is True
+    import rasterio
+
+    with rasterio.open(str(dst)) as d:
+        assert d.offsets[0] == 0  # SCL is never radiometrically offset
 
 
 def _reprocessing_pair_plus_control(cloud=5.0):
@@ -245,8 +299,7 @@ def test_download_drops_the_duplicate_before_transfer(monkeypatch, tmp_path):
         written.append((src_url, dst_url))
         import os
         os.makedirs(os.path.dirname(dst_url), exist_ok=True)
-        with open(dst_url, "wb") as f:
-            f.write(b"cog-bytes")
+        _write_fake_cog(dst_url)
 
     monkeypatch.setattr(mpc.fs, "transfer", _fake_transfer)
 
@@ -291,8 +344,7 @@ def test_download_end_to_end_mocked(monkeypatch, tmp_path):
         written.append((src_url, dst_url))
         import os
         os.makedirs(os.path.dirname(dst_url), exist_ok=True)
-        with open(dst_url, "wb") as f:
-            f.write(b"cog-bytes")
+        _write_fake_cog(dst_url)
 
     monkeypatch.setattr(mpc.fs, "transfer", _fake_transfer)
 
@@ -312,17 +364,87 @@ def test_download_end_to_end_mocked(monkeypatch, tmp_path):
 
     gdf = catalog.read()
     assert set(gdf["id"]) == {"pre", "post"}
-    offsets = dict(zip(gdf["id"], gdf["boa_add_offset"]))
+    offsets = dict(zip(gdf["id"], gdf["offset"]))
     assert offsets == {"pre": 0, "post": -1000}
 
 
-def test_download_rejects_remote_root(tmp_path):
+def test_download_accepts_remote_root_and_stamps_via_local_scratch(tmp_path, monkeypatch):
+    """spec 34 §3/§5: lifts spec 32's local-only guard — a remote (here,
+    fsspec `memory://`, standing in for `abfss://`) root_folderpath must still
+    get a stamped COG, staged through local scratch."""
+    items = [
+        _fake_item("t1", "2022-06-01T00:00:00Z", 0.0, 0.0, 5.0, baseline="04.00",
+                   assets={"B04": "https://example/t1/B04.tif?sig=1"}),
+    ]
+    monkeypatch.setattr(mpc, "_search_items", lambda *a, **k: items)
+
+    def _fake_transfer(src_url, dst_url, **kw):
+        _write_fake_cog(dst_url, value=1500)
+
+    monkeypatch.setattr(mpc.fs, "transfer", _fake_transfer)
+
     from fsd.catalog.catalog import TileCatalog
 
     catalog = TileCatalog(str(tmp_path / "catalog.parquet"))
-    roi = gpd.GeoDataFrame(geometry=[sg.box(0, 0, 1, 1)], crs="EPSG:4326")
-    with pytest.raises(ValueError, match="local-only"):
-        mpc.download(
-            roi, datetime.datetime(2021, 1, 1), datetime.datetime(2022, 1, 1),
-            ["B04"], "s3://some-bucket/imagery", catalog, max_tiles=10,
-        )
+    roi = gpd.GeoDataFrame(geometry=[sg.box(0.2, 0.2, 0.5, 0.5)], crs="EPSG:4326")
+    remote_root = "memory://fsd-mpc-test/imagery"
+
+    result = mpc.download(
+        roi, datetime.datetime(2021, 1, 1), datetime.datetime(2022, 12, 31),
+        ["B04"], remote_root, catalog, max_tiles=10,
+    )
+    assert result.successful_count == 1
+    assert result.failed_count == 0
+
+    import fsspec
+
+    memfs = fsspec.filesystem("memory")
+    assert memfs.exists("fsd-mpc-test/imagery/t1/B04.tif")
+
+
+def test_gdal_tag_and_stac_raster_bands_agree(tmp_path, monkeypatch):
+    """spec 34 §4: ingest writes offset/scale/nodata to **both** the COG's GDAL tag
+    and STAC `raster:bands`, with equal values — the two declarations are written
+    from the same source of truth, so a viewer reading the tag (`unscale=true`) and
+    a tool reading the STAC item can never disagree.
+
+    Drives the real ingest stamp (`mpc._transfer_and_stamp_one`) and the real STAC
+    export (`stac.tile_catalog_to_items`) over the same declared offset, rather than
+    asserting each side separately against a literal.
+    """
+    import geopandas as gpd
+    import pandas as pd
+    import rasterio
+    import shapely.geometry
+
+    from fsd.catalog import stac
+
+    offset = -1000  # baseline >= 04.00
+    dst = tmp_path / "B04.tif"
+
+    def _fake_transfer(src_url, dst_url, **kw):
+        _write_fake_cog(dst_url, value=1500)
+
+    monkeypatch.setattr(mpc.fs, "transfer", _fake_transfer)
+    ok, _ = mpc._transfer_and_stamp_one(
+        "https://example/B04.tif", str(dst), band="B04", offset=offset,
+    )
+    assert ok is True
+
+    row = {
+        "id": "S2A_MSIL2A_20220601T075611_N0500_R035_T33UWP_20220601T120000",
+        "satellite": "sentinel-2-l2a",
+        "timestamp": pd.Timestamp("2022-06-01T07:56:11", tz="UTC"),
+        "s3url": "", "local_folderpath": str(tmp_path), "files": "B04.tif",
+        "cloud_cover": 0.0, "offset": offset, "nodata": 0,
+        "geometry": shapely.geometry.box(15.0, 48.0, 15.4, 48.4),
+    }
+    item = stac.tile_catalog_to_items(
+        gpd.GeoDataFrame([row], geometry="geometry", crs="EPSG:4326")
+    )[0]
+    stac_band = RasterExtension.ext(item.assets["B04"]).bands[0]
+
+    with rasterio.open(str(dst)) as d:
+        assert d.offsets[0] == stac_band.offset == offset
+        assert d.scales[0] == pytest.approx(stac_band.scale)
+        assert d.nodata == stac_band.nodata == 0

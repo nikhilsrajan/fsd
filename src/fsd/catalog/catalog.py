@@ -1,10 +1,12 @@
 """TileCatalog — read/append/filter the downloaded-tile catalog.
 
-Spec: specs/02-catalog.md. GeoParquet, read/written via fsd.storage.
+Spec: specs/02-catalog.md; schema per spec 34 §5 `[G4]` (retires spec 32's
+`boa_add_offset` column — no back-compat shim, see `read()`).
 
 Columns: id (unique), satellite, timestamp (UTC), s3url, local_folderpath,
-files (comma-joined band filenames), cloud_cover, boa_add_offset (additive S2
-processing-baseline offset, spec 32; 0 for CDSE rows and old catalogs),
+files (comma-joined band filenames), cloud_cover, offset (additive declared
+radiometric offset for reflectance bands, spec 34 §1; 0 when a source has no
+such concept), nodata (declared nodata value, spec 34 §1c; defaults 0),
 geometry (EPSG:4326).
 """
 
@@ -27,7 +29,8 @@ COLUMNS = [
     "local_folderpath",
     "files",
     "cloud_cover",
-    "boa_add_offset",
+    "offset",
+    "nodata",
     "geometry",
 ]
 
@@ -59,10 +62,15 @@ class TileCatalog:
         new = gpd.GeoDataFrame(rows, crs=CRS)
         # Normalize timestamp to tz-aware UTC for a stable on-disk dtype.
         new["timestamp"] = pd.to_datetime(new["timestamp"], utc=True)
-        # boa_add_offset is additive (spec 32); rows from a source that doesn't set
-        # it (CDSE, for now) default to 0 rather than fail column selection below.
-        if "boa_add_offset" not in new.columns:
-            new["boa_add_offset"] = 0
+        # offset/nodata are per-row declared values (spec 34 §1); a source that
+        # doesn't set one (no radiometric-offset concept, or nodata already
+        # implicit) defaults to 0 rather than fail column selection below. This is
+        # an ergonomic default for a *fresh* append, not a legacy-catalog shim
+        # (see `read()`, which does not backfill these).
+        if "offset" not in new.columns:
+            new["offset"] = 0
+        if "nodata" not in new.columns:
+            new["nodata"] = 0
 
         if fs.exists(self.filepath):
             existing = self.read()
@@ -87,13 +95,15 @@ class TileCatalog:
     def read(self) -> gpd.GeoDataFrame:
         """Return the full catalog as a GeoDataFrame.
 
-        Back-compat (spec 32): a catalog written before `boa_add_offset` existed
-        gets the column filled with 0 (no processing-baseline offset applied).
+        **No back-compat shim (spec 34 `[G4]`):** a catalog written before the
+        `offset`/`nodata` columns existed (spec 32's `boa_add_offset` schema) is
+        NOT patched up here — it is disposable and must be re-ingested (spec 34
+        "Data" section), not silently defaulted, so a stale catalog fails loudly
+        downstream (`flatten_catalog`/`build_datacube`) instead of building a cube
+        against unfilled/wrong radiometry.
         """
         gdf = fs.read_parquet(self.filepath)
         gdf["timestamp"] = pd.to_datetime(gdf["timestamp"], utc=True)
-        if "boa_add_offset" not in gdf.columns:
-            gdf["boa_add_offset"] = 0
         return gdf
 
     def to_stac(self, dst_folderpath: str, **kwargs) -> str:

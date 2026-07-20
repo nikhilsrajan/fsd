@@ -22,21 +22,29 @@ from fsd.sources.cdse import CdseCredentials
 class _FakeItem:
     """Duck-typed stand-in for a pystac `Item` (no network)."""
 
-    def __init__(self, id, dt, geom, cloud, assets):
+    def __init__(self, id, dt, geom, cloud, assets, baseline="05.09"):
         self.id = id
         self.datetime = dt
         self.geometry = sg.mapping(geom)
         self.properties = {"eo:cloud_cover": cloud}
+        if baseline is not None:
+            self.properties["s2:processing_baseline"] = baseline
         self.assets = {k: types.SimpleNamespace(href=v) for k, v in assets.items()}
 
 
-def _fake_item(id, dt, lon, lat, cloud, safe=None, assets=None):
-    """A STAC item over box (lon,lat)-(lon+1,lat+1); default asset is one B02 href."""
+def _fake_item(id, dt, lon, lat, cloud, safe=None, assets=None, baseline="05.09"):
+    """A STAC item over box (lon,lat)-(lon+1,lat+1); default asset is one B02 href.
+
+    `baseline` (spec 34 §1, closes #30/#10) defaults to a real >=04.00 value so
+    every pre-existing call site (most of this file) exercises `_items_to_gdf`'s
+    offset derivation without needing to know about it; pass `baseline=None` to
+    test the "missing property" fork.
+    """
     safe = safe or f"s3://eodata/{id}.SAFE"
     if assets is None:
         assets = {"B02_10m": f"{safe}/GRANULE/G/IMG_DATA/R10m/T_D_B02_10m.jp2"}
     dt = datetime.datetime.fromisoformat(dt.replace("Z", "+00:00"))
-    return _FakeItem(id, dt, sg.box(lon, lat, lon + 1, lat + 1), cloud, assets)
+    return _FakeItem(id, dt, sg.box(lon, lat, lon + 1, lat + 1), cloud, assets, baseline=baseline)
 
 # DUMMY = legacy JSON-key form; DUMMY_FIELDS = the dataclass field form of the same.
 DUMMY = {
@@ -146,12 +154,24 @@ def test_items_to_gdf_parses_stac():
     gdf = cdse._items_to_gdf(items)
     assert list(gdf["id"]) == ["t1", "t2"]
     assert list(gdf.columns) == ["id", "satellite", "timestamp", "s3url",
-                                 "cloud_cover", "geometry"]
+                                 "cloud_cover", "offset", "nodata", "geometry"]
     assert gdf.crs.to_epsg() == 4326
     assert str(gdf["timestamp"].dt.tz) == "UTC"
     assert gdf["s3url"].iloc[0].startswith("s3://eodata/")
     assert gdf["s3url"].iloc[0].endswith(".SAFE")  # derived from an asset href
     assert gdf["satellite"].iloc[0] == "sentinel-2-l2a"
+
+
+def test_items_to_gdf_derives_offset_from_baseline_closes_30_10():
+    """spec 34 §1, closes #30/#10: CDSE rows no longer hardcode offset=0 — the
+    per-item processing baseline (the same STAC property MPC reads) decides it."""
+    items = [
+        _fake_item("pre", "2021-06-01T00:00:00Z", 0.0, 0.0, 5.0, baseline="02.14"),
+        _fake_item("post", "2022-06-01T00:00:00Z", 0.0, 0.0, 5.0, baseline="04.00"),
+    ]
+    gdf = cdse._items_to_gdf(items)
+    assert list(gdf["offset"]) == [0, -1000]
+    assert list(gdf["nodata"]) == [0, 0]
 
 
 def test_safe_root_from_item_derives_from_asset_href():
@@ -579,16 +599,45 @@ def test_download_one_cog_converts_and_is_idempotent(monkeypatch, tmp_path):
     assert calls == []
 
 
-def test_download_cog_rejects_remote_root():
-    import pytest
+def test_download_cog_accepts_remote_root_via_local_scratch(monkeypatch, tmp_path):
+    """spec 34 §5 lifts the local-only guard: cog=True + a remote root_folderpath
+    runs the pipeline against local scratch, then pushes the result (here, to an
+    fsspec `memory://` filesystem standing in for `abfss://`) and rewrites the
+    catalog's local_folderpath to the remote location."""
+    import os
 
-    roi = gpd.GeoDataFrame(geometry=[sg.box(0, 0, 1, 1)], crs="EPSG:4326")
-    with pytest.raises(ValueError, match="local root_folderpath"):
-        cdse.download(
-            roi, datetime.datetime(2018, 1, 1), datetime.datetime(2018, 2, 1),
-            ["B02"], "s3://some-bucket/out", object(),
-            CdseCredentials(**DUMMY_FIELDS), max_tiles=10, cog=True,
-        )
+    from fsd.catalog.catalog import TileCatalog
+
+    item = _fake_item("S2A_T36PZT", "2018-01-30T08:00:00Z", 36.0, 11.0, 5.0, safe=SAFE)
+    monkeypatch.setattr(cdse, "_search_items", lambda *a, **k: [item])
+    monkeypatch.setattr(
+        cdse, "_select_item_files",
+        lambda it, bands, root, cog=True: [
+            (f"{cdse._safe_root_from_item(it)}/B04.jp2", os.path.join(root, "tile", "B04.tif")),
+        ],
+    )
+    def fake_transfer(src, target, **kw):
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        _write_raster(target)
+
+    monkeypatch.setattr(cdse.fs, "transfer", fake_transfer)
+
+    roi = gpd.GeoDataFrame(geometry=[sg.box(36.0, 11.0, 37.0, 12.0)], crs="EPSG:4326")
+    cat = TileCatalog(str(tmp_path / "c.parquet"))
+    remote_root = "memory://fsd-cdse-test/imagery"
+    result = cdse.download(
+        roi, datetime.datetime(2018, 1, 1), datetime.datetime(2018, 2, 1),
+        ["B04"], remote_root, cat, CdseCredentials(**DUMMY_FIELDS),
+        max_tiles=10, cog=True,
+    )
+    assert result.successful_count == 1 and result.failed_count == 0
+
+    import fsspec
+
+    memfs = fsspec.filesystem("memory")
+    assert memfs.exists("fsd-cdse-test/imagery/tile/B04.tif")
+    gdf = cat.read()
+    assert gdf["local_folderpath"].iloc[0].startswith(remote_root)
 
 
 def test_download_resume_loops_until_complete(monkeypatch):
@@ -1190,8 +1239,8 @@ def test_should_stop_halts_submit_loop_mid_pass(monkeypatch, tmp_path):
     finalized = {"n": 0}
     real_convert_one = cdse._convert_one
 
-    def counting_convert_one(staging, dst):
-        result = real_convert_one(staging, dst)
+    def counting_convert_one(staging, dst, **kw):
+        result = real_convert_one(staging, dst, **kw)
         finalized["n"] += 1
         return result
 

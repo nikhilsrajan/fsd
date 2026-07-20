@@ -65,17 +65,17 @@ def test_reproject_same_crs_is_noop():
     assert out_profile is profile
 
 
-def test_apply_boa_offset_zero_is_passthrough():
+def test_apply_offset_zero_is_passthrough():
     data, profile = _synthetic()
-    out_data, out_profile = images.apply_boa_offset(data, profile, offset=0)
+    out_data, out_profile = images.apply_offset(data, profile, offset=0)
     assert out_data is data
     assert out_profile is profile
 
 
-def test_apply_boa_offset_shifts_and_clamps_uint16_no_underflow():
+def test_apply_offset_shifts_and_clamps_uint16_no_underflow():
     data = np.array([[[1500, 500, 0]]], dtype=np.uint16)  # (1, 1, 3)
     _, profile = _synthetic()
-    out_data, out_profile = images.apply_boa_offset(data, profile, offset=-1000)
+    out_data, out_profile = images.apply_offset(data, profile, offset=-1000)
     assert out_data.dtype == np.uint16
     assert list(out_data[0, 0]) == [500, 0, 0]  # 1500-1000=500; 500-1000 clamps to 0; nodata stays 0
     assert out_profile is profile  # profile untouched
@@ -347,3 +347,72 @@ def test_to_cog_verify_is_a_noop_on_lossless(tmp_path):
     to_cog(str(src), str(dst), overviews="NONE", verify=True)
     with rasterio.open(str(dst)) as d:
         assert (d.read() == src_data).all()
+
+
+# --- ingest radiometry tags (spec 34 §1a/§1c) --------------------------------
+
+
+def _write_stampable_cog(path, value, nodata=None, dtype="uint16"):
+    """A small real COG to stamp — `stamp_gdal_tags` reopens in "r+", so the file
+    has to be a genuine GDAL-readable raster, not a stub."""
+    from fsd.raster.cog import to_cog
+
+    plain = str(path) + ".plain.tif"
+    with rasterio.open(
+        plain, "w", driver="GTiff", height=4, width=4, count=1, dtype=dtype,
+        crs=UTM, transform=rasterio.transform.from_origin(0, 40, 10, 10),
+        nodata=nodata,
+    ) as dst:
+        dst.write(np.full((1, 4, 4), value, dtype=dtype))
+    to_cog(plain, str(path), overviews="NONE")
+    if nodata is not None:  # the COG driver drops nodata on some GDAL builds
+        with rasterio.open(str(path), "r+", IGNORE_COG_LAYOUT_BREAK="YES") as d:
+            d.nodata = nodata
+    return path
+
+
+@pytest.mark.parametrize("dn", [1, 500, 999, 1000])
+def test_stamped_cog_preserves_low_dn_on_disk(tmp_path, dn):
+    """spec 34 §1: the old `apply_boa_offset` clip(DN-1000, 0, ...) is GONE from the
+    ingest/store path. A reflectance DN in (0,1000] must survive to disk untouched —
+    the offset is *declared* (a tag), never baked into the pixels."""
+    from fsd.raster.cog import stamp_gdal_tags
+
+    p = _write_stampable_cog(tmp_path / f"b04_{dn}.tif", value=dn)
+    stamp_gdal_tags(str(p), offset=-1000, scale=1 / 10000, set_nodata_if_missing=0)
+
+    with rasterio.open(str(p)) as d:
+        assert (d.read() == dn).all()  # NOT clamped to 0
+        assert d.offsets[0] == -1000
+
+
+def test_plain_read_of_stamped_cog_returns_raw_dn(tmp_path):
+    """spec 34 §1a "no double-application": a plain `rasterio.open(...).read()` — what
+    the datacube builder does — never auto-applies the GDAL SCALE/OFFSET tags. The
+    builder's explicit `apply_offset` is the *only* place the offset is applied, so
+    the tag and the builder cannot drift into applying it twice."""
+    from fsd.raster.cog import stamp_gdal_tags
+
+    p = _write_stampable_cog(tmp_path / "b04.tif", value=1500)
+    stamp_gdal_tags(str(p), offset=-1000, scale=1 / 10000, set_nodata_if_missing=0)
+
+    with rasterio.open(str(p)) as d:
+        assert (d.read() == 1500).all()          # raw stamped DN, not 500
+        assert d.offsets[0] == -1000             # ...while the tag still declares it
+        assert d.scales[0] == pytest.approx(1 / 10000)
+
+
+def test_stamp_sets_nodata_only_when_missing(tmp_path):
+    """spec 34 §1c: ingest declares nodata=0 on a source that has none, but a source
+    that already declares one keeps its own value."""
+    from fsd.raster.cog import stamp_gdal_tags
+
+    missing = _write_stampable_cog(tmp_path / "missing.tif", value=100, nodata=None)
+    stamp_gdal_tags(str(missing), set_nodata_if_missing=0)
+    with rasterio.open(str(missing)) as d:
+        assert d.nodata == 0
+
+    declared = _write_stampable_cog(tmp_path / "declared.tif", value=100, nodata=65535)
+    stamp_gdal_tags(str(declared), set_nodata_if_missing=0)
+    with rasterio.open(str(declared)) as d:
+        assert d.nodata == 65535  # kept, not overwritten

@@ -41,6 +41,14 @@ REFERENCE_BAND = "B08"   # 10 m; used for resampling/merge reference
 NODATA = 0
 MAX_TIMEDELTA_DAYS = 5   # acceptable gap when checking for missing acquisitions
 
+# --- Radiometry / ingest normalization (spec 34) -----------------------------
+# ESA S2 L2A: reflectance = (DN + offset) / QUANTIFICATION_VALUE. `offset` is the
+# per-item declared value (0, or -1000 for processing baseline >= 04.00); this
+# scale is the constant half of the pair, stamped into the on-disk COG GDAL tag
+# AND STAC raster:bands (spec 34 §1a) so unscale=true (titiler) yields physical
+# reflectance regardless of which baseline an item was processed with.
+S2_REFLECTANCE_SCALE = 1 / 10000
+
 # --- CDSE endpoints ----------------------------------------------------------
 # STAC catalog (discovery). Anonymous — no credentials needed. Queried via
 # pystac-client. Each item's `assets` give the per-band S3 hrefs directly, so we

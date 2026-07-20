@@ -29,22 +29,28 @@ def run_ops(datacube, metadata, sequence):
     return datacube, metadata
 
 
-def apply_cloud_mask_scl(datacube, metadata, *, mask_classes, bands_to_modify=None,
-                         mask_value=0):
-    """Set pixels to `mask_value` where SCL ∈ `mask_classes`, across the requested
-    (non-SCL) bands. SCL itself is left untouched (drop it separately)."""
+def apply_cloud_mask_scl(datacube, metadata, *, mask_classes, mask_band="SCL",
+                         bands_to_modify=None, mask_value=0):
+    """Set pixels to `mask_value` where the categorical mask band (`mask_band`,
+    default `"SCL"`) has a value in `mask_classes`, across the requested
+    (non-mask) bands. The mask band itself is left untouched (drop it separately).
+
+    `mask_band` generalizes this beyond S2 (spec 34 §2b `[G3]`
+    `mask_type="categorical_classes"`) — any source whose QA band encodes
+    "masked" as a small set of discrete values (not just SCL) can reuse this op
+    by declaring its own `mask_band`."""
     band_indices = {band: i for i, band in enumerate(metadata["bands"])}
-    if "SCL" not in band_indices:
-        raise ValueError("SCL band not present in datacube")
+    if mask_band not in band_indices:
+        raise ValueError(f"{mask_band} band not present in datacube")
 
     if bands_to_modify is None:
-        bands_to_modify = [b for b in band_indices if b != "SCL"]
+        bands_to_modify = [b for b in band_indices if b != mask_band]
     present = [b for b in bands_to_modify if b in band_indices]
     idx_to_modify = [band_indices[b] for b in present]
 
-    scl = datacube[:, :, :, band_indices["SCL"]]
+    mask_col = datacube[:, :, :, band_indices[mask_band]]
     selected = datacube[:, :, :, idx_to_modify]
-    selected[np.where(np.isin(scl, mask_classes))] = mask_value
+    selected[np.where(np.isin(mask_col, mask_classes))] = mask_value
     datacube[:, :, :, idx_to_modify] = selected
     return datacube, metadata
 

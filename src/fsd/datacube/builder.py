@@ -25,9 +25,14 @@ import shapely
 from rasterio.crs import CRS
 
 from fsd import config
+from fsd.catalog.declaration import (
+    MASK_TYPE_CATEGORICAL_CLASSES,
+    S2_L2A_DECLARATION,
+    SourceDeclaration,
+)
 from fsd.datacube import ops
 from fsd.raster import images
-from fsd.raster.images import _is_reflectance, apply_boa_offset
+from fsd.raster.images import _is_reflectance, apply_offset
 from fsd.storage import fs
 
 _RASTER_EXTS = (".jp2", ".tif", ".tiff")
@@ -46,23 +51,38 @@ def _timed(store: dict, name: str):
 
 # --- caller helper: TileCatalog rows -> band-flattened rows -------------------
 
-def flatten_catalog(catalog_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+def flatten_catalog(
+    catalog_gdf: gpd.GeoDataFrame,
+    declaration: SourceDeclaration = S2_L2A_DECLARATION,
+) -> gpd.GeoDataFrame:
     """Explode a filtered `TileCatalog` (one row per tile, with
     `area_contribution` from `TileCatalog.filter`) into one row per raster band
     file — the band-flattened form `build_datacube` consumes.
 
     Output cols: `id, filepath, band, timestamp, geometry, area_contribution,
-    boa_add_offset`. Non-raster files (e.g. `MTD_TL.xml`) are skipped; `band` =
-    filename minus ext. `boa_add_offset` (spec 32) is the tile-row's additive
-    processing-baseline offset for reflectance bands (`_is_reflectance`), else 0
-    — SCL/masks are never harmonized. Missing column (older catalogs) defaults
-    to 0 for every band.
+    offset, nodata`. Non-raster files (e.g. `MTD_TL.xml`) are skipped; `band` =
+    filename minus ext. `offset` (spec 34 §1, generalizing spec 32's
+    `boa_add_offset`) is the tile-row's declared additive radiometric offset for
+    reflectance bands (`_is_reflectance`), else 0 — mask/QA bands are never
+    harmonized. `nodata` is the tile-row's declared nodata (spec 34 §1c),
+    defaulting to 0 when the row doesn't carry one. Missing `offset`/`nodata`
+    columns on `catalog_gdf` (a source with no radiometric-offset concept)
+    default every row to 0.
+
+    `declaration` (spec 34 §2a) is the *collection-level* builder contract —
+    which band is the mask/reference, how to interpret the mask, the source's
+    grid shape — attached to the output as `GeoDataFrame.attrs["declaration"]`,
+    which `build_datacube` reads instead of hardcoding S2. Defaults to the S2
+    L2A declaration (both fsd sources, CDSE and MPC, are S2 L2A today); a new
+    source passes its own (see `fsd/docs/adding-a-source.md`).
     """
     data = {k: [] for k in
             ("id", "filepath", "band", "timestamp", "geometry", "area_contribution",
-             "boa_add_offset")}
+             "offset", "nodata")}
     for _, row in catalog_gdf.iterrows():
-        tile_offset = row.get("boa_add_offset", 0) or 0
+        tile_offset = row.get("offset", 0) or 0
+        tile_nodata = row.get("nodata", 0)
+        tile_nodata = 0 if tile_nodata is None else tile_nodata
         for file in str(row["files"]).split(","):
             band = next((file[:-len(e)] for e in _RASTER_EXTS if file.endswith(e)),
                         None)
@@ -74,8 +94,11 @@ def flatten_catalog(catalog_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
             data["timestamp"].append(row["timestamp"])
             data["geometry"].append(row["geometry"])
             data["area_contribution"].append(row["area_contribution"])
-            data["boa_add_offset"].append(tile_offset if _is_reflectance(band) else 0)
-    return gpd.GeoDataFrame(data=data, crs=catalog_gdf.crs)
+            data["offset"].append(tile_offset if _is_reflectance(band) else 0)
+            data["nodata"].append(tile_nodata)
+    flat = gpd.GeoDataFrame(data=data, crs=catalog_gdf.crs)
+    flat.attrs["declaration"] = declaration
+    return flat
 
 
 # --- the seam ----------------------------------------------------------------
@@ -89,7 +112,8 @@ def build_datacube(
     *,
     mosaic_days: int = config.MOSAIC_DAYS,
     scl_mask_classes: list[int] | None = None,
-    reference_band: str = config.REFERENCE_BAND,
+    reference_band: str | None = None,
+    declaration: SourceDeclaration | None = None,
     export_folderpath: str,
     mosaic_scheme: str = config.MOSAIC_SCHEME,
     njobs: int = 1,
@@ -101,9 +125,34 @@ def build_datacube(
 ) -> None:
     """Assemble one cloud-masked, time-mosaicked datacube and save it.
 
-    Steps (specs/03): missing-files check -> load+crop -> dst_crs (max mean area
-    contribution) -> reference profile (merge B08) -> resample all to ref -> stack
-    by timestamp x band -> SCL mask -> drop SCL -> median mosaic -> save.
+    Steps (specs/03, generalized by spec 34 §2b): missing-files check -> load+crop ->
+    dst_crs (max mean area contribution) -> reference profile (merge the declared
+    reference band) -> resample all to ref -> stack by timestamp x band -> declared
+    op-sequence assembly (radiometry offset -> mask -> drop mask band -> median
+    mosaic) -> save.
+
+    **Declaration-driven, not hardcoded (spec 34 Decision 2 / #35).** What band is
+    the mask, how to interpret it, which band is the resample reference, and the
+    mosaic method are read from a `SourceDeclaration` (`fsd.catalog.declaration`) —
+    resolved as: the explicit `declaration=` kwarg, else
+    `catalog_subset.attrs["declaration"]` (set by `flatten_catalog`), else the S2 L2A
+    default. `scl_mask_classes`/`reference_band`, if given, override the resolved
+    declaration's fields (back-compat for existing S2 callers). The declared mask is
+    skipped entirely (no `apply_cloud_mask_scl`, no drop) when `mask_spec` is `None`
+    **or** its `band` is not in the requested `bands` — this is what closes #35:
+    `bands=["B04"]` no longer requires an SCL band to exist. A `mask_spec.mask_type`
+    other than `"categorical_classes"` raises `NotImplementedError` (a growable-but-
+    partially-unimplemented seam, spec 34 `[G3]`), never a silently wrong mask. A
+    declaration with `native_grid=True` (a source with one native grid, e.g. ERA5)
+    also raises `NotImplementedError` — the non-tiled build path is designed-for but
+    ships with the ERA5 spec, not this one (`[G2]`).
+
+    Per-row `offset`/`nodata` catalog columns (spec 34 §1) carry the *radiometric*
+    declaration: each image's declared additive offset is applied (read-time only,
+    `apply_offset`) before the median mosaic, and the build's nodata is read from
+    `catalog_subset["nodata"]` (falling back to the resolved declaration's `nodata`,
+    NOT `config.NODATA`, when the column is absent) — so mutating either in the
+    catalog changes the build, proving neither is config-hardcoded.
 
     `startdate` must be on/before the first acquisition and `enddate` on/after the
     last (median_mosaic requirement). `mosaic_scheme` (spec 15) controls how the
@@ -124,9 +173,32 @@ def build_datacube(
     wall-clock `time.time()` so intervals are comparable across grid processes. The
     workflow path enables it via the `FSD_WRITE_READ_LOG` env var (see workflows.task).
     """
-    if scl_mask_classes is None:
-        scl_mask_classes = config.SCL_MASK_CLASSES
-    nodata = config.NODATA
+    declared = declaration or catalog_subset.attrs.get("declaration") or S2_L2A_DECLARATION
+    if declared.native_grid:
+        raise NotImplementedError(
+            "build_datacube: a native single-grid source (declaration.native_grid="
+            "True) is designed-for but not implemented — grid-topology generalization "
+            "(the multi-tile single-CRS-collapse alternative) lands with the ERA5/"
+            "CHIRPS spec (spec 34 [G2])."
+        )
+    if reference_band is None:
+        reference_band = declared.reference_band
+
+    mask_spec = declared.mask_spec
+    mask_active = mask_spec is not None and mask_spec.band in bands
+    if mask_active and mask_spec.mask_type != MASK_TYPE_CATEGORICAL_CLASSES:
+        raise NotImplementedError(
+            f"build_datacube: mask_type={mask_spec.mask_type!r} is not implemented — "
+            f"only {MASK_TYPE_CATEGORICAL_CLASSES!r} is (spec 34 [G3]); "
+            "bitmask/threshold masks land with a later source spec."
+        )
+    if scl_mask_classes is None and mask_active:
+        scl_mask_classes = list(mask_spec.classes)
+
+    if "nodata" in catalog_subset.columns and len(catalog_subset):
+        nodata = int(catalog_subset["nodata"].iloc[0])
+    else:
+        nodata = declared.nodata
     timings: dict[str, float] = {}
     t_all = time.perf_counter()
 
@@ -145,11 +217,15 @@ def build_datacube(
             catalog_gdf=catalog_subset, shape_gdf=shape_gdf, nodata=nodata,
             njobs=njobs_load_images, write_read_log=write_read_log,
         )
-        # Harmonize the S2 processing-baseline offset (spec 32 D1/D2) per source
-        # image, HERE — before dst_crs/reference/resample/mosaic — so a calendar
-        # window straddling the baseline 04.00 cutover (2022-01-25) never medians
-        # unharmonized DN together (correctness debt #10).
-        _apply_boa_offsets(catalog_gdf, data_profile_list)
+        # Harmonize each image's declared radiometric offset (spec 34 §1, generalizing
+        # spec 32's S2-only version) HERE — before dst_crs/reference/resample/mosaic —
+        # so a calendar window straddling e.g. the S2 baseline 04.00 cutover
+        # (2022-01-25) never medians unharmonized DN together (correctness debt #10).
+        # The cube still clips to uint16 after this (spec 34 §1f `[G1]`, intentional —
+        # see test_build_datacube_still_clips_after_offset_pinned_behavior): the
+        # lossless win is that the on-disk COG kept raw DN (this apply is read-time
+        # only, never written back).
+        _apply_offsets(catalog_gdf, data_profile_list)
 
     # Collapse into a single UTM zone so rasterio.merge (single-CRS) can run.
     with _timed(timings, "dst_crs"):
@@ -181,13 +257,23 @@ def build_datacube(
         )
 
     with _timed(timings, "ops"):
-        datacube, metadata = ops.run_ops(datacube, metadata, sequence=[
-            (ops.apply_cloud_mask_scl, dict(mask_classes=scl_mask_classes)),
-            (ops.drop_bands, dict(bands_to_drop=["SCL"])),
-            (ops.median_mosaic, dict(startdate=startdate, enddate=enddate,
-                                     mosaic_days=mosaic_days,
-                                     mosaic_scheme=mosaic_scheme)),
-        ])
+        # Declaration-driven op-sequence assembly (spec 34 §2b) — replaces the
+        # hardcoded S2 chain. `mask_active` (resolved above from the declaration +
+        # the requested `bands`) decides whether the mask/drop pair runs at all; a
+        # source with no mask (or one whose mask band wasn't requested) skips both,
+        # closing #35 without a source-specific `if` here.
+        sequence = []
+        if mask_active:
+            sequence.append((ops.apply_cloud_mask_scl,
+                             dict(mask_classes=scl_mask_classes, mask_band=mask_spec.band,
+                                  mask_value=nodata)))
+            if not declared.mask_keep:
+                sequence.append((ops.drop_bands, dict(bands_to_drop=[mask_spec.band])))
+        sequence.append((ops.median_mosaic, dict(startdate=startdate, enddate=enddate,
+                                                  mosaic_days=mosaic_days,
+                                                  mosaic_scheme=mosaic_scheme,
+                                                  mask_value=nodata)))
+        datacube, metadata = ops.run_ops(datacube, metadata, sequence=sequence)
 
     with _timed(timings, "save"):
         fs.makedirs(export_folderpath)
@@ -377,18 +463,19 @@ def _load_images(catalog_gdf, shape_gdf, nodata, njobs=1, write_read_log=False):
     return catalog_gdf, data_profile_list, reads
 
 
-def _apply_boa_offsets(catalog_gdf, data_profile_list) -> None:
-    """Apply each row's `boa_add_offset` (spec 32) to its loaded image, in place.
+def _apply_offsets(catalog_gdf, data_profile_list) -> None:
+    """Apply each row's declared `offset` (spec 34 §1, generalizing spec 32's
+    `boa_add_offset`) to its loaded image, in place, read-time only.
 
     `catalog_gdf` is post-filter (kept rows only), `image_index` still indexes
-    the full `data_profile_list`. Missing `boa_add_offset` column (older/CDSE
-    catalogs) is a no-op — every offset defaults to 0."""
-    if "boa_add_offset" not in catalog_gdf.columns:
+    the full `data_profile_list`. Missing `offset` column (a source with no
+    radiometric-offset concept) is a no-op — every offset defaults to 0."""
+    if "offset" not in catalog_gdf.columns:
         return
-    for idx, offset in zip(catalog_gdf["image_index"], catalog_gdf["boa_add_offset"]):
+    for idx, offset in zip(catalog_gdf["image_index"], catalog_gdf["offset"]):
         offset = int(offset) if offset else 0
         if offset:
-            data_profile_list[idx] = apply_boa_offset(*data_profile_list[idx], offset=offset)
+            data_profile_list[idx] = apply_offset(*data_profile_list[idx], offset=offset)
 
 
 def _load_images_logged(filepaths, shape_gdf, nodata, product_ids, bands):

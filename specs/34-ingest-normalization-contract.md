@@ -1,7 +1,9 @@
 # Spec 34 — Ingest / normalization contract (`stage → normalize → put`, per source)
 
-> **Status: ✅ SIGNED OFF (2026-07-20, Opus@high — user sign-off after a `grilling` pass).** Ready for a
-> Sonnet@medium implementation session against this spec (handoff: `/tmp/fsd-handoff-spec34-implement.md`).
+> **Status: ✅ IMPLEMENTED (2026-07-20, Sonnet@medium).** Signed off 2026-07-20 (Opus@high — user
+> sign-off after a `grilling` pass) then implemented same-day against this spec. `pytest -q` green
+> (279 passed/3 skipped), `ruff` clean. **→ NEXT: Opus@high review, then the user runs
+> `runbooks/34-download-to-blob.md` + `runbooks/34-mini-mpc-cross-baseline.md`.**
 > Promotes **TODO #38**
 > (the item; this is spec **34**). Re-opens **download-to-blob for all sources** (suspended out of P1 —
 > spec 31 §5/§5-ARCHIVE) now that the storage/compute seam is **proven** (spec 31, 2026-07-18).

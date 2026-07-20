@@ -10,9 +10,13 @@ limits — no `CdseCredentials` for this source).
 
 MPC serves raw, unharmonized DN and does not expose the per-band S2
 processing-baseline offset in STAC (`raster:bands` absent) — it must be derived
-from the item property `s2:processing_baseline` (§2 below) and is stored as the
-additive `boa_add_offset` catalog column, applied at build time (spec 32 D1/D2;
-see `fsd.datacube.builder`), not here.
+from the item property `s2:processing_baseline` (`_s2_radiometry.offset_for_item`)
+and is stored as the additive `offset` catalog column (spec 34 §1, generalizing
+spec 32's `boa_add_offset`). Since spec 34, MPC's download is no longer a *pure*
+byte-copy: after `fs.transfer`, ingest stamps the GDAL scale/offset + nodata-if-
+missing tags on the local COG (`fsd.raster.cog.stamp_or_reencode`) and pushes the
+result to `root_folderpath` (local or blob) — a cheap header edit, no pixel
+decode (spec 34 §3).
 """
 
 from __future__ import annotations
@@ -27,6 +31,9 @@ import pandas as pd
 import shapely
 
 from fsd import config
+from fsd.raster.cog import stamp_or_reencode
+from fsd.raster.images import _is_reflectance
+from fsd.sources._s2_radiometry import offset_for_item
 from fsd.sources.cdse import _finalize_catalog_gdf, _is_local_path, _roi_gdf
 from fsd.storage import fs
 
@@ -45,31 +52,6 @@ class DownloadResult:
     failed_count: int = 0
     elapsed_s: float = 0.0
     failures: list = dataclasses.field(default_factory=list)  # (src_url, reason)
-
-
-# --- baseline -> offset (spec 32 D2/D3, correctness debt #10) -----------------
-
-
-def _baseline_tuple(baseline: str) -> tuple[int, int]:
-    """Parse an S2 `s2:processing_baseline` string ("04.00", "05.09", "02.14")
-    into a comparable `(major, minor)` int tuple."""
-    major, minor = baseline.split(".")
-    return (int(major), int(minor))
-
-
-def _offset_for_item(item) -> int:
-    """The additive reflectance-band offset for one MPC item (spec 32 D2/D3),
-    keyed on **baseline**, not acquisition date (MPC reprocessing can stamp a
-    >=04.00 baseline on a pre-2022 date; the offset still applies). Raises if
-    `s2:processing_baseline` is missing — deterministic, no silent 0 (this is
-    the correctness-critical field, spec 32 §2)."""
-    baseline = item.properties.get("s2:processing_baseline")
-    if baseline is None:
-        raise ValueError(
-            f"MPC item {item.id!r} has no 's2:processing_baseline' property; "
-            "cannot derive the reflectance offset (spec 32 §2)."
-        )
-    return -1000 if _baseline_tuple(baseline) >= (4, 0) else 0
 
 
 # --- catalog discovery -------------------------------------------------------
@@ -154,14 +136,15 @@ def _items_to_gdf(items) -> gpd.GeoDataFrame:
             "timestamp": it.datetime,
             "s3url": _item_self_href(it),
             "cloud_cover": it.properties.get("eo:cloud_cover"),
-            "boa_add_offset": _offset_for_item(it),
+            "offset": offset_for_item(it),
+            "nodata": config.NODATA,
             "geometry": shapely.geometry.shape(it.geometry),
         }
         for it in items
     ]
     gdf = gpd.GeoDataFrame(
         rows, columns=["id", "satellite", "timestamp", "s3url", "cloud_cover",
-                       "boa_add_offset", "geometry"], geometry="geometry",
+                       "offset", "nodata", "geometry"], geometry="geometry",
         crs="EPSG:4326",
     )
     gdf["timestamp"] = pd.to_datetime(gdf["timestamp"], utc=True)
@@ -179,7 +162,7 @@ def query_catalog(
     MPC STAC API (anonymous by default).
 
     Returns a GeoDataFrame: id, satellite, timestamp, s3url, cloud_cover,
-    boa_add_offset, geometry (EPSG:4326). Asserts tile id uniqueness.
+    offset, nodata, geometry (EPSG:4326). Asserts tile id uniqueness.
     """
     roi_gdf = _roi_gdf(roi)
     items = _search_items(roi_gdf, startdate, enddate, max_cloudcover=max_cloudcover)
@@ -188,50 +171,83 @@ def query_catalog(
     return _finalize_catalog_gdf(gdf, roi_gdf, max_cloudcover)
 
 
-# --- tile download (pure COG byte-copy; no conversion, spec 32 §1) -----------
+# --- tile download (byte-copy + GDAL metadata stamp, spec 34 §3) -------------
 
 
 def _select_item_files(
     item, bands: list[str], root_folderpath: str
-) -> list[tuple[str, str]]:
+) -> list[tuple[str, str, str]]:
     """Select download files from an MPC item's `assets` — MPC keys bands
     directly (`"B04"`, `"SCL"`, …), simpler than CDSE's `Bxx_YYm`. Returns
-    `[(signed_href, local_dst_path), ...]`."""
+    `[(signed_href, local_dst_path, band), ...]`."""
     dst_folder = os.path.join(root_folderpath, item.id)
     selected = []
     for band in bands:
         asset = item.assets.get(band)
         if asset is None:
             continue  # band not available for this item
-        selected.append((asset.href, os.path.join(dst_folder, f"{band}.tif")))
+        selected.append((asset.href, os.path.join(dst_folder, f"{band}.tif"), band))
     return selected
 
 
-def _transfer_one(
-    src_url: str, dst_path: str, *, tries: int = 3, base_delay: float = 0.5,
+def _transfer_and_stamp_one(
+    src_url: str, dst_path: str, *, band: str, offset: int,
+    tries: int = 3, base_delay: float = 0.5,
 ) -> tuple[bool, str]:
-    """Pure byte-copy of one already-COG asset (no conversion). Idempotent skip
-    on an existing non-empty `dst_path`. Returns `(ok, reason)`."""
+    """Byte-copy one already-COG asset (`fs.transfer`), then stamp the declared
+    GDAL scale/offset (reflectance bands only) + nodata-if-missing tags (spec 34
+    §1a/§3) — a cheap header edit, not a pixel-decoding re-encode
+    (`fsd.raster.cog.stamp_or_reencode`, whose documented fallback is a
+    GDAL-COG-driver re-encode if the in-place stamp breaks COG validity).
+
+    Stamping needs a real local file, so when `dst_path` is remote (blob) the
+    transfer lands in local scratch first, gets stamped there, then `fs.put`
+    pushes it to `dst_path` (lifts spec 31/32's local-only guard, spec 34 §5).
+    Idempotent skip on an existing non-empty `dst_path`. Returns `(ok, reason)`.
+    """
+    import shutil
+    import tempfile
     import time
 
     if fs.exists(dst_path) and fs.size(dst_path) > 0:
         return True, "skipped"
+
+    local = _is_local_path(dst_path)
+    scratch_dir = None
+    scratch = dst_path
+    if not local:
+        scratch_dir = tempfile.mkdtemp(prefix="fsd_mpc_")
+        scratch = os.path.join(scratch_dir, os.path.basename(dst_path))
+
+    is_reflectance = _is_reflectance(band)
     last: Exception | None = None
-    for attempt in range(tries):
-        try:
-            fs.transfer(src_url, dst_path)
-            return True, "ok"
-        except Exception as e:  # noqa: BLE001 - retried below; final failure reported
-            last = e
-            if attempt == tries - 1:
-                break
-            time.sleep(base_delay * (2**attempt))
-    return False, str(last) if last else "unknown"
+    try:
+        for attempt in range(tries):
+            try:
+                fs.transfer(src_url, scratch)
+                stamp_or_reencode(
+                    scratch,
+                    offset=offset if is_reflectance else 0.0,
+                    scale=config.S2_REFLECTANCE_SCALE if is_reflectance else 1.0,
+                    set_nodata_if_missing=config.NODATA,
+                )
+                if not local:
+                    fs.put(scratch, dst_path)
+                return True, "ok"
+            except Exception as e:  # noqa: BLE001 - retried below; final failure reported
+                last = e
+                if attempt == tries - 1:
+                    break
+                time.sleep(base_delay * (2**attempt))
+        return False, str(last) if last else "unknown"
+    finally:
+        if scratch_dir is not None:
+            shutil.rmtree(scratch_dir, ignore_errors=True)
 
 
 def _append_downloaded(catalog, tile_meta: dict, results: list[tuple]) -> int:
     """Group successful (tile_id, dst, ok) downloads by tile and upsert catalog
-    rows. Mirrors `cdse._append_downloaded`, plus `boa_add_offset`."""
+    rows. Mirrors `cdse._append_downloaded`, plus `offset`/`nodata`."""
     import collections
 
     files_by_tile = collections.defaultdict(list)
@@ -253,7 +269,8 @@ def _append_downloaded(catalog, tile_meta: dict, results: list[tuple]) -> int:
             "local_folderpath": folder_by_tile[tile_id],
             "files": ",".join(sorted(files)),
             "cloud_cover": r["cloud_cover"],
-            "boa_add_offset": r["boa_add_offset"],
+            "offset": r["offset"],
+            "nodata": r["nodata"],
             "geometry": r["geometry"],
         })
     if rows:
@@ -276,13 +293,14 @@ def download(
     should_stop: Callable[[], bool] | None = None,
 ) -> DownloadResult:
     """Discover matching MPC S2 L2A tiles and download the requested band files
-    to `root_folderpath` (spec 32). Local-only in Phase 1 (mirrors CDSE's local
-    ingest contract); no credentials required (anonymous MPC access, D4).
+    to `root_folderpath`, local or remote/blob (spec 34 §3/§5 — lifts spec 32's
+    local-only guard). No credentials required (anonymous MPC access, D4).
 
-    Unlike `cdse.download`, this is a **pure COG byte-copy** — no jp2->COG
-    conversion, so Phase 1 uses a straightforward thread-pool transfer (no
+    Unlike `cdse.download`, source assets are already COG — no jp2->COG
+    conversion, so this uses a straightforward thread-pool transfer + stamp (no
     convert-process-pool, no disk-aware staging cap; a single tile/band run is
-    trivial — spec 32 §1 scope note). Idempotent (skips files already on disk).
+    trivial — spec 32 §1 scope note, still true post-spec-34). Idempotent (skips
+    files already on disk).
 
     `should_stop` (optional) is checked in the submit loop, same halt-new-
     submissions-only semantics as `cdse.download` — not exercised by the
@@ -291,14 +309,8 @@ def download(
     import concurrent.futures
     import time
 
-    if not _is_local_path(root_folderpath):
-        raise ValueError(
-            "MPC source is local-only in Phase 1; got remote root_folderpath "
-            f"{root_folderpath!r}. Azure-native streaming/copy is a Phase-2 "
-            "decision (spec 32 §Scope; deferred fork, stream-in-place vs "
-            "copy-to-rise)."
-        )
-    fs.makedirs(root_folderpath, exist_ok=True)
+    if _is_local_path(root_folderpath):
+        fs.makedirs(root_folderpath, exist_ok=True)
 
     roi_gdf = _roi_gdf(roi)
     items = _search_items(roi_gdf, startdate, enddate, max_cloudcover=max_cloudcover)
@@ -314,10 +326,11 @@ def download(
     tile_meta = {row["id"]: row for _, row in tiles.iterrows()}
     kept_items = [it for it in items if it.id in tile_meta]
 
-    work: list[tuple[str, str, str]] = []
+    work: list[tuple[str, str, str, str, int]] = []
     for it in kept_items:
-        for src, dst in _select_item_files(it, bands, root_folderpath):
-            work.append((src, dst, it.id))
+        offset = tile_meta[it.id]["offset"]
+        for src, dst, band in _select_item_files(it, bands, root_folderpath):
+            work.append((src, dst, it.id, band, offset))
 
     workers = max_concurrent if max_concurrent is not None else config.MPC_MAX_CONCURRENT
     start = time.time()
@@ -327,10 +340,10 @@ def download(
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         futs = {}
-        for src, dst, tid in work:
+        for src, dst, tid, band, offset in work:
             if should_stop is not None and should_stop():
                 break
-            futs[pool.submit(_transfer_one, src, dst)] = (src, dst, tid)
+            futs[pool.submit(_transfer_and_stamp_one, src, dst, band=band, offset=offset)] = (src, dst, tid)
         for fut in concurrent.futures.as_completed(futs):
             src, dst, tid = futs[fut]
             ok, reason = fut.result()

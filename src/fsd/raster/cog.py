@@ -26,7 +26,7 @@ import rasterio.shutil
 from fsd import config
 from fsd.raster import rio_open
 
-__all__ = ["to_cog", "cog_creation_opts"]
+__all__ = ["to_cog", "cog_creation_opts", "stamp_gdal_tags", "stamp_or_reencode"]
 
 
 def cog_creation_opts(
@@ -103,3 +103,74 @@ def to_cog(
                 raise ValueError(f"to_cog: {dst_path} is not bit-identical to {src_path}")
 
     return os.path.getsize(dst_path)
+
+
+def stamp_gdal_tags(
+    filepath: str,
+    *,
+    offset: float = 0.0,
+    scale: float = 1.0,
+    set_nodata_if_missing: float | None = None,
+) -> None:
+    """Declare radiometry + nodata as GDAL band-level metadata, in place (spec 34 §1a).
+
+    A header-tag edit: reopens `filepath` in update ("r+") mode and sets every band's
+    `SCALE`/`OFFSET` (what `rio-tiler`/titiler's `unscale=true` reads — STAC
+    `raster:bands` alone is **not** forwarded to the viewer, per titiler discussion
+    #803) and, if the raster has no nodata tag yet, sets it to `set_nodata_if_missing`
+    (spec 34 §1c — never overwrites an already-declared nodata). Never decodes pixels:
+    no radiometric loss, cheap even on a large COG.
+
+    Plain `rasterio.open(...).read()` (what the datacube builder uses) never
+    auto-applies these tags — they are inert metadata on a normal read, so this and
+    the STAC `raster:bands` declaration (`fsd.catalog.stac`) can coexist with the
+    builder's own read-time `apply_offset` without double-applying (spec 34 §1a).
+
+    `IGNORE_COG_LAYOUT_BREAK=YES`: GDAL's COG driver refuses an in-place metadata
+    edit by default ("has COG layout... updating it will generally result in losing
+    part of the optimizations") even though a scale/offset/nodata tag is a header-only
+    change that never touches pixel data or block layout — this open option is exactly
+    what lets the "cheap header edit" this function promises actually happen in place.
+    """
+    with rio_open(filepath, "r+", IGNORE_COG_LAYOUT_BREAK="YES") as dst:
+        dst.scales = (scale,) * dst.count
+        dst.offsets = (offset,) * dst.count
+        if set_nodata_if_missing is not None and dst.nodata is None:
+            dst.nodata = set_nodata_if_missing
+
+
+def stamp_or_reencode(
+    filepath: str,
+    *,
+    offset: float = 0.0,
+    scale: float = 1.0,
+    set_nodata_if_missing: float | None = None,
+) -> str:
+    """`stamp_gdal_tags`, falling back to a GDAL-COG-driver re-encode if the in-place
+    stamp breaks COG validity (spec 34 §1a "runbook observation" — whether an in-place
+    tag edit keeps a strictly-valid COG is source/GDAL-version dependent; this is the
+    documented fallback, not the expected path). Returns ``"stamped"`` or
+    ``"reencoded"`` (informational, for a runbook to report which path was taken).
+    """
+    try:
+        stamp_gdal_tags(
+            filepath, offset=offset, scale=scale,
+            set_nodata_if_missing=set_nodata_if_missing,
+        )
+        return "stamped"
+    except Exception:
+        tmp = f"{filepath}.reencode.part"
+        try:
+            rasterio.shutil.copy(filepath, tmp, **cog_creation_opts(filepath))
+            os.replace(tmp, filepath)
+        finally:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+        stamp_gdal_tags(
+            filepath, offset=offset, scale=scale,
+            set_nodata_if_missing=set_nodata_if_missing,
+        )
+        return "reencoded"

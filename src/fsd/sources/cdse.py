@@ -24,6 +24,9 @@ import pandas as pd
 import shapely
 
 from fsd import config
+from fsd.raster.cog import stamp_or_reencode
+from fsd.raster.images import _is_reflectance
+from fsd.sources._s2_radiometry import offset_for_item
 from fsd.storage import fs
 
 # Environment-variable names for the cloud/Batch path (CdseCredentials.from_env).
@@ -227,6 +230,13 @@ def _items_to_gdf(items) -> gpd.GeoDataFrame:
 
     Pure — no network — so it is unit-testable with duck-typed fake items
     (`.id`, `.datetime`, `.geometry`, `.properties`, `.assets[*].href`).
+
+    `offset` (spec 34 §1, closes #30/#10) is derived from the item's
+    `s2:processing_baseline` property, the same mechanism MPC uses
+    (`fsd.sources._s2_radiometry.offset_for_item`) — CDSE's STAC exposes the same
+    S2 extension property. `nodata` defaults to the S2 convention (`config.NODATA`);
+    CDSE's own jp2->COG conversion stamps it (`_convert_one`), so it is never
+    missing for a CDSE-ingested artifact.
     """
     rows = [
         {
@@ -235,13 +245,15 @@ def _items_to_gdf(items) -> gpd.GeoDataFrame:
             "timestamp": it.datetime,
             "s3url": _safe_root_from_item(it),
             "cloud_cover": it.properties.get("eo:cloud_cover"),
+            "offset": offset_for_item(it),
+            "nodata": config.NODATA,
             "geometry": shapely.geometry.shape(it.geometry),
         }
         for it in items
     ]
     gdf = gpd.GeoDataFrame(
         rows, columns=["id", "satellite", "timestamp", "s3url", "cloud_cover",
-                       "geometry"], geometry="geometry", crs="EPSG:4326",
+                       "offset", "nodata", "geometry"], geometry="geometry", crs="EPSG:4326",
     )
     gdf["timestamp"] = pd.to_datetime(gdf["timestamp"], utc=True)
     return gdf
@@ -429,11 +441,13 @@ def _transfer_one(
     return False, _error_reason(last) if last else "unknown", 0.0, 0
 
 
-def _convert_one(staging: str, dst_path: str) -> tuple[bool, str, float]:
+def _convert_one(staging: str, dst_path: str, *, offset: int = 0) -> tuple[bool, str, float]:
     """PROCESS stage (spec 25). `to_cog(staging, dst_path)` (spec 14, lossless COG
-    with overviews) then remove `staging` (`finally` — `to_cog` is atomic, so a crash
-    leaves at most the staging JP2, never a half-written `.tif`; the next resume pass
-    re-transfers and re-converts).
+    with overviews) then, spec 34 §1a, stamp the declared GDAL scale/offset (reflectance
+    bands only, `offset` — 0 is a no-op) + nodata-if-missing tags (closes #30/#10 — CDSE
+    gets this for free since it already re-encodes jp2->COG) — then remove `staging`
+    (`finally` — `to_cog` is atomic, so a crash leaves at most the staging JP2, never a
+    half-written `.tif`; the next resume pass re-transfers and re-converts).
 
     Top-level & picklable (`ProcessPoolExecutor`, spawn) — operates only on real local
     files, so it never needs a parent-process monkeypatch. A failure here is a local/
@@ -449,6 +463,14 @@ def _convert_one(staging: str, dst_path: str) -> tuple[bool, str, float]:
     try:
         t0 = time.time()
         to_cog(staging, dst_path)
+        band = os.path.splitext(os.path.basename(dst_path))[0]
+        is_reflectance = _is_reflectance(band)
+        stamp_or_reencode(
+            dst_path,
+            offset=offset if is_reflectance else 0.0,
+            scale=config.S2_REFLECTANCE_SCALE if is_reflectance else 1.0,
+            set_nodata_if_missing=config.NODATA,
+        )
         return True, "ok", time.time() - t0
     except Exception:
         return False, "ConvertError", 0.0
@@ -514,11 +536,48 @@ def _append_downloaded(catalog, tile_meta: dict, results: list[tuple]) -> int:
             "local_folderpath": folder_by_tile[tile_id],
             "files": ",".join(sorted(files)),
             "cloud_cover": r["cloud_cover"],
+            "offset": r.get("offset", 0),
+            "nodata": r.get("nodata", config.NODATA),
             "geometry": r["geometry"],
         })
     if rows:
         catalog.append(rows)
     return sum(len(f) for f in files_by_tile.values())
+
+
+def _push_scratch_to_remote(scratch_root: str, remote_root: str, catalog) -> None:
+    """Spec 34 §5: after a `download()` pass completes against local scratch (because
+    a remote `root_folderpath` was given), push every file under `scratch_root` to
+    `remote_root` (`fs.put`, works for any fsspec backend) and rewrite the catalog's
+    `local_folderpath` so it points at the remote location — the scratch dir is
+    removed right after (the caller doesn't need it; the catalog is the record).
+
+    Whole-run batch push, not per-file streaming (TODO #31 is the deferred streaming
+    item this spec does not swallow) — every file already succeeded locally by the
+    time this runs, so a push failure here is reported by letting the exception
+    propagate (the scratch dir is left in place for a manual retry rather than removed).
+    """
+    import glob
+
+    for local_fp in glob.glob(os.path.join(scratch_root, "**", "*"), recursive=True):
+        if os.path.isdir(local_fp):
+            continue
+        rel = os.path.relpath(local_fp, scratch_root).replace(os.sep, "/")
+        fs.put(local_fp, remote_root.rstrip("/") + "/" + rel)
+
+    if fs.exists(catalog.filepath):
+        gdf = catalog.read()
+
+        def _relocate(p):
+            if not str(p).startswith(scratch_root):
+                return p
+            rel = os.path.relpath(str(p), scratch_root).replace(os.sep, "/")
+            return remote_root.rstrip("/") + "/" + rel
+
+        gdf["local_folderpath"] = gdf["local_folderpath"].apply(_relocate)
+        fs.write_parquet(catalog.filepath, gdf)
+
+    shutil.rmtree(scratch_root, ignore_errors=True)
 
 
 def _default_max_staged(root_folderpath: str, max_convert_procs: int,
@@ -642,20 +701,27 @@ def download(
 
     creds.require_s3()  # discovery (STAC) is anonymous; only download needs S3 keys
 
-    if cog and not _is_local_path(root_folderpath):
-        raise ValueError(
-            "COG-on-download (cog=True) needs a local root_folderpath in v1; got "
-            f"{root_folderpath!r}. Use cog=False to keep native JP2, or wait for the "
-            "stage-local->convert->upload path (Azure milestone)."
-        )
+    # Spec 34 §5 lifts the local-only guard: a remote (blob) root_folderpath runs the
+    # whole existing local pipeline (transfer/convert/stamp) against LOCAL scratch —
+    # every path below stays local, so nothing else in this function changes — then,
+    # once the pass completes, the scratch tree is pushed to the real remote root and
+    # the catalog rows are rewritten to point at it (`_push_scratch_to_remote`). This is
+    # a whole-run batch push, not per-file streaming-to-blob (that's TODO #31, out of
+    # this spec's scope) — acceptable for the cloud-VM-first runbook (spec 34 [G5]),
+    # where the scratch dir and the blob destination are both close to the VM.
+    import tempfile
+
+    remote_root = None
+    if not _is_local_path(root_folderpath):
+        remote_root = root_folderpath
+        root_folderpath = tempfile.mkdtemp(prefix="fsd_cdse_")
 
     # Ensure the local output root exists: the disk-usage probe in _default_max_staged
     # (and, for a first run, the per-file writes) assume it is already there. Leaf dirs
     # auto-create on write, but the root-level probe runs before any write, so a fresh
     # --dst would otherwise FileNotFoundError. Creating the root is part of download()'s
     # contract (put files under root_folderpath), not the caller's job.
-    if _is_local_path(root_folderpath):
-        fs.makedirs(root_folderpath, exist_ok=True)
+    fs.makedirs(root_folderpath, exist_ok=True)
 
     roi_gdf = _roi_gdf(roi)
     items = _search_items(roi_gdf, startdate, enddate)
@@ -834,7 +900,8 @@ def download(
         if ok and reason != "skipped" and needs_convert:
             try:
                 pool = _get_convert_pool()
-                cfut = pool.submit(_convert_one, dst + ".src.jp2", dst)
+                offset = int(tile_meta[tid].get("offset", 0) or 0)
+                cfut = pool.submit(_convert_one, dst + ".src.jp2", dst, offset=offset)
             except Exception:
                 with lock:
                     state["pool_broken"] = True
@@ -880,6 +947,9 @@ def download(
             pending_results.clear()
         except Exception as e:
             print(f"[fsd.download] warning: end-of-run catalog flush failed: {e!r}", flush=True)
+
+    if remote_root is not None:
+        _push_scratch_to_remote(root_folderpath, remote_root, catalog)
 
     _emit()  # final line
 

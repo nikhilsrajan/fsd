@@ -1,5 +1,6 @@
 """Tests for fsd.datacube.builder (spec 03). Synthetic GeoTIFF tiles on disk."""
 
+import dataclasses
 import datetime
 import json
 
@@ -12,6 +13,7 @@ from rasterio.crs import CRS as RioCRS
 from rasterio.transform import from_origin
 from shapely.geometry import box
 
+from fsd.catalog.declaration import MaskSpec, SourceDeclaration
 from fsd.datacube import builder
 from fsd.storage import fs
 
@@ -77,20 +79,145 @@ def test_build_datacube_end_to_end(tmp_path):
     assert md["geotiff_metadata"]["height"] == 4
 
 
-def test_build_datacube_harmonizes_boa_offset_before_median_mosaic(tmp_path):
-    """spec 32 #10 guard: a calendar window straddling the baseline-04.00 cutover
-    must align every image to the pre-baseline scale BEFORE the median, not
-    after — else the mosaic silently mixes incomparable reflectances."""
+def test_build_datacube_no_mask_band_requested_closes_35(tmp_path):
+    """spec 34 §2b/§35: bands=['B04'] (no SCL requested) builds without raising —
+    the mask/drop ops are skipped entirely, not just tolerated with a no-op."""
+    ts = pd.Timestamp("2018-06-01", tz="UTC")
+    p = tmp_path / "t1_B04.tif"
+    _write_tile(p, np.full((4, 4), 111, dtype=np.uint16))
+    catalog = gpd.GeoDataFrame([_band_row("tile_t1", p, "B04", ts)], crs=CRS)
+    shape = gpd.GeoDataFrame({"geometry": [TILE_BOX]}, crs=CRS)
+    out = tmp_path / "cube"
+
+    builder.build_datacube(
+        catalog_subset=catalog, shape_gdf=shape,
+        startdate=datetime.datetime(2018, 5, 31), enddate=datetime.datetime(2018, 6, 2),
+        bands=["B04"], mosaic_days=20, export_folderpath=str(out),
+        if_missing_files=None, reference_band="B04",
+    )
+    dc = fs.load_npy(str(out / "datacube.npy"))
+    md = fs.load_npy(str(out / "metadata.pickle.npy"), allow_pickle=True)[()]
+    assert md["bands"] == ["B04"]      # no SCL to drop -- never requested
+    assert (dc[0, :, :, 0] == 111).all()
+
+
+def test_build_datacube_native_grid_declaration_raises_not_implemented(tmp_path):
+    """spec 34 [G2]: a native-single-grid declaration is a loud, documented gap."""
+    ts = pd.Timestamp("2018-06-01", tz="UTC")
+    p = tmp_path / "t1_B04.tif"
+    _write_tile(p, np.full((4, 4), 1, dtype=np.uint16))
+    catalog = gpd.GeoDataFrame([_band_row("tile_t1", p, "B04", ts)], crs=CRS)
+    shape = gpd.GeoDataFrame({"geometry": [TILE_BOX]}, crs=CRS)
+    native_grid_declaration = SourceDeclaration(reference_band=None, native_grid=True)
+
+    with pytest.raises(NotImplementedError, match="native single-grid"):
+        builder.build_datacube(
+            catalog_subset=catalog, shape_gdf=shape,
+            startdate=datetime.datetime(2018, 5, 31), enddate=datetime.datetime(2018, 6, 2),
+            bands=["B04"], export_folderpath=str(tmp_path / "cube"),
+            if_missing_files=None, declaration=native_grid_declaration,
+        )
+
+
+def test_build_datacube_unimplemented_mask_type_raises_not_implemented(tmp_path):
+    """spec 34 [G3]: a mask_type other than categorical_classes is a loud gap, not a
+    silently wrong mask."""
+    ts = pd.Timestamp("2018-06-01", tz="UTC")
+    rows = []
+    for band, val in [("B04", 5), ("QA", 0)]:
+        p = tmp_path / f"t1_{band}.tif"
+        _write_tile(p, np.full((4, 4), val, dtype=np.uint16))
+        rows.append(_band_row("tile_t1", p, band, ts))
+    catalog = gpd.GeoDataFrame(rows, crs=CRS)
+    shape = gpd.GeoDataFrame({"geometry": [TILE_BOX]}, crs=CRS)
+    bitmask_declaration = SourceDeclaration(
+        reference_band="B04", mask_spec=MaskSpec(band="QA", mask_type="bitmask"),
+    )
+
+    with pytest.raises(NotImplementedError, match="bitmask"):
+        builder.build_datacube(
+            catalog_subset=catalog, shape_gdf=shape,
+            startdate=datetime.datetime(2018, 5, 31), enddate=datetime.datetime(2018, 6, 2),
+            bands=["B04", "QA"], export_folderpath=str(tmp_path / "cube"),
+            if_missing_files=None, declaration=bitmask_declaration,
+        )
+
+
+def test_build_datacube_mask_keep_retains_mask_band(tmp_path):
+    """spec 34 §2c: mask_keep=True masks but does not drop the mask band."""
+    ts = pd.Timestamp("2018-06-01", tz="UTC")
+    rows = []
+    scl = np.full((4, 4), 4, dtype=np.uint16)
+    scl[0, 0] = 8  # masked
+    for band, arr in [("B04", np.full((4, 4), 50, dtype=np.uint16)), ("SCL", scl)]:
+        p = tmp_path / f"t1_{band}.tif"
+        _write_tile(p, arr)
+        rows.append(_band_row("tile_t1", p, band, ts))
+    catalog = gpd.GeoDataFrame(rows, crs=CRS)
+    shape = gpd.GeoDataFrame({"geometry": [TILE_BOX]}, crs=CRS)
+    keep_declaration = SourceDeclaration(
+        reference_band="B04",
+        mask_spec=MaskSpec(band="SCL", mask_type="categorical_classes", classes=(8,)),
+        mask_keep=True,
+    )
+    out = tmp_path / "cube"
+
+    builder.build_datacube(
+        catalog_subset=catalog, shape_gdf=shape,
+        startdate=datetime.datetime(2018, 5, 31), enddate=datetime.datetime(2018, 6, 2),
+        bands=["B04", "SCL"], export_folderpath=str(out),
+        if_missing_files=None, declaration=keep_declaration,
+    )
+    md = fs.load_npy(str(out / "metadata.pickle.npy"), allow_pickle=True)[()]
+    assert "SCL" in md["bands"]     # kept, not dropped
+    dc = fs.load_npy(str(out / "datacube.npy"))
+    b04 = dc[0, :, :, md["bands"].index("B04")]
+    assert b04[0, 0] == 0 and b04[1, 1] == 50   # masked pixel zeroed, others intact
+
+
+def test_build_datacube_reads_declared_nodata_not_config_default(tmp_path):
+    """spec 34: the catalog's declared `nodata` (not `config.NODATA`) decides which
+    pixel value the mosaic treats as missing. Two acquisitions in one mosaic window:
+    one real (42), one all-declared-nodata (77) — if the declared value (77) is
+    correctly used as the mask value, the 77s are excluded and the window median is
+    42; if the code fell back to `config.NODATA` (0), 77 would NOT be excluded and
+    the median would be (42+77)/2=59 instead."""
+    ts1 = pd.Timestamp("2018-06-01", tz="UTC")
+    ts2 = pd.Timestamp("2018-06-05", tz="UTC")
+    rows = []
+    for ts, tag, val in [(ts1, "a", 42), (ts2, "b", 77)]:
+        p = tmp_path / f"{tag}_B04.tif"
+        _write_tile(p, np.full((4, 4), val, dtype=np.uint16))
+        rows.append({**_band_row(f"tile_{tag}", p, "B04", ts), "nodata": 77})
+    catalog = gpd.GeoDataFrame(rows, crs=CRS)
+    shape = gpd.GeoDataFrame({"geometry": [TILE_BOX]}, crs=CRS)
+    out = tmp_path / "cube"
+
+    builder.build_datacube(
+        catalog_subset=catalog, shape_gdf=shape,
+        startdate=datetime.datetime(2018, 5, 31), enddate=datetime.datetime(2018, 6, 10),
+        bands=["B04"], mosaic_days=20, export_folderpath=str(out),
+        if_missing_files=None, reference_band="B04",
+    )
+    dc = fs.load_npy(str(out / "datacube.npy"))
+    assert dc.shape[0] == 1               # both dates land in the same window
+    assert (dc[0, :, :, 0] == 42).all()   # 77 excluded as the declared nodata
+
+
+def test_build_datacube_harmonizes_offset_before_median_mosaic(tmp_path):
+    """spec 34 §1f / spec 32 #10 guard: a calendar window straddling the baseline-
+    04.00 cutover must align every image to the pre-baseline scale BEFORE the
+    median, not after — else the mosaic silently mixes incomparable reflectances."""
     ts_old = pd.Timestamp("2021-06-01", tz="UTC")
     ts_new = pd.Timestamp("2022-06-01", tz="UTC")
     rows = []
     for ts, tag, b04v, offset in [(ts_old, "old", 200, 0), (ts_new, "new", 1200, -1000)]:
         p = tmp_path / f"{tag}_B04.tif"
         _write_tile(p, np.full((4, 4), b04v, dtype=np.uint16))
-        rows.append({**_band_row(f"tile_{tag}", p, "B04", ts), "boa_add_offset": offset})
+        rows.append({**_band_row(f"tile_{tag}", p, "B04", ts), "offset": offset})
         scl_p = tmp_path / f"{tag}_SCL.tif"
         _write_tile(scl_p, np.full((4, 4), 4, dtype=np.uint16))  # 4 = vegetation, unmasked
-        rows.append({**_band_row(f"tile_{tag}", scl_p, "SCL", ts), "boa_add_offset": 0})
+        rows.append({**_band_row(f"tile_{tag}", scl_p, "SCL", ts), "offset": 0})
     catalog = gpd.GeoDataFrame(rows, crs=CRS)
     shape = gpd.GeoDataFrame({"geometry": [TILE_BOX]}, crs=CRS)
     out = tmp_path / "cube"
@@ -186,24 +313,36 @@ def test_flatten_catalog_skips_non_raster(tmp_path):
     assert flat["filepath"].iloc[0].endswith("B04.jp2")
 
 
-def test_flatten_catalog_boa_offset_exempts_non_reflectance_bands(tmp_path):
+def test_flatten_catalog_offset_exempts_non_reflectance_bands(tmp_path):
     gdf = gpd.GeoDataFrame(
         [{"id": "x", "local_folderpath": str(tmp_path), "timestamp": 0,
           "files": "B04.tif,SCL.tif", "area_contribution": 50.0,
-          "boa_add_offset": -1000, "geometry": TILE_BOX}], crs=CRS,
+          "offset": -1000, "geometry": TILE_BOX}], crs=CRS,
     )
     flat = builder.flatten_catalog(gdf)
-    offsets = dict(zip(flat["band"], flat["boa_add_offset"]))
+    offsets = dict(zip(flat["band"], flat["offset"]))
     assert offsets == {"B04": -1000, "SCL": 0}
 
 
-def test_flatten_catalog_boa_offset_defaults_to_zero_when_column_missing(tmp_path):
+def test_flatten_catalog_offset_and_nodata_default_to_zero_when_column_missing(tmp_path):
     gdf = gpd.GeoDataFrame(
         [{"id": "x", "local_folderpath": str(tmp_path), "timestamp": 0,
           "files": "B04.jp2", "area_contribution": 50.0, "geometry": TILE_BOX}], crs=CRS,
     )
     flat = builder.flatten_catalog(gdf)
-    assert flat["boa_add_offset"].iloc[0] == 0
+    assert flat["offset"].iloc[0] == 0
+    assert flat["nodata"].iloc[0] == 0
+
+
+def test_flatten_catalog_attaches_declaration():
+    gdf = gpd.GeoDataFrame(
+        [{"id": "x", "local_folderpath": "/tmp", "timestamp": 0,
+          "files": "B04.jp2", "area_contribution": 50.0, "geometry": TILE_BOX}], crs=CRS,
+    )
+    from fsd.catalog.declaration import S2_L2A_DECLARATION
+
+    flat = builder.flatten_catalog(gdf)
+    assert flat.attrs["declaration"] is S2_L2A_DECLARATION
 
 
 def test_get_dst_crs_picks_max_mean_area():
@@ -268,3 +407,86 @@ def test_missing_files_raises_on_incomplete_area():
             enddate=datetime.datetime(2018, 6, 2), bands=["B04"],
             if_missing_files="raise_error",
         )
+
+
+def test_build_datacube_clips_low_dn_to_zero_pinned_not_a_bug(tmp_path):
+    """spec 34 §1f `[G1]` — PINNED INTENDED BEHAVIOR, NOT A BUG. DO NOT "FIX".
+
+    The datacube is `uint16`, so applying a post-baseline offset (-1000) to a true
+    reflectance DN in `(0,1000]` clips it to 0. On disk the raw DN is preserved
+    intact (spec 34 §1 — see `test_stamped_cog_preserves_low_dn_on_disk`); the clip
+    is a *cube-representation* consequence the spec accepts consciously, because a
+    dtype change here would balloon every cube's footprint.
+
+    This test exists so a future "fix" that silently changes the cube dtype (or
+    re-introduces a signed/float intermediate) is caught here and forces a
+    deliberate spec revision rather than a quiet behavior change.
+    """
+    ts = pd.Timestamp("2022-06-01", tz="UTC")
+    rows = []
+    b04_p = tmp_path / "clip_B04.tif"
+    _write_tile(b04_p, np.full((4, 4), 400, dtype=np.uint16))  # 400 + (-1000) -> clip 0
+    rows.append({**_band_row("tile_clip", b04_p, "B04", ts), "offset": -1000})
+    scl_p = tmp_path / "clip_SCL.tif"
+    _write_tile(scl_p, np.full((4, 4), 4, dtype=np.uint16))
+    rows.append({**_band_row("tile_clip", scl_p, "SCL", ts), "offset": 0})
+    catalog = gpd.GeoDataFrame(rows, crs=CRS)
+    shape = gpd.GeoDataFrame({"geometry": [TILE_BOX]}, crs=CRS)
+    out = tmp_path / "cube"
+
+    builder.build_datacube(
+        catalog_subset=catalog, shape_gdf=shape,
+        startdate=datetime.datetime(2022, 1, 1), enddate=datetime.datetime(2022, 12, 1),
+        bands=["B04", "SCL"], mosaic_days=1000, scl_mask_classes=[8, 9],
+        export_folderpath=str(out), if_missing_files=None, reference_band="B04",
+    )
+    dc = fs.load_npy(str(out / "datacube.npy"))
+    assert dc.dtype == np.uint16          # the pinned dtype (§1f [G1])
+    assert (dc[0, :, :, 0] == 0).all()    # 400 - 1000 clipped to 0, not wrapped to 64936
+
+
+def test_build_datacube_uses_declared_reference_band_without_kwarg(tmp_path):
+    """spec 34 §4 "reads the declaration, not `config`": with NO `reference_band=`
+    kwarg, the build must take the reference band from the passed `SourceDeclaration`.
+
+    Proven by grid, not by introspection: B04 is written at 10 m and B08 at 20 m over
+    the same extent, so whichever band is the resample reference decides the cube's
+    height/width. A declaration naming B08 must yield the 20 m (2x2) grid — the
+    `config.REFERENCE_BAND` default (B08 at 10 m in the S2 declaration) cannot
+    produce that, so this can only pass if the declared value was honored.
+    """
+    ts = pd.Timestamp("2022-06-01", tz="UTC")
+    b04_p = tmp_path / "ref_B04.tif"   # 4x4 @ 10 m
+    _write_tile(b04_p, np.full((4, 4), 100, dtype=np.uint16))
+    b08_p = tmp_path / "ref_B08.tif"   # 2x2 @ 20 m, same extent
+    with rasterio.open(
+        b08_p, "w", driver="GTiff", height=2, width=2, count=1, dtype="uint16",
+        crs=CRS, transform=from_origin(500000, 5000000, 20, 20), nodata=0,
+    ) as dst:
+        dst.write(np.full((1, 2, 2), 200, dtype=np.uint16))
+    rows = [
+        {**_band_row("tile_ref", b04_p, "B04", ts), "offset": 0},
+        {**_band_row("tile_ref", b08_p, "B08", ts), "offset": 0},
+    ]
+    catalog = gpd.GeoDataFrame(rows, crs=CRS)
+    shape = gpd.GeoDataFrame({"geometry": [TILE_BOX]}, crs=CRS)
+
+    def _build(declaration, out_name):
+        out = tmp_path / out_name
+        builder.build_datacube(
+            catalog_subset=catalog, shape_gdf=shape,
+            startdate=datetime.datetime(2022, 1, 1),
+            enddate=datetime.datetime(2022, 12, 1),
+            bands=["B04", "B08"], mosaic_days=1000,
+            export_folderpath=str(out), if_missing_files=None,
+            declaration=declaration,   # NOTE: no reference_band= kwarg
+        )
+        return fs.load_npy(str(out / "datacube.npy"))
+
+    no_mask = SourceDeclaration(mask_spec=None, nodata=0)
+    dc_20m = _build(dataclasses.replace(no_mask, reference_band="B08"), "ref_b08")
+    dc_10m = _build(dataclasses.replace(no_mask, reference_band="B04"), "ref_b04")
+
+    assert dc_20m.shape[1:3] == (2, 2)   # declared B08 (20 m) drove the grid
+    assert dc_10m.shape[1:3] == (4, 4)   # declared B04 (10 m) drove the grid
+    assert dc_20m.shape[1:3] != dc_10m.shape[1:3]  # the declaration is load-bearing

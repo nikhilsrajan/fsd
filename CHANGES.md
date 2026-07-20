@@ -4,6 +4,68 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## Ingest/normalization contract: `stage → normalize → put`, declaration-driven builder (spec 34, 2026-07-20)
+
+- **Known gap vs. the spec, logged as TODO #42 (review pass, 2026-07-20):** spec 34 §2a
+  places the **mask spec** in "catalog/collection metadata" and §4 asks that mask classes
+  survive a catalog write→read. As shipped they do not — the collection-level
+  `SourceDeclaration` lives on `GeoDataFrame.attrs["declaration"]`, and GeoParquet does not
+  persist `.attrs`, so a write→read silently falls back to `S2_L2A_DECLARATION`. Per-row
+  `offset`/`nodata` **do** round-trip (real catalog columns) and asset roles are re-derived
+  on every STAC export, so those parts of §4 hold. Harmless while both sources are S2 L2A;
+  a correctness bug for the first non-S2 source. Pinned by
+  `tests/test_catalog.py::test_declaration_does_not_survive_catalog_roundtrip_todo_42`.
+
+- **`apply_boa_offset`'s lossy `clip(DN−1000, 0, 65535)` is dropped from the store path**
+  (it was never actually called there — spec 32 only used it at build/read time — but
+  the function itself is renamed `fsd.raster.images.apply_offset` and documented as
+  read-time-only, generalized past S2's BOA-specific name). The on-disk COG is now
+  explicitly the lossless artifact; the offset is metadata, applied at read time by the
+  builder and, independently, by an `unscale`-aware viewer (spec 34 §1).
+- **`boa_add_offset` catalog column retired; `offset` + `nodata` replace it** (spec 34
+  §1/`[G4]`) — `fsd.catalog.catalog.COLUMNS`. `offset` is the same additive-DN semantics,
+  renamed generic (not S2-BOA-specific); `nodata` is new (spec 34 §1c — some MPC COGs
+  omit a nodata tag; ingest now declares one, defaulting to 0). **No back-compat shim:**
+  `TileCatalog.read()` does not backfill a legacy catalog missing these columns
+  (`fsd/catalog/catalog.py`); a pre-spec-34 catalog is disposable, not migrated.
+- **CDSE now derives `offset` from `s2:processing_baseline`** (`fsd.sources._s2_radiometry
+  .offset_for_item`, shared with MPC) — closes #30/#10 (CDSE previously hardcoded 0/never
+  harmonized). CDSE's jp2→COG conversion (`_convert_one`) now also stamps the GDAL
+  scale/offset + nodata-if-missing tag (`fsd.raster.cog.stamp_or_reencode`) — free, since
+  it already re-encodes.
+- **MPC's download is no longer a pure byte-copy** — after `fs.transfer`, it stamps the
+  same GDAL tags on the local file (`_transfer_and_stamp_one`) before the file is
+  considered done. Still cheap (a header-only edit, `IGNORE_COG_LAYOUT_BREAK=YES`; no
+  pixel decode) unless the in-place stamp breaks COG validity, in which case
+  `stamp_or_reencode` falls back to a GDAL-COG-driver re-encode.
+- **Both CDSE's and MPC's local-only download guards are lifted** (spec 31 §5-ARCHIVE
+  suspended these) — a remote (`abfss://`) `root_folderpath` now works for both. MPC
+  streams each file through local scratch before pushing (`fs.put`); CDSE reuses its
+  entire existing local pipeline unchanged against a temp scratch root, then does one
+  whole-run batch push + catalog-rewrite at the end (`_push_scratch_to_remote`) — **not**
+  per-file streaming (that's TODO #31, still out of scope), so a CDSE run against a
+  remote root is not yet crash-resumable the way a local-root run is.
+- **`build_datacube` is declaration-driven, not S2-hardcoded** (spec 34 §2, closes #35):
+  a new `fsd.catalog.declaration.SourceDeclaration` (+ `MaskSpec`) carries reference
+  band, mask spec, mask-keep, nodata default, mosaic method. Resolved from the explicit
+  `declaration=` kwarg, else `catalog_subset.attrs["declaration"]` (set by
+  `flatten_catalog`), else the S2 L2A default (`S2_L2A_DECLARATION`) — so every existing
+  caller (`workflows/task.py`, `api.py`, `create_datacube.py`) is unchanged. The mask
+  step is skipped entirely (not just tolerated) when the declared mask band isn't in the
+  requested `bands` — `bands=["B04"]` no longer raises `ValueError: SCL band not present`.
+  A `mask_type` other than `"categorical_classes"`, or `native_grid=True`, raises
+  `NotImplementedError` (loud, documented gaps — `[G2]`/`[G3]`) instead of silently
+  mis-assembling or mis-collapsing. `ops.apply_cloud_mask_scl` gained a `mask_band="SCL"`
+  parameter (default preserves old behavior) so the same op works for any categorical
+  mask band, not just SCL.
+- **STAC export carries `raster:bands` + role-tagged asset `roles`**
+  (`fsd.catalog.stac.tile_catalog_to_items`) — every raster asset gets `offset`/`scale`/
+  `nodata` (pystac `raster` extension) and a role (`reflectance`/`mask`/`reference`)
+  alongside `"data"`. `items_to_rows` recovers `offset`/`nodata` on the reverse mapping.
+- **New:** `fsd/catalog/declaration.py` (`SourceDeclaration`, `MaskSpec`,
+  `S2_L2A_DECLARATION`), `fsd/sources/_s2_radiometry.py` (shared baseline→offset),
+  `fsd/raster/cog.py::stamp_gdal_tags`/`stamp_or_reencode`, `fsd/docs/adding-a-source.md`.
+
 ## P1 Azure compute seam: `storage=` is now meaningful (spec 31, 2026-07-17)
 - **`storage=` on `download`/`create_training_data` now does something** — previously
   `_check_local_seams` (`api.py`) rejected any non-`None` `storage` unconditionally ("blob lands

@@ -22,9 +22,19 @@ import pystac
 import shapely.geometry
 from pystac.extensions.eo import EOExtension
 from pystac.extensions.projection import ProjectionExtension
+from pystac.extensions.raster import RasterBand, RasterExtension
 from pystac.stac_io import DefaultStacIO
 
+from fsd import config
+from fsd.raster.images import _is_reflectance
 from fsd.storage import fs
+
+# Bands with a categorical mask/QA role (spec 34 §2a) rather than a continuous
+# reflectance value — never radiometrically offset, and the default S2 declaration's
+# mask band. Not exhaustive for future non-S2 sources (a source with its own QA band
+# naming supplies its own declaration; this module only needs to render the S2
+# ingest path's roles today, spec 34 §3).
+_MASK_BANDS = {"SCL"}
 
 # STAC extension URIs we populate beyond eo/proj (added via their helper classes).
 _GRID_EXT = "https://stac-extensions.github.io/grid/v1.1.0/schema.json"
@@ -66,12 +76,31 @@ def _parse_mgrs(item_id: str) -> tuple[str, int] | None:
     return f"{zone}{band}{square}", epsg
 
 
-def _media_type_and_roles(filename: str) -> tuple[str | None, list[str]]:
+def _band_role(band: str, reference_band: str = "B08") -> str:
+    """Spec 34 §2a role classification for a band name: `"mask"` (SCL/QA),
+    `"reference"` (the resample-reference band), else `"reflectance"` for an S2
+    optical band, else the generic `"data"` (e.g. AOT/WVP/visual — present in a
+    tile's `files` but not consumed by the builder's radiometry/mask/reference
+    logic)."""
+    if band in _MASK_BANDS:
+        return "mask"
+    if band == reference_band:
+        return "reference"
+    if _is_reflectance(band):
+        return "reflectance"
+    return "data"
+
+
+def _media_type_and_roles(filename: str, band: str | None = None) -> tuple[str | None, list[str]]:
     lower = filename.lower()
+    role = [_band_role(band)] if band else []
+    # spec 34 §2a: the role classification rides alongside "data" (never replaces it,
+    # and never duplicates it when _band_role already returned "data").
+    data_roles = ["data", *role] if role and role[0] != "data" else ["data"]
     if lower.endswith((".tif", ".tiff")):
-        return pystac.MediaType.COG, ["data"]
+        return pystac.MediaType.COG, data_roles
     if lower.endswith(".jp2"):
-        return pystac.MediaType.JPEG2000, ["data"]
+        return pystac.MediaType.JPEG2000, data_roles
     if lower.endswith(".xml"):
         return pystac.MediaType.XML, ["metadata"]
     return None, ["data"]
@@ -92,17 +121,31 @@ def _read_proj_fields(href: str) -> dict:
 
 # --- tile catalog -> STAC items ----------------------------------------------
 
-def tile_catalog_to_items(gdf, *, collection_id=None, read_proj=False) -> list[pystac.Item]:
+def tile_catalog_to_items(
+    gdf, *, collection_id=None, read_proj=False, reference_band: str = "B08",
+) -> list[pystac.Item]:
     """Map `TileCatalog` rows (a GeoDataFrame from `.read()`) to STAC Items.
 
     One Item per row (a tile-product acquisition); one asset per band file in `files`.
     Pure-metadata unless `read_proj=True` (which opens each raster for proj:shape/transform).
+
+    Spec 34 §1a/§2a: every raster asset (a `.tif`/`.jp2` band file) gets a `raster:bands`
+    entry with the row's declared `offset`/`nodata` (`.get(...)`, defaulting to 0 for a
+    catalog row without them) and the constant reflectance `scale`
+    (`config.S2_REFLECTANCE_SCALE`) for reflectance bands (`scale=1` for mask/other
+    bands — a no-op). This is the *interchange* declaration the builder/other tools
+    read; the load-bearing one for a viewer is the COG's own GDAL tag (stamped at
+    ingest, `fsd.raster.cog.stamp_gdal_tags`) — the two are written with identical
+    values so there is no drift (§1a "no double-application").
     """
     items: list[pystac.Item] = []
     for _, row in gdf.iterrows():
         geom = row["geometry"]
         dt = row["timestamp"].to_pydatetime()
         coll = collection_id if collection_id is not None else row["satellite"]
+        row_offset = row.get("offset", 0) or 0
+        row_nodata = row.get("nodata", 0)
+        row_nodata = 0 if row_nodata is None else row_nodata
 
         item = pystac.Item(
             id=str(row["id"]),
@@ -125,17 +168,26 @@ def tile_catalog_to_items(gdf, *, collection_id=None, read_proj=False) -> list[p
 
         files = [f for f in str(row["files"]).split(",") if f]
         for filename in files:
-            href = _asset_href(row["local_folderpath"], filename)
-            media_type, roles = _media_type_and_roles(filename)
             band = filename.rsplit(".", 1)[0]
+            href = _asset_href(row["local_folderpath"], filename)
+            media_type, roles = _media_type_and_roles(filename, band)
             asset = pystac.Asset(href=href, media_type=media_type, roles=roles, title=band)
-            if roles == ["data"]:
+            item.add_asset(band, asset)  # sets asset.owner=item, required before ext(add_if_missing=True)
+            if "data" in roles:
                 asset.extra_fields["eo:bands"] = [{"name": band}]
                 if read_proj and media_type != pystac.MediaType.XML:
                     asset.extra_fields.update(
                         {f"proj:{k}": v for k, v in _read_proj_fields(href).items()}
                     )
-            item.add_asset(band, asset)
+                if media_type in (pystac.MediaType.COG, pystac.MediaType.JPEG2000):
+                    is_reflectance = _band_role(band, reference_band) in ("reflectance", "reference")
+                    RasterExtension.ext(asset, add_if_missing=True).bands = [
+                        RasterBand.create(
+                            nodata=row_nodata,
+                            offset=row_offset if is_reflectance else 0,
+                            scale=config.S2_REFLECTANCE_SCALE if is_reflectance else 1,
+                        )
+                    ]
 
         if row.get("s3url"):
             item.add_link(pystac.Link(rel=_SOURCE_LINK_REL, target=str(row["s3url"])))
@@ -301,6 +353,17 @@ def items_to_rows(items: list[pystac.Item]):
         filenames = sorted(os.path.basename(h) for h in hrefs)
         folders = {os.path.dirname(h) for h in hrefs}
         source = next((lk.get_href() for lk in item.get_links(_SOURCE_LINK_REL)), None)
+        # Spec 34: recover the declared offset/nodata from any asset's raster:bands
+        # (all assets on one item share the same tile-level values, §1) — 0 if the
+        # item predates the extension (no raster:bands asset at all).
+        offset, nodata = 0, 0
+        if RasterExtension.has_extension(item):  # item-level: hoisted out of the loop
+            for asset in item.assets.values():
+                bands = RasterExtension.ext(asset).bands
+                if bands:
+                    nodata = bands[0].nodata or 0
+                    if bands[0].offset:
+                        offset = bands[0].offset
         rows.append({
             "id": item.id,
             "satellite": item.collection_id,
@@ -309,6 +372,8 @@ def items_to_rows(items: list[pystac.Item]):
             "local_folderpath": folders.pop() if len(folders) == 1 else ",".join(sorted(folders)),
             "files": ",".join(filenames),
             "cloud_cover": item.properties.get("eo:cloud_cover"),
+            "offset": offset,
+            "nodata": nodata,
             "geometry": shapely.geometry.shape(item.geometry),
         })
     return gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")

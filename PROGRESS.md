@@ -4,6 +4,83 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-20_
 
+## ✅ SPEC 34 REVIEWED + FIXED (2026-07-20, Opus@high) — review pass closed. **→ NEXT: the user runs the two runbooks (`runbooks/34-download-to-blob.md`, then `runbooks/34-mini-mpc-cross-baseline.md`) on a clean session.**
+
+**Workspace consolidated:** the spec-34 work was living in the git worktree
+`.claude/worktrees/spec34-ingest-normalization`. It has been **merged into `main`'s working
+tree and the worktree + its branch removed** — there is now **one** checkout. The changes
+are still **uncommitted** (per "commit only when the user asks"), and the `PYTHONPATH`
+gotcha from the previous handoff is **gone**: `fsd/.venv`'s editable install points at
+`main`'s `src/`, which is now the only `src/`. Plain `.venv/bin/python -m pytest -q` works.
+
+**Verified independently this pass** (not taken on trust from the implement session):
+- `pytest -q` → **289 passed / 3 skipped**, `ruff check src/ tests/` clean.
+- All of spec 34 §5's deliverables are present and the implementation is sound — the
+  earlier two-axis `code-review` found **no implementation defects**, and this pass found
+  none either. The gaps were 2 style violations + §4 test coverage.
+
+**Fixes applied:**
+- **Standards (2 hard violations):** `catalog/stac.py::tile_catalog_to_items` had
+  `from fsd import config` mid-function → hoisted to module top (verified no circular
+  import: `config.py` imports only `os`). `sources/cdse.py::_push_scratch_to_remote` had
+  `import glob as _glob` / `import shutil as _shutil` despite `shutil` already being a
+  top-level import → now uses the top-level `shutil` + an unaliased local `import glob`
+  (matching the file's existing pattern for rarely-used stdlib modules).
+- **Standards (nits, done):** `stac.py::_media_type_and_roles` roles expression hoisted
+  once instead of duplicated per extension; `stac.py::items_to_rows` moved the
+  item-level `RasterExtension.has_extension` check out of the per-asset loop.
+- **Standards (nits, deliberately skipped):** `raster/cog.py::stamp_or_reencode`'s
+  duplicated `stamp_gdal_tags(...)` call (the duplication is load-bearing for
+  readability of the try/fallback split) and `sources/mpc.py::download`'s 5-tuple `work`
+  list (a real cleanup, but it touches the concurrency path — not worth the blast radius
+  in a fix-up pass).
+- **Spec §4 (+10 tests, 279 → 289):** low-DN survival on disk (parametrized 1/500/999/1000,
+  `test_raster.py`); GDAL tag ↔ STAC `raster:bands` agreement driven through the *real*
+  ingest + export path (`test_mpc.py`); plain-read-returns-raw-DN "no double-application"
+  pin; nodata set-only-when-missing (both branches); the `[G1]` uint16 clip pinned as
+  intended-not-a-bug with a §1f comment; and a `reference_band`-from-declaration test that
+  proves the declaration is load-bearing by *grid shape* (10 m vs 20 m reference band →
+  4×4 vs 2×2 cube) rather than by introspection.
+
+**⚠️ One real gap found and logged — TODO #42 (the handoff underestimated this one).**
+Spec 34 §2a's table puts the **mask spec** in "catalog/collection metadata" and §4 asks
+that mask classes "survive write→read". They do **not**: the collection-level
+`SourceDeclaration` rides on `GeoDataFrame.attrs["declaration"]`, and GeoParquet does not
+persist `.attrs` — **verified**, a write→read returns `attrs == {}`, after which
+`build_datacube` silently falls back to `S2_L2A_DECLARATION`. Per-row `offset`/`nodata` DO
+round-trip (real columns), and roles are re-derived on every STAC export, so those parts of
+§4 are genuinely satisfied. This is **latent today** (both shipped sources *are* S2 L2A, so
+the fallback is coincidentally correct) but **silently wrong for the first non-S2 source** —
+exactly the failure mode spec 34 exists to prevent. Not fixed here: closing it means
+deciding *which artifact is authoritative* (STAC Collection vs. a sidecar), which needs a
+spec-34 amendment, not a patch. Pinned meanwhile by
+`tests/test_catalog.py::test_declaration_does_not_survive_catalog_roundtrip_todo_42`, which
+fails loudly if the behavior changes in either direction.
+
+**Verdict: ready to commit and ready for the runbooks.** TODO #42 does not block either
+runbook (both are S2-only paths). Nothing is committed yet — awaiting the user's go-ahead.
+
+## ✅ SPEC 34 IMPLEMENTED (2026-07-20, Sonnet@medium) — ingest/normalization contract shipped.
+
+Implemented to the signed-off spec (`specs/34-ingest-normalization-contract.md` §5). **`pytest -q` → 279 passed / 3 skipped, ruff clean** (up from 274 pre-spec-34; the fixtures that carried the retired `boa_add_offset` schema were migrated, not shimmed, per `[G4]`).
+
+**What shipped:**
+- **`fsd/catalog/declaration.py` (new)** — `SourceDeclaration`/`MaskSpec`/`S2_L2A_DECLARATION`. `build_datacube` resolves its declaration from an explicit `declaration=` kwarg, else `catalog_subset.attrs["declaration"]` (set by `flatten_catalog`), else the S2 default — every existing caller (`workflows/task.py`, `api.py`, `create_datacube.py`) is unchanged.
+- **`fsd/datacube/builder.py`** — declaration-driven op-assembly (§2b): the mask/drop step runs only when the declared mask band is in the requested `bands` (closes **#35** — `bands=["B04"]` no longer raises); `mask_type≠"categorical_classes"` or `native_grid=True` raise `NotImplementedError` (`[G2]`/`[G3]`); nodata read from the catalog's `nodata` column, not `config.NODATA`; `_apply_boa_offsets`→`_apply_offsets` (reads `offset`, generic name).
+- **`fsd/catalog/catalog.py`** — `boa_add_offset` column retired; `offset`+`nodata` replace it. **No back-compat**: `TileCatalog.read()` does not backfill a legacy catalog missing them (`[G4]`).
+- **`fsd/catalog/stac.py`** — every raster asset gets `raster:bands` (offset/scale/nodata, pystac raster extension) + a role tag (`reflectance`/`mask`/`reference`) alongside `"data"`.
+- **`fsd/raster/cog.py`** — new `stamp_gdal_tags`/`stamp_or_reencode` (the "cheap header-tag edit, GDAL-COG-reencode fallback" spec 34 §1a promised; needed `IGNORE_COG_LAYOUT_BREAK=YES` to actually stamp in place — GDAL refuses by default even for a header-only edit).
+- **`fsd/sources/_s2_radiometry.py` (new, shared)** — `offset_for_item` (baseline→offset), used by both CDSE and MPC — closes **#30/#10** for CDSE.
+- **`fsd/sources/cdse.py`** — `_convert_one` now stamps the GDAL tag after `to_cog` (free — it already re-encodes); the local-only guard is lifted via a local-scratch-then-batch-push strategy (`_push_scratch_to_remote`) reusing the entire existing local pipeline unchanged — **known limitation, documented**: not per-file-resumable against a remote root (TODO #31 still covers true streaming).
+- **`fsd/sources/mpc.py`** — `_transfer_one`→`_transfer_and_stamp_one`: stamps tags after `fs.transfer`; local-only guard lifted via per-file local-scratch-then-`fs.put` (resumable, unlike CDSE's batch push).
+- **`fsd/docs/adding-a-source.md` (new)** — the ingest/builder contract + field table + a CHIRPS-like worked example.
+- **`fsd/runbooks/34-download-to-blob.md`** + `runbooks/scripts/34_download_to_blob.py` — cloud-VM-first, tmux cheat-sheet, git-clone (`[G5]`/`[G7]`); **`fsd/runbooks/34-mini-mpc-cross-baseline.md`** + `runbooks/scripts/34_mixed_baseline_slice.py` — local-copies §1e acceptance (`[G6]`), reusing spec 30's mini-MPC stack.
+- **Living docs**: `TODO.md` (#10/#30/#35/#37 closed, #38 implemented), `CHANGES.md` (new spec-34 entry).
+
+**Design choices made during implementation (not re-opening the spec, filling in mechanism):** offset/nodata are per-catalog-row (genuinely per-tile); role/mask-spec/reference-band/mosaic-method live in the collection-level `SourceDeclaration` object (attached to the flattened catalog via `.attrs`, not a parquet column) — matches the spec's §2a "catalog/collection metadata" wording for those fields vs. "catalog row" for offset/nodata. `ops.apply_cloud_mask_scl` gained a `mask_band="SCL"` parameter (default preserves old behavior) rather than a rename, to minimize blast radius on its existing direct tests.
+
+**Not yet done (deliberately, per the handoff):** the two runbooks are written but **not run** — the user runs them and pastes back `_result.json`. A CDSE-to-blob run against a large slice inherits the batch-push limitation above; fine for the runbook's small slice.
+
 ## ✅ SPEC 34 (ingest / normalization contract) WRITTEN + SIGNED OFF (2026-07-20, Opus@high) — `specs/34-ingest-normalization-contract.md`. **→ NEXT: Sonnet@medium implements** (handoff `/tmp/fsd-handoff-spec34-implement.md`).
 
 Promotes **TODO #38** (this is spec **34**). Re-opens **download-to-blob for all sources** (`stage → normalize → put` per source), standing on the proven P1 storage seam (spec 31). Interviewed → drafted → cross-validated (standing permission) → **grilled** (7 resolutions) → user sign-off, all in one Opus@high session. **No code written** (spec-first; implementation is a later Sonnet@medium session).

@@ -133,37 +133,40 @@ def test_append_empty_is_noop(tmp_path):
     assert not fs.exists(cat.filepath)
 
 
-# --- boa_add_offset (spec 32) --------------------------------------------------
+# --- offset / nodata (spec 34 §1, retiring spec 32's boa_add_offset) -----------
 
 
-def test_append_rows_without_boa_add_offset_default_to_zero(tmp_path):
-    # CDSE-shaped rows (no boa_add_offset key) must not KeyError on write.
+def test_append_rows_without_offset_or_nodata_default_to_zero(tmp_path):
+    # CDSE-shaped rows (no offset/nodata key) must not KeyError on write.
     cat = TileCatalog(str(tmp_path / "catalog.parquet"))
     cat.append([_row("t1", "2024-08-01T10:00:00Z", "B02.jp2", _box(0, 0, 1, 1))])
     gdf = cat.read()
-    assert gdf["boa_add_offset"].iloc[0] == 0
+    assert gdf["offset"].iloc[0] == 0
+    assert gdf["nodata"].iloc[0] == 0
 
 
-def test_boa_add_offset_round_trips(tmp_path):
+def test_offset_and_nodata_round_trip(tmp_path):
     cat = TileCatalog(str(tmp_path / "catalog.parquet"))
     cat.append([
         _row("t1", "2024-08-01T10:00:00Z", "B04.tif", _box(0, 0, 1, 1),
-             boa_add_offset=-1000),
+             offset=-1000, nodata=0),
     ])
     gdf = cat.read()
-    assert gdf.loc[gdf["id"] == "t1", "boa_add_offset"].iloc[0] == -1000
+    assert gdf.loc[gdf["id"] == "t1", "offset"].iloc[0] == -1000
+    assert gdf.loc[gdf["id"] == "t1", "nodata"].iloc[0] == 0
 
 
-def test_read_fills_missing_boa_add_offset_column(tmp_path):
-    # Simulate an old catalog written before the column existed: write directly,
-    # bypassing TileCatalog.append's own back-compat fill.
+def test_read_does_not_backfill_a_legacy_catalog_missing_offset_nodata(tmp_path):
+    # spec 34 [G4]: no back-compat shim — a catalog written before offset/nodata
+    # existed is disposable (re-ingest, don't migrate), so `.read()` must NOT
+    # silently patch the columns back in.
     import geopandas as gpd
     import pandas as pd
 
     from fsd.catalog.catalog import COLUMNS
     from fsd.storage import fs
 
-    old_cols = [c for c in COLUMNS if c != "boa_add_offset"]
+    old_cols = [c for c in COLUMNS if c not in ("offset", "nodata")]
     row = _row("t1", "2024-08-01T10:00:00Z", "B02.jp2", _box(0, 0, 1, 1))
     gdf = gpd.GeoDataFrame([row], geometry="geometry", crs="EPSG:4326")
     gdf["timestamp"] = pd.to_datetime(gdf["timestamp"], utc=True)
@@ -172,4 +175,55 @@ def test_read_fills_missing_boa_add_offset_column(tmp_path):
     fs.write_parquet(fp, gdf)
 
     read_back = TileCatalog(fp).read()
-    assert read_back["boa_add_offset"].iloc[0] == 0
+    assert "offset" not in read_back.columns
+    assert "nodata" not in read_back.columns
+
+
+def test_declaration_does_not_survive_catalog_roundtrip_todo_42(tmp_path):
+    """spec 34 §4 round-trip — PINS A KNOWN GAP (TODO #42), not desired behavior.
+
+    §4 asks that "roles, mask classes, nodata, offset/scale survive write->read of
+    the catalog + STAC export". As shipped, the split is:
+
+    * **per-row** fields DO round-trip — `offset`/`nodata` are real catalog columns
+      (see `test_offset_and_nodata_round_trip`), and asset **roles** are re-derived
+      from the band name by `fsd.catalog.stac` on every export, so they need no
+      persistence.
+    * the **collection-level** `SourceDeclaration` (mask band/type/**classes**,
+      reference band, mosaic method) rides on `GeoDataFrame.attrs["declaration"]`,
+      and pandas/GeoParquet does **not** persist `.attrs`. It is silently dropped,
+      and `build_datacube` then falls back to `S2_L2A_DECLARATION`.
+
+    Harmless today (both shipped sources ARE S2 L2A, so the fallback happens to be
+    right) and **silently wrong for the first non-S2 source** — which is the exact
+    failure mode spec 34 exists to prevent. This test fails loudly if the gap is
+    closed, forcing TODO #42 to be resolved and the spec amended rather than the
+    behavior drifting either way unnoticed.
+    """
+    import geopandas as gpd
+
+    from fsd.catalog.declaration import MaskSpec, SourceDeclaration
+
+    cat = TileCatalog(str(tmp_path / "catalog.parquet"))
+    cat.append([
+        _row("t1", "2024-08-01T10:00:00Z", "B04.tif", _box(0, 0, 1, 1),
+             offset=-1000, nodata=7),
+    ])
+
+    custom = SourceDeclaration(
+        reference_band="B04",
+        mask_spec=MaskSpec(band="QA", classes=(1, 2, 3)),
+        mosaic_method="median",
+    )
+    gdf = cat.read()
+    gdf.attrs["declaration"] = custom
+    from fsd.storage import fs
+    fs.write_parquet(cat.filepath, gdf)
+
+    back = cat.read()
+    assert isinstance(back, gpd.GeoDataFrame)
+    # per-row declarations survive...
+    assert back["offset"].iloc[0] == -1000
+    assert back["nodata"].iloc[0] == 7
+    # ...the collection-level one does NOT (TODO #42).
+    assert "declaration" not in back.attrs
