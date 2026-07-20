@@ -6,12 +6,15 @@ _Last updated: 2026-07-20_
 
 ## ✅ SPEC 34 REVIEWED + FIXED (2026-07-20, Opus@high) — review pass closed. **→ NEXT: the user runs the two runbooks (`runbooks/34-download-to-blob.md`, then `runbooks/34-mini-mpc-cross-baseline.md`) on a clean session.**
 
-**Workspace consolidated:** the spec-34 work was living in the git worktree
+**Workspace consolidated + SHIPPED:** the spec-34 work was living in the git worktree
 `.claude/worktrees/spec34-ingest-normalization`. It has been **merged into `main`'s working
-tree and the worktree + its branch removed** — there is now **one** checkout. The changes
-are still **uncommitted** (per "commit only when the user asks"), and the `PYTHONPATH`
-gotcha from the previous handoff is **gone**: `fsd/.venv`'s editable install points at
-`main`'s `src/`, which is now the only `src/`. Plain `.venv/bin/python -m pytest -q` works.
+tree and the worktree + its branch removed** — there is now **one** checkout — then
+**committed and pushed to `origin/main` as `0dd5e5a`** (2026-07-20, at the user's request;
+only the kept-out notebooks remain uncommitted). A fresh `git clone` on a VM therefore has
+spec 34 with no checkout step, which is why `runbooks/34-download-to-blob.md` step 0 no
+longer names a branch. The `PYTHONPATH` gotcha from the previous handoff is **gone**:
+`fsd/.venv`'s editable install points at `main`'s `src/`, which is now the only `src/`.
+Plain `.venv/bin/python -m pytest -q` works.
 
 **Verified independently this pass** (not taken on trust from the implement session):
 - `pytest -q` → **289 passed / 3 skipped**, `ruff check src/ tests/` clean.
@@ -57,8 +60,8 @@ spec-34 amendment, not a patch. Pinned meanwhile by
 `tests/test_catalog.py::test_declaration_does_not_survive_catalog_roundtrip_todo_42`, which
 fails loudly if the behavior changes in either direction.
 
-**Verdict: ready to commit and ready for the runbooks.** TODO #42 does not block either
-runbook (both are S2-only paths). Nothing is committed yet — awaiting the user's go-ahead.
+**Verdict: shipped (`0dd5e5a` on `origin/main`) and ready for the runbooks.** TODO #42 does
+not block either runbook (both are S2-only paths).
 
 ## ✅ SPEC 34 IMPLEMENTED (2026-07-20, Sonnet@medium) — ingest/normalization contract shipped.
 
