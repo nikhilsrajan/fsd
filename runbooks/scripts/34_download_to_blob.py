@@ -89,7 +89,13 @@ def _verify_on_blob(catalog_filepath: str, dst_folderpath: str) -> dict:
     import pystac
     from pystac.extensions.raster import RasterExtension
 
-    cat = pystac.Catalog.from_file(catalog_json)
+    from fsd.catalog.stac import _StorageStacIO
+
+    # pystac's DefaultStacIO reads hrefs via urllib3, which only knows file/http(s) --
+    # a remote --dst makes every href abfss:// and blows up with URLSchemeUnknown.
+    # _StorageStacIO routes reads through fsd.storage, and pystac reuses it for the
+    # recursive child/item link traversal below. Same pattern as demos/mini_mpc/*.py.
+    cat = pystac.Catalog.from_file(catalog_json, stac_io=_StorageStacIO())
     items = list(cat.get_items(recursive=True))
     metrics["stac_items"] = len(items)
     has_raster_bands = any(

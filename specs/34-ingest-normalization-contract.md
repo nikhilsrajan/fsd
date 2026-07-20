@@ -269,8 +269,8 @@ everything downstream (builder, viewer) reads the artifact, never the source.
 
 | Source | `stage` | `normalize` (container) | `normalize` (radiometry) | mask | reference / grid | `put` |
 |---|---|---|---|---|---|---|
-| **CDSE** (S2 L2A) | fetch jp2 from S3 | **jp2 → COG** (`to_cog`, exists) | STAC baseline → offset; stamp GDAL tag + `raster:bands` (**closes #30/#10**) | SCL, classes | B08 / MGRS tiled, multi-CRS | `fs.transfer`/write to blob |
-| **MPC** (S2 L2A) | signed HTTPS href | **byte-copy** (already COG) **+ GDAL tag stamp** (offset+nodata) | `s2:processing_baseline` → offset (`_offset_for_item`, exists) | SCL, classes | B08 / MGRS tiled, multi-CRS | `fs.transfer` to blob |
+| **CDSE** (S2 L2A) | fetch jp2 from S3 | **jp2 → COG** (`to_cog`, exists) | **`processing:version`** → offset (STAC Processing Ext.; see §3a **A1**); stamp GDAL tag + `raster:bands` (**closes #30/#10**) | SCL, classes | B08 / MGRS tiled, multi-CRS | `fs.transfer`/write to blob |
+| **MPC** (S2 L2A) | signed HTTPS href | **byte-copy** (already COG) **+ GDAL tag stamp** (offset+nodata) | **`s2:processing_baseline`** → offset (S2 STAC Ext.; see §3a **A1**) | SCL, classes | B08 / MGRS tiled, multi-CRS | `fs.transfer` to blob |
 | **ERA5** (future, designed-for) | netCDF/GRIB | **netCDF → COG** (container; forecloses `/vsicurl` stream) | units/scale → `raster:bands` | **None** | native single global lat/lon grid — **skip CRS-collapse** | write to blob |
 
 - **CDSE and MPC are both S2** → they exercise the S2 path (mask present, tiled multi-CRS). **ERA5**
@@ -279,6 +279,70 @@ everything downstream (builder, viewer) reads the artifact, never the source.
   — the row is here so the contract shape is validated against it, not so code ships.
 - The **only** per-source branch is the container transform, chosen at setup from the source's
   declaration — **not** re-decided per tile, per band, or in the builder.
+
+### 3a. Amendment A1 — the baseline property differs per provider (2026-07-20, post-runbook)
+
+**Status: AMENDMENT — corrects a factual error in the signed-off spec.** Found by
+`runbooks/34-download-to-blob.md --source cdse`, which hard-failed on every CDSE item with
+`ValueError: ... has no 's2:processing_baseline' property`.
+
+**What the spec got wrong.** §3's original CDSE row said "STAC baseline → offset", and
+`sources/_s2_radiometry.py`'s docstring asserted that *"CDSE's STAC items carry the same
+`s2:processing_baseline` property, per the S2 STAC extension both providers implement."*
+**That is false for the endpoint fsd actually queries.** `config.CDSE_STAC_URL` is
+`https://stac.dataspace.copernicus.eu/v1/`, and CDSE's v1 catalogue (Feb 2025) performed a
+*"removal of the satellite-specific STAC extensions in favor of a more generic metadata model."*
+There is **no `s2:` namespace in a CDSE v1 item at all** — the observed property set is
+`processing:*`, `product:*`, `grid:code`, `view:*`, `eopf:*`, `sat:*`, `eo:*`. The claim was true
+of CDSE's *older* catalogue and was carried forward unverified; it is exactly the class of
+external-fact error the "cross-validate every spec against authoritative sources" practice exists
+to catch, and it was not caught because the claim was plausible (both providers *do* implement
+STAC extensions — just different ones).
+
+**The correction.** The baseline is provider-specific in *name only*; the value format
+(`"MM.mm"`) and the semantics are identical, so `baseline_tuple` is unchanged.
+
+| Provider | Property | Extension | Observed (T33UWP, Jun 2022) |
+|---|---|---|---|
+| **MPC** | `s2:processing_baseline` | S2 STAC extension | `"05.09"` etc. (leg **passed**) |
+| **CDSE v1** | `processing:version` | STAC **Processing** extension | `"05.10"` ≡ `N0510` in the product id, on all 8 items |
+
+`offset_for_item` therefore resolves the baseline from an **ordered tuple of known
+baseline-bearing properties**, first hit wins:
+
+```python
+_BASELINE_PROPS = (
+    "s2:processing_baseline",  # MPC / legacy CDSE — S2 STAC extension
+    "processing:version",      # CDSE STAC v1 — STAC Processing extension
+)
+```
+
+**What does NOT change (deliberately):**
+
+- **Still keyed on baseline, never on acquisition date.** Reprocessing stamps a ≥ 04.00 baseline on
+  a pre-2022 acquisition — the observed items are June-2022 acquisitions **reprocessed in June 2024**
+  to baseline 05.10, so a date-keyed rule would get them wrong. This is why §1's original wording
+  chose baseline over date, and A1 does not weaken it.
+- **Still a hard `ValueError` when no known property is present — no silent `0`.** This is the whole
+  point of the spec: TODO #30/#10 is the bug where a hardcoded `boa_add_offset=0` put cubes ~1000 DN
+  high (the reason the `demo_e2e` archive is radiometrically unusable for science). A loud failure on
+  unrecognized metadata is strictly better than a quiet wrong number, and A1 preserves it.
+- **No fallback to parsing `N0510` from the product id**, even though the id always carries it.
+  Two *documented standard properties* beat a filename convention, and a silent id-regex fallback
+  would mask the next provider metadata-model migration — which is precisely how this defect
+  reached a runbook. If a third provider needs it, it is a new entry in `_BASELINE_PROPS`, not a
+  regex.
+
+**Blast radius (verified 2026-07-20):** `s2:processing_baseline` was CDSE's *only* missing property
+dependency. `sources/cdse.py` otherwise reads only `eo:cloud_cover` (present in v1), and MGRS/EPSG
+are parsed from the product id (`_safe_root_from_item`, `catalog/stac.py::_parse_mgrs`), not from
+`s2:mgrs_tile`. MPC's extra `s2:` reads (`s2:mgrs_tile`, `s2:generation_time`) are untouched — MPC
+still serves the `s2:` extension, and its runbook leg passed.
+
+**Tests (add to §4):** `offset_for_item` resolves from `s2:processing_baseline` alone; from
+`processing:version` alone; prefers `s2:processing_baseline` when both are present and disagree
+(pins the precedence order); and still raises when neither is present. Fixtures are duck-typed
+items, so no network — matching §4's existing synthetic style.
 
 ## 4. Tests (pytest — synthetic/local; the credentialed/visual parts are runbooks)
 
@@ -400,6 +464,29 @@ spec-32/33 lesson. The generic op-assembly (§2b) is the load-bearing new logic,
   `renders` → no MPC single-URL harmonization possible; proves the metadata is load-bearing. → §1e.
   — https://github.com/microsoft/PlanetaryComputer/issues/134 ;
     https://planetarycomputer.microsoft.com/api/stac/v1/collections/sentinel-2-l2a
+- **STAC Processing extension** (added by A1, 2026-07-20): defines `processing:version` as *"The
+  version of the primary processing software or processing chain that produced the data. For example,
+  this could be **the processing baseline for the Sentinel missions**."* → §3a **A1**: this is the
+  authoritative basis for reading CDSE's baseline from `processing:version` — the field's documented
+  purpose for this exact mission family, not an inference from a coincidence.
+  — https://github.com/stac-extensions/processing
+- **CDSE v1 catalogue release note** (added by A1, 2026-07-20): the new catalogue features
+  *"removal of the satellite-specific STAC extensions in favor of a more generic metadata model that
+  fits the new generation of Copernicus satellites and contributing missions"*, on STAC 1.1. → §3a
+  **A1**: explains *why* `s2:processing_baseline` vanished from `stac.dataspace.copernicus.eu/v1/`
+  and why the original spec's "both providers implement the same extension" premise was false.
+  — https://dataspace.copernicus.eu/news/2025-2-13-release-new-cdse-stac-catalogue
+- **CDSE STAC API docs** (checked 2026-07-20, *negative* result): documents the v1 endpoint and its
+  collections but **does not document per-item property schemas**, so the property set could not be
+  confirmed from docs alone. → §3a **A1** methodology: the live probe against `CDSE_STAC_URL` was
+  necessary, not optional — a docs-only cross-validation would have missed this.
+  — https://documentation.dataspace.copernicus.eu/APIs/STAC.html
+- **ESA/CDSE baseline versioning** (added by A1): the `NMMmm` product-id field ≡ the `MM.mm`
+  baseline string (`N0510` ≡ `05.10`), and baselines are deployed over time (05.11 in 2024, 05.12 in
+  2025) against *older* acquisitions via reprocessing. → §3a **A1**: corroborates that
+  `processing:version` and the product id agree, and that baseline ≠ acquisition date.
+  — https://documentation.dataspace.copernicus.eu/Data/SentinelMissions/Sentinel2.html ;
+    https://dataspace.copernicus.eu/news/2024-7-19-deployment-sentinel-2-processing-baseline-version-0511-23-july
 - **fsd's own source** (read 2026-07-20): `apply_boa_offset` = `clip(DN−1000,0,65535)` (the lossy
   clamp we drop); `build_datacube` hardcodes SCL mask/drop + `reference_band=B08` + `nodata=0`;
   `mpc.py`/`cdse.py` local-only guards. → §1d, §2. *(spec-32 lesson: this class of fact no external

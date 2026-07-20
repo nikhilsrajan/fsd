@@ -232,11 +232,11 @@ def _items_to_gdf(items) -> gpd.GeoDataFrame:
     (`.id`, `.datetime`, `.geometry`, `.properties`, `.assets[*].href`).
 
     `offset` (spec 34 §1, closes #30/#10) is derived from the item's
-    `s2:processing_baseline` property, the same mechanism MPC uses
-    (`fsd.sources._s2_radiometry.offset_for_item`) — CDSE's STAC exposes the same
-    S2 extension property. `nodata` defaults to the S2 convention (`config.NODATA`);
-    CDSE's own jp2->COG conversion stamps it (`_convert_one`), so it is never
-    missing for a CDSE-ingested artifact.
+    `processing:version` property (spec 34 §3a Amendment A1 — CDSE's v1
+    catalogue exposes the STAC Processing extension, not MPC's `s2:` extension)
+    via `fsd.sources._s2_radiometry.offset_for_item`. `nodata` defaults to the
+    S2 convention (`config.NODATA`); CDSE's own jp2->COG conversion stamps it
+    (`_convert_one`), so it is never missing for a CDSE-ingested artifact.
     """
     rows = [
         {

@@ -27,26 +27,37 @@ is written for someone who has never touched an Azure VM before.
 
 ## Prerequisites
 
-- [ ] A cloud VM you can SSH into, in/near the `rise` subscription/region (ask if
-      unsure which one — see `../P1_AZURE_SETUP.md`).
-- [ ] For CDSE: a `cdse_credentials.json` (gitignored) with your CDSE S3 keys — copy
-      it to the VM (`scp`), never commit it.
+- [ ] A cloud VM **inside the `rise` VNet**, in/near the subscription/region (see
+      `../P1_AZURE_SETUP.md`). **`strisewesteurope` is deny-by-default firewalled** — a VM
+      outside the project subnets cannot reach it at all, so "any Azure VM" will not do.
+- [ ] For CDSE: a `cdse_credentials.json` (gitignored) with your CDSE S3 keys, on the VM.
+      Never commit it; see the upload note in Step 0.
 - [ ] For MPC: nothing — anonymous access.
+
+> **An AML compute instance works and may be the only option.** On this tenant, plain VMs
+> report *"SSH access from the public internet is disabled"* — so `ssh`/`scp` from a laptop
+> are unavailable. An **Azure ML compute instance** (Studio → Notebooks → *Terminal*) sits
+> inside the VNet, reaches the firewalled storage, and gives you a shell with no SSH at all.
+> Validated end-to-end this way on 2026-07-20. Its browser terminal drops more easily than
+> SSH would, so `tmux` (Step 1) matters *more*, not less.
 
 ## Step 0 — reach the VM and set it up (one-time, Azure-noob pace)
 
 ```bash
-# from your laptop: SSH to the VM (substitute your VM's connection details)
+# Get a shell on the VM. Either SSH (if your VM allows it):
 ssh <you>@<vm-host>
+# ...or, on an AML compute instance, just open Studio -> Notebooks -> Terminal.
 
-# on the VM: log in to Azure so DefaultAzureCredential (used by adlfs/GDAL) can find a token
-az login
-# if the VM has a system-assigned managed identity instead, this may already be
-# non-interactive -- `az account show` tells you which identity is active.
+# confirm which identity the shell is acting as -- this is the identity that must hold
+# `Storage Blob Data Contributor` on the storage account, NOT necessarily your laptop's.
+az account show --query user -o json
+# If it is unauthenticated, `az login`. On an AML compute instance you are typically
+# already signed in as yourself, and no `az login` is needed.
 
 # clone the fsd repo (this IS the Batch dress rehearsal, spec 34 [G7] --
-# the same "code arrives via git-clone" path the Batch runner will use later)
-git clone git@github.com:nikhilsrajan/fsd.git
+# the same "code arrives via git-clone" path the Batch runner will use later).
+# HTTPS, not SSH: a fresh VM has no GitHub deploy key, and fsd is a public repo.
+git clone https://github.com/nikhilsrajan/fsd.git
 cd fsd
 # spec 34 is on `main` (pushed 2026-07-20) -- a fresh clone already has it, no
 # checkout needed. Sanity-check you got it before going further:
@@ -54,14 +65,59 @@ test -f src/fsd/catalog/declaration.py && echo "spec 34 present" || echo "WRONG 
 
 python3.11 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev,azure]"
+# NOTE the `mpc` extra -- `planetary-computer` is NOT in core, and `--source mpc` below
+# dies with ModuleNotFoundError without it.
+pip install -e ".[dev,azure,mpc]"
 
 # the one env var that matters for writing to blob (see storage/azure.py):
 export FSSPEC_ABFSS_ANON=false
 ```
 
+**The ROI lives OUTSIDE this repo — `git clone` cannot give it to you.** The script resolves
+`ROI_PATH = <parent-of-fsd>/shapefiles/s2grid=476da24.geojson` (`34_download_to_blob.py:32-33`),
+i.e. `shapefiles/` must be a **sibling of the `fsd` checkout**. That folder is part of the
+workspace, not the git repo. It is a 490-byte GeoJSON — recreate it rather than fighting with
+file transfer:
+
+```bash
+mkdir -p ../shapefiles
+cat > "../shapefiles/s2grid=476da24.geojson" <<'EOF'
+{
+"type": "FeatureCollection",
+"name": "geometry",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+"features": [
+{ "type": "Feature", "properties": { "id": "476da24" }, "geometry": { "type": "Polygon", "coordinates": [ [ [ 16.033748282140277, 48.114321242550432 ], [ 16.057710116623269, 48.155721847866374 ], [ 16.115848242509124, 48.147389969624996 ], [ 16.091816009803637, 48.106010155862421 ], [ 16.033748282140277, 48.114321242550432 ] ] ] } }
+]
+}
+EOF
+```
+
+**Getting `cdse_credentials.json` onto the VM (CDSE leg only).** If SSH is disabled, `scp` is
+out. Do **not** use the AML Studio upload button for this: it writes to `~/cloudfiles/...`,
+which is the **shared workspace file share** mounted on every compute instance in the
+workspace — wrong place for S3 keys. Paste into local disk instead:
+
+```bash
+umask 077
+cat > ~/cdse_credentials.json <<'EOF'
+<paste the JSON from your laptop here>
+EOF
+chmod 600 ~/cdse_credentials.json
+
+# verify without printing secrets -- CdseCredentials.__repr__ masks values by design
+.venv/bin/python -c "
+from fsd.sources.cdse import CdseCredentials
+print(CdseCredentials.from_json('$HOME/cdse_credentials.json'))
+"
+```
+
+Expect `s3_access_key=set`, `s3_secret_key=set`. **Check `s3_keys_expire`** in that output —
+CDSE S3 keys expire and nothing in fsd enforces it, so an expired key surfaces as an opaque
+S3 auth error much later.
+
 - **Expect:** `pip install` finishes with no errors; `python -c "import fsd"` succeeds.
-- **PASS if:** the venv is active and `fsd` imports.
+- **PASS if:** the venv is active, `fsd` imports, and the ROI file exists at `../shapefiles/`.
 
 ## Step 1 — run the download **inside `tmux`** (detach-safe)
 
@@ -102,6 +158,14 @@ and `tmux attach -t dl` to see it still running (or finished).
 - **If it fails:** paste the error/`_result.json` back. For CDSE, a remote `--dst` run
   that fails partway is not resumable (see the limitation below) — just re-run.
 
+> **Known transient: CDSE discovery can drop mid-pagination.** `APIError: {"code":
+> "ConnectionDoesNotExistError","description":"connection was closed in the middle of
+> operation"}` from inside `pages_as_dicts` is **CDSE's server, not your setup** — the JSON
+> error body proves their API was reached, so it is not an NSG/egress/credential problem.
+> `_search_items` has no retry (TODO #43), so one blip kills the invocation before anything
+> downloads. **Just re-run.** If it recurs 3+ times consecutively, stop and report it — that
+> would suggest something about *this* VM's egress rather than a CDSE hiccup.
+
 ## Step 2 — monitor progress (from a second terminal, optional)
 
 ```bash
@@ -132,11 +196,17 @@ pushed.
 
 ## Success criteria (`_result.json`)
 
+The **criteria** are the six booleans in the script's own `expected` block. `catalog_rows`,
+`stac_items` and `source` are context, **not** pass/fail criteria — the granule count varies
+by source and window (an MPC run of this slice returned **8**), so do not treat the
+illustrative number below as a target.
+
 ```json
 { "step": "spec34-download-to-blob", "status": "ok", "pass": true,
   "metrics": {
     "source": "mpc",
-    "catalog_rows": 3,
+    "catalog_rows": 8,
+    "stac_items": 8,
     "cog_present": true,
     "cog_nonzero_bytes": true,
     "gdal_offset_or_scale_tag_present": true,

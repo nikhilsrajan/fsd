@@ -18,13 +18,15 @@ class _FakeItem:
     """Duck-typed stand-in for an MPC pystac `Item` (no network)."""
 
     def __init__(self, id, dt, geom, cloud, baseline, mgrs_tile=None, assets=None,
-                 generation_time=None):
+                 generation_time=None, processing_version=None):
         self.id = id
         self.datetime = dt
         self.geometry = sg.mapping(geom)
         self.properties = {"eo:cloud_cover": cloud}
         if baseline is not None:
             self.properties["s2:processing_baseline"] = baseline
+        if processing_version is not None:
+            self.properties["processing:version"] = processing_version
         if mgrs_tile is not None:
             self.properties["s2:mgrs_tile"] = mgrs_tile
         if generation_time is not None:
@@ -33,12 +35,13 @@ class _FakeItem:
 
 
 def _fake_item(id, dt, lon, lat, cloud, baseline="05.09", mgrs_tile=None, assets=None,
-                generation_time=None):
+                generation_time=None, processing_version=None):
     if assets is None:
         assets = {"B04": f"https://example/{id}/B04.tif?sig=abc"}
     dt = datetime.datetime.fromisoformat(dt.replace("Z", "+00:00"))
     return _FakeItem(id, dt, sg.box(lon, lat, lon + 1, lat + 1), cloud, baseline,
-                     mgrs_tile=mgrs_tile, assets=assets, generation_time=generation_time)
+                     mgrs_tile=mgrs_tile, assets=assets, generation_time=generation_time,
+                     processing_version=processing_version)
 
 
 # --- baseline -> offset (spec 34 §1, generalizing spec 32 D2/D3) -------------
@@ -68,6 +71,41 @@ def test_offset_for_item_reprocessed_pre_2022_date_still_yields_offset():
 
 def test_offset_for_item_missing_baseline_raises():
     it = _fake_item("no-baseline", "2021-06-01T00:00:00Z", 0, 0, 5.0, baseline=None)
+    with pytest.raises(ValueError, match="s2:processing_baseline"):
+        mpc.offset_for_item(it)
+
+
+# --- provider-specific baseline property (spec 34 §3a Amendment A1) ----------
+
+
+def test_offset_for_item_resolves_from_processing_version_alone():
+    pre = _fake_item(
+        "cdse-pre", "2021-06-01T00:00:00Z", 0, 0, 5.0, baseline=None,
+        processing_version="02.14",
+    )
+    post = _fake_item(
+        "cdse-post", "2022-06-01T00:00:00Z", 0, 0, 5.0, baseline=None,
+        processing_version="05.10",
+    )
+    assert mpc.offset_for_item(pre) == 0
+    assert mpc.offset_for_item(post) == -1000
+
+
+def test_offset_for_item_prefers_s2_processing_baseline_when_both_present():
+    # both properties present and disagreeing — s2:processing_baseline wins
+    # (pins the ordering as a decision, not an accident).
+    it = _fake_item(
+        "both", "2022-06-01T00:00:00Z", 0, 0, 5.0, baseline="02.14",
+        processing_version="05.10",
+    )
+    assert mpc.offset_for_item(it) == 0
+
+
+def test_offset_for_item_missing_both_baseline_props_raises():
+    it = _fake_item(
+        "no-baseline-either", "2021-06-01T00:00:00Z", 0, 0, 5.0, baseline=None,
+        processing_version=None,
+    )
     with pytest.raises(ValueError, match="s2:processing_baseline"):
         mpc.offset_for_item(it)
 
