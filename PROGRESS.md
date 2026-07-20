@@ -4,7 +4,69 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-20_
 
-## ✅ SPEC 34 REVIEWED + FIXED (2026-07-20, Opus@high) — review pass closed. **→ NEXT: the user runs the two runbooks (`runbooks/34-download-to-blob.md`, then `runbooks/34-mini-mpc-cross-baseline.md`) on a clean session.**
+## ✅ RUNBOOK 34-download-to-blob PASSED, BOTH SOURCES (2026-07-20, Opus@high) — found + fixed a real spec defect on the way. **→ NEXT: run `runbooks/34-mini-mpc-cross-baseline.md` (the only remaining spec-34 acceptance; MPC-only, local + docker, fully independent).**
+
+**Both legs PASS on the `rise` blob, verified on metrics (not the `pass` flag).** All six
+`expected` booleans true for each source; the flag's own computation was checked and genuinely
+ANDs all six + `catalog_rows > 0`, each derived from a real blob-side read — it *can* fail,
+unlike spec 32's runbook v1.
+
+| leg | files | catalog_rows | stac_items | verdict |
+|---|---|---|---|---|
+| **MPC** | 16 (B04+SCL × 8) | 8 | 8 | ✅ PASS |
+| **CDSE** | 24 (B04+SCL+`MTD_TL.xml` × 8) | 8 | 8 | ✅ PASS |
+
+Both sources independently agree on 8 granules for the same window/tile. The 16-vs-24 file
+difference is by design — `_select_item_files` adds `MTD_TL.xml` per granule for CDSE; MPC has
+no such asset. `gdal_offset_or_scale_tag_present: true` on the **CDSE** leg is the load-bearing
+result: these are baseline-05.10 products, so the tag can only be there if the offset resolved
+to −1000. **TODO #30/#10 is now closed for the CDSE path, proven against real data.**
+
+**⚠️ The CDSE leg first hard-failed — a factual error in the signed-off spec, now Amendment A1
+(`specs/34` §3a), implemented + pushed as `9eccc44`.** `_s2_radiometry.py` asserted that "CDSE's
+STAC items carry the same `s2:processing_baseline` property, per the S2 STAC extension both
+providers implement." **False for the endpoint fsd queries.** `config.CDSE_STAC_URL` is
+`stac.dataspace.copernicus.eu/v1/`, and CDSE's v1 catalogue (Feb 2025) *removed the
+satellite-specific `s2:` extensions in favour of a generic metadata model*. A live probe of 8
+items: **no `s2:` keys at all**; baseline is in the STAC Processing extension's
+**`processing:version` = `"05.10"`**, matching `N0510` in the product id. The extension defines
+that field as *"the version of the primary processing software … for example, this could be the
+processing baseline for the Sentinel missions"* — its documented purpose, not a coincidence.
+Fix = `_BASELINE_PROPS` ordered lookup (`s2:processing_baseline` → `processing:version`), first
+hit wins, hard-fail preserved when neither is present. Implemented Sonnet@medium in a parallel
+session against `runbooks/HANDOFF-spec34-A1-implement.md`; merged + verified here (**289 → 292
+passed / 3 skipped**, ruff clean). **The code was never wrong — it faithfully implemented a spec
+that stated an unverified external fact.** Notably the CDSE docs do *not* publish item property
+schemas, so a docs-only cross-validation could not have caught this; the live probe was
+necessary. That methodology point is recorded in §3a's per-source credit.
+
+**Runbook 1 had five step-0 defects, all found by running it** (fixed in `9eccc44`): the
+`shapefiles/` ROI resolves to a *sibling of the repo* so `git clone` cannot supply it; SSH clone
+URL on a VM with no deploy key; `[dev,azure]` missing the `mpc` extra; a stale `catalog_rows: 3`
+example readable as a criterion (it is context — only the six booleans are criteria); and
+`_verify_on_blob` calling `pystac.Catalog.from_file` **without** `_StorageStacIO` — the only
+call site in the repo bypassing the storage seam, which broke verification against `abfss://`
+hrefs. Common cause: step 0 was written assuming the author's laptop. The runbook now also
+documents the **AML compute instance** path (SSH from the public internet is disabled on this
+tenant; an AML compute instance is inside the VNet and reaches the firewalled storage), the
+credential-upload warning (**not** `~/cloudfiles` — that is the shared workspace file share),
+and the transient CDSE discovery error.
+
+**New: TODO #43** — `_search_items` has no retry/backoff while the download layer right below it
+has a full retry ladder; one transient `ConnectionDoesNotExistError` mid-pagination killed a run
+before any download. Re-running worked. Low priority, contained fix, matters more for unattended
+Batch runs.
+
+**Workspace:** worktree `spec34-a1` merged file-by-file (verified byte-identical), removed, its
+branch deleted — **one checkout again**. Stale merged branches `spec32-mpc-implement` /
+`specs-28-29-impl` still exist; cosmetic.
+
+**⚠️ A1 is drafted + implemented but NOT user-signed-off.** It was written and merged inside one
+session under time pressure of a live runbook. The decisions worth a second look: resolution via
+`processing:version`, `s2:` winning a tie, and *no* product-id regex fallback despite `N0510`
+always being present.
+
+## ✅ SPEC 34 REVIEWED + FIXED (2026-07-20, Opus@high) — review pass closed.
 
 **Workspace consolidated + SHIPPED:** the spec-34 work was living in the git worktree
 `.claude/worktrees/spec34-ingest-normalization`. It has been **merged into `main`'s working
