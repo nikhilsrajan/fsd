@@ -2,7 +2,19 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-18_
+_Last updated: 2026-07-20_
+
+## ✅ SPEC 34 (ingest / normalization contract) WRITTEN + SIGNED OFF (2026-07-20, Opus@high) — `specs/34-ingest-normalization-contract.md`. **→ NEXT: Sonnet@medium implements** (handoff `/tmp/fsd-handoff-spec34-implement.md`).
+
+Promotes **TODO #38** (this is spec **34**). Re-opens **download-to-blob for all sources** (`stage → normalize → put` per source), standing on the proven P1 storage seam (spec 31). Interviewed → drafted → cross-validated (standing permission) → **grilled** (7 resolutions) → user sign-off, all in one Opus@high session. **No code written** (spec-first; implementation is a later Sonnet@medium session).
+
+**The two locked decisions:**
+- **Radiometry/encoding/nodata (§1).** Ingest stores **raw-DN COGs (lossless archive)** + declares the S2 processing-baseline BOA offset as **metadata in BOTH places**: the COG's **GDAL scale/offset tag** (required for the viewer — cross-validated that titiler/rio-tiler `unscale` honors **only** the internal GDAL tag, **not** STAC `raster:bands`; maintainer disc. #803) **and** STAC `raster:bands` (for the builder + interchange). **Not baked** (baking = permanent silent clip of real reflectance in (0,1000] + kills MPC's byte-copy). Payoff: a **single titiler-pgstac XYZ URL with `unscale=true` renders a mixed-baseline mosaic with no seam** — the driving requirement (MPC itself *can't* do this — it exposes no per-item offset, §1e). nodata guaranteed = 0 (MPC COGs sometimes omit it). **Retires the bespoke `boa_add_offset` column** → closes #10/#30. **⚠️ Honest scope (`[G1]`):** the **science datacube still clips** (uint16, offset applied before the median) — but consciously + recoverably (true DN on disk); `int16`/`float32` deferred to TODO #13.
+- **Builder generalization / #35 (§2).** `build_datacube` becomes **declaration-driven** (option B — the artifact self-describes band roles / mask / reference / nodata / offset; no product registry, no `if source==`). Mask is **opt-out** behind a growable `mask_type` (categorical-classes only for now) → **closes #35**. Grid-topology for non-tiled sources (ERA5/CHIRPS) is **deferred to the ERA5 spec**, `NotImplementedError`-guarded (`[G2]`). Ships a **`docs/adding-a-source.md`** guide + a docstring DoD so a library user can add a source themselves.
+
+**Grilling resolutions folded in (`[G1]`–`[G7]` tagged in the spec):** [G1] cube-clip honesty; [G2] grid-topology deferred; [G3] `mask_type` seam; [G4] **no legacy/back-compat — 74 GB Austria archive is disposable, data re-ingested under the new contract**; [G5] **cloud-VM-first runbook + tmux/detach-safety + Azure-noob hand-holding** (the "download-on-cloud, no hotspot" property comes from *running on a cloud VM*, not from writing-to-blob — Batch auto-dispatch is still P2); [G6] cross-baseline acceptance runs on **local copies** (titiler-serves-blob deferred to P5); [G7] code onto VM via **git-clone** (Batch dress rehearsal), rsync for debug.
+
+**Scope:** Contract + **MPC** (copy + GDAL-tag stamp) + **CDSE** (jp2→COG + declare) implemented; **ERA5** designed-for, built later. **Living docs updated on sign-off:** `TODO.md` (#38 signed off; #35 closed; #37/#30/#10 folded), `PROGRESS.md`, memory `[[fsd-status]]`. **`CHANGES.md` deferred to implementation** (it records shipped behavior; nothing's built yet).
 
 ## 🎉 P1 STORAGE SEAM PROVEN END TO END (2026-07-18) — `runbooks/31-p1-datacube-on-blob.md` ran GREEN (`"pass": true`). Spec 31 DONE.
 
