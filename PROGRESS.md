@@ -4,7 +4,29 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-21_
 
-## ✅ SPEC 35 **REVIEWED + ACCEPTED** (2026-07-21, Opus@high). No defects found in the implementation; 4 small corrections applied in place, 1 design gap logged as TODO #45. `pytest -q` **331 passed / 3 skipped**, `ruff` clean. **→ NEXT: user decides — commit spec 35, or move on** (nothing committed; tree still dirty by design).
+## ⭐ DEMO TARGET LOCKED + spec 35 committed (2026-07-21, Opus@high). **→ NEXT: P2 — the Azure Batch runner (TODO #41), starting with the GDAL/VSI-under-MSI spike.**
+
+- **The target (user, 2026-07-21):** *a researcher runs the same fsd pipeline on **Azure Batch at
+  scale**, where `runner="batch"` / `storage="abfss://…"` is configuration, not a rewrite.*
+  Audience = **a researcher who would actually use fsd** (self-serve bar). Written up as
+  **`ROADMAP.md` §5.0** — that section, not this entry, is the canonical statement.
+- **Everything local is done and proven** (P0→P0.9 on real data); **P1's storage half is proven**
+  (runbooks 31 + 34-download-to-blob green). **The single missing piece is the runner.**
+- Ordered path: (1) decide **Batch vs AML** — still open, gates the spec; (2) **spike GDAL/VSI
+  auth under MSI** (`AZURE_INFRA.md` §7.3) — the one real technical unknown, do it *before* the
+  spec so the spec isn't written on a guess; (3) **write spec 10**, settling `AZURE_INFRA.md` §7's
+  eight questions; (4) **container image + ACR**; (5) **implement the runner seam** (+ the local
+  Snakemake sentinels' blob-unsafety, TODO #41); (6) **infra ask** (quota / `max_tasks_per_node`).
+- **New: `LIMITATIONS.md`** — a one-page, user-facing **index** of what fsd cannot do today, with
+  a "trigger to fix" per row. Deliberately an index, **not** a fifth register: detail stays in
+  `TODO.md`/`DROPPED.md`/`BUGS.md`/`specs/`. Working principle the user set: **YAGNI/DRY/KISS — we
+  plug a limitation when we actually hit it**, not in advance.
+- **Spec 35 committed** (`f486c3c`, 24 files) — see the two entries below for the implementation
+  and the review. Notebooks deliberately left out of the commit (`CLAUDE.md` preference).
+
+---
+
+## ✅ SPEC 35 **REVIEWED + ACCEPTED** (2026-07-21, Opus@high). No defects found in the implementation; 4 small corrections applied in place, 1 design gap logged as TODO #45. `pytest -q` **331 passed / 3 skipped**, `ruff` clean. Committed as `f486c3c`.
 
 - **Verified against the spec, not just re-read.** §9's 10 deliverables all land; §8's 11 test
   requirements all have a real test. **Independently re-derived the two claims the design rests

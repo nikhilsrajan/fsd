@@ -228,6 +228,46 @@ legacy `rsutils.s2_grid_utils.get_s2_grids_gdf` already does it, and
 Each phase is a shippable release to show the team. **Infra-ask** flags where we must *propose*
 a `raapid-infra` change to the admin (we never edit it ourselves).
 
+### 5.0 ⭐ THE DEMO TARGET (locked 2026-07-21, user)
+
+Everything below is background; **this is what we are driving at**, and anything not on this
+path is a distraction until it ships:
+
+> **A researcher runs the same fsd pipeline on Azure Batch at scale — `runner="batch"` /
+> `storage="abfss://…"` is *configuration*, not a rewrite.** That is **P2 → P4** (TODO #41).
+> Audience: **a researcher who would actually use fsd**, so the self-serve bar applies —
+> `pip install`, docs, adapter-writing, error messages that teach.
+
+**Everything local is already done and proven on real data** (P0 → P0.9), and the storage half
+of the cloud story is proven too (P1: runbook `31-p1-datacube-on-blob.md` green,
+`34-download-to-blob.md` green on both sources). **The single missing piece is the runner.**
+
+⚠️ **A tension to hold consciously, not resolve by accident.** "Researcher self-serve" and
+"runs on Batch" pull apart: a researcher without `rise` credentials + VPN **cannot run the Batch
+path at all**. So the honest shape of the demo is *"the local path is theirs to run; the cloud
+path is the same call with two arguments changed, which we drive."* Protecting that — one code
+path, cloud as a backend — **is** the demo. If the Batch runner ends up needing its own pipeline
+code, the demo has failed even if it runs fast.
+
+**What is left, in order** (detail: `AZURE_INFRA.md` §7/§8, TODO #41):
+
+1. **Decide Batch vs AML.** Still open. A decision, not code — but it gates the spec.
+2. **Spike GDAL/VSI auth under MSI** (`AZURE_INFRA.md` §7.3). The one genuine technical
+   unknown; everything else is design work. Do this *before* the spec, so the spec isn't
+   written on a guess.
+3. **Write spec 10 (the runner spec)** — settles §7's eight questions: task granularity/node
+   packing, where the driver runs, blob data layout, container image, the `--runner=` seam,
+   idempotency under Batch retries, telemetry.
+4. **Container image + ACR push.** None exists today.
+5. **Implement the runner seam** + fix the local Snakemake sentinels' blob-unsafety (both are
+   TODO #41; the second likely falls out of the first).
+6. **Infra ask to the platform admin** — quota bump, probably `max_tasks_per_node`. First
+   proposal of the project; we never run Terraform ourselves.
+
+**Not on the path** (real, but do them when we hit them — `LIMITATIONS.md`): more data sources,
+xarray/zarr, the config-only adapter, tile serving. Serving (P5) is the natural *next* demo
+after this one, not part of it.
+
 | Phase | Ships | Demo | Infra-ask |
 |---|---|---|---|
 | **P0** | fsd pip-installable (GitHub); high-level verb *skeletons*; STAC-aligned catalog (§6) | `pip install fsd`, local download→datacube→flatten via `create_training_data` | none |
