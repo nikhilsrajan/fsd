@@ -272,8 +272,15 @@ These are the decisions the future spec 10 must settle. Flagged here so we don't
 2. **Where does the driver run?** Laptop-on-VPN (simplest to start), an AML compute job, or
    a small always-/on-demand VM (would need adding `vms` to rise)? The `common-ops` Batch
    example pairs `vms` + `azure-batch` for exactly this.
-3. **GDAL/VSI auth under MSI** for the raster-read exception — `/vsiadls/` config, token
-   env vars, or hand rasterio a user-delegation SAS URL? Needs a spike.
+3. ~~**GDAL/VSI auth under MSI** for the raster-read exception — needs a spike.~~
+   **✅ RESOLVED by spec 31 (proven on real Azure 2026-07-18, `runbooks/31-p1-datacube-on-blob.md`
+   green).** `fsd.raster.rio_open` translates `abfss://`/`az://` → `/vsiadls/` (`storage/azure.py`)
+   and opens inside a `rasterio.Env` carrying a **fresh `AZURE_STORAGE_ACCESS_TOKEN`** +
+   `AZURE_STORAGE_ACCOUNT`; local paths stay a straight passthrough. The build streamed blob COGs
+   this way end to end. **Residual, narrower unknown: GDAL *writes* to blob.** `rio_open` raises on
+   `mode="w"` for a remote path by design (P1 scoped writes local), so **inference-output COGs to
+   blob are still unproven** — that is TODO #39 and lands in **P4**, not P2. Do not re-spike the
+   read path.
 4. **Input/output data layout in blob** — container/paths for the S2 archive, catalogs,
    datacubes, flattened arrays; how the catalog (GeoParquet) is shared to tasks.
 5. **Container image** — base (GDAL/rasterio wheels vs. system GDAL), size, build/push CI,
@@ -288,8 +295,12 @@ These are the decisions the future spec 10 must settle. Flagged here so we don't
 ## 8. Things to confirm (not yet verified)
 
 - Exact Batch **account URL** output name and the region's Batch endpoint host.
-- Whether `adlfs` + `DefaultAzureCredential` covers all `fsd.storage` operations we use
-  (`transfer`, `size`, `load_npy`, atomic `.part`+rename — rename semantics on ADLS Gen2).
+- ~~Whether `adlfs` + `DefaultAzureCredential` covers all `fsd.storage` operations we use.~~
+  **✅ Largely answered by spec 31 + runbooks 31/34** (green 2026-07-18/07-20): `read/write_parquet`,
+  `save/load_npy`, `transfer` (`.part` + `mv`), `put`, `exists`, `makedirs` all ran against `rise`
+  blob, and `FSSPEC_ABFSS_ANON` was proven to cross a subprocess boundary. **Still unconfirmed:
+  whether ADLS Gen2's rename is genuinely *atomic* under concurrent writers** — irrelevant with one
+  local driver, potentially load-bearing once N Batch tasks write at once (see §7.7 idempotency).
 - Current **quota** actually granted on the Batch account (needs `az batch account show`).
 - Whether the pool image (`microsoft-dsvm/ubuntu-hpc/2204`) + Docker is enough, or we need a
   custom node image.

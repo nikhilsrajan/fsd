@@ -12,11 +12,17 @@ _Last updated: 2026-07-21_
   **`ROADMAP.md` §5.0** — that section, not this entry, is the canonical statement.
 - **Everything local is done and proven** (P0→P0.9 on real data); **P1's storage half is proven**
   (runbooks 31 + 34-download-to-blob green). **The single missing piece is the runner.**
-- Ordered path: (1) decide **Batch vs AML** — still open, gates the spec; (2) **spike GDAL/VSI
-  auth under MSI** (`AZURE_INFRA.md` §7.3) — the one real technical unknown, do it *before* the
-  spec so the spec isn't written on a guess; (3) **write spec 10**, settling `AZURE_INFRA.md` §7's
-  eight questions; (4) **container image + ACR**; (5) **implement the runner seam** (+ the local
-  Snakemake sentinels' blob-unsafety, TODO #41); (6) **infra ask** (quota / `max_tasks_per_node`).
+- Ordered path: (1) decide **Batch vs AML** — still open, gates the spec; (2) **write spec 10**,
+  settling `AZURE_INFRA.md` §7's remaining questions; (3) **container image + ACR** (the largest
+  genuinely new build); (4) **implement the runner seam** (+ the local Snakemake sentinels'
+  blob-unsafety, TODO #41); (5) **infra ask** (quota / `max_tasks_per_node`).
+- ⚠️ **Correction made while preparing this handoff — no spike is needed first.** I had told the
+  user to start with a GDAL/VSI-under-MSI spike; that was **wrong**. §7.3 was stale: spec 31
+  already solved and *proved* it on real Azure (`fsd.raster.rio_open` → `/vsiadls/` + fresh
+  `AZURE_STORAGE_ACCESS_TOKEN`; runbook `31-p1-datacube-on-blob.md` green 2026-07-18). Marked
+  resolved in `AZURE_INFRA.md` §7.3/§8. The residual unknown is narrower and belongs to **P4**:
+  GDAL *writes* to blob (inference-output COGs) — `rio_open` raises on a remote `mode="w"` by
+  design (TODO #39). **P2 is design + build, not discovery.**
 - **New: `LIMITATIONS.md`** — a one-page, user-facing **index** of what fsd cannot do today, with
   a "trigger to fix" per row. Deliberately an index, **not** a fifth register: detail stays in
   `TODO.md`/`DROPPED.md`/`BUGS.md`/`specs/`. Working principle the user set: **YAGNI/DRY/KISS — we

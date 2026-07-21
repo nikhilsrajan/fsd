@@ -252,17 +252,21 @@ code, the demo has failed even if it runs fast.
 **What is left, in order** (detail: `AZURE_INFRA.md` §7/§8, TODO #41):
 
 1. **Decide Batch vs AML.** Still open. A decision, not code — but it gates the spec.
-2. **Spike GDAL/VSI auth under MSI** (`AZURE_INFRA.md` §7.3). The one genuine technical
-   unknown; everything else is design work. Do this *before* the spec, so the spec isn't
-   written on a guess.
-3. **Write spec 10 (the runner spec)** — settles §7's eight questions: task granularity/node
+2. **Write spec 10 (the runner spec)** — settles §7's remaining questions: task granularity/node
    packing, where the driver runs, blob data layout, container image, the `--runner=` seam,
    idempotency under Batch retries, telemetry.
-4. **Container image + ACR push.** None exists today.
-5. **Implement the runner seam** + fix the local Snakemake sentinels' blob-unsafety (both are
+3. **Container image + ACR push.** None exists today — the largest genuinely *new* build.
+4. **Implement the runner seam** + fix the local Snakemake sentinels' blob-unsafety (both are
    TODO #41; the second likely falls out of the first).
-6. **Infra ask to the platform admin** — quota bump, probably `max_tasks_per_node`. First
+5. **Infra ask to the platform admin** — quota bump, probably `max_tasks_per_node`. First
    proposal of the project; we never run Terraform ourselves.
+
+✅ **No spike is needed first.** GDAL/VSI auth under MSI — long carried as *the* technical
+unknown (`AZURE_INFRA.md` §7.3) — was **solved and proven on real Azure by spec 31**
+(`fsd.raster.rio_open` → `/vsiadls/` + fresh token; runbook `31-p1-datacube-on-blob.md` green
+2026-07-18). §7.3/§8 are now marked resolved. The residual is narrower and lands in **P4**, not
+here: GDAL *writes* to blob for inference-output COGs are still unproven (`rio_open` raises on a
+remote `mode="w"` by design), i.e. TODO #39. **P2 is design + build, not discovery.**
 
 **Not on the path** (real, but do them when we hit them — `LIMITATIONS.md`): more data sources,
 xarray/zarr, the config-only adapter, tile serving. Serving (P5) is the natural *next* demo
