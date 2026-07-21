@@ -31,7 +31,13 @@ Every source's `download(...)` does three things, in order, for each unit of wor
      `stamp_or_reencode` falls back to a GDAL-COG-driver re-encode if the in-place tag
      edit breaks COG validity (a GDAL/source-dependent edge case, not the common path).
 3. **put** — write the normalized artifact to `root_folderpath` (local or blob,
-   `fsd.storage.fs.transfer`/`fs.put`) and append a row to the `TileCatalog` (below).
+   `fsd.storage.fs.transfer`/`fs.put`) and append a row to the `TileCatalog` (below),
+   **stamping the source's `SourceDeclaration` at that `catalog.append(...)` call**
+   (spec 35 §4) — this is a **required** step, not optional: `TileCatalog.append(rows,
+   declaration=YOUR_DECLARATION)`. Without it, the collection-level declaration is never
+   persisted (spec 35 §1/§2), and every downstream build against that catalog raises
+   (§5a) rather than silently guessing S2. See `sources/cdse.py`/`sources/mpc.py` for the
+   two-line pattern (`catalog.append(rows, declaration=S2_L2A_DECLARATION)`).
 
 **Radiometry is metadata, never baked into pixels** (spec 34 §1): the on-disk artifact
 stays raw DN; a per-tile additive `offset` and the source's `nodata` value are declared
@@ -64,10 +70,16 @@ re-ingest, don't migrate.
 ### 3. The builder contract: `SourceDeclaration` (`fsd.catalog.declaration`)
 
 `build_datacube` (`fsd.datacube.builder`) has **no `if source == ...`** anywhere. It
-reads a `SourceDeclaration` — the collection-level facts it needs — resolved as:
-the explicit `declaration=` kwarg to `build_datacube`, else
-`catalog_subset.attrs["declaration"]` (set by `flatten_catalog(catalog_gdf,
-declaration=...)`), else the S2 L2A default.
+reads a `SourceDeclaration` — the collection-level facts it needs — resolved as
+(spec 35 §5): the explicit `declaration=` kwarg to `build_datacube`, else
+`catalog_subset`'s own stamp (`attrs["fsd:declaration"]`, restored by `fs.read_parquet`
+from the catalog Parquet's footer and set on the flattened output by
+`flatten_catalog(catalog_gdf, declaration=...)`), else the S2 L2A default **for a
+hand-built `catalog_gdf`** — a `catalog_gdf` that came from a file
+(`fs.read_parquet`) and carries no stamp raises instead (spec 35 §5a): the artifact
+must self-describe, not be guessed at. This is what step 3 above's required stamping
+step exists for — see `specs/35-declaration-persistence.md` for the full design and
+`fsd.catalog.restamp_cli` for re-stamping a catalog written before this contract.
 
 This is the field-by-field table (spec 34 §2a) — what the builder reads, and where:
 
@@ -124,7 +136,7 @@ def download(roi, startdate, enddate, bands, root_folderpath, catalog, *, max_ti
     # normalize (radiometry): CHIRPS has no per-item offset -- stamp offset=0, scale=1,
     #   and nodata=-9999 if the source file doesn't already declare it
     # put: fs.transfer/fs.put to root_folderpath; catalog.append([{..., "offset": 0,
-    #   "nodata": -9999, ...}])
+    #   "nodata": -9999, ...}], declaration=CHIRPS_DECLARATION)  # spec 35 §4 -- required
     ...
 ```
 

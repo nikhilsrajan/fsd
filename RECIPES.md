@@ -384,3 +384,68 @@ training = fsd.create_training_data(
 - **Not wired**: `download`-to-blob (`sources/mpc.py`/`sources/cdse.py` keep their local-only
   guards — suspended into the ingest/normalization contract spec, TODO #38) and
   `run_inference`/`deploy` (`storage_allowed=False` — P4/P5, TODO #39).
+
+## Probe: does a GeoDataFrame's `.attrs` survive a GeoParquet write→read? (spec 35 / TODO #42)
+
+Offline, ~2 s, read-only. Proves the TODO-#42 gap and validates the footer-metadata fix in one go —
+re-run it after any `geopandas`/`pandas`/`pyarrow` bump, because geopandas
+[PR #3597](https://github.com/geopandas/geopandas/pull/3597) (merged 2025-10-30) will change the
+first answer from `{}` to the round-tripped attrs.
+
+```bash
+.venv/bin/python - <<'PY'
+import geopandas as gpd, pandas as pd, pyarrow as pa, pyarrow.parquet as pq, io, json, shapely
+print("geopandas", gpd.__version__, "| pandas", pd.__version__, "| pyarrow", pa.__version__)
+
+g = gpd.GeoDataFrame({"id": ["a"], "geometry": [shapely.box(0, 0, 1, 1)]}, crs="EPSG:4326")
+g.attrs["declaration"] = {"x": 1}
+buf = io.BytesIO(); g.to_parquet(buf)
+print("geopandas attrs survive? ", gpd.read_parquet(io.BytesIO(buf.getvalue())).attrs)   # {} on 1.1.4
+
+df = pd.DataFrame({"a": [1]}); df.attrs["declaration"] = {"x": 1}
+b = io.BytesIO(); df.to_parquet(b, engine="pyarrow")
+print("pandas attrs survive?    ", pd.read_parquet(io.BytesIO(b.getvalue())).attrs)      # {'declaration': ...}
+print("pandas footer keys:      ", list(pq.read_table(io.BytesIO(b.getvalue())).schema.metadata))
+
+# the spec-35 route: stamp a footer key, keep the file valid GeoParquet
+t = pq.read_table(io.BytesIO(buf.getvalue()))
+md = dict(t.schema.metadata); md[b"PANDAS_ATTRS"] = json.dumps({"fsd:declaration": {"v": 1}}).encode()
+out = io.BytesIO(); pq.write_table(t.replace_schema_metadata(md), out); raw = out.getvalue()
+print("stamped file still reads:", gpd.read_parquet(io.BytesIO(raw)).crs.to_string())
+print("footer-only read:        ", list(pq.read_metadata(io.BytesIO(raw)).metadata))
+PY
+```
+
+**Expected (geopandas 1.1.4 / pandas 3.0.3 / pyarrow 24.0.0):** geopandas `{}`, pandas
+`{'declaration': {'x': 1}}` with a `PANDAS_ATTRS` footer key, the stamped file still readable as
+GeoParquet, and `pq.read_metadata` listing `PANDAS_ATTRS` + `geo` **without reading a row group**.
+⚠️ Never put a dataclass in `.attrs` — JSON-encoding it warns *"defaulting to empty attributes"* and
+raises `TypeError` (spec 35 §2a).
+
+**Implemented 2026-07-21** (spec 35, closing TODO #42): the footer route above is now
+`fsd.storage.fs.write_parquet`/`read_parquet`, generically, for any `.attrs`.
+
+## Re-stamp / inspect a catalog's `SourceDeclaration` (spec 35 §6)
+
+A catalog written before spec 35 (or by code that forgets to pass `declaration=` to
+`TileCatalog.append`) carries no `fsd:declaration` footer stamp — `flatten_catalog`/
+`build_datacube` now raise on it (§5a) rather than silently defaulting to S2. No
+re-download is needed — `restamp_cli` rewrites only the catalog Parquet (a KB-MB
+read + re-write in place; the imagery it points at is untouched) and
+`inspect_cli` reads the footer only (no row group). Both go through
+`fsd.storage`, so they work on `abfss://`/`s3://` too.
+
+```bash
+# stamp (or re-stamp) a catalog -- refuses to overwrite a *different* existing stamp
+# without --force; idempotent against the same declaration.
+.venv/bin/python -m fsd.catalog.restamp_cli /path/to/catalog.parquet --declaration s2_l2a
+
+# print the stamped declaration, footer-only (no row group read) -- the sidecar's
+# human-legibility without its separation risk.
+.venv/bin/python -m fsd.catalog.inspect_cli /path/to/catalog.parquet
+```
+
+The four catalogs known to need this (spec 35 §6): the Austria `demo_e2e/imagery/
+catalog.parquet`, `mpc_baseline/imagery/`, the `rise` blob catalog from runbook
+`34-download-to-blob`, and per-cell slices in old run folders — folded into TODO #44's
+re-ingest rather than run separately.

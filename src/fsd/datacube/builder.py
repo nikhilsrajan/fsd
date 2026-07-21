@@ -25,6 +25,7 @@ import shapely
 from rasterio.crs import CRS
 
 from fsd import config
+from fsd.catalog import declaration as declaration_module
 from fsd.catalog.declaration import (
     MASK_TYPE_CATEGORICAL_CLASSES,
     S2_L2A_DECLARATION,
@@ -49,11 +50,47 @@ def _timed(store: dict, name: str):
     store[name] = round(time.perf_counter() - t0, 4)
 
 
+# --- declaration resolution (spec 35 §5) --------------------------------------
+
+def _resolve_declaration(
+    gdf: gpd.GeoDataFrame, declaration: SourceDeclaration | None,
+) -> SourceDeclaration:
+    """Resolution order (spec 35 §5): the explicit `declaration=` kwarg, else the
+    stamp already on `gdf.attrs` (restored by `fs.read_parquet` from the Parquet
+    footer, or attached by a prior call to this function), else the S2 L2A
+    default -- **but only for a hand-built GeoDataFrame** (spec 35 §5a).
+
+    A `gdf` that came from a file (`fs.read_parquet` stamps
+    `attrs[fs.SOURCE_PATH_ATTRS_KEY]`) and carries no declaration stamp is an
+    error: this is precisely the "coincidentally correct because everything is
+    S2" fallback that hid TODO #42 for a whole spec cycle. Re-stamping is a
+    footer rewrite (`python -m fsd.catalog.restamp_cli`), not a re-download.
+    """
+    if declaration is not None:
+        return declaration
+    stamped = declaration_module.from_attrs(gdf)
+    if stamped is not None:
+        return stamped
+    from fsd.storage import fs as fs_module
+
+    source_path = gdf.attrs.get(fs_module.SOURCE_PATH_ATTRS_KEY)
+    if source_path is not None:
+        raise ValueError(
+            f"no SourceDeclaration stamp found on the catalog read from "
+            f"{source_path!r}. A catalog written before spec 35 (or by code that "
+            "doesn't stamp one) is not silently assumed to be Sentinel-2 L2A -- "
+            "re-stamp it first: `python -m fsd.catalog.restamp_cli "
+            f"{source_path} --declaration s2_l2a` (spec 35 §6), or pass "
+            "declaration= explicitly."
+        )
+    return S2_L2A_DECLARATION
+
+
 # --- caller helper: TileCatalog rows -> band-flattened rows -------------------
 
 def flatten_catalog(
     catalog_gdf: gpd.GeoDataFrame,
-    declaration: SourceDeclaration = S2_L2A_DECLARATION,
+    declaration: SourceDeclaration | None = None,
 ) -> gpd.GeoDataFrame:
     """Explode a filtered `TileCatalog` (one row per tile, with
     `area_contribution` from `TileCatalog.filter`) into one row per raster band
@@ -71,11 +108,14 @@ def flatten_catalog(
 
     `declaration` (spec 34 §2a) is the *collection-level* builder contract —
     which band is the mask/reference, how to interpret the mask, the source's
-    grid shape — attached to the output as `GeoDataFrame.attrs["declaration"]`,
-    which `build_datacube` reads instead of hardcoding S2. Defaults to the S2
-    L2A declaration (both fsd sources, CDSE and MPC, are S2 L2A today); a new
-    source passes its own (see `fsd/docs/adding-a-source.md`).
+    grid shape — resolved per `_resolve_declaration` (spec 35 §5/§5a: explicit
+    kwarg, else `catalog_gdf`'s own stamp, else the S2 L2A default for a
+    hand-built `catalog_gdf`, else raise for an unstamped file). The resolved
+    declaration is attached to the output as the JSON-able
+    `GeoDataFrame.attrs["fsd:declaration"]` (spec 35 §2a — never the dataclass
+    itself), which `build_datacube` reads instead of hardcoding S2.
     """
+    declaration = _resolve_declaration(catalog_gdf, declaration)
     data = {k: [] for k in
             ("id", "filepath", "band", "timestamp", "geometry", "area_contribution",
              "offset", "nodata")}
@@ -97,7 +137,7 @@ def flatten_catalog(
             data["offset"].append(tile_offset if _is_reflectance(band) else 0)
             data["nodata"].append(tile_nodata)
     flat = gpd.GeoDataFrame(data=data, crs=catalog_gdf.crs)
-    flat.attrs["declaration"] = declaration
+    declaration_module.to_attrs(flat, declaration)
     return flat
 
 
@@ -134,9 +174,11 @@ def build_datacube(
     **Declaration-driven, not hardcoded (spec 34 Decision 2 / #35).** What band is
     the mask, how to interpret it, which band is the resample reference, and the
     mosaic method are read from a `SourceDeclaration` (`fsd.catalog.declaration`) —
-    resolved as: the explicit `declaration=` kwarg, else
-    `catalog_subset.attrs["declaration"]` (set by `flatten_catalog`), else the S2 L2A
-    default. `scl_mask_classes`/`reference_band`, if given, override the resolved
+    resolved by `_resolve_declaration` (spec 35 §5): the explicit `declaration=`
+    kwarg, else `catalog_subset`'s own stamp (`attrs["fsd:declaration"]`, set by
+    `flatten_catalog`), else the S2 L2A default for a hand-built `catalog_subset`
+    (§5a — an unstamped catalog that came from a file raises instead).
+    `scl_mask_classes`/`reference_band`, if given, override the resolved
     declaration's fields (back-compat for existing S2 callers). The declared mask is
     skipped entirely (no `apply_cloud_mask_scl`, no drop) when `mask_spec` is `None`
     **or** its `band` is not in the requested `bands` — this is what closes #35:
@@ -173,7 +215,7 @@ def build_datacube(
     wall-clock `time.time()` so intervals are comparable across grid processes. The
     workflow path enables it via the `FSD_WRITE_READ_LOG` env var (see workflows.task).
     """
-    declared = declaration or catalog_subset.attrs.get("declaration") or S2_L2A_DECLARATION
+    declared = _resolve_declaration(catalog_subset, declaration)
     if declared.native_grid:
         raise NotImplementedError(
             "build_datacube: a native single-grid source (declaration.native_grid="

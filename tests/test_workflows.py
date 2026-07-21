@@ -53,6 +53,9 @@ def _write_tile(path, value):
 
 
 def _make_catalog(path, tmp, files="B04.jp2,B08.jp2,SCL.jp2,MTD_TL.xml", with_ac=False):
+    from fsd.catalog import declaration as declaration_module
+    from fsd.catalog.declaration import S2_L2A_DECLARATION
+
     rows = []
     for i, ts in enumerate(TS):
         r = {"id": f"T_{i}", "satellite": "sentinel-2-l2a", "timestamp": ts,
@@ -61,7 +64,11 @@ def _make_catalog(path, tmp, files="B04.jp2,B08.jp2,SCL.jp2,MTD_TL.xml", with_ac
         if with_ac:
             r["area_contribution"] = 100.0
         rows.append(r)
-    fs.write_parquet(str(path), gpd.GeoDataFrame(rows, crs="EPSG:4326"))
+    gdf = gpd.GeoDataFrame(rows, crs="EPSG:4326")
+    # spec 35 §5a: a catalog read from a file must carry a declaration stamp or
+    # `flatten_catalog`/`build_datacube` raise -- these fixtures are S2 L2A.
+    declaration_module.to_attrs(gdf, S2_L2A_DECLARATION)
+    fs.write_parquet(str(path), gdf)
 
 
 def _two_shapes(path):

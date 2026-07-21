@@ -63,6 +63,108 @@ def test_write_read_geoparquet(tmp_path):
     assert back.geometry.iloc[0].wkt == "POINT (0 0)"
 
 
+# --- .attrs footer preservation (spec 35 §2) ----------------------------------
+
+
+def test_write_read_parquet_preserves_attrs(tmp_path):
+    gdf = gpd.GeoDataFrame(
+        {"id": ["t1"]}, geometry=[sg.Point(0, 0)], crs="EPSG:4326",
+    )
+    gdf.attrs["fsd:declaration"] = {"reference_band": "B04"}
+    p = str(tmp_path / "catalog.parquet")
+    fs.write_parquet(p, gdf)
+    back = fs.read_parquet(p)
+    assert back.attrs["fsd:declaration"] == {"reference_band": "B04"}
+
+
+def test_read_parquet_stamps_source_path(tmp_path):
+    gdf = gpd.GeoDataFrame({"id": ["t1"]}, geometry=[sg.Point(0, 0)], crs="EPSG:4326")
+    p = str(tmp_path / "catalog.parquet")
+    fs.write_parquet(p, gdf)
+    back = fs.read_parquet(p)
+    assert back.attrs[fs.SOURCE_PATH_ATTRS_KEY] == p
+
+
+def test_write_parquet_strips_source_path_before_writing(tmp_path):
+    """spec 35 §10: fsd:source_path is read-side bookkeeping -- it must never be
+    serialized into a written artifact (it would leak a local absolute path)."""
+    gdf = gpd.GeoDataFrame({"id": ["t1"]}, geometry=[sg.Point(0, 0)], crs="EPSG:4326")
+    p1 = str(tmp_path / "a.parquet")
+    fs.write_parquet(p1, gdf)
+    read_back = fs.read_parquet(p1)
+    assert fs.SOURCE_PATH_ATTRS_KEY in read_back.attrs
+
+    p2 = str(tmp_path / "b.parquet")
+    fs.write_parquet(p2, read_back)  # write what we just read back
+    fresh = fs.read_parquet(p2)
+    # p2's own read stamps fsd:source_path = p2 (not p1, and it must not have
+    # been serialized as leftover data from read_back.attrs).
+    assert fresh.attrs[fs.SOURCE_PATH_ATTRS_KEY] == p2
+    assert fs.peek_parquet_attrs(p2) == {}  # nothing else got written to the footer
+
+
+def test_write_parquet_empty_attrs_is_the_zero_cost_fast_path(tmp_path):
+    """No PANDAS_ATTRS footer key at all when attrs is empty (spec 35 §8.5) --
+    proves the fast path is byte-for-byte the pre-spec-35 write."""
+    import pyarrow.parquet as pq
+
+    gdf = gpd.GeoDataFrame({"id": ["t1"]}, geometry=[sg.Point(0, 0)], crs="EPSG:4326")
+    p = str(tmp_path / "catalog.parquet")
+    fs.write_parquet(p, gdf)
+    with open(p, "rb") as f:
+        metadata = pq.read_metadata(f)
+    assert fs.PANDAS_ATTRS_FOOTER_KEY not in (metadata.metadata or {})
+
+
+def test_stamped_file_is_still_valid_geoparquet(tmp_path):
+    """spec 35 §8.3: a stamped file reads with stock gpd.read_parquet; the `geo`
+    key survives; geometry/CRS are unaffected by the footer rewrite."""
+    gdf = gpd.GeoDataFrame(
+        {"id": ["t1", "t2"]},
+        geometry=[sg.Point(0, 0), sg.Point(1, 1)],
+        crs="EPSG:4326",
+    )
+    gdf.attrs["fsd:declaration"] = {"reference_band": "B04"}
+    p = str(tmp_path / "catalog.parquet")
+    fs.write_parquet(p, gdf)
+
+    stock_back = gpd.read_parquet(p)  # stock geopandas, not fsd.storage.fs
+    assert stock_back.crs.to_epsg() == 4326
+    assert list(stock_back["id"]) == ["t1", "t2"]
+
+    import pyarrow.parquet as pq
+
+    with open(p, "rb") as f:
+        metadata = pq.read_metadata(f)
+    assert b"geo" in (metadata.metadata or {})
+
+    fsd_back = fs.read_parquet(p)
+    assert fsd_back.crs.to_epsg() == stock_back.crs.to_epsg()
+    assert list(fsd_back.geometry) == list(stock_back.geometry)
+
+
+def test_peek_parquet_attrs_footer_only(tmp_path):
+    gdf = gpd.GeoDataFrame({"id": ["t1"]}, geometry=[sg.Point(0, 0)], crs="EPSG:4326")
+    gdf.attrs["fsd:declaration"] = {"reference_band": "B04"}
+    p = str(tmp_path / "catalog.parquet")
+    fs.write_parquet(p, gdf)
+    assert fs.peek_parquet_attrs(p) == {"fsd:declaration": {"reference_band": "B04"}}
+
+
+def test_peek_parquet_attrs_on_a_non_local_filesystem():
+    """`TileCatalog.append`'s conflict check reads the stamp through
+    `peek_parquet_attrs` on every append — including against an `abfss://`
+    catalog (the `rise` blob ingest). Pin that the footer-only read works on a
+    non-local fsspec filesystem, not just a local path."""
+    import uuid
+
+    gdf = gpd.GeoDataFrame({"id": ["t1"]}, geometry=[sg.Point(0, 0)], crs="EPSG:4326")
+    gdf.attrs["fsd:declaration"] = {"reference_band": "B04"}
+    p = f"memory://{uuid.uuid4()}/catalog.parquet"
+    fs.write_parquet(p, gdf)
+    assert fs.peek_parquet_attrs(p) == {"fsd:declaration": {"reference_band": "B04"}}
+
+
 def test_ls_and_glob(tmp_path):
     import os
 

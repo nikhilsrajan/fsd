@@ -4,17 +4,52 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
-## Ingest/normalization contract: `stage → normalize → put`, declaration-driven builder (spec 34, 2026-07-20)
+## Declaration persistence — the collection declaration survives write→read (spec 35, 2026-07-21)
 
-- **Known gap vs. the spec, logged as TODO #42 (review pass, 2026-07-20):** spec 34 §2a
-  places the **mask spec** in "catalog/collection metadata" and §4 asks that mask classes
-  survive a catalog write→read. As shipped they do not — the collection-level
-  `SourceDeclaration` lives on `GeoDataFrame.attrs["declaration"]`, and GeoParquet does not
-  persist `.attrs`, so a write→read silently falls back to `S2_L2A_DECLARATION`. Per-row
-  `offset`/`nodata` **do** round-trip (real catalog columns) and asset roles are re-derived
-  on every STAC export, so those parts of §4 hold. Harmless while both sources are S2 L2A;
-  a correctness bug for the first non-S2 source. Pinned by
-  `tests/test_catalog.py::test_declaration_does_not_survive_catalog_roundtrip_todo_42`.
+Amends spec 34 §2a/§4, closing TODO #42 (below): the collection-level `SourceDeclaration`
+now survives every catalog write→read hop, not just the per-row `offset`/`nodata` columns.
+
+- **Authority moved from `GeoDataFrame.attrs["declaration"]` (in-memory only, a typed
+  dataclass) to the catalog Parquet file's own footer**, as a JSON dict under
+  `attrs["fsd:declaration"]` (versioned, `fsd_declaration_version`). `fsd.storage.fs`'s
+  `write_parquet`/`read_parquet` gained generic `.attrs` <-> `PANDAS_ATTRS` footer
+  preservation (the upstream pandas/geopandas convention, geopandas PR #3597) — the fix
+  lives at the storage seam so it covers all three write→read hops (ingest catalog,
+  per-cell slice, builder entry) at one choke point, not just `TileCatalog`.
+- **`TileCatalog.append` now stamps a declaration** (`declaration=` kwarg, constructor
+  default); one catalog file = one collection = one declaration — a conflicting append
+  raises. `sources.cdse.download`/`sources.mpc.download` stamp `S2_L2A_DECLARATION` at
+  their existing `catalog.append` call (this is the change that makes hop 1 real — before
+  this, *nothing* in the ingest path declared anything).
+- **Behavior change, intentional (spec 34 `[G4]`'s "fail loudly, don't half-understand"
+  rule applied here too): a catalog read from a file with no declaration stamp now
+  raises** at `flatten_catalog`/`build_datacube`, naming the file and the re-stamp
+  command (`python -m fsd.catalog.restamp_cli <catalog.parquet> --declaration s2_l2a`,
+  a sub-second rewrite of the catalog Parquet alone — the imagery is untouched, nothing
+  is re-downloaded). A **hand-built** `GeoDataFrame` (never through
+  `fs.read_parquet`) keeps the S2 L2A default — an explicit in-process call is treated as
+  an explicit choice, preserving synthetic-test/notebook ergonomics. The four catalogs
+  written before this spec (`demo_e2e`, `mpc_baseline`, the `rise` blob catalog, old
+  per-cell slices) need re-stamping before they build again; folded into TODO #44's
+  re-ingest, not a separate migration.
+- **STAC gets an additive Collection mirror** (`TileCatalog.to_stac`/`write_stac_catalog`):
+  the mask band's classes as the standard `classification:classes` on an `item_assets`
+  entry, plus `fsd:declaration` for the fields STAC has no vocabulary for. Read back via
+  `fsd.catalog.stac.collection_to_declaration`. The Parquet footer stays authoritative —
+  the mirror cannot drift because both are written from the same object.
+- **`GeoDataFrame.attrs["declaration"]` (the typed dataclass key) is retired** — a
+  dataclass must never sit in `.attrs` once any writer JSON-encodes it (verified: a future
+  geopandas raises `TypeError` on write). Use `fsd.catalog.declaration.from_attrs`/
+  `to_attrs` instead of touching `.attrs["declaration"]` directly.
+- Was logged as TODO #42 (review pass, 2026-07-20; corrected 2026-07-21 while writing this
+  spec — the gap was **not** latent on the production path, `run_task` used
+  `S2_L2A_DECLARATION` unconditionally). Pinned meanwhile by
+  `tests/test_catalog.py::test_declaration_does_not_survive_catalog_roundtrip_todo_42`,
+  deleted and replaced by `test_declaration_survives_catalog_roundtrip` + the spec 35 §8
+  test suite (`tests/test_declaration.py`, `tests/test_restamp_cli.py`, and additions to
+  `test_storage.py`/`test_catalog.py`/`test_datacube_builder.py`/`test_catalog_stac.py`).
+
+## Ingest/normalization contract: `stage → normalize → put`, declaration-driven builder (spec 34, 2026-07-20)
 
 - **`apply_boa_offset`'s lossy `clip(DN−1000, 0, 65535)` is dropped from the store path**
   (it was never actually called there — spec 32 only used it at build/read time — but

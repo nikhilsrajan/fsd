@@ -335,14 +335,118 @@ def test_flatten_catalog_offset_and_nodata_default_to_zero_when_column_missing(t
 
 
 def test_flatten_catalog_attaches_declaration():
+    """spec 35 §2a: the resolved declaration is attached as the JSON-able
+    `attrs["fsd:declaration"]`, never the dataclass under a bare `"declaration"`
+    key -- `declaration.from_attrs` is how a caller reads it back typed."""
     gdf = gpd.GeoDataFrame(
         [{"id": "x", "local_folderpath": "/tmp", "timestamp": 0,
           "files": "B04.jp2", "area_contribution": 50.0, "geometry": TILE_BOX}], crs=CRS,
     )
+    from fsd.catalog import declaration as declaration_module
     from fsd.catalog.declaration import S2_L2A_DECLARATION
 
     flat = builder.flatten_catalog(gdf)
-    assert flat.attrs["declaration"] is S2_L2A_DECLARATION
+    assert "declaration" not in flat.attrs
+    assert flat.attrs[declaration_module.ATTRS_KEY] == declaration_module.to_json(S2_L2A_DECLARATION)
+    assert declaration_module.from_attrs(flat) == S2_L2A_DECLARATION
+
+
+# --- declaration persistence, the three hops end to end (spec 35 §8.2) -------
+
+
+def test_declaration_survives_ingest_filter_slice_reread_flatten():
+    """The regression test that actually matters (spec 35 §8.2): a non-S2
+    declaration stamped at ingest -> `TileCatalog.filter` -> `fs.write_parquet`
+    slice -> a *fresh* `fs.read_parquet` (simulating the per-cell task's separate
+    process) -> `flatten_catalog` -> the declaration reaching `build_datacube` is
+    the stamped one, NOT `S2_L2A_DECLARATION`.
+
+    Deliberately non-S2 (`reference_band="B04"`, no B08 anywhere) so a silent
+    fallback to the S2 default cannot pass by coincidence -- an agreement test
+    can't catch a shared error (the black-tile-bug lesson): if `build_datacube`
+    ignored the resolved declaration and used the S2 default's `reference_band=
+    "B08"` instead, `catalog_gdf.loc[catalog_gdf["band"] == "B08"]` would be
+    empty and the merge below would raise, so this test fails loudly rather than
+    passing vacuously.
+    """
+    import tempfile
+
+    from fsd.catalog import declaration as declaration_module
+    from fsd.catalog.catalog import TileCatalog
+    from fsd.storage import fs as fs_module
+
+    ts = pd.Timestamp("2018-06-01", tz="UTC")
+    custom = SourceDeclaration(reference_band="B04", mask_spec=None, mosaic_method="median")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        import os
+
+        tile_path = os.path.join(tmp, "B04.tif")
+        _write_tile(tile_path, np.full((4, 4), 42, dtype=np.uint16))
+
+        geom_4326 = gpd.GeoSeries([TILE_BOX], crs=CRS).to_crs("EPSG:4326").iloc[0]
+        cat_path = os.path.join(tmp, "catalog.parquet")
+        cat = TileCatalog(cat_path, declaration=custom)
+        cat.append([{
+            "id": "tile_t1", "satellite": "s2-like-but-not", "timestamp": ts,
+            "s3url": "s3://x", "local_folderpath": tmp, "files": "B04.tif",
+            "cloud_cover": 0.0, "geometry": geom_4326,
+        }])
+
+        shape_gdf = gpd.GeoDataFrame({"geometry": [TILE_BOX], "id": ["cell1"]}, crs=CRS)
+        subset = cat.filter(shape_gdf, datetime.datetime(2018, 5, 31), datetime.datetime(2018, 6, 2))
+        assert len(subset) == 1
+
+        slice_path = os.path.join(tmp, "slice.parquet")
+        fs_module.write_parquet(slice_path, subset)  # hop 2 (setup's write)
+
+        fresh_subset = fs_module.read_parquet(slice_path)  # hop 2's reader, "a separate process"
+        flat = builder.flatten_catalog(fresh_subset)  # hop 3
+
+        resolved = declaration_module.from_attrs(flat)
+        assert resolved == custom
+        assert resolved != builder.S2_L2A_DECLARATION
+
+        out = os.path.join(tmp, "cube")
+        builder.build_datacube(
+            catalog_subset=flat, shape_gdf=shape_gdf,
+            startdate=datetime.datetime(2018, 5, 31), enddate=datetime.datetime(2018, 6, 2),
+            bands=["B04"], export_folderpath=out, if_missing_files=None,
+        )
+        md = fs.load_npy(os.path.join(out, "metadata.pickle.npy"), allow_pickle=True)[()]
+        assert md["bands"] == ["B04"]
+
+
+def test_unstamped_file_read_catalog_raises_at_flatten(tmp_path):
+    """spec 35 §5a: a catalog gdf that came from a file (`fs.read_parquet` stamps
+    `attrs[fs.SOURCE_PATH_ATTRS_KEY]`) with no declaration stamp is an error, not
+    a silent S2 fallback."""
+    from fsd.storage import fs as fs_module
+
+    gdf = gpd.GeoDataFrame(
+        [{"id": "x", "local_folderpath": "/tmp", "timestamp": 0,
+          "files": "B04.jp2", "area_contribution": 50.0, "geometry": TILE_BOX}], crs=CRS,
+    )
+    p = str(tmp_path / "unstamped.parquet")
+    fs_module.write_parquet(p, gdf)  # no attrs -> no stamp
+    from_file = fs_module.read_parquet(p)
+
+    with pytest.raises(ValueError, match="restamp_cli"):
+        builder.flatten_catalog(from_file)
+
+
+def test_hand_built_gdf_keeps_s2_default_no_raise():
+    """spec 35 §5a: a hand-built GeoDataFrame (never through fs.read_parquet, so
+    no fsd:source_path) keeps the S2 default -- an explicit in-process call is
+    an explicit choice, and this preserves synthetic-test/notebook ergonomics."""
+    gdf = gpd.GeoDataFrame(
+        [{"id": "x", "local_folderpath": "/tmp", "timestamp": 0,
+          "files": "B04.jp2", "area_contribution": 50.0, "geometry": TILE_BOX}], crs=CRS,
+    )
+    flat = builder.flatten_catalog(gdf)
+    from fsd.catalog import declaration as declaration_module
+
+    assert declaration_module.from_attrs(flat) == builder.S2_L2A_DECLARATION
 
 
 def test_get_dst_crs_picks_max_mean_area():

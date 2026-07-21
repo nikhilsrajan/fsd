@@ -20,12 +20,15 @@ import re
 
 import pystac
 import shapely.geometry
+from pystac.extensions.classification import Classification, ClassificationExtension
 from pystac.extensions.eo import EOExtension
 from pystac.extensions.projection import ProjectionExtension
 from pystac.extensions.raster import RasterBand, RasterExtension
 from pystac.stac_io import DefaultStacIO
 
 from fsd import config
+from fsd.catalog import declaration as declaration_module
+from fsd.catalog.declaration import SourceDeclaration
 from fsd.raster.images import _is_reflectance
 from fsd.storage import fs
 
@@ -388,6 +391,54 @@ def items_to_rows(items: list[pystac.Item]):
     return gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
 
 
+# --- declaration mirror on the STAC Collection (spec 35 §7) ------------------
+#
+# Additive, not authoritative: if the Collection and the catalog Parquet footer
+# (spec 35 §1) ever disagree, the footer wins. Both are written from the same
+# `SourceDeclaration` object (here), so they cannot drift in the write path.
+
+
+def _stamp_collection_declaration(
+    collection: pystac.Collection, decl: SourceDeclaration,
+) -> None:
+    """Mirror `decl` onto `collection` (spec 35 §7): the mask band's classes as
+    the STAC Classification extension's `classification:classes` on an
+    `item_assets` entry (standard vocabulary, legible to any STAC-aware tool);
+    the remaining fields STAC has no vocabulary for (`reference_band`,
+    `mosaic_method`, `mask_keep`, `native_grid`) as `fsd:declaration`, the same
+    JSON `fsd.catalog.declaration.to_json` writes to the Parquet footer.
+    """
+    collection.extra_fields[declaration_module.ATTRS_KEY] = declaration_module.to_json(decl)
+
+    if decl.mask_spec is not None and decl.mask_spec.classes:
+        # `collection.item_assets` is the top-level property (the ItemAssetsExtension
+        # wrapper is deprecated in pystac >= 1.10 in favor of it).
+        band = decl.mask_spec.band
+        asset_def = collection.item_assets.get(band) or pystac.ItemAssetDefinition.create(
+            title=band, description=None, media_type=None, roles=["data", "mask"],
+        )
+        # Assign into the collection FIRST -- ClassificationExtension.ext(...,
+        # add_if_missing=True) needs asset_def.owner set, which only happens on
+        # assignment into item_assets.
+        collection.item_assets[band] = asset_def
+        ClassificationExtension.ext(asset_def, add_if_missing=True).classes = [
+            Classification.create(value=v, name=str(v)) for v in decl.mask_spec.classes
+        ]
+
+
+def collection_to_declaration(collection: pystac.Collection) -> SourceDeclaration | None:
+    """Inverse of `_stamp_collection_declaration`: read the `fsd:declaration`
+    mirror back off a Collection, or `None` if it carries no stamp (spec 35 §7).
+    Reads the `fsd:declaration` JSON (the footer's authoritative representation,
+    §1), not the `classification:classes` mirror -- the two are written from one
+    source so they cannot drift, but the JSON is the complete field set.
+    """
+    raw = collection.extra_fields.get(declaration_module.ATTRS_KEY)
+    if raw is None:
+        return None
+    return declaration_module.from_json(raw)
+
+
 # --- serialization -----------------------------------------------------------
 
 def write_stac_catalog(
@@ -397,8 +448,14 @@ def write_stac_catalog(
     catalog_id: str = "fsd",
     collection_id: str | None = None,
     description: str = "fsd tile catalog (STAC export).",
+    declaration: SourceDeclaration | None = None,
 ) -> str:
     """Write a static, self-contained STAC catalog (catalog.json + collection + item JSONs).
+
+    `declaration` (spec 35 §7), if given, is mirrored onto the Collection --
+    additive, not authoritative (the catalog Parquet footer wins on disagreement,
+    spec 35 §1). `None` (the default) writes no mirror, e.g. for a hand-built
+    item list with no catalog behind it.
 
     Returns the catalog.json path. Written through `fsd.storage`.
     """
@@ -419,6 +476,8 @@ def write_stac_catalog(
         extent=pystac.Extent(spatial=spatial, temporal=temporal),
     )
     collection.add_items(items)
+    if declaration is not None:
+        _stamp_collection_declaration(collection, declaration)
 
     catalog = pystac.Catalog(id=catalog_id, description=description)
     catalog.add_child(collection)

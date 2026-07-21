@@ -1,9 +1,11 @@
-"""Source -> builder declaration contract (spec 34 §2a).
+"""Source -> builder declaration contract (spec 34 §2a, persisted by spec 35).
 
 `build_datacube` (fsd.datacube.builder) is a generic engine: it has no
 `if source == "s2"` anywhere. Instead it reads what it needs from a
 `SourceDeclaration`, attached to the flattened, band-exploded catalog it is
-given (`GeoDataFrame.attrs["declaration"]`, set by `flatten_catalog`) or
+given as the JSON-able `GeoDataFrame.attrs["fsd:declaration"]` (`ATTRS_KEY`,
+set by `flatten_catalog` and restored from the catalog Parquet's footer by
+`fsd.storage.fs.read_parquet` — never the dataclass itself, spec 35 §2a), or
 passed explicitly. A new source (ERA5/CHIRPS/S1/...) that wants a *different*
 mask/reference/mosaic behavior supplies its own `SourceDeclaration` — no
 change to `builder.py` is required. See `fsd/docs/adding-a-source.md`.
@@ -27,7 +29,26 @@ __all__ = [
     "MaskSpec",
     "SourceDeclaration",
     "S2_L2A_DECLARATION",
+    "FSD_DECLARATION_VERSION",
+    "ATTRS_KEY",
+    "to_json",
+    "from_json",
+    "to_attrs",
+    "from_attrs",
 ]
+
+# Persistence (spec 35). `ATTRS_KEY` is the key under which the plain-dict JSON
+# form of a `SourceDeclaration` lives inside `GeoDataFrame.attrs` (never the
+# dataclass itself -- spec 35 §2a); `fsd.storage.fs` serializes that whole
+# `.attrs` dict to the Parquet footer's `PANDAS_ATTRS` key.
+FSD_DECLARATION_VERSION = 1
+ATTRS_KEY = "fsd:declaration"
+
+_DECLARATION_FIELDS = (
+    "reference_band", "native_grid", "mask_spec", "mask_keep", "nodata",
+    "mosaic_method",
+)
+_MASK_SPEC_FIELDS = ("band", "mask_type", "classes")
 
 # The only implemented `MaskSpec.mask_type` (spec 34 [G3]): mask wherever the
 # mask band's pixel value is one of `classes` (covers S2 SCL). `bitmask`
@@ -112,3 +133,123 @@ S2_L2A_DECLARATION = SourceDeclaration(
     nodata=config.NODATA,
     mosaic_method="median",
 )
+
+
+# --- serialization (spec 35 §2a/§3) -------------------------------------------
+#
+# Pure functions, no I/O. `to_json`/`from_json` convert a `SourceDeclaration` to
+# and from a plain JSON-able dict (field-for-field, `fsd_declaration_version`
+# required); `to_attrs`/`from_attrs` place that dict under `ATTRS_KEY` on a
+# GeoDataFrame's `.attrs` -- the *typed* representation never goes in `.attrs`
+# directly (a dataclass there is a future crash once a JSON-encoding writer
+# touches it, see §2a).
+
+
+def _mask_spec_to_json(mask_spec: MaskSpec | None) -> dict | None:
+    if mask_spec is None:
+        return None
+    return {
+        "band": mask_spec.band,
+        "mask_type": mask_spec.mask_type,
+        "classes": list(mask_spec.classes),
+    }
+
+
+def _mask_spec_from_json(raw: dict | None) -> MaskSpec | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"declaration.mask_spec must be a JSON object or null, got "
+            f"{type(raw).__name__}: {raw!r}."
+        )
+    unknown = set(raw) - set(_MASK_SPEC_FIELDS)
+    if unknown:
+        raise ValueError(
+            f"declaration.mask_spec has unknown field(s) {sorted(unknown)}; "
+            f"known fields are {_MASK_SPEC_FIELDS}."
+        )
+    if "band" not in raw:
+        raise ValueError("declaration.mask_spec is missing required field 'band'.")
+    kwargs: dict = {"band": raw["band"]}
+    if "mask_type" in raw:
+        kwargs["mask_type"] = raw["mask_type"]
+    if "classes" in raw:
+        kwargs["classes"] = tuple(raw["classes"])
+    return MaskSpec(**kwargs)
+
+
+def to_json(decl: SourceDeclaration) -> dict:
+    """`SourceDeclaration` -> a plain JSON-able dict, field-for-field (spec 35 §3).
+
+    Tuples (`MaskSpec.classes`) become JSON arrays; `from_json` rehydrates them
+    back into tuples, keeping the dataclass frozen/hashable.
+    """
+    return {
+        "fsd_declaration_version": FSD_DECLARATION_VERSION,
+        "reference_band": decl.reference_band,
+        "native_grid": decl.native_grid,
+        "mask_spec": _mask_spec_to_json(decl.mask_spec),
+        "mask_keep": decl.mask_keep,
+        "nodata": decl.nodata,
+        "mosaic_method": decl.mosaic_method,
+    }
+
+
+def from_json(raw: dict) -> SourceDeclaration:
+    """Inverse of `to_json`. Raises on a version newer than this fsd supports, an
+    unknown field at a known version, or a `mask_spec` object missing `band`
+    (spec 35 §3, the `[G4]` "fail loudly, don't half-understand" rule) -- a
+    missing *optional* field takes the dataclass default (forward-compat for a
+    future v2)."""
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"declaration JSON must be a JSON object, got {type(raw).__name__}: {raw!r}."
+        )
+    version = raw.get("fsd_declaration_version")
+    if version is None:
+        raise ValueError(
+            "declaration JSON is missing required field 'fsd_declaration_version'."
+        )
+    if version > FSD_DECLARATION_VERSION:
+        raise ValueError(
+            f"declaration JSON was written by a newer fsd (version {version}) than "
+            f"this one supports (version {FSD_DECLARATION_VERSION}); upgrade fsd "
+            "before reading this catalog."
+        )
+    unknown = set(raw) - {"fsd_declaration_version", *_DECLARATION_FIELDS}
+    if unknown:
+        raise ValueError(
+            f"declaration JSON (version {version}) has unknown field(s) "
+            f"{sorted(unknown)}; known fields are {_DECLARATION_FIELDS}."
+        )
+
+    kwargs: dict = {}
+    if "reference_band" in raw:
+        kwargs["reference_band"] = raw["reference_band"]
+    if "native_grid" in raw:
+        kwargs["native_grid"] = raw["native_grid"]
+    if "mask_spec" in raw:
+        kwargs["mask_spec"] = _mask_spec_from_json(raw["mask_spec"])
+    if "mask_keep" in raw:
+        kwargs["mask_keep"] = raw["mask_keep"]
+    if "nodata" in raw:
+        kwargs["nodata"] = raw["nodata"]
+    if "mosaic_method" in raw:
+        kwargs["mosaic_method"] = raw["mosaic_method"]
+    return SourceDeclaration(**kwargs)
+
+
+def to_attrs(gdf, decl: SourceDeclaration) -> None:
+    """Stamp `decl` onto `gdf.attrs[ATTRS_KEY]` as a plain JSON-able dict (never
+    the dataclass itself, spec 35 §2a). Mutates `gdf.attrs` in place."""
+    gdf.attrs[ATTRS_KEY] = to_json(decl)
+
+
+def from_attrs(gdf) -> SourceDeclaration | None:
+    """Read the stamped declaration back off `gdf.attrs[ATTRS_KEY]`, or `None`
+    if `gdf` carries no stamp."""
+    raw = gdf.attrs.get(ATTRS_KEY)
+    if raw is None:
+        return None
+    return from_json(raw)

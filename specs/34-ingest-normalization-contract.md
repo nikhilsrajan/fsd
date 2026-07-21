@@ -8,7 +8,12 @@
 > baseline in `processing:version`, not `s2:processing_baseline`; `9eccc44`) and the **black-tile bug**
 > (viewer tag stamped the offset in DN units alongside `scale=1/10000`; `c2bf1f1`). `pytest -q` **294
 > passed / 3 skipped**, `ruff` clean. TODO #38 done. **Follow-ups (do NOT block closure): TODO #42**
-> (collection declaration doesn't survive the catalog round-trip — needs a spec amendment), **#43**
+> (collection declaration doesn't survive the catalog round-trip — **amended and closed by
+> `specs/35-declaration-persistence.md`, implemented 2026-07-21 (Sonnet@medium)**: it amends this
+> spec's §2a "where it lives" column (the mask spec / reference band / mosaic method now live in
+> the catalog Parquet's footer, `attrs["fsd:declaration"]`, not just in-memory) and makes §4's
+> round-trip claim true for the collection-level fields too — see spec 35 for the full design;
+> `pytest -q` **329 passed / 3 skipped** post-implementation), **#43**
 > (CDSE STAC discovery has no retry), **#44** (the `rise` blob COGs predate `c2bf1f1` → re-ingest before
 > serving). Runbook 34b was rewritten self-contained; `demos/mini_mpc/README.md` generalized.
 > Promotes **TODO #38**

@@ -7,6 +7,7 @@ Covers: append -> read round-trip, `files` union on re-append, and `filter`
 import datetime
 
 import geopandas as gpd
+import pytest
 import shapely.geometry as sg
 
 from fsd import config
@@ -125,6 +126,54 @@ def test_filter_inclusive_bounds(tmp_path):
     assert set(out["id"]) == {"start", "end"}
 
 
+# --- declaration stamping / conflict rule (spec 35 §4/§8.7) -------------------
+
+
+def test_append_stamps_declaration_on_new_catalog(tmp_path):
+    from fsd.catalog.declaration import S2_L2A_DECLARATION
+
+    cat = TileCatalog(str(tmp_path / "catalog.parquet"))
+    cat.append(
+        [_row("t1", "2024-08-01T10:00:00Z", "B02.jp2", _box(0, 0, 1, 1))],
+        declaration=S2_L2A_DECLARATION,
+    )
+    assert cat.declaration == S2_L2A_DECLARATION
+
+
+def test_constructor_declaration_is_appends_default(tmp_path):
+    from fsd.catalog.declaration import S2_L2A_DECLARATION
+
+    cat = TileCatalog(str(tmp_path / "catalog.parquet"), declaration=S2_L2A_DECLARATION)
+    cat.append([_row("t1", "2024-08-01T10:00:00Z", "B02.jp2", _box(0, 0, 1, 1))])
+    assert cat.declaration == S2_L2A_DECLARATION
+
+
+def test_append_conflicting_declaration_raises(tmp_path):
+    from fsd.catalog.declaration import MaskSpec, SourceDeclaration
+
+    a = SourceDeclaration(reference_band="B04")
+    b = SourceDeclaration(reference_band="B08", mask_spec=MaskSpec(band="SCL", classes=(1,)))
+
+    cat = TileCatalog(str(tmp_path / "catalog.parquet"))
+    cat.append([_row("t1", "2024-08-01T10:00:00Z", "B02.jp2", _box(0, 0, 1, 1))], declaration=a)
+    with pytest.raises(ValueError, match="declaration conflict"):
+        cat.append([_row("t2", "2024-08-02T10:00:00Z", "B02.jp2", _box(1, 1, 2, 2))], declaration=b)
+    # the original stamp is untouched by the rejected append.
+    assert cat.declaration == a
+
+
+def test_append_declaration_none_preserves_existing_stamp(tmp_path):
+    from fsd.catalog.declaration import SourceDeclaration
+
+    a = SourceDeclaration(reference_band="B04")
+    cat = TileCatalog(str(tmp_path / "catalog.parquet"))
+    cat.append([_row("t1", "2024-08-01T10:00:00Z", "B02.jp2", _box(0, 0, 1, 1))], declaration=a)
+    # an fsd-agnostic top-up (no declaration= given) must not erase the stamp.
+    cat.append([_row("t2", "2024-08-02T10:00:00Z", "B02.jp2", _box(1, 1, 2, 2))])
+    assert cat.declaration == a
+    assert len(cat.read()) == 2
+
+
 def test_append_empty_is_noop(tmp_path):
     cat = TileCatalog(str(tmp_path / "catalog.parquet"))
     cat.append([])
@@ -179,51 +228,31 @@ def test_read_does_not_backfill_a_legacy_catalog_missing_offset_nodata(tmp_path)
     assert "nodata" not in read_back.columns
 
 
-def test_declaration_does_not_survive_catalog_roundtrip_todo_42(tmp_path):
-    """spec 34 §4 round-trip — PINS A KNOWN GAP (TODO #42), not desired behavior.
-
-    §4 asks that "roles, mask classes, nodata, offset/scale survive write->read of
-    the catalog + STAC export". As shipped, the split is:
-
-    * **per-row** fields DO round-trip — `offset`/`nodata` are real catalog columns
-      (see `test_offset_and_nodata_round_trip`), and asset **roles** are re-derived
-      from the band name by `fsd.catalog.stac` on every export, so they need no
-      persistence.
-    * the **collection-level** `SourceDeclaration` (mask band/type/**classes**,
-      reference band, mosaic method) rides on `GeoDataFrame.attrs["declaration"]`,
-      and pandas/GeoParquet does **not** persist `.attrs`. It is silently dropped,
-      and `build_datacube` then falls back to `S2_L2A_DECLARATION`.
-
-    Harmless today (both shipped sources ARE S2 L2A, so the fallback happens to be
-    right) and **silently wrong for the first non-S2 source** — which is the exact
-    failure mode spec 34 exists to prevent. This test fails loudly if the gap is
-    closed, forcing TODO #42 to be resolved and the spec amended rather than the
-    behavior drifting either way unnoticed.
-    """
+def test_declaration_survives_catalog_roundtrip(tmp_path):
+    """spec 35 §8.1 — footer round-trip: a non-S2 declaration stamped through
+    `TileCatalog.append` survives write->read byte-identical, tuples still
+    tuples (replaces the deleted TODO-#42 pin, which this closes)."""
     import geopandas as gpd
 
     from fsd.catalog.declaration import MaskSpec, SourceDeclaration
 
-    cat = TileCatalog(str(tmp_path / "catalog.parquet"))
+    custom = SourceDeclaration(
+        reference_band="B04",
+        mask_spec=MaskSpec(band="QA", classes=(1, 2, 3)),
+        mask_keep=True,
+        mosaic_method="median",
+    )
+    cat = TileCatalog(str(tmp_path / "catalog.parquet"), declaration=custom)
     cat.append([
         _row("t1", "2024-08-01T10:00:00Z", "B04.tif", _box(0, 0, 1, 1),
              offset=-1000, nodata=7),
     ])
-
-    custom = SourceDeclaration(
-        reference_band="B04",
-        mask_spec=MaskSpec(band="QA", classes=(1, 2, 3)),
-        mosaic_method="median",
-    )
-    gdf = cat.read()
-    gdf.attrs["declaration"] = custom
-    from fsd.storage import fs
-    fs.write_parquet(cat.filepath, gdf)
 
     back = cat.read()
     assert isinstance(back, gpd.GeoDataFrame)
     # per-row declarations survive...
     assert back["offset"].iloc[0] == -1000
     assert back["nodata"].iloc[0] == 7
-    # ...the collection-level one does NOT (TODO #42).
-    assert "declaration" not in back.attrs
+    # ...and now so does the collection-level one (spec 35, closing TODO #42).
+    assert cat.declaration == custom
+    assert isinstance(cat.declaration.mask_spec.classes, tuple)

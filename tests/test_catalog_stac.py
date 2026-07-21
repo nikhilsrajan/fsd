@@ -163,6 +163,85 @@ def test_tilecatalog_to_stac(tmp_path):
     assert len(list(cat.get_items(recursive=True))) == 2
 
 
+# --- declaration mirror on the Collection (spec 35 §7/§8.10) -----------------
+
+
+def test_write_stac_catalog_mirrors_declaration_on_collection(tmp_path):
+    from fsd.catalog.declaration import MaskSpec, SourceDeclaration
+
+    decl = SourceDeclaration(
+        reference_band="B08", mask_spec=MaskSpec(band="SCL", classes=(3, 8, 9)),
+    )
+    items = stac.tile_catalog_to_items(_catalog_gdf())
+    dst = str(tmp_path / "stac")
+    catalog_json = stac.write_stac_catalog(items, dst, declaration=decl)
+
+    cat = pystac.Catalog.from_file(catalog_json)
+    collection = next(cat.get_children())
+    assert isinstance(collection, pystac.Collection)
+
+    from fsd.catalog import declaration as declaration_module
+
+    assert collection.extra_fields[declaration_module.ATTRS_KEY] == declaration_module.to_json(decl)
+
+    from pystac.extensions.classification import ClassificationExtension
+
+    scl_asset = collection.item_assets["SCL"]
+    classes = ClassificationExtension.ext(scl_asset).classes
+    assert sorted(c.value for c in classes) == [3, 8, 9]
+
+
+def test_collection_to_declaration_round_trips():
+    from fsd.catalog.declaration import MaskSpec, SourceDeclaration
+    from fsd.catalog.stac import collection_to_declaration
+
+    decl = SourceDeclaration(
+        reference_band="B04", mask_spec=MaskSpec(band="QA", classes=(1, 2)),
+        mosaic_method="median",
+    )
+    collection = pystac.Collection(
+        id="x", description="x",
+        extent=pystac.Extent(
+            spatial=pystac.SpatialExtent([[0, 0, 1, 1]]),
+            temporal=pystac.TemporalExtent([[None, None]]),
+        ),
+    )
+    stac._stamp_collection_declaration(collection, decl)
+    assert collection_to_declaration(collection) == decl
+
+
+def test_collection_to_declaration_no_stamp_returns_none():
+    from fsd.catalog.stac import collection_to_declaration
+
+    collection = pystac.Collection(
+        id="x", description="x",
+        extent=pystac.Extent(
+            spatial=pystac.SpatialExtent([[0, 0, 1, 1]]),
+            temporal=pystac.TemporalExtent([[None, None]]),
+        ),
+    )
+    assert collection_to_declaration(collection) is None
+
+
+def test_tilecatalog_to_stac_mirrors_the_catalogs_stamp(tmp_path):
+    from fsd.catalog import declaration as declaration_module
+    from fsd.catalog.declaration import SourceDeclaration
+    from fsd.catalog.stac import collection_to_declaration
+
+    decl = SourceDeclaration(reference_band="B04")
+    cat_path = str(tmp_path / "catalog.parquet")
+    gdf = _catalog_gdf()
+    declaration_module.to_attrs(gdf, decl)
+    from fsd.storage import fs
+
+    fs.write_parquet(cat_path, gdf)
+
+    catalog_json = TileCatalog(cat_path).to_stac(str(tmp_path / "stac"))
+    cat = pystac.Catalog.from_file(catalog_json)
+    collection = next(cat.get_children())
+    assert collection_to_declaration(collection) == decl
+
+
 # --- cog_outputs_to_items geometry (spec 28) ---------------------------------
 
 def _make_output_cog(folder, *, epsg=32637):

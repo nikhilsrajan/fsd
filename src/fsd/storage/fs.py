@@ -21,6 +21,7 @@ for CDSE S3:
 from __future__ import annotations
 
 import io
+import json
 import os
 import shutil
 from typing import Any
@@ -42,10 +43,24 @@ __all__ = [
     "load_npy",
     "read_parquet",
     "write_parquet",
+    "peek_parquet_attrs",
     "transfer",
     "to_vsi",
     "is_local",
+    "SOURCE_PATH_ATTRS_KEY",
 ]
+
+# spec 35 §2/§5a. `PANDAS_ATTRS_FOOTER_KEY` is the upstream pandas/geopandas
+# convention (pandas issue #54321, geopandas PR #3597) that `.attrs` is
+# JSON-encoded under -- reusing it means fsd converges with a future geopandas
+# release instead of forking a second convention (spec 35 §2).
+PANDAS_ATTRS_FOOTER_KEY = b"PANDAS_ATTRS"
+
+# `read_parquet` stamps this onto the returned `.attrs` so downstream code can
+# tell "read from a file" apart from "hand-built in this process" (spec 35 §5a).
+# It is bookkeeping, not data: `write_parquet` always strips it before writing
+# (spec 35 §10), so it never leaks an absolute local path into a written artifact.
+SOURCE_PATH_ATTRS_KEY = "fsd:source_path"
 
 
 # --- internal helpers --------------------------------------------------------
@@ -164,23 +179,86 @@ def load_npy(path: str, allow_pickle: bool = False, **storage_options: Any):
         return np.load(io.BytesIO(f.read()), allow_pickle=allow_pickle)
 
 
+def _decode_pandas_attrs(footer_metadata: dict | None) -> dict:
+    """`pyarrow` schema/file metadata -> the restored `.attrs` dict, or `{}` if
+    there is no `PANDAS_ATTRS` footer key (spec 35 §2)."""
+    if not footer_metadata:
+        return {}
+    raw = footer_metadata.get(PANDAS_ATTRS_FOOTER_KEY)
+    if raw is None:
+        return {}
+    return json.loads(raw.decode("utf-8"))
+
+
 def read_parquet(path: str, **storage_options: Any):
-    """Read a (Geo)Parquet file -> GeoDataFrame."""
+    """Read a (Geo)Parquet file -> GeoDataFrame.
+
+    Restores `.attrs` from the Parquet footer's `PANDAS_ATTRS` key if present
+    (spec 35 §2 -- geopandas' own writer/reader does not do this, unlike
+    pandas'), and always stamps `attrs[SOURCE_PATH_ATTRS_KEY] = path` so
+    downstream code can tell this GeoDataFrame came from a file (spec 35 §5a).
+    """
     import geopandas as gpd
 
     fs, p = _fs_and_path(path, storage_options)
     with fs.open(p, "rb") as f:
-        return gpd.read_parquet(io.BytesIO(f.read()))
+        raw = f.read()
+    gdf = gpd.read_parquet(io.BytesIO(raw))
+    import pyarrow.parquet as pq
+
+    attrs = _decode_pandas_attrs(pq.read_metadata(io.BytesIO(raw)).metadata)
+    if attrs:
+        gdf.attrs.update(attrs)
+    gdf.attrs[SOURCE_PATH_ATTRS_KEY] = path
+    return gdf
 
 
 def write_parquet(path: str, df, **storage_options: Any) -> None:
-    """Write a (Geo)DataFrame to `path` as (Geo)Parquet."""
+    """Write a (Geo)DataFrame to `path` as (Geo)Parquet.
+
+    If `df.attrs` is non-empty (minus `SOURCE_PATH_ATTRS_KEY`, always stripped
+    -- spec 35 §10, it is read-side bookkeeping that would otherwise leak a
+    local path into a written artifact), the attrs are JSON-encoded into the
+    footer under `PANDAS_ATTRS` (spec 35 §2): `to_parquet` -> `pq.read_table` ->
+    `replace_schema_metadata` -> `pq.write_table`. Empty attrs skip this
+    entirely -- byte-for-byte today's write path at today's cost.
+
+    Note: the attrs-present path re-encodes the table through pyarrow, so
+    row-group layout/compression follow pyarrow's defaults rather than
+    necessarily being byte-identical to plain `to_parquet` output -- harmless
+    for catalog-sized data (KB-MB), but don't route a large dataframe through
+    this expecting zero extra cost (spec 35 §10).
+    """
     fs, p = _fs_and_path(path, storage_options)
     _ensure_parent(fs, p)
     buf = io.BytesIO()
     df.to_parquet(buf)
+
+    attrs = {k: v for k, v in df.attrs.items() if k != SOURCE_PATH_ATTRS_KEY}
+    if attrs:
+        import pyarrow.parquet as pq
+
+        buf.seek(0)
+        table = pq.read_table(buf)
+        metadata = dict(table.schema.metadata or {})
+        metadata[PANDAS_ATTRS_FOOTER_KEY] = json.dumps(attrs).encode("utf-8")
+        buf = io.BytesIO()
+        pq.write_table(table.replace_schema_metadata(metadata), buf)
+
     with fs.open(p, "wb") as f:
         f.write(buf.getvalue())
+
+
+def peek_parquet_attrs(path: str, **storage_options: Any) -> dict:
+    """Read only the Parquet footer -- no row group -- and return the restored
+    `.attrs` dict, or `{}` if there is none (spec 35 §1/§6: cheap inspection of
+    the declaration stamp, e.g. for `fsd-catalog-inspect`)."""
+    import pyarrow.parquet as pq
+
+    fs, p = _fs_and_path(path, storage_options)
+    with fs.open(p, "rb") as f:
+        metadata = pq.read_metadata(f)
+    return _decode_pandas_attrs(metadata.metadata)
 
 
 # --- first-class S3-compatible transport -------------------------------------

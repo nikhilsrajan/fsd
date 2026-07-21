@@ -18,6 +18,8 @@ import geopandas as gpd
 import pandas as pd
 import shapely
 
+from fsd.catalog import declaration as declaration_module
+from fsd.catalog.declaration import SourceDeclaration
 from fsd.storage import fs
 
 # On-disk column order (spec 02). geometry is always last for GeoParquet.
@@ -47,17 +49,46 @@ def _union_files(*files_values: str) -> str:
 
 
 class TileCatalog:
-    def __init__(self, filepath: str):
+    def __init__(self, filepath: str, declaration: SourceDeclaration | None = None):
         self.filepath = filepath
+        # `append`'s default when its own `declaration=` kwarg is None (spec 35 §4).
+        self._declaration_default = declaration
 
-    def append(self, rows: list[dict]) -> None:
+    def _existing_stamp(self) -> SourceDeclaration | None:
+        """The declaration actually stamped on the on-disk file, or `None` if the
+        file doesn't exist or carries no stamp (footer-only, cheap)."""
+        if not fs.exists(self.filepath):
+            return None
+        raw = fs.peek_parquet_attrs(self.filepath).get(declaration_module.ATTRS_KEY)
+        return declaration_module.from_json(raw) if raw is not None else None
+
+    @property
+    def declaration(self) -> SourceDeclaration | None:
+        """The declaration a build against this catalog would resolve to right
+        now: the on-disk stamp if the file exists, else the constructor default
+        (spec 35 §4)."""
+        if fs.exists(self.filepath):
+            return self._existing_stamp()
+        return self._declaration_default
+
+    def append(self, rows: list[dict], declaration: SourceDeclaration | None = None) -> None:
         """Upsert by id; union `files` for an existing tile (don't overwrite).
 
         A re-download of more bands extends the recorded `files` list rather than
         replacing it; all other columns take the newest value.
+
+        `declaration` (spec 35 §4) stamps the collection-level `SourceDeclaration`
+        on this catalog file (constructor's `declaration=` is the default when this
+        kwarg is `None`). One catalog file = one collection = one declaration:
+        appending a declaration that differs from the one already stamped on an
+        existing catalog raises `ValueError`; appending with `declaration=None` to
+        an already-stamped catalog preserves the existing stamp (an fsd-agnostic
+        top-up cannot erase it).
         """
         if not rows:
             return
+
+        effective = declaration if declaration is not None else self._declaration_default
 
         new = gpd.GeoDataFrame(rows, crs=CRS)
         # Normalize timestamp to tz-aware UTC for a stable on-disk dtype.
@@ -73,9 +104,19 @@ class TileCatalog:
             new["nodata"] = 0
 
         if fs.exists(self.filepath):
+            existing_stamp = self._existing_stamp()
+            if effective is not None and existing_stamp is not None and effective != existing_stamp:
+                raise ValueError(
+                    f"TileCatalog.append: declaration conflict at {self.filepath!r} -- "
+                    f"existing stamp {existing_stamp!r} != new {effective!r}. One "
+                    "catalog file is one collection with one declaration; write the "
+                    "conflicting rows to a different catalog file instead."
+                )
+            stamp = effective if effective is not None else existing_stamp
             existing = self.read()
             combined = pd.concat([existing, new], ignore_index=True)
         else:
+            stamp = effective
             combined = new
 
         # Union `files` across rows sharing an id (oldest..newest order).
@@ -90,6 +131,8 @@ class TileCatalog:
         out = deduped.reset_index()
 
         out = gpd.GeoDataFrame(out[COLUMNS], geometry="geometry", crs=CRS)
+        if stamp is not None:
+            declaration_module.to_attrs(out, stamp)
         fs.write_parquet(self.filepath, out)
 
     def read(self) -> gpd.GeoDataFrame:
@@ -115,7 +158,7 @@ class TileCatalog:
         from fsd.catalog import stac
 
         items = stac.tile_catalog_to_items(self.read(), **kwargs)
-        return stac.write_stac_catalog(items, dst_folderpath)
+        return stac.write_stac_catalog(items, dst_folderpath, declaration=self.declaration)
 
     def filter(
         self,

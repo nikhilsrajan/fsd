@@ -31,6 +31,7 @@ import pandas as pd
 import shapely
 
 from fsd import config
+from fsd.catalog.declaration import S2_L2A_DECLARATION
 from fsd.raster.cog import stamp_or_reencode
 from fsd.raster.images import _is_reflectance
 from fsd.sources._s2_radiometry import offset_for_item
@@ -278,7 +279,9 @@ def _append_downloaded(catalog, tile_meta: dict, results: list[tuple]) -> int:
             "geometry": r["geometry"],
         })
     if rows:
-        catalog.append(rows)
+        # spec 35 §4: MPC is also S2 L2A -- stamp the collection-level declaration
+        # at the one place this source appends to the catalog.
+        catalog.append(rows, declaration=S2_L2A_DECLARATION)
     return sum(len(f) for f in files_by_tile.values())
 
 

@@ -4,6 +4,134 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-21_
 
+## ✅ SPEC 35 **REVIEWED + ACCEPTED** (2026-07-21, Opus@high). No defects found in the implementation; 4 small corrections applied in place, 1 design gap logged as TODO #45. `pytest -q` **331 passed / 3 skipped**, `ruff` clean. **→ NEXT: user decides — commit spec 35, or move on** (nothing committed; tree still dirty by design).
+
+- **Verified against the spec, not just re-read.** §9's 10 deliverables all land; §8's 11 test
+  requirements all have a real test. **Independently re-derived the two claims the design rests
+  on** (rather than trusting the passing suite): (1) `pd.concat`'s attrs rule is *all inputs must
+  agree* — `concat(non-empty, empty).attrs == {}` in this venv — so `TileCatalog.append`'s
+  **explicit** re-stamp is **required**, not merely the safer of two options (the implement
+  session's handoff note claimed "empty attrs on one side is fine"; that is wrong, and the
+  implementation is right); (2) the filter chain (boolean mask → `.copy()` → column assign) *does*
+  propagate attrs, so `TileCatalog.filter` needs no re-stamp. Also confirmed the stamped write
+  keeps SNAPPY + a valid `geo` key (no compression/format drift), and that `flatten_catalog`'s
+  output is a **fresh** GeoDataFrame with no `fsd:source_path`, so §5a can never double-raise on a
+  `flatten → build` chain.
+- **Mutation-tested the §8.2 non-vacuousness claim myself** rather than taking the implementer's
+  word: forcing `build_datacube` to ignore the resolved declaration fails the three-hop test
+  (`IndexError` — the S2 default's `reference_band="B08"` selects no images); forcing
+  `flatten_catalog` to do the same fails it *and* the §5a raise test. Both probes reverted;
+  `builder.py` carries no leftover trace.
+- **pystac deviation accepted as semantically equivalent.** `ItemAssetDefinition` +
+  `Classification.create(value=…, name=…)` is forced by pystac 1.15.1 (the wrapper is deprecated;
+  `name` became required in the classification extension's **v2.0.0**). On the wire the Collection
+  gets the right `stac_extensions` entry, `item_assets.SCL.classification:classes`, and
+  `fsd:declaration`; re-stamping is idempotent (no duplicate classes or extension URLs).
+- **Corrections applied (Opus, in place):** `declaration.py`'s module docstring still advertised the
+  retired `attrs["declaration"]` key; `from_json`/`_mask_spec_from_json` raised an incidental
+  `TypeError`/nonsense message on a non-object `mask_spec` (now a clear `ValueError`, +1 test);
+  `restamp_cli`/`RECIPES.md`/`CHANGES.md` called the re-stamp a "footer-only rewrite" when it is a
+  full read+re-write of the catalog Parquet (still sub-second, imagery untouched — wording fixed);
+  added a `peek_parquet_attrs` test on a `memory://` path, since `TileCatalog.append`'s conflict
+  check runs it on **every** append including against an `abfss://` catalog and was only covered
+  locally (verified working on a non-local fs).
+- **Logged, not fixed: TODO #45** — the STAC `classification:classes` mirror lists only the *masked*
+  subset of SCL values with placeholder names (`name="3"`), so spec 35 §7's "legible to any
+  STAC-aware tool" only half-lands. Schema-valid and harmless (the Parquet footer is authoritative;
+  nothing reads the mirror), but fixing it properly means adding class *names* to `MaskSpec` — a
+  spec-34 §2a field change, hence a TODO rather than a review-time edit.
+- **Non-scope respected:** the diff touches no `[G2]` native-grid path, no new `mask_type`, no
+  `Source` ABC (#11), and re-stamps none of the four on-disk catalogs.
+
+---
+
+## ✅ SPEC 35 (declaration persistence, TODO #42) **IMPLEMENTED** (2026-07-21, Sonnet@medium), against the signed-off spec's §9 deliverable table. Reviewed + accepted by Opus@high the same day — see the entry above. Tree left dirty, nothing committed (`CLAUDE.md`: commit only when asked).
+
+- **All 10 deliverables done:** `declaration.py` gained `to_json`/`from_json`/`to_attrs`/
+  `from_attrs` + `FSD_DECLARATION_VERSION`/`ATTRS_KEY`; `storage/fs.py`'s `write_parquet`/
+  `read_parquet` gained generic `.attrs` <-> `PANDAS_ATTRS` footer preservation (+
+  `peek_parquet_attrs` for a footer-only read) and `SOURCE_PATH_ATTRS_KEY` stamping/stripping;
+  `catalog.py`'s `TileCatalog` gained `declaration=`/`.declaration`/the append conflict rule;
+  `cdse.py`/`mpc.py` now stamp `S2_L2A_DECLARATION` at their one `catalog.append` call each;
+  `datacube/builder.py` resolves via a shared `_resolve_declaration` helper (used by both
+  `flatten_catalog` and `build_datacube`) that implements the §5a raise, and no longer puts the
+  typed dataclass in `.attrs`; `catalog/stac.py` gained the Collection mirror
+  (`classification:classes` + `fsd:declaration`) and `collection_to_declaration`; two new CLIs,
+  `python -m fsd.catalog.restamp_cli` / `fsd.catalog.inspect_cli` (spec 35 §6).
+- **Tests: 329 passed / 3 skipped** (baseline 294; net +35 — the TODO-#42 pin deleted, ~36 new
+  tests across `tests/test_declaration.py` (new), `test_storage.py`, `test_catalog.py`,
+  `test_datacube_builder.py`, `test_catalog_stac.py`, `test_restamp_cli.py` (new)). `ruff check
+  src/ tests/` clean. The §8.2 three-hop end-to-end test was verified non-vacuous by temporarily
+  forcing `build_datacube` to ignore the resolved declaration and confirming the test fails
+  (`IndexError` — the wrong reference band has no images) before reverting.
+- **Two existing tests needed fixing, not the code** (the handoff's predicted case): `_make_catalog`
+  in `tests/test_workflows.py` wrote catalogs via `fs.write_parquet` with no stamp, which now
+  correctly raises per §5a once read back through `run_task`'s `flatten_catalog` call — fixed by
+  stamping `S2_L2A_DECLARATION` in the fixture, since those catalogs are S2-shaped.
+- **No ambiguity required a spec re-interpretation.** One environment-only surprise not anticipated
+  by the spec: pystac 1.15.1 deprecates the `ItemAssetsExtension` wrapper (top-level
+  `Collection.item_assets` instead) and requires `Classification.create(value=..., name=...)`
+  (`name` became required in the extension's v2.0.0) — used the current, non-deprecated API; no
+  design decision was affected.
+- Docs updated: `docs/adding-a-source.md` (the ingest step now documents stamping as required, and
+  the resolution-order section points at §5a), `CHANGES.md`, `TODO.md` #42 closed, `RECIPES.md`
+  (the two new CLIs), `specs/34-ingest-normalization-contract.md` status block.
+
+---
+
+## ✅ SPEC 35 (declaration persistence, TODO #42) WRITTEN + **SIGNED OFF** (2026-07-21, Opus@high). `specs/35-declaration-persistence.md`. Implemented same day, see the entry above.
+
+**§5a locked as recommended (user, 2026-07-21): an unstamped catalog file RAISES**; a hand-built
+GeoDataFrame keeps the S2 default. Consequence accepted eyes-open: the four known on-disk catalogs
+(demo_e2e, mpc_baseline, the `rise` blob catalog, old per-cell slices) raise until re-stamped — a
+millisecond footer rewrite, folded into TODO #44's re-ingest. The spec forbids the softeners
+(grace period, env-var escape, "`satellite` looks like S2" heuristic) by name, since each recreates
+the silent fallback being removed.
+
+**⚠️ The gap is bigger than TODO #42 recorded — it is NOT latent on the production path.** TODO #42
+called the missing declaration round-trip "latent today (both shipped sources *are* S2 L2A, so the
+fallback is coincidentally correct)". True of the *value*, wrong about the *location*. There are
+**three** write→read hops between ingest and the builder, and hop 2/3 is the **per-cell unit of
+work**: setup writes a slice with `fs.write_parquet` (`workflows/create_datacube.py:88`), and
+`run_task` reads it back in a **separate process** with `fs.read_parquet` (`workflows/task.py:59`)
+before calling `flatten_catalog` (`task.py:60`). In-memory `.attrs` cannot bridge a process
+boundary even in principle. So **`run_task` — the one production caller of `build_datacube`, the
+task Snakemake runs and Batch will dispatch — uses `S2_L2A_DECLARATION` unconditionally today, no
+matter what ingest declared.** Spec 34's declaration-driven builder is, on the path that actually
+runs, still hardcoded to S2. (Also found: *nothing* in the ingest path stamps a declaration at all —
+hop 1 never writes one.)
+
+**The spec's shape (7 decisions):** authority = the **catalog GeoParquet footer** (single artifact,
+cannot separate from its data; same file-level key/value area GeoParquet's own `geo` key uses) —
+sidecar JSON, STAC-as-authoritative, and a source registry all rejected with reasons; mechanism =
+**generic `.attrs` preservation in the storage seam** (`fs.write_parquet`/`read_parquet`), because
+that is the one choke point all three hops already pass through; versioned JSON schema; ingest
+stamps + one-catalog-one-declaration conflict rule; **unstamped file ⇒ raise** (the §5a sign-off
+fork, aligned with spec 34 `[G4]`) while hand-built gdfs keep the S2 default; a millisecond
+**footer-rewrite migration** (`fsd-restamp-catalog`) so demo_e2e/mpc_baseline/the `rise` blob
+catalog need no re-download; and an **additive STAC Collection mirror** using the standard
+`classification:classes`.
+
+**Two findings from cross-validation that changed the design:** (1) geopandas **PR #3597 merged
+2025-10-30** — a future geopandas *will* serialize `.attrs`, under **`PANDAS_ATTRS`**, so fsd uses
+that same key/encoding to converge with upstream rather than fork a second convention; (2)
+consequently **a dataclass must never sit in `.attrs`** — verified locally that JSON-encoding attrs
+containing a `SourceDeclaration` emits "Could not serialize … defaulting to empty attributes" **and**
+raises `TypeError`, i.e. a routine `pip install -U geopandas` would break fsd's write path under the
+current design. Blast radius of the change is small: `build_datacube`/`flatten_catalog` have exactly
+**one** production call site each (`workflows/task.py`) plus `tests/test_datacube_builder.py`.
+
+**→ NEXT: Sonnet@medium implements** against `specs/35` §9's deliverable table, baton
+`runbooks/HANDOFF-spec35-implement.md` (in the **repo**, not `/tmp` — see the lesson below), then
+Opus@high review. No runbook needed — nothing credentialed, networked, or visual; the §6 migration
+folds into TODO #44's re-ingest.
+
+**🧭 Process lesson (2026-07-21): a `/tmp` handoff baton did not survive.** This session was pointed
+at `/tmp/fsd-handoff-todo42-declaration-spec.md`, which did not exist anywhere on disk. State was
+reconstructed from `PROGRESS.md` + `TODO.md` #42 with no loss — **because both were current**, which
+is the spec-24 D6 design working as intended (durable state in `PROGRESS.md`/`TODO.md`/`specs/`; the
+baton is ephemeral). Still: **write batons into `fsd/runbooks/HANDOFF-*.md`, not `/tmp`.**
+
 ## ✅ SPEC 34 FULLY VALIDATED — BOTH RUNBOOKS PASS (2026-07-21, Opus@high). **→ NEXT: spec 34 is closeable; TODO #38 done. Remaining follow-ups: TODO #42 (declaration round-trip, needs a spec amendment), TODO #43 (CDSE discovery retry), TODO #44 (re-ingest the pre-fix blob COGs).**
 
 **Runbook `34-mini-mpc-cross-baseline` PASSED — §1e cross-baseline serving proof done, and it
