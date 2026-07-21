@@ -131,10 +131,41 @@ crux of the whole auth story.
 
 ## 3. Where fsd fits: the two compute paths
 
-`rise` has **both** `aml` and `azure-batch`. For fsd's **download → datacube** fan-out,
-**Azure Batch is the intended target** (the CLAUDE.md "runner seam over a CLI unit-of-work;
-an Azure Batch runner dispatches the same task later"). AML is more for training/notebooks
-(out of fsd core scope) but is available as a driver host.
+`rise` has **both** `aml` and `azure-batch`.
+
+> ### 3.1 ⭐ FORK RESOLVED — the scale runner targets **AML**, not Batch (2026-07-21)
+>
+> Measured, not assumed, by `runbooks/36-runner-fork-probe.md` (green 2026-07-21) against a
+> **decision rule registered before the numbers were seen**:
+>
+> | Fact | Value | Consequence |
+> |---|---|---|
+> | Batch account `dedicatedCoreQuota` | **6** | The pool VM is a **64-core** SKU ⇒ Batch **cannot allocate even one node.** `lowPriorityCoreQuota` is 6 too, so there is no spot escape hatch. |
+> | AML cluster `<proj>-d16` | **32 nodes × 16 vCPU = 512 cores**, `provisioningState: Succeeded` | Runs **today**. |
+> | AML quota, that VM family | **6400** cluster-dedicated vCPUs (64 in use) | 512 is nowhere near the ceiling. |
+> | AML cluster identity | **UserAssigned = the project compute identity** | The *same* UAMI P1 proved can reach blob (spec 31 / runbook 31). No new auth path, no new RBAC ask. |
+>
+> So §6.1's "Batch quota starts tiny" gotcha is **confirmed real, not hypothetical** — Batch is
+> blocked behind a portal quota request (external, multi-day) before it can run at all, while AML
+> is unblocked, ~4× larger, and inherits P1's proven identity. Note the AML *cluster* quota is what
+> governs `AmlCompute`; the subscription-level VM-family quota is much smaller and is **not** the
+> binding constraint (the probe shows a 64-core compute instance counted against the AML cluster
+> quota, not the VM quota) — worth re-checking on the first real scale-up.
+>
+> **This does not change the shape of the design.** The unit of work is unchanged, the storage seam
+> is unchanged, and the runner seam is the same seam — only which dispatcher plugs into it. Design
+> lives in `specs/36-scale-runner.md`.
+>
+> **Batch is DROPPED, not deferred** (user, 2026-07-21 — strict YAGNI). We are **not** filing the
+> quota request: AML ships the demo today, and the runner seam is already evidenced by two live
+> backends (local Snakemake ↔ AML). Batch remains the more portable model on paper — a generic task
+> queue that AWS Batch and k8s Jobs also fit — so if a third backend is ever wanted, this section is
+> the record of why it wasn't built: **quota, not architecture.** Everything else about the pool was
+> ready (see §8).
+
+Historically (and in the roadmap's original wording) **Azure Batch was the intended target** for the
+**download → datacube** fan-out. AML was framed as training/notebooks (out of fsd core scope) plus a
+driver host; per §3.1 it is now also the scale backend.
 
 **Azure Batch mental model** (maps 1:1 onto fsd's existing design):
 - A **pool** = a set of identical VM nodes (the project pool, D64ds_v6) that **autoscales
@@ -229,10 +260,12 @@ is a real design point for the spec.
 
 ## 6. Gotchas & constraints (things that will bite us)
 
-1. **Batch quota starts tiny (~6 dedicated vCPUs).** A fresh Batch account can't even run
-   one 64-vCPU node. Before any real run we must file a **per-Batch-account quota increase**
-   in the Portal for the D-family in the region (need ≥128 vCPU for 2×D64). Quota is
-   per-account — it does not carry over from other projects. (`common-ops.md` §quota.)
+1. **Batch quota starts tiny — ✅ CONFIRMED at exactly 6 dedicated vCPUs** (measured 2026-07-21,
+   `runbooks/36-runner-fork-probe.md`; low-priority is 6 as well). A fresh Batch account can't even
+   run one 64-vCPU node, and this account is still fresh. Before any real Batch run we must file a
+   **per-Batch-account quota increase** in the Portal for the D-family in the region (need ≥128 vCPU
+   for 2×D64). Quota is per-account — it does not carry over from other projects.
+   (`common-ops.md` §quota.) **This is what sent the scale runner to AML instead — see §3.1.**
 2. **`max_nodes = 2` today** — deliberately small, and validated at plan time against the
    compute subnet's IP budget. Scaling out = raise `max_nodes` in tfvars (needs subnet IP
    headroom **and** quota). A platform-admin `terraform apply`, not something we do.
@@ -294,16 +327,61 @@ These are the decisions the future spec 10 must settle. Flagged here so we don't
 
 ## 8. Things to confirm (not yet verified)
 
-- Exact Batch **account URL** output name and the region's Batch endpoint host.
+- ~~Exact Batch **account URL** output name and the region's Batch endpoint host.~~ **✅ CONFIRMED
+  2026-07-21** (fork probe): `accountEndpoint` follows the documented
+  `<batch-account>.<region>.batch.azure.com` shape, and `poolAllocationMode` is `BatchService` as
+  assumed. Concrete value in the private doc.
 - ~~Whether `adlfs` + `DefaultAzureCredential` covers all `fsd.storage` operations we use.~~
   **✅ Largely answered by spec 31 + runbooks 31/34** (green 2026-07-18/07-20): `read/write_parquet`,
   `save/load_npy`, `transfer` (`.part` + `mv`), `put`, `exists`, `makedirs` all ran against `rise`
-  blob, and `FSSPEC_ABFSS_ANON` was proven to cross a subprocess boundary. **Still unconfirmed:
-  whether ADLS Gen2's rename is genuinely *atomic* under concurrent writers** — irrelevant with one
-  local driver, potentially load-bearing once N Batch tasks write at once (see §7.7 idempotency).
-- Current **quota** actually granted on the Batch account (needs `az batch account show`).
-- Whether the pool image (`microsoft-dsvm/ubuntu-hpc/2204`) + Docker is enough, or we need a
-  custom node image.
+  blob, and `FSSPEC_ABFSS_ANON` was proven to cross a subprocess boundary. ~~**Still unconfirmed:
+  whether ADLS Gen2's rename is genuinely *atomic* under concurrent writers**~~ — **✅ RESOLVED
+  from primary docs (2026-07-21), see §8.1 below.**
+- Current **quota** actually granted on the Batch account (needs `az batch account show`) — **being
+  answered by `runbooks/36-runner-fork-probe.md`**, together with the AML cluster names/quota and
+  (the fork's real discriminator) whether the compute identity is attached to the AML clusters.
+- ~~Whether the pool image (`microsoft-dsvm/ubuntu-hpc/2204`) + Docker is enough, or we need a
+  custom node image.~~ **✅ CONFIRMED 2026-07-21** (fork probe): the pool runs that image with
+  `nodeAgentSkuId = batch.node.ubuntu 22.04`, `containerConfiguration.type = DockerCompatible`, a
+  start task already configured, and — notably — the project **ACR pre-wired as a container registry
+  with the compute identity as its `identityReference`**. Batch was fully prepped for containers;
+  only quota stopped it. Moot for now (§3.1), and good news whenever the quota ask lands.
+- **NEW (AML), partly closed by spec-36 Phase 0 (green 2026-07-21):**
+  - ~~whether an AML job must declare `identity: managed`~~ **✅ No.** A plain command job with no
+    `identity:` block ran as the cluster's user-assigned identity (token `xms_mirid` = the compute
+    identity). **But it only does so when the job sets `AZURE_CLIENT_ID`** — with that removed, the
+    node's `DefaultAzureCredential` cannot pick among user-assigned identities and fails outright
+    (proven by the run-book's negative control). See spec 36 D4.
+  - which ACR the AML **workspace** builds environments into — still open, but the build log's
+    password-based `docker login` plus the project ACR's `adminUserEnabled: false` points at the
+    **workspace** registry rather than `acr<proj>`.
+
+### 8.1 Atomic publish on ADLS Gen2 — RESOLVED (2026-07-21, primary docs)
+
+Settles §7.7 (idempotency at scale), and it settles it **the same way whichever backend wins the
+Batch-vs-AML fork**, so the spec-36 design can rely on it now:
+
+- **Rename is atomic on an HNS account, and it can be made fail-if-exists.** The ADLS Gen2
+  `Path - Create` REST operation performs rename via `x-ms-rename-source` and states: *"By default,
+  the destination is overwritten… To fail if the destination already exists, use a conditional
+  request with `If-None-Match: "*"`."* A losing racer gets `412 ConditionNotMet` (or `409
+  PathAlreadyExists`), never a half-written artifact. `rise` storage is HNS-on, so this applies.
+  Source: [Path - Create (ADLS Gen2 REST)](https://learn.microsoft.com/en-us/rest/api/storageservices/datalakestoragegen2/path/create).
+  The HNS concept doc corroborates the atomicity ("a hierarchical namespace processes these tasks by
+  updating a single entry (the parent directory)") and names the exact pattern we want — *"Tools like
+  Hive and Spark often write output to temporary locations and then rename the location at the
+  conclusion of the job."*
+  Source: [ADLS hierarchical namespace](https://learn.microsoft.com/en-us/azure/storage/blobs/data-lake-storage-namespace).
+  ⇒ **Design consequence:** the sentinel/`done.txt` scheme can be replaced by *write-to-temp →
+  atomic-rename-to-final*, with the final path's existence as the resume check. No lease, no lock,
+  no eventual-consistency window to reason about.
+- **Idempotent tasks are mandatory, not merely prudent.** Azure Batch retries a task when a node
+  recovery operation is triggered (unhealthy node rebooted, node lost to host failure), and *"retries
+  due to recovery operations are independent of and are not counted against the `maxTaskRetryCount`.
+  Even if the `maxTaskRetryCount` is 0, an internal retry due to a recovery operation may occur…
+  all Tasks should be idempotent."* So a re-executed unit of work must be safe **even with retries
+  configured off**.
+  Source: [Error handling and detection in Azure Batch](https://learn.microsoft.com/en-us/azure/batch/error-handling).
 
 ---
 

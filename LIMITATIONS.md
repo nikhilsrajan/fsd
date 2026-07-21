@@ -44,8 +44,9 @@ column is what "hitting it" means for each row.
 
 | Limitation | Trigger to fix | Detail |
 |---|---|---|
-| **There is no Azure Batch runner.** Snakemake-on-this-laptop is the only runner; the runner seam exists but nothing dispatches through it. | **this is the P2/P4 gate** — the whole scale-out story | TODO #41; `ROADMAP.md` P2 |
-| **The local Snakemake runner's `start.txt`/`done.txt` sentinels are not blob-safe** — a remote `export_folderpath` raises rather than silently corrupting. | running the local runner with artifacts on blob | TODO #41 |
+| **There is no cloud runner.** Snakemake-on-this-laptop is the only runner; the runner seam exists but nothing dispatches through it. | **this is the P2/P4 gate** — the whole scale-out story | TODO #41; `ROADMAP.md` P2; spec 36 (targets **AML**) |
+| **There will be no Azure *Batch* runner.** The project's Batch account has a 6 vCPU quota against a 64-core pool VM, so it cannot allocate a node; dropped rather than quota-requested. | someone needs Batch specifically (or a generic task-queue backend: AWS Batch, k8s) | `AZURE_INFRA.md` §3.1 |
+| **The local Snakemake runner's `start.txt`/`done.txt` sentinels are not blob-safe** — a remote `export_folderpath` raises rather than silently corrupting. | running the local runner with artifacts on blob | TODO #41; fix = atomic-rename publish, `AZURE_INFRA.md` §8.1 |
 | **Inference/serving output writes are local-only** (`storage_allowed=False` for `run_inference`/`deploy`). | inference outputs need to land on blob | TODO #39 |
 | **ROI geometry inputs are read locally**, bypassing `fsd.storage`. | a Batch node with no `shapefiles/` checkout | TODO #40 |
 

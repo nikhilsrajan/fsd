@@ -4,7 +4,95 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-21_
 
-## ⭐ DEMO TARGET LOCKED + spec 35 committed (2026-07-21, Opus@high). **→ NEXT: P2 — the Azure Batch runner (TODO #41), starting with the GDAL/VSI-under-MSI spike.**
+## ⭐ SPEC 36 **SIGNED OFF** + fork resolved → AML + Phase 0 green on the cluster (2026-07-21, Opus@high). **→ NEXT: `/handoff` to a Sonnet@medium session to IMPLEMENT spec 36 (11 deliverables, §5).**
+
+- **✅ `specs/36-scale-runner.md` SIGNED OFF (user, 2026-07-21).** Design is frozen; implementation
+  has not started. Read the spec, not this entry, for the design — §3 has D1–D10, §4 is the reuse
+  ledger, §5 the 11 deliverables, §7 the 9 tests.
+- **Sign-off decision on §8 Q4: TODO #40 is fixed INSIDE spec 36**, not as a prerequisite commit.
+  Spec gained **D6a** (three geometry I/O sites → `fsd.storage` + `BytesIO`: `setup`'s ROI read,
+  `setup`'s per-unit geometry write, `run_task`'s geometry read), **deliverable 11**, and **test 9**.
+  It stopped being deferrable because a cluster node has no `shapefiles/` checkout. Per spec 31 §6's
+  audit these are the *last* raw-path I/O sites, so TODO #40 closes outright. **The guard that
+  matters: the existing local-path geometry tests must pass unchanged** — the risk is a local
+  regression, not a missing feature.
+
+- **✅ Phase 0 identity smoke GREEN** (`runbooks/36-phase0-identity-smoke.md`, AML run
+  `mighty_seal_21kp83tsv7`). **fsd ran on an AML cluster node, unmodified**: the wheel built from the
+  working tree installed and imported, `fsd.storage` round-tripped npy+text on `rise` blob, and
+  `fsd.raster.rio_open` streamed a real MGRS-tile COG over `/vsiadls/` (EPSG:32633, 10980², uint16).
+  The token's `xms_mirid` proves **the compute identity** answered — the same UAMI P1 used.
+- **The negative control failed, which is the good outcome: D4 is load-bearing.** With
+  `AZURE_CLIENT_ID` removed, the bare `DefaultAzureCredential()` cannot get a token at all
+  (`ManagedIdentityCredential: Expecting value: line 1 column 1` — IMDS won't guess among
+  user-assigned identities). **Shipping without that env var would have failed every blob read on
+  the cluster at runtime.** The control is why we know this rather than assume it.
+- **Also settled:** an AML job needs **no `identity:` block** (spec 36 §8 Q2 closed — a plain command
+  job already runs as the cluster UAMI); D5's premise (install a built wheel, let AML build the
+  environment) is demonstrated, not just argued.
+- **One honest gap:** the COG window read came back all-zero (tile top-left corner — almost certainly
+  genuine granule-edge nodata). So "streamed successfully" is proven; "streamed *real pixel values*"
+  is not. Phase 1 covers it by construction; recorded in spec 36 §6 rather than glossed.
+
+- **`specs/36-scale-runner.md` written, awaiting sign-off.** 10 decisions (D1 backend, D2 shard
+  granularity, D3 the `runner=` seam + 4 invariants, D4 node identity, D5 environment, D6 layout,
+  D7 idempotency, D8 driver host, D9 telemetry, D10 preflight), a **reuse ledger** (§4) that makes
+  the "no new pipeline code" claim checkable at review, 10 deliverables, a 4-phase validation plan,
+  8 synthetic tests, 6 non-blocking open questions, and per-source credit (§9).
+- **The headline: `workflows/task.py` must not change at all** (D3 invariant 1) — if it needs to,
+  the design is wrong. `storage/azure.py` doesn't change either (see D4 below). The cloud runner
+  only shards a work list and launches the *existing* local Snakemake runner inside each job.
+- **D4 was the near-miss.** The AML cluster has **only** a user-assigned identity, and a UAMI is
+  never selected implicitly — so a bare `DefaultAzureCredential()` (what `storage/azure.py` does)
+  would have failed *silently on the cluster*, after P1 "proved" blob access. Both MS docs point at
+  a code change; reading `azure-identity` 1.25.3's source **in this venv** showed
+  `DefaultAzureCredential` already defaults `managed_identity_client_id` to `AZURE_CLIENT_ID`, so
+  the whole fix is **one env var the dispatcher sets** — config, not code, exactly on-theme. Phase 0
+  of the run-book validates it before any runner code is written.
+- **D7 closes TODO #41's second half as a side effect:** Snakemake's sentinels move to node-local
+  scratch (they are one invocation's bookkeeping), the durable resume signal becomes the artifact's
+  own existence on blob, and publishes go temp→atomic-rename. So **the local runner gains blob
+  support** and the Snakefile's hard `RuntimeError` on a remote `export_folderpath` can be deleted.
+- **TODO #40 (ROI geometry via `fsd.storage`) is now blocking**, not deferred — a cluster node has
+  no `shapefiles/` checkout (spec 36 §8 Q4: fix inside this spec or as a prerequisite commit?).
+
+- **The Batch-vs-AML fork closed by measurement, not argument.** `runbooks/36-runner-fork-probe.md`
+  (new, read-only, green 2026-07-21) ran against a **decision rule registered before the numbers
+  were seen**. It fired on one fact: the `rise` Batch account's **`dedicatedCoreQuota` is 6** against
+  a **64-core** pool VM — Batch cannot allocate a single node (low-priority quota is 6 too, so no
+  spot escape). Meanwhile AML **`cluster-<proj>-d16`** is provisioned at **32 nodes × 16 vCPU = 512
+  cores**, family quota 6400, and — the clincher — carries **`UserAssigned` = the project compute
+  identity**, i.e. *the same UAMI spec 31 already proved reads/writes `rise` blob*. No new auth path,
+  no RBAC ask, no re-spike. Evidence table: `AZURE_INFRA.md` §3.1; concrete values (names/IDs/quotas)
+  in the workspace-root private doc.
+- **Batch DROPPED, not deferred (user).** Strict YAGNI — we are *not* filing the quota request. The
+  seam is already evidenced by two live backends (local Snakemake ↔ AML). `AZURE_INFRA.md` §3.1 is
+  the record of *why*: **quota, not architecture** (the pool was otherwise fully prepped —
+  DockerCompatible, DSVM image, start task, ACR pre-wired with the compute identity).
+- **Two decisions locked before any drafting:** (1) **granularity** — one dispatched unit = a
+  **shard of `input.csv`**, executed by the *existing local Snakemake runner* inside the job, so the
+  cloud runner only shards a work list and launches proven code (this also killed the
+  `max_tasks_per_node` infra ask); (2) **spec numbering** — the runner spec is **`specs/36-scale-runner.md`**,
+  not an edit to the signed-off `specs/10-storage-and-scale.md` (10 defines the *seams*; 36 is the P2
+  design against them).
+- **⭐ P2 now needs ZERO infra asks and no container build.** Both were Batch requirements: the quota
+  bump + `max_tasks_per_node` are moot, and AML builds/versions the job environment itself (an image
+  becomes an optimization, not a gate; `az acr build` is available server-side if wanted). The
+  project's "first infra proposal" is deferred indefinitely.
+- **§7.7 idempotency settled from primary docs** (backend-independent, so bankable now) —
+  `AZURE_INFRA.md` **§8.1**: ADLS Gen2 rename is **atomic on an HNS account** and can be made
+  fail-if-exists via `If-None-Match: "*"`, so **`done.txt` sentinels get replaced by write-temp →
+  atomic-rename-to-final**, with the final path's existence as the resume check — no lease, no lock,
+  no consistency window. And Azure retries a task on node-recovery events **independently of
+  `maxTaskRetryCount`, even when it is 0** ⇒ idempotent units are mandatory, not merely prudent.
+- **ROADMAP §5.0's locked target widened (user):** "on Azure **Batch** at scale" → "**on Azure at
+  scale**", `runner="batch"` → `runner="aml"`. The locked promise is *the seam*, not a product name;
+  a footnote records why Batch was displaced so the history isn't lost.
+- Docs updated: `ROADMAP.md` §5.0 + P2/P4 rows, `AZURE_INFRA.md` §3.1/§6.1/§8/§8.1, `LIMITATIONS.md`
+  (Scale/cloud), `TODO.md` #41, the private doc's measured-facts table. **Nothing committed.**
+- **Open, carried into spec 36:** which ACR the AML workspace builds environments into; whether an
+  AML job must declare `identity: managed` to run as the UAMI rather than the submitter; whether the
+  AML control plane is reachable off-VPN. None blocks the design.
 
 - **The target (user, 2026-07-21):** *a researcher runs the same fsd pipeline on **Azure Batch at
   scale**, where `runner="batch"` / `storage="abfss://…"` is configuration, not a rewrite.*

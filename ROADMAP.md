@@ -233,10 +233,20 @@ a `raapid-infra` change to the admin (we never edit it ourselves).
 Everything below is background; **this is what we are driving at**, and anything not on this
 path is a distraction until it ships:
 
-> **A researcher runs the same fsd pipeline on Azure Batch at scale — `runner="batch"` /
+> **A researcher runs the same fsd pipeline on Azure at scale — `runner="aml"` /
 > `storage="abfss://…"` is *configuration*, not a rewrite.** That is **P2 → P4** (TODO #41).
 > Audience: **a researcher who would actually use fsd**, so the self-serve bar applies —
 > `pip install`, docs, adapter-writing, error messages that teach.
+
+> **Wording widened 2026-07-21 (user), from "on Azure **Batch** at scale" / `runner="batch"`.**
+> The promise being locked is **the seam** — cloud as a swappable backend — not a product name, and
+> hardcoding the vendor's product into the north-star is precisely the failure mode that cost us a
+> session to detect. *Why Batch was displaced:* `runbooks/36-runner-fork-probe.md` measured the
+> project's Batch account at a **6 vCPU** dedicated core quota against a **64-core** pool VM — it
+> cannot allocate one node — while the AML `d16` cluster offers 512 cores today under **the same
+> managed identity spec 31 already proved against blob**. Full evidence: `AZURE_INFRA.md` §3.1.
+> **Batch is dropped, not deferred** (user, 2026-07-21 — strict YAGNI): AML ships the demo, and the
+> seam is already demonstrated by local-Snakemake ↔ AML. Revisit only if something actually needs it.
 
 **Everything local is already done and proven on real data** (P0 → P0.9), and the storage half
 of the cloud story is proven too (P1: runbook `31-p1-datacube-on-blob.md` green,
@@ -249,17 +259,31 @@ path is the same call with two arguments changed, which we drive."* Protecting t
 path, cloud as a backend — **is** the demo. If the Batch runner ends up needing its own pipeline
 code, the demo has failed even if it runs fast.
 
-**What is left, in order** (detail: `AZURE_INFRA.md` §7/§8, TODO #41):
+**What is left, in order** (detail: `AZURE_INFRA.md` §3.1/§7/§8, TODO #41):
 
-1. **Decide Batch vs AML.** Still open. A decision, not code — but it gates the spec.
-2. **Write spec 10 (the runner spec)** — settles §7's remaining questions: task granularity/node
-   packing, where the driver runs, blob data layout, container image, the `--runner=` seam,
-   idempotency under Batch retries, telemetry.
-3. **Container image + ACR push.** None exists today — the largest genuinely *new* build.
-4. **Implement the runner seam** + fix the local Snakemake sentinels' blob-unsafety (both are
-   TODO #41; the second likely falls out of the first).
-5. **Infra ask to the platform admin** — quota bump, probably `max_tasks_per_node`. First
-   proposal of the project; we never run Terraform ourselves.
+1. ~~**Decide Batch vs AML.**~~ ✅ **RESOLVED 2026-07-21 → AML** (`cluster-<proj>-d16`), by measurement
+   rather than argument: `runbooks/36-runner-fork-probe.md` + `AZURE_INFRA.md` §3.1. Batch dropped.
+2. **Write spec 36 (the scale-runner spec)** — settles §7's remaining questions: where the driver
+   runs, blob data layout, the job environment/image, the `--runner=` seam, idempotency under
+   retries, telemetry. *(§7's task-granularity question is already answered — see below.)*
+3. **Implement the runner seam** + fix the local Snakemake sentinels' blob-unsafety (both TODO #41;
+   the second falls out of the first, since §8.1's atomic-rename publish replaces the sentinels).
+
+**Two things got materially cheaper on 2026-07-21, and both are worth naming:**
+
+- **Zero infra asks.** The old plan needed two platform-admin changes (a Batch core-quota bump and
+  probably `max_tasks_per_node`). The AML clusters are provisioned, quota'd, and identity-attached
+  **today** — so P2 no longer waits on anyone. The project's "first infra proposal" is deferred
+  indefinitely.
+- **No container build blocking the path.** "Container image + ACR push — the largest genuinely new
+  build" was a Batch requirement. AML builds and versions the job environment itself, so an image is
+  an optimization, not a gate. (`az acr build` is available server-side if we ever want one — the
+  registry is Basic SKU with public access, so no local Docker is needed either.)
+
+**Task granularity is decided (user, 2026-07-21): one dispatched unit = a *shard* of `input.csv`,**
+executed by the **existing local Snakemake runner** inside the job. The cloud runner shards the work
+list and launches copies of code that is already proven — the strongest form of "cloud is a backend,
+not a rewrite." Retry/resume is per-shard, made safe by per-cube skip-if-exists (§8.1).
 
 ✅ **No spike is needed first.** GDAL/VSI auth under MSI — long carried as *the* technical
 unknown (`AZURE_INFRA.md` §7.3) — was **solved and proven on real Azure by spec 31**
@@ -279,9 +303,9 @@ after this one, not part of it.
 | **P0.75** | ✅ **DONE (spec 21, 2026-07-07)** — **Local ROI inference verb (completes Mode A).** `run_inference(roi=…)` chains **tile the ROI (`fsd.grid.roi_to_s2_grids`) → build one datacube per grid cell → infer → COG + STAC (+ optional display merge)** in a single call, all local. The per-cell **build+infer** is one runner-dispatched unit-of-work (`workflows/infer_task.py` + Snakefile → **Batch swaps in at P4 unchanged**, not a second pool). `merge=True\|"reproject"` (strict vs lossy display merge). Imagery assumed present in the catalog — **inference never calls CDSE** (conserve quota, SO-6). *(`create_training_data(roi=…)` deferred — labelled field shapes need no ROI→cell tiling.)* | Mode A: one call turns an ROI GeoJSON into per-cell crop-class COGs (`tests/manual/roi_inference.md`) | none |
 | **P0.9** | ✅ **DONE (spec 23, 2026-07-10)** — **Local-completeness gate + team run-book.** `demos/e2e_austria.py` runs the *whole* local pipeline on **fresh real CDSE data** (download → jp2→COG → datacube → flatten → train → bundle → ROI build+infer → COG/STAC/merged), a **reusable template** (swap `--roi/--train`), **cross-UTM-zone-safe** (`merge="reproject"` area-dominant/`merge_crs`). Adds **decomposed download timing** (transfer vs COG-convert) + a **throughput probe** (factor out link/VPN), the **`plan_download` guardrail** (missing imagery → actionable `fsd.download` plan; verbs never auto-fetch), and a **no-download `estimate_run`** (ETA for any region/window/bands). Doc: `demos/E2E_AUSTRIA.md`. | the go-to "how fsd runs locally" doc + trustworthy timings | none | 
 | **P1** | Storage seam on Azure: adlfs/MSI read+write to the `rise` project storage; GDAL-VSI auth proven | build a datacube locally but I/O against `rise` blob (over VPN) | none (uses existing) |
-| **P2** | Azure Batch runner for datacube fan-out (the runner seam) | N datacubes built across the autoscaled `rise` Batch pool | **quota bump; likely `max_tasks_per_node`** |
+| **P2** | Azure **AML** runner for datacube fan-out (the runner seam; spec 36) | N datacubes built across the autoscaled `rise` AML `d16` cluster | **none** (was: Batch quota bump + `max_tasks_per_node` — moot since the fork went to AML) |
 | **P3** | Thin control plane ("trigger from laptop"): submit-a-job UX + config files | Mode B: laptop triggers cloud build, pulls flattened arrays | none new |
-| **P4** | **Inference at scale.** Dispatch the **per-cell** build+infer unit-of-work from P0.75 onto the **`rise` Batch pool** (reusing the P2 datacube-fan-out runner), I/O against blob. Algorithm unchanged — this phase is **only** the runner/dispatch swap (`runner=`/`storage=` config, no new pipeline code). | Mode C: the P0.75 ROI verb fanned out across Batch nodes | maybe scale `max_nodes` |
+| **P4** | **Inference at scale.** Dispatch the **per-cell** build+infer unit-of-work from P0.75 onto the **`rise` AML cluster** (reusing the P2 datacube-fan-out runner), I/O against blob. Algorithm unchanged — this phase is **only** the runner/dispatch swap (`runner=`/`storage=` config, no new pipeline code). | Mode C: the P0.75 ROI verb fanned out across AML nodes | maybe scale `max_nodes` |
 | **P5** | Output STAC + hosted TiTiler / XYZ | outputs viewable as web tiles | TiTiler hosting (infra) |
 | **P6** | Deploy/registration UX; model-bundle push/register | one-command deploy of a bundle | model store (infra) |
 
