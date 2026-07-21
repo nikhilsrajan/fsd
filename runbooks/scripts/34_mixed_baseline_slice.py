@@ -25,8 +25,8 @@ ROI_PATH = FSD_ROOT.parent / "shapefiles" / "s2grid=476da24.geojson"  # single-t
 
 BANDS = ["B04", "B03", "B02", "SCL"]  # a visible-light RGB + mask, for the QGIS eyeball
 # Same MGRS tile, one pre-cutover and one post-cutover window (spec 34 §1e).
-PRE_WINDOW = (datetime.datetime(2021, 6, 1), datetime.datetime(2021, 6, 20))
-POST_WINDOW = (datetime.datetime(2022, 6, 1), datetime.datetime(2022, 6, 20))
+PRE_WINDOW = (datetime.datetime(2021, 6, 14), datetime.datetime(2021, 6, 19))
+POST_WINDOW = (datetime.datetime(2022, 6, 14), datetime.datetime(2022, 6, 19))
 
 result = {
     "step": "spec34-mixed-baseline-slice",

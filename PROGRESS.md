@@ -2,9 +2,59 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-20_
+_Last updated: 2026-07-21_
 
-## ✅ RUNBOOK 34-download-to-blob PASSED, BOTH SOURCES (2026-07-20, Opus@high) — found + fixed a real spec defect on the way. **→ NEXT: run `runbooks/34-mini-mpc-cross-baseline.md` (the only remaining spec-34 acceptance; MPC-only, local + docker, fully independent).**
+## ✅ SPEC 34 FULLY VALIDATED — BOTH RUNBOOKS PASS (2026-07-21, Opus@high). **→ NEXT: spec 34 is closeable; TODO #38 done. Remaining follow-ups: TODO #42 (declaration round-trip, needs a spec amendment), TODO #43 (CDSE discovery retry), TODO #44 (re-ingest the pre-fix blob COGs).**
+
+**Runbook `34-mini-mpc-cross-baseline` PASSED — §1e cross-baseline serving proof done, and it
+found + fixed a real correctness bug.** Registering two datetime-filtered searches (2021-only /
+2022-only) in the mini-MPC stack and viewing all four `{year}×{unscale}` XYZ layers in QGIS:
+**`unscale=true` matches across the 2022-01-25 baseline cutover** (harmonized), **`unscale=false`
+shows the raw seam** (2022 ~33% brighter). Plus the numerical proof: each item's stamped offset is
+conditional per baseline (2021 → `0.0`, 2022 → `-0.1`). §1e's claim — fsd's ingest fills the offset
+gap MPC can't, and the serving path applies it — is established three ways (serving render, per-item
+tags, spec-32's end-to-end numerics).
+
+**🐛 THE BLACK-TILE BUG (found by running the runbook; fixed + pushed `c2bf1f1`).** `unscale=true`
+first rendered **every tile pure black**. Root cause = a viewer-tag **unit mismatch**: spec 34 §1a
+mandates `scale=1/10000` (so `unscale` yields physical reflectance), but ingest stamped the offset in
+**DN units** (`-1000`) alongside that reflectance scale. A viewer computes `DN*scale + offset =
+DN/10000 - 1000 ≈ -1000` for every pixel → clamped to 0 → black. **The datacube science path was never
+affected** (it reads raw DN and applies the offset itself from the DN-unit catalog column); only the
+viewer/`unscale` path (§1b/§1e) was wrong. **Fix:** stamp the offset in reflectance units
+(`offset * S2_REFLECTANCE_SCALE = -0.1`) to match the scale — in the GDAL tag (`mpc.py`, `cdse.py`)
+and STAC `raster:bands` (`stac.py`); `items_to_rows` divides the scale back out so the catalog's
+DN-unit column round-trips as `-1000` (else a datacube from a re-imported catalog would be ~1000 DN
+high — regression of #10/#30). **2 new regression tests** the old suite structurally could not catch:
+one asserts the actual `unscale` arithmetic (`DN*scale+offset == reflectance`, `0≤x≤1`) — the prior
+"GDAL tag ↔ STAC agree" test passed because **both carried the same wrong value** (an agreement test
+can't catch a shared error); one pins the DN round-trip. 3 existing tests that hard-coded the DN offset
+on the tag were corrected. **294 passed / 3 skipped, ruff clean.**
+
+**This is the third consecutive time running a runbook found the defect, not code review** — spec 32,
+the review pass, now this. And this one was caught **only by eyeballing a render in QGIS** (the user's
+"visual validation is essential" principle earning its keep); two `code-review` passes, spec
+cross-validation, and both prior runbooks all missed it because nothing executed `unscale` on a real tile.
+
+**Runbook 2 had SIX documented defects, all found by running it** — now fixed by a **full rewrite**
+(`runbooks/34-mini-mpc-cross-baseline.md` is self-contained, no more runbook-30 delegation): (1) cost/time
+understated (~10 GB shown as "a handful of small COGs" — the full-tile-asset error spec 32's v1 also made);
+(2) `max_tiles` guidance pointed at the expensive knob (raise cap vs narrow window — the window was
+narrowed to 5-day, in `34_mixed_baseline_slice.py`); (3) step-2 stac-geoparquet export is a dead-end
+(not consumed by the loader, needs a different venv); (4) the compose `/data` mount defaults to the
+spec-30 Austria data and must be repointed **and the container recreated**; (5) `register_and_url.py` is
+a categorical crop-map URL builder that structurally cannot render RGB `unscale` — the tile URL must be
+built directly against titiler; (6) example `rescale` wrong for the data. Also **rewrote
+`demos/mini_mpc/README.md`** from demo_e2e-specific to dataset-agnostic, with an operations cookbook
+(swap dataset, register/filter searches, hand-built RGB tile URLs, smoke-test, inspect, delete
+collection/searches, wipe/reset).
+
+**⚠️ Consequence for runbook 1's blob artifacts → TODO #44.** The `rise` blob COGs from
+`34-download-to-blob` were ingested **before** `c2bf1f1`, so they carry the wrong offset tag and would
+render black under `unscale`. Runbook 1's PASS still holds for what it verified (bytes/tag-present/abfss);
+only the tag *value* is wrong. Latent (nothing serves them); re-ingest before ever serving.
+
+## ✅ RUNBOOK 34-download-to-blob PASSED, BOTH SOURCES (2026-07-20, Opus@high) — found + fixed a real spec defect (A1) on the way.
 
 **Both legs PASS on the `rise` blob, verified on metrics (not the `pass` flag).** All six
 `expected` booleans true for each source; the flag's own computation was checked and genuinely
