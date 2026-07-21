@@ -15,6 +15,7 @@ import shapely.geometry
 from pystac.extensions.projection import ProjectionExtension
 from pystac.extensions.raster import RasterExtension
 
+from fsd import config
 from fsd.catalog import stac
 from fsd.catalog.catalog import TileCatalog
 
@@ -92,12 +93,14 @@ def test_tile_catalog_to_items_core_and_assets():
 
 
 def test_tile_catalog_to_items_raster_bands_carry_declared_offset_scale_nodata():
-    """spec 34 §1a: reflectance/reference bands get the row's declared offset +
-    the constant reflectance scale; the mask band (SCL) gets offset=0/scale=1
-    (a no-op) — both in the COG-analog GDAL tag AND here, the STAC interchange."""
-    it = stac.tile_catalog_to_items(_catalog_gdf())[0]  # row declares offset=-1000
+    """spec 34 §1a: reflectance/reference bands get the row's declared offset (scaled
+    to reflectance units to pair with scale=1/10000, so unscale=true yields physical
+    reflectance) + the constant reflectance scale; the mask band (SCL) gets
+    offset=0/scale=1 (a no-op) — both in the COG GDAL tag AND here, the STAC interchange."""
+    it = stac.tile_catalog_to_items(_catalog_gdf())[0]  # row declares offset=-1000 (DN)
     b04_bands = RasterExtension.ext(it.assets["B04"]).bands
-    assert b04_bands[0].offset == -1000
+    # reflectance-unit: -1000 DN * 1/10000 = -0.1 (NOT the DN value -- the black-tile bug)
+    assert b04_bands[0].offset == pytest.approx(-1000 * config.S2_REFLECTANCE_SCALE)
     assert b04_bands[0].scale == pytest.approx(1 / 10000)
     assert b04_bands[0].nodata == 0
     scl_bands = RasterExtension.ext(it.assets["SCL"]).bands

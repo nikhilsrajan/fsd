@@ -467,7 +467,11 @@ def _convert_one(staging: str, dst_path: str, *, offset: int = 0) -> tuple[bool,
         is_reflectance = _is_reflectance(band)
         stamp_or_reencode(
             dst_path,
-            offset=offset if is_reflectance else 0.0,
+            # reflectance-unit offset to match scale=1/10000 (spec 34 §1a): a viewer's
+            # unscale=true computes DN*scale + offset, so the DN-space offset (-1000)
+            # must be scaled to reflectance too (-> -0.1), else unscale yields
+            # DN/10000 - 1000 ~= -1000 for every pixel (the black-tile bug).
+            offset=offset * config.S2_REFLECTANCE_SCALE if is_reflectance else 0.0,
             scale=config.S2_REFLECTANCE_SCALE if is_reflectance else 1.0,
             set_nodata_if_missing=config.NODATA,
         )

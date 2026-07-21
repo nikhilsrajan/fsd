@@ -184,7 +184,11 @@ def tile_catalog_to_items(
                     RasterExtension.ext(asset, add_if_missing=True).bands = [
                         RasterBand.create(
                             nodata=row_nodata,
-                            offset=row_offset if is_reflectance else 0,
+                            # raster:bands offset is reflectance-unit to match scale=1/10000
+                            # (spec 34 §1a) — the catalog `row_offset` is DN-unit, so scale
+                            # it; `items_to_rows` divides it back out. Keeps unscale=true
+                            # unit-consistent (DN*scale + offset == (DN+offset_dn)/10000).
+                            offset=row_offset * config.S2_REFLECTANCE_SCALE if is_reflectance else 0,
                             scale=config.S2_REFLECTANCE_SCALE if is_reflectance else 1,
                         )
                     ]
@@ -363,7 +367,12 @@ def items_to_rows(items: list[pystac.Item]):
                 if bands:
                     nodata = bands[0].nodata or 0
                     if bands[0].offset:
-                        offset = bands[0].offset
+                        # raster:bands offset is reflectance-unit (spec 34 §1a); the catalog
+                        # `offset` column is DN-unit (the builder applies it in DN space), so
+                        # divide the scale back out — else a datacube built from a re-imported
+                        # catalog would be ~1000 DN high (regression of #10/#30).
+                        scale = bands[0].scale or 1
+                        offset = bands[0].offset / scale
         rows.append({
             "id": item.id,
             "satellite": item.collection_id,

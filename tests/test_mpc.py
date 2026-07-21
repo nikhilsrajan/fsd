@@ -11,6 +11,7 @@ import pytest
 import shapely.geometry as sg
 from pystac.extensions.raster import RasterExtension
 
+from fsd import config
 from fsd.sources import _s2_radiometry, mpc
 
 
@@ -271,7 +272,11 @@ def test_transfer_and_stamp_one_stamps_reflectance_offset_and_nodata(tmp_path, m
     import rasterio
 
     with rasterio.open(str(dst)) as d:
-        assert d.offsets[0] == -1000
+        # reflectance-unit tag (spec 34 §1a): -1000 DN * 1/10000 -> -0.1, paired with
+        # scale=1/10000 so unscale=true yields physical reflectance (not the black-tile
+        # unit mismatch that stamped -1000 alongside scale=1/10000).
+        assert d.offsets[0] == pytest.approx(-1000 * config.S2_REFLECTANCE_SCALE)
+        assert d.scales[0] == pytest.approx(config.S2_REFLECTANCE_SCALE)
         assert d.nodata == 0  # stamped, was missing
 
 
@@ -483,6 +488,61 @@ def test_gdal_tag_and_stac_raster_bands_agree(tmp_path, monkeypatch):
     stac_band = RasterExtension.ext(item.assets["B04"]).bands[0]
 
     with rasterio.open(str(dst)) as d:
-        assert d.offsets[0] == stac_band.offset == offset
+        # both declarations carry the SAME reflectance-unit offset (-1000 DN * 1/10000
+        # = -0.1), not the DN offset — so a viewer (GDAL tag) and a STAC reader agree
+        # AND are unit-consistent with scale=1/10000 (spec 34 §1a).
+        expected_refl_offset = offset * config.S2_REFLECTANCE_SCALE
+        assert d.offsets[0] == pytest.approx(stac_band.offset)
+        assert d.offsets[0] == pytest.approx(expected_refl_offset)
         assert d.scales[0] == pytest.approx(stac_band.scale)
         assert d.nodata == stac_band.nodata == 0
+
+
+def test_stamped_tag_unscales_to_physical_reflectance_not_black(tmp_path, monkeypatch):
+    """Regression for the black-tile bug found in runbook 34b (2026-07-20). The GDAL
+    SCALE/OFFSET a viewer's `unscale=true` reads must be UNIT-CONSISTENT: unscale
+    computes ``DN*scale + offset``, and with ``scale=1/10000`` (physical reflectance,
+    spec 34 §1a) the stamped offset must be reflectance-unit too. The bug stamped the
+    raw DN offset (-1000) alongside ``scale=1/10000``, so unscale gave
+    ``1500/10000 - 1000 ~= -1000`` for *every* pixel → every tile rendered pure black.
+    This asserts the actual unscale arithmetic, which the agreement test above cannot
+    (both sides shared the same wrong value, so they agreed while both being wrong)."""
+    import rasterio
+
+    dst = tmp_path / "B04.tif"
+    monkeypatch.setattr(mpc.fs, "transfer", lambda s, d, **k: _write_fake_cog(d, value=1500))
+    ok, _ = mpc._transfer_and_stamp_one(
+        "https://example/B04.tif", str(dst), band="B04", offset=-1000,
+    )
+    assert ok is True
+    with rasterio.open(str(dst)) as d:
+        unscaled = 1500 * d.scales[0] + d.offsets[0]   # what titiler unscale=true computes
+        assert unscaled == pytest.approx((1500 - 1000) / 10000)   # 0.05 reflectance
+        assert 0.0 <= unscaled <= 1.0                              # sane, NOT ~-1000 (black)
+
+
+def test_stac_roundtrip_preserves_dn_offset_for_builder(tmp_path):
+    """The catalog `offset` column is DN-unit (the builder applies it in DN space,
+    `clip(DN + offset)`), but raster:bands stores it reflectance-unit (spec 34 §1a).
+    A ``to_stac`` → ``items_to_rows`` round-trip must recover the DN offset (-1000), or
+    a datacube built from a re-imported catalog would silently be ~1000 DN high — the
+    exact #10/#30 failure spec 34 exists to close."""
+    import geopandas as gpd
+    import pandas as pd
+    import shapely.geometry
+
+    from fsd.catalog import stac
+
+    row = {
+        "id": "S2A_MSIL2A_20220601T075611_N0500_R035_T33UWP_20220601T120000",
+        "satellite": "sentinel-2-l2a",
+        "timestamp": pd.Timestamp("2022-06-01T07:56:11", tz="UTC"),
+        "s3url": "", "local_folderpath": str(tmp_path), "files": "B04.tif",
+        "cloud_cover": 0.0, "offset": -1000, "nodata": 0,
+        "geometry": shapely.geometry.box(15.0, 48.0, 15.4, 48.4),
+    }
+    items = stac.tile_catalog_to_items(
+        gpd.GeoDataFrame([row], geometry="geometry", crs="EPSG:4326")
+    )
+    back = stac.items_to_rows(items)
+    assert back.iloc[0]["offset"] == pytest.approx(-1000)   # DN-unit recovered, not -0.1
