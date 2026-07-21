@@ -12,6 +12,7 @@ later optimize.
 from __future__ import annotations
 
 import datetime
+import io
 import os
 
 import geopandas as gpd
@@ -55,7 +56,11 @@ def setup(
     startdate = pd.to_datetime(startdate, utc=True)
     enddate = pd.to_datetime(enddate, utc=True)
     catalog = TileCatalog(catalog_filepath)
-    shapes_gdf = gpd.read_file(shapefilepath)
+    # D6a (spec 36, TODO #40): read via fsd.storage + BytesIO -- a local path behaves
+    # exactly as before (fsd.storage routes file:// transparently), and this closes the
+    # last raw-path geometry read that a cluster node (no `shapefiles/` checkout) can't do.
+    with fs.open(shapefilepath, "rb") as f:
+        shapes_gdf = gpd.read_file(io.BytesIO(f.read()))
 
     rows = []
     for _, srow in shapes_gdf.iterrows():
@@ -87,7 +92,10 @@ def setup(
         fs.makedirs(export_folderpath)
         shape_path = os.path.join(export_folderpath, "geometry.geojson")
         catalog_path = os.path.join(export_folderpath, "catalog.parquet")
-        shape_gdf.to_file(shape_path, driver="GeoJSON")
+        # D6a (spec 36): write via fsd.storage rather than gpd.to_file(path) directly, so
+        # this per-unit geometry lands correctly on a remote export_folderpath too.
+        with fs.open(shape_path, "w") as f:
+            f.write(shape_gdf.to_json())
         fs.write_parquet(catalog_path, subset)
 
         row = {
@@ -144,8 +152,14 @@ def run_create_datacube(
     unlock: bool = False,
     overwrite_setup_csv: bool = True,
     runner: str = "local",
+    runner_kwargs: dict | None = None,
 ):
-    """Run setup (unless csv exists), then dispatch the task via `runner`."""
+    """Run setup (unless csv exists), then dispatch the task via `runner`.
+
+    `runner_kwargs` (spec 36 D3) is forwarded to `runners.run_aml` when `runner="aml"`
+    (e.g. `cluster=`, `environment=`, `root=`, `identity_client_id=`) -- the local runner
+    takes no extra kwargs, so it is ignored for `runner="local"`.
+    """
     if overwrite_setup_csv and fs.exists(csv_filepath):
         fs.rm(csv_filepath)
 
@@ -158,6 +172,8 @@ def run_create_datacube(
             csv_filepath=csv_filepath, label_col=label_col, mosaic_scheme=mosaic_scheme,
         )
 
-    if runner != "local":
-        raise ValueError(f"Unknown runner={runner!r}; only 'local' exists in v1.")
-    return runners.run_local(csv_filepath, cores=cores, dry_run=dry_run, unlock=unlock)
+    if runner == "local":
+        return runners.run_local(csv_filepath, cores=cores, dry_run=dry_run, unlock=unlock)
+    if runner == "aml":
+        return runners.run_aml(csv_filepath, **(runner_kwargs or {}))
+    raise ValueError(f"Unknown runner={runner!r}; valid values: 'local', 'aml'.")

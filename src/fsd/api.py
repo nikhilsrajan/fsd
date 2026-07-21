@@ -79,15 +79,18 @@ def compute_n_timestamps(
     return math.ceil(total_days / mosaic_days)
 
 
+_VALID_RUNNERS = ("local", "aml")
+
+
 def _check_local_seams(runner: str, storage, *, storage_allowed: bool = True) -> list[str]:
-    """`runner` is local-only through P1 (Batch lands in P2). `storage` is wired to the
-    Azure compute seam in P1 (spec 31) for the verbs that read/write the pipeline's own
-    artifacts (`download`, `create_training_data`) — pass `storage_allowed=False` for verbs
-    that are explicitly out of P1 scope (`run_inference`/`deploy`: inference/serving-on-blob
-    is P4/P5, stays local for now)."""
+    """`runner` is `"local"` (Snakemake) or `"aml"` (spec 36 P2: the Azure ML scale
+    runner). `storage` is wired to the Azure compute seam in P1 (spec 31) for the verbs
+    that read/write the pipeline's own artifacts (`download`, `create_training_data`) —
+    pass `storage_allowed=False` for verbs that are explicitly out of P1 scope
+    (`run_inference`/`deploy`: inference/serving-on-blob is P4/P5, stays local for now)."""
     errs = []
-    if runner != "local":
-        errs.append(f"runner={runner!r} not supported in P0 (only 'local'; Batch lands in P2).")
+    if runner not in _VALID_RUNNERS:
+        errs.append(f"runner={runner!r} not supported (valid: {list(_VALID_RUNNERS)}).")
     if storage is not None and storage != "local":
         if not storage_allowed:
             errs.append(
@@ -255,6 +258,7 @@ def create_training_data(
     aggregate=None,
     cores: int = 1,
     runner: str = "local",
+    runner_kwargs: dict | None = None,
     storage=None,
     run_folderpath: str | None = None,
 ) -> TrainingData:
@@ -268,7 +272,10 @@ def create_training_data(
     `feature_sequence` (adapter-less/exploratory). `aggregate` ∈ {None, "median_per_id",
     callable} reduces per-pixel samples before the transform. When any is given, fsd writes
     `features.npy` (+ `feature_ids`/`feature_labels`) additively; the raw `data.npy` is kept.
-    `runner`/`storage` are local-only in P0.
+
+    `runner="local"` (default) or `"aml"` (spec 36 P2: dispatches the build fan-out onto an
+    Azure ML cluster, `runner_kwargs` carries its `cluster=`/`environment=`/`root=`/
+    `identity_client_id=`, see `workflows.runners.run_aml`). `storage` is local-only for now.
     """
     if adapter is not None and feature_sequence is not None:
         raise PreflightError(
@@ -346,6 +353,7 @@ def create_training_data(
         startdate=startdate, enddate=enddate, bands=bands,
         scl_mask_classes=scl_mask_classes, mosaic_days=mosaic_days,
         csv_filepath=csv_filepath, label_col=label_col, cores=cores, runner=runner,
+        runner_kwargs=runner_kwargs,
     )
 
     with fs.open(csv_filepath, "r") as f:

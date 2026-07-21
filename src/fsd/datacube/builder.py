@@ -16,6 +16,7 @@ import datetime
 import json
 import os
 import time
+import uuid
 import warnings
 from contextlib import contextmanager
 
@@ -319,14 +320,19 @@ def build_datacube(
 
     with _timed(timings, "save"):
         fs.makedirs(export_folderpath)
-        fs.save_npy(os.path.join(export_folderpath, "datacube.npy"), datacube)
         # Metadata is a dict (geometry, per-timestamp mapping, dim names) — things that
         # don't fit in the numpy array. It's pickled via np.save (allow_pickle) rather
         # than raw pickle because a raw pickle written on macOS could not be read on
         # Ubuntu (and vice versa) — np.save's pickling proved cross-platform stable.
         # (xarray is a possible future alternative; see TODO.)
-        fs.save_npy(os.path.join(export_folderpath, "metadata.pickle.npy"),
-                    metadata, allow_pickle=True)
+        # D7 (spec 36): each artifact is written to a per-attempt temp path and renamed
+        # into place only once fully written, so a reader never observes a partial file.
+        # metadata is published FIRST and datacube.npy LAST — `datacube.npy`'s existence
+        # is the resume signal (workflows.task.run_task), so by the time it appears the
+        # metadata it depends on is already durable.
+        _save_npy_atomic(os.path.join(export_folderpath, "metadata.pickle.npy"),
+                          metadata, allow_pickle=True)
+        _save_npy_atomic(os.path.join(export_folderpath, "datacube.npy"), datacube)
 
     if reads is not None:
         _write_read_log(export_folderpath, reads)
@@ -337,6 +343,16 @@ def build_datacube(
             n_resampled=len(resample_indices), datacube=datacube, metadata=metadata,
             dst_crs=dst_crs,
         )
+
+
+def _save_npy_atomic(path: str, arr, allow_pickle: bool = False) -> None:
+    """`fs.save_npy` a temp sidecar next to `path`, then `fs.rename` onto it (D7,
+    spec 36) -- the write-to-temp-then-rename publish pattern (also used by
+    `fs.transfer`). A crash mid-write leaves the temp path orphaned and `path` absent;
+    it never leaves `path` partially written."""
+    tmp = f"{path}.tmp-{uuid.uuid4().hex}"
+    fs.save_npy(tmp, arr, allow_pickle=allow_pickle)
+    fs.rename(tmp, path)
 
 
 def _write_timings_sidecar(export_folderpath, timings, total_seconds, *, shape_gdf,

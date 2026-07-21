@@ -123,9 +123,29 @@ def test_setup_does_not_corrupt_a_remote_run_folderpath(tmp_path, monkeypatch):
     remote_root = "abfss://data@acct.dfs.core.windows.net/p1-demo/run"
     written = {}
 
+    class _FakeWriteHandle:
+        def __init__(self, path):
+            self._path = path
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def write(self, data):
+            written.setdefault("geojson", self._path)
+
+    _real_open = fs.open
+
+    def _open(path, mode="rb", **kw):
+        # D6a (spec 36): the per-shape geometry now writes via `fs.open(path, "w")` +
+        # `to_json()`, not `gpd.GeoDataFrame.to_file` -- mock only that write; the
+        # caller's (local) input geojson still reads for real.
+        if mode == "w" and path.startswith(remote_root):
+            return _FakeWriteHandle(path)
+        return _real_open(path, mode, **kw)
+
     monkeypatch.setattr(fs, "makedirs", lambda *a, **kw: None)
     monkeypatch.setattr(fs, "write_parquet", lambda path, df, **kw: written.setdefault("parquet", path))
-    monkeypatch.setattr(gpd.GeoDataFrame, "to_file", lambda self, path, **kw: written.setdefault("geojson", path))
+    monkeypatch.setattr(fs, "open", _open)
 
     csv_local = tmp_path / "input.csv"  # the work-unit ledger itself can stay local
     create_datacube.setup(
@@ -146,11 +166,11 @@ def test_setup_does_not_corrupt_a_remote_run_folderpath(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(importlib.util.find_spec("snakemake") is None,
                     reason="snakemake not installed")
-def test_snakefile_raises_clearly_for_remote_export_folderpath(tmp_path):
-    """The local Snakemake runner's own start.txt/done.txt sentinels are plain local
-    file operations (specs/31 §6) — a remote export_folderpath must fail loud (dry-run
-    still parses the rule graph, which is where the guard lives), not silently create
-    garbage local sentinel dirs."""
+def test_snakefile_plans_a_remote_export_folderpath(tmp_path):
+    """D7 (spec 36): sentinels move to node-local scratch, decoupled from
+    export_folderpath, so a remote (e.g. abfss://) export_folderpath is no longer
+    rejected -- dry-run must plan the job instead of raising (specs/31 §6's finding is
+    now handled by scratch-dir sentinels, not a guard)."""
     csv = tmp_path / "input.csv"
     pd.DataFrame([{
         "shapefilepath": str(tmp_path / "geometry.geojson"),
@@ -162,7 +182,7 @@ def test_snakefile_raises_clearly_for_remote_export_folderpath(tmp_path):
     }]).to_csv(csv, index=False)
 
     result = runners.run_local(str(csv), cores=1, dry_run=True)
-    assert result.returncode != 0
+    assert result.returncode == 0
 
 
 def test_setup_raises_when_no_workunits(tmp_path):
