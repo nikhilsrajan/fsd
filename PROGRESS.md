@@ -4,7 +4,18 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-22_
 
-## ⭐ SPEC 36 **IMPLEMENTED** (Sonnet@medium, 2026-07-22). **→ NEXT: Opus@high review against §5's deliverable table + §4's reuse ledger; then the user runs `runbooks/36-aml-runner.md` Phases 1–3 on the real cluster.**
+## ⭐ SPEC 36 **IMPLEMENTED + REVIEWED + MERGED to `main`** (Sonnet@medium impl 2026-07-22; Opus@high review + merge 2026-07-22). **→ NEXT: the user runs `runbooks/36-aml-runner.md` Phases 1–3 on the real cluster.**
+
+- **Opus@high review outcome (2026-07-22):** the §4 reuse ledger and §5 deliverable table hold; the
+  §3 invariants (D3 inv 1 `task.py` unchanged; D4 `storage/azure.py` unchanged; atomic-publish
+  ordering metadata-before-datacube) verified against the diff. **One real defect found + fixed**
+  (commit `89aeb9b`) — the implementing session's own "known open question": three `run_aml` tests
+  called the real `azure.ai.ml.command(...)`, so `pytest -q` was RED on the canonical
+  `pip install -e ".[dev]"` venv (the `[aml]` extra had silently become a *test* dependency,
+  violating §7 "No test may require Azure"). Fixed by indirecting the sole `command` import through
+  `runners._import_aml_command()` and injecting a `fake_aml_command` fixture; the AZURE_CLIENT_ID
+  pin now runs on every install. **343 passed / 3 skipped on a bare `.[dev]` venv** (no `[aml]`),
+  ruff clean. Branch `worktree-spec36-scale-runner` merged to `main`; worktree pruned.
 
 - **All 11 deliverables (§5) landed.** `pyproject.toml` `[aml]` extra; `fsd.storage.fs.rename`
   (the atomic-publish primitive); D7 atomic-rename publish + skip-if-final-exists
@@ -28,20 +39,20 @@ _Last updated: 2026-07-22_
   variants — **12 new tests total** in `tests/test_scale_runner.py`. Full suite: **343 passed / 3
   skipped** (baseline was 331/3 at handoff), `ruff check src/ tests/` clean. No test touches Azure —
   the AML client is a hand-rolled fake (`_FakeMLClient`) injected at `run_aml`'s `ml_client=`
-  boundary; `azure.ai.ml.command(...)` itself runs for real in tests (pure object construction, no
-  network) since the `[aml]` extra is a dev/test dependency, not a runtime one.
+  boundary, and (after the review fix `89aeb9b`) the job-builder `azure.ai.ml.command` is faked via
+  the `fake_aml_command` fixture, so **the suite passes with the `[aml]` extra absent** — it is a
+  pure runtime dependency, never a test one.
 - **D4 implemented as designed, no shortcuts**: `run_aml` takes `identity_client_id` as a required
   caller-supplied parameter (never hardcoded — a concrete `rise` identity id has no business in a
   public repo) and sets it as the job's `AZURE_CLIENT_ID` env var; test 5 pins that nothing else in
   `fsd/` would explain why it's there.
-- **One deliberate design call beyond the spec's literal wording, recorded for review:** `run_aml`'s
-  `ml_client=` injection point is real `MLClient`-shaped (constructed via `azure.ai.ml.MLClient(...)`
-  when not injected) rather than a narrower custom submit-function seam — this lets
-  `azure.ai.ml.command(...)` build a **real** `Command` object in both the production and test path
-  (test 5 asserts against a real SDK object's `.environment_variables`), rather than fsd inventing
-  its own parallel job-spec representation that would need translating at the real-submission
-  boundary. Flag at review if this reads as scope drift from D3 invariant 3's "imported lazily" —
-  the import site is still exactly one function, `run_aml`, and still lazy (verified above).
+- **~~One deliberate design call beyond the spec's literal wording~~ → RESOLVED at review (`89aeb9b`).**
+  The implementing session kept `azure.ai.ml.command(...)` running for real in tests (asserting on a
+  real `Command`'s `.environment_variables`), which made the `[aml]` extra a test dependency and
+  turned `pytest -q` red on a bare `.[dev]` clone. The review moved the job-builder behind
+  `runners._import_aml_command()` (still exactly one lazy import site in `run_aml`, D3 inv 3 intact)
+  and faked it in tests via `fake_aml_command`; test 5 now asserts on the kwargs `run_aml` passes —
+  which *is* the run_aml behaviour being pinned — rather than on the SDK's Command class.
 - **Not done in this session (by design — Claude never runs networked/pipeline scripts,
   `CLAUDE.md`):** Phases 1–3 of `runbooks/36-aml-runner.md` (one shard, resume, real fan-out on the
   actual `rise` cluster) and building the AML Environment (D5) for real. Both are runbooks for the
