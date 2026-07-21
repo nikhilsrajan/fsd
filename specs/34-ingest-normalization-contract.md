@@ -1,9 +1,16 @@
 # Spec 34 — Ingest / normalization contract (`stage → normalize → put`, per source)
 
-> **Status: ✅ IMPLEMENTED (2026-07-20, Sonnet@medium).** Signed off 2026-07-20 (Opus@high — user
-> sign-off after a `grilling` pass) then implemented same-day against this spec. `pytest -q` green
-> (279 passed/3 skipped), `ruff` clean. **→ NEXT: Opus@high review, then the user runs
-> `runbooks/34-download-to-blob.md` + `runbooks/34-mini-mpc-cross-baseline.md`.**
+> **Status: ✅ DONE / VALIDATED (2026-07-21).** Signed off 2026-07-20 (Opus@high, post-`grilling`),
+> implemented same-day (Sonnet@medium), reviewed (Opus@high — no impl defects), then **both runbooks
+> run by the user and PASSED**: `34-download-to-blob` (CDSE + MPC → `rise` blob, both sources) and
+> `34-mini-mpc-cross-baseline` (§1e cross-baseline serving proof, QGIS-confirmed). Running the runbooks
+> found + fixed **two real defects the review missed**: **Amendment A1** (§3a — CDSE v1 exposes the
+> baseline in `processing:version`, not `s2:processing_baseline`; `9eccc44`) and the **black-tile bug**
+> (viewer tag stamped the offset in DN units alongside `scale=1/10000`; `c2bf1f1`). `pytest -q` **294
+> passed / 3 skipped**, `ruff` clean. TODO #38 done. **Follow-ups (do NOT block closure): TODO #42**
+> (collection declaration doesn't survive the catalog round-trip — needs a spec amendment), **#43**
+> (CDSE STAC discovery has no retry), **#44** (the `rise` blob COGs predate `c2bf1f1` → re-ingest before
+> serving). Runbook 34b was rewritten self-contained; `demos/mini_mpc/README.md` generalized.
 > Promotes **TODO #38**
 > (the item; this is spec **34**). Re-opens **download-to-blob for all sources** (suspended out of P1 —
 > spec 31 §5/§5-ARCHIVE) now that the storage/compute seam is **proven** (spec 31, 2026-07-18).
