@@ -180,6 +180,18 @@ def _run_snakemake(snakefile_rel, cores, conf, *, overwrite=False, dry_run=False
 _TERMINAL_JOB_STATUSES = {"Completed", "Failed", "Canceled"}
 
 
+def _import_aml_command():
+    """Lazy handle to `azure.ai.ml.command` (D3 invariant 3: the sole azure-ai-ml
+    import in `fsd/`, inside a function -- `import fsd` never needs the extra). Indirected
+    through this helper so the AML job-builder is part of `run_aml`'s injection boundary:
+    tests substitute a fake and never require the `[aml]` extra ("no test may require
+    Azure", spec 36 §7). Production behaviour is unchanged -- a real `runner="aml"` with
+    the extra absent still raises ImportError here, exactly as a direct import would."""
+    from azure.ai.ml import command
+
+    return command
+
+
 def shard_units(units: list, n_shards: int) -> list[list]:
     """Partition `units` into up to `n_shards` non-empty groups, round-robin (spec 36
     D2 / test 1). A partition: every unit appears in exactly one shard. `n_shards` >
@@ -296,7 +308,7 @@ def run_aml(
         units = pd.read_csv(f).to_dict("records")
     shards = shard_units(units, n_shards)
 
-    from azure.ai.ml import command as aml_command
+    aml_command = _import_aml_command()
 
     job_names: dict[int, str] = {}
     for k, rows in enumerate(shards):

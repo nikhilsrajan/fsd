@@ -1,8 +1,9 @@
 """Tests for spec 36 (the AML scale runner): sharding, shard.py, run_aml, D4/D7/D6a.
 
-No test requires Azure -- the AML client is injected/mocked at the `runners.run_aml`
-submission boundary (`_FakeMLClient`, below); `azure.ai.ml.command(...)` itself is pure
-object construction (no network) and is exercised for real.
+No test requires Azure (spec 36 §7): both halves of the AML submission surface are
+substituted at the `runners.run_aml` boundary -- the client via `_FakeMLClient` (below)
+and the job-builder `azure.ai.ml.command` via the `fake_aml_command` fixture -- so the
+suite passes on a `pip install -e ".[dev]"` clone without the `[aml]` extra.
 """
 
 from __future__ import annotations
@@ -124,6 +125,20 @@ class _NS(types.SimpleNamespace):
     pass
 
 
+@pytest.fixture
+def fake_aml_command(monkeypatch):
+    """Substitute `azure.ai.ml.command` with a no-dependency job-builder (a
+    `SimpleNamespace` carrying the same kwargs) so run_aml tests exercise the real
+    dispatcher yet never require the `[aml]` extra ("no test may require Azure", §7).
+    `job.environment_variables` etc. are exactly the kwargs run_aml passed -- which is
+    the run_aml behaviour these tests pin (test 5), not azure-ai-ml's Command class."""
+    def _cmd(**kwargs):
+        return types.SimpleNamespace(**kwargs)
+
+    monkeypatch.setattr(runners, "_import_aml_command", lambda: _cmd)
+    return _cmd
+
+
 class _FakeMLClient:
     """Fakes exactly the `MLClient` surface `run_aml` touches. `job_statuses` is the
     terminal status returned for the k-th submitted job, in submission order."""
@@ -153,7 +168,7 @@ def _write_input_csv(url, n_units=2):
 
 # --- test 3: run_aml raises listing exactly the failed shards ---------------------
 
-def test_run_aml_raises_listing_exactly_the_failed_shards():
+def test_run_aml_raises_listing_exactly_the_failed_shards(fake_aml_command):
     input_csv = "memory://run_aml_fail/input.csv"
     _write_input_csv(input_csv, n_units=2)
     ml_client = _FakeMLClient(["Completed", "Failed"])
@@ -167,7 +182,7 @@ def test_run_aml_raises_listing_exactly_the_failed_shards():
     assert len(ml_client.submitted) == 2
 
 
-def test_run_aml_succeeds_when_all_shards_complete():
+def test_run_aml_succeeds_when_all_shards_complete(fake_aml_command):
     input_csv = "memory://run_aml_ok/input.csv"
     _write_input_csv(input_csv, n_units=2)
     ml_client = _FakeMLClient(["Completed", "Completed"])
@@ -192,7 +207,7 @@ def test_check_local_seams_accepts_aml_and_lists_valid_values():
 
 # --- test 5: D4 -- the job spec run_aml builds carries AZURE_CLIENT_ID ------------
 
-def test_run_aml_job_carries_azure_client_id():
+def test_run_aml_job_carries_azure_client_id(fake_aml_command):
     """Nothing in fsd/ reads AZURE_CLIENT_ID -- this test is the only thing that
     explains why run_aml sets it (D4: the AML cluster's user-assigned identity is
     never selected implicitly)."""
