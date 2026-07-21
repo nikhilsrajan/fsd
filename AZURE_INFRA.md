@@ -314,16 +314,29 @@ These are the decisions the future spec 10 must settle. Flagged here so we don't
    `mode="w"` for a remote path by design (P1 scoped writes local), so **inference-output COGs to
    blob are still unproven** — that is TODO #39 and lands in **P4**, not P2. Do not re-spike the
    read path.
-4. **Input/output data layout in blob** — container/paths for the S2 archive, catalogs,
-   datacubes, flattened arrays; how the catalog (GeoParquet) is shared to tasks.
-5. **Container image** — base (GDAL/rasterio wheels vs. system GDAL), size, build/push CI,
-   warm-cache via `container_image_names`.
-6. **Runner abstraction in `fsd.workflows`** — the seam so `--runner=snakemake|batch`
-   selects dispatcher without touching the task CLI.
-7. **Idempotency / resume at scale** — today `done.txt` sentinels + skip-if-exists; how that
-   behaves with Batch task retries and blob eventual consistency.
-8. **Cost/observability** — budget alerts already exist; do we want per-run timing/telemetry
-   (the spec-11 `timings.json` seam) written to blob?
+4. ~~**Input/output data layout in blob** — container/paths for the S2 archive, catalogs,
+   datacubes, flattened arrays; how the catalog (GeoParquet) is shared to tasks.~~ **✅ RESOLVED
+   by spec 36 D6** (signed off 2026-07-21): `<root>/imagery/...` (runbook 34), `<root>/runs/<run_id>/
+   {input.csv, shards/<k>.csv, cubes/<cell_id>/, _status/<k>.json}` — spec 35's self-describing
+   catalog is what made "how does a task learn its collection" not need answering separately.
+5. **Container image** — moot for a Batch task (dropped, `AZURE_INFRA.md` §3.1); **spec 36 D5**
+   answers the equivalent AML question — an AML **Environment** (conda/pip spec + fsd wheel),
+   built and versioned by AML itself, no ACR push required.
+6. ~~**Runner abstraction in `fsd.workflows`** — the seam so `--runner=snakemake|batch` selects
+   dispatcher without touching the task CLI.~~ **✅ RESOLVED by spec 36 D3**: `runner="local"|"aml"`,
+   `workflows.runners.run_aml` the only new dispatcher, `workflows/task.py` (the unit of work)
+   provably unchanged (D3 invariant 1).
+7. ~~**Idempotency / resume at scale** — today `done.txt` sentinels + skip-if-exists; how that
+   behaves with Batch task retries and blob eventual consistency.~~ **✅ RESOLVED by spec 36 D7**:
+   atomic-rename publish (temp path → `fs.rename`, §8.1's HNS-atomic-rename primitive) + the
+   artifact's own existence as the resume signal, replacing `done.txt`; sentinels move to
+   node-local scratch. Answered for AML task-recovery retries specifically (`AZURE_INFRA.md`
+   §8.2-equivalent evidence: Azure retries independently of `maxTaskRetryCount`), which generalizes
+   past Batch.
+8. **Cost/observability** — **partly addressed by spec 36 D9**: each AML shard writes
+   `_status/<k>.json` shaped like a spec-24 `_result.json`; the existing spec-11 `timings.json`
+   sidecar already lands next to each cube via `fsd.storage` and needed no change. Budget-alert
+   wiring itself is still open.
 
 ## 8. Things to confirm (not yet verified)
 

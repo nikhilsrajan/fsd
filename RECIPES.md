@@ -449,3 +449,29 @@ The four catalogs known to need this (spec 35 §6): the Austria `demo_e2e/imager
 catalog.parquet`, `mpc_baseline/imagery/`, the `rise` blob catalog from runbook
 `34-download-to-blob`, and per-cell slices in old run folders — folded into TODO #44's
 re-ingest rather than run separately.
+
+## Run the datacube fan-out on the AML cluster (spec 36, P2)
+
+`runner="aml"` dispatches the **same** build fan-out `runner="local"` runs, as shards on
+`rise`'s AML cluster, instead of Snakemake-on-this-laptop:
+
+```python
+from fsd import api
+
+api.create_training_data(
+    ..., runner="aml",
+    runner_kwargs=dict(
+        cluster="<the d16 cluster name>",       # AZURE_INFRA_PRIVATE.md
+        environment="fsd-aml-env:1",             # spec 36 D5 -- build once, see runbooks/36-aml-runner.md
+        root="abfss://<fs>@<account>.dfs.core.windows.net/<prefix>",
+        identity_client_id="<compute identity client id>",  # az identity show --query clientId
+        n_shards=8,                              # default: the cluster's max_instances
+    ),
+)
+```
+
+Or call the runner directly for a from-a-run-folder `input.csv` without going through
+`create_training_data`: `fsd.workflows.runners.run_aml(csv_filepath, cluster=..., ...)`.
+Never hardcode `cluster`/`identity_client_id` in anything under `fsd/` — they are
+concrete `rise` identifiers (`AZURE_INFRA_PRIVATE.md`, workspace root, not a git repo).
+Full phased validation (one shard → resume → real fan-out): `runbooks/36-aml-runner.md`.

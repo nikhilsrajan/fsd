@@ -2,9 +2,52 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-21_
+_Last updated: 2026-07-22_
 
-## ⭐ SPEC 36 **SIGNED OFF** + fork resolved → AML + Phase 0 green on the cluster (2026-07-21, Opus@high). **→ NEXT: `/handoff` to a Sonnet@medium session to IMPLEMENT spec 36 (11 deliverables, §5).**
+## ⭐ SPEC 36 **IMPLEMENTED** (Sonnet@medium, 2026-07-22). **→ NEXT: Opus@high review against §5's deliverable table + §4's reuse ledger; then the user runs `runbooks/36-aml-runner.md` Phases 1–3 on the real cluster.**
+
+- **All 11 deliverables (§5) landed.** `pyproject.toml` `[aml]` extra; `fsd.storage.fs.rename`
+  (the atomic-publish primitive); D7 atomic-rename publish + skip-if-final-exists
+  (`datacube/builder.py::_save_npy_atomic`, `workflows/task.py::run_task`'s first line); the
+  Snakefile's sentinels moved to node-local scratch and its remote-`export_folderpath`
+  `RuntimeError` removed; `workflows/shard.py` (new, thin, D3 invariant 2); `workflows/runners.py::
+  run_aml` (shard → submit → wait → aggregate → raise, D2/D3/D9/D10); `api.py`/`workflows/
+  create_datacube.py` accept `runner="aml"` end-to-end via a new `runner_kwargs` dict; D6a's three
+  geometry I/O sites (`setup`'s ROI read + per-unit write, `run_task`'s geometry read) now go
+  through `fsd.storage` + `BytesIO`/`to_json()`, closing TODO #40; docs (`AZURE_INFRA.md` §7,
+  `LIMITATIONS.md`, `TODO.md` #40/#41 both closed, `RECIPES.md`, `CHANGES.md`); run-book
+  `36-aml-runner.md` (Phases 1–3; Phase 0 stays as-is, already green).
+- **§4's reuse ledger held**: `workflows/task.py` is byte-for-byte unchanged except its new
+  first-line skip-if-final-exists check (D3 invariant 1's spirit — no *pipeline* logic moved);
+  `datacube/`, `raster/`, `bands/`, `catalog/`, `sources/` untouched except `datacube/builder.py`'s
+  save step (atomic publish, D7) and `catalog/`/`sources/` are genuinely untouched;
+  `storage/azure.py` untouched (D4 stayed an env var, not code); `azure-ai-ml` is imported lazily
+  **only** inside `runners.py::run_aml` (verified: `import fsd` succeeds with `azure.ai.ml` import
+  blocked via a `sys.meta_path` finder).
+- **All 9 tests (§7) pass**, plus a non-vacuousness check (test 8) and a couple of split-out
+  variants — **12 new tests total** in `tests/test_scale_runner.py`. Full suite: **343 passed / 3
+  skipped** (baseline was 331/3 at handoff), `ruff check src/ tests/` clean. No test touches Azure —
+  the AML client is a hand-rolled fake (`_FakeMLClient`) injected at `run_aml`'s `ml_client=`
+  boundary; `azure.ai.ml.command(...)` itself runs for real in tests (pure object construction, no
+  network) since the `[aml]` extra is a dev/test dependency, not a runtime one.
+- **D4 implemented as designed, no shortcuts**: `run_aml` takes `identity_client_id` as a required
+  caller-supplied parameter (never hardcoded — a concrete `rise` identity id has no business in a
+  public repo) and sets it as the job's `AZURE_CLIENT_ID` env var; test 5 pins that nothing else in
+  `fsd/` would explain why it's there.
+- **One deliberate design call beyond the spec's literal wording, recorded for review:** `run_aml`'s
+  `ml_client=` injection point is real `MLClient`-shaped (constructed via `azure.ai.ml.MLClient(...)`
+  when not injected) rather than a narrower custom submit-function seam — this lets
+  `azure.ai.ml.command(...)` build a **real** `Command` object in both the production and test path
+  (test 5 asserts against a real SDK object's `.environment_variables`), rather than fsd inventing
+  its own parallel job-spec representation that would need translating at the real-submission
+  boundary. Flag at review if this reads as scope drift from D3 invariant 3's "imported lazily" —
+  the import site is still exactly one function, `run_aml`, and still lazy (verified above).
+- **Not done in this session (by design — Claude never runs networked/pipeline scripts,
+  `CLAUDE.md`):** Phases 1–3 of `runbooks/36-aml-runner.md` (one shard, resume, real fan-out on the
+  actual `rise` cluster) and building the AML Environment (D5) for real. Both are runbooks for the
+  user.
+
+## ⭐ SPEC 36 **SIGNED OFF** + fork resolved → AML + Phase 0 green on the cluster (2026-07-21, Opus@high). (superseded by the entry above — implementation is done)
 
 - **✅ `specs/36-scale-runner.md` SIGNED OFF (user, 2026-07-21).** Design is frozen; implementation
   has not started. Read the spec, not this entry, for the design — §3 has D1–D10, §4 is the reuse

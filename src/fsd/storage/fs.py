@@ -44,6 +44,7 @@ __all__ = [
     "read_parquet",
     "write_parquet",
     "peek_parquet_attrs",
+    "rename",
     "transfer",
     "to_vsi",
     "is_local",
@@ -135,6 +136,20 @@ def get(remote_path: str, local_path: str, **storage_options: Any) -> None:
     if parent:
         os.makedirs(parent, exist_ok=True)
     fs.get_file(rpath, local_path)
+
+
+def rename(src_path: str, dst_path: str, **storage_options: Any) -> None:
+    """Move `src_path` onto `dst_path` on one fsspec filesystem, in a single `mv`.
+
+    The atomic-publish primitive for D7 (spec 36): on an HNS Azure account rename is a
+    single metadata operation, and locally it is `os.rename` -- so a writer that saves
+    to `src_path` and renames onto `dst_path` at the end leaves no window where a reader
+    can observe a partial artifact.
+    """
+    fs, spath = _fs_and_path(src_path, storage_options)
+    _, dpath = _fs_and_path(dst_path, storage_options)
+    _ensure_parent(fs, dpath)
+    fs.mv(spath, dpath)
 
 
 def ls(url: str, **storage_options: Any) -> list[str]:

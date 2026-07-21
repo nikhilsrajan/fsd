@@ -1,9 +1,12 @@
 # Spec 36 — the scale runner (P2): dispatch the existing unit of work onto Azure ML
 
-> **Status: ✅ SIGNED OFF (user, 2026-07-21).** Written by Opus@high after the Batch-vs-AML fork was
-> closed by measurement (`runbooks/36-runner-fork-probe.md`, `AZURE_INFRA.md` §3.1), and after
-> **Phase 0 validated D4 on the cluster** (`runbooks/36-phase0-identity-smoke.md`, green). Implementation
-> is a **Sonnet@medium session** against this spec — nothing here is built yet.
+> **Status: ✅ SIGNED OFF (user, 2026-07-21); IMPLEMENTED (Sonnet@medium, 2026-07-22), pending
+> review + Phases 1–3.** Written by Opus@high after the Batch-vs-AML fork was closed by measurement
+> (`runbooks/36-runner-fork-probe.md`, `AZURE_INFRA.md` §3.1), and after **Phase 0 validated D4 on
+> the cluster** (`runbooks/36-phase0-identity-smoke.md`, green). All 11 deliverables (§5) landed;
+> all 9 tests (§7) pass (343 passed / 3 skipped locally, up from the 331/3 baseline; `ruff` clean;
+> `import fsd` verified to not require `azure-ai-ml`). Phases 1–3 (`runbooks/36-aml-runner.md`) are
+> the real-cluster validation — user-run, not yet executed.
 >
 > **Sign-off decision on §8 Q4 (user):** **TODO #40 (ROI geometry through `fsd.storage`) is fixed
 > inside this spec**, not as a prerequisite commit — see D6a and deliverable 11.

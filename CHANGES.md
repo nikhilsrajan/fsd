@@ -4,6 +4,44 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## The AML scale runner — `runner="aml"`, plus local resumability on blob (spec 36, 2026-07-21/22)
+
+Closes TODO #40/#41. Gives the runner seam (spec 10 Seam 2) a second backend without touching the
+unit of work: `workflows/task.py::run_task` is byte-for-byte the function spec 08 defined, and
+`datacube/`, `raster/`, `bands/`, `catalog/`, `sources/` are untouched (spec 36 §4's reuse ledger).
+
+- **`runner="aml"` dispatches shards of `input.csv` onto the `rise` AML cluster**
+  (`workflows/runners.py::run_aml`): shard → submit one command job per shard (each running
+  `python -m fsd.workflows.shard <shard_csv_url> --cores N`, which calls back into the **existing**
+  `run_local`) → wait → aggregate `_status/<k>.json` → raise, listing which shards failed. The AML
+  SDK (`azure-ai-ml`) is imported lazily inside `run_aml` only — `import fsd` never requires it (new
+  `[aml]` extra, opt-in, not in the default install).
+- **Idempotency changed for both runners, not just AML** (D7): a task whose `datacube.npy` already
+  exists at `export_folderpath` now returns immediately (`run_task`'s first line) instead of
+  rebuilding, and each artifact publish is temp-path-then-`fs.rename` (`datacube/builder.py::
+  _save_npy_atomic`) rather than a direct write — a reader never observes a partial artifact, and a
+  recovery-retried shard skips every cube it already finished. Metadata publishes before the
+  datacube (the datacube's existence is the resume signal, so it must imply the metadata is done).
+- **The local Snakemake runner's own `start.txt`/`done.txt` sentinels moved to node-local scratch**
+  (`_snakefiles/create_datacube/Snakefile`), keyed by a hash of `export_folderpath` instead of
+  living inside it. **Behavior change:** the Snakefile's `RuntimeError` on a remote
+  `export_folderpath` is gone — the local runner now works with artifacts on blob (durable resume
+  is `run_task`'s own existence check, not Snakemake's DAG, across separate invocations/machines).
+- **ROI/label geometry I/O now goes through `fsd.storage`** (TODO #40, closing the last raw-path
+  I/O the spec-31 §6 audit found): `workflows/create_datacube.py::setup`'s two geometry sites and
+  `workflows/task.py::run_task`'s geometry read all go via `fs.open` + `BytesIO`/`to_json()` instead
+  of `gpd.read_file(path)`/`gdf.to_file(path)` directly. A local path behaves exactly as before
+  (`fsd.storage` already routes `file://` transparently) — this closes the gap that made ROI inputs
+  unreadable from a cluster node with no `shapefiles/` checkout.
+- **`fsd.storage.fs` gained `rename(src, dst)`** — the atomic-publish primitive (`fs.mv` under the
+  hood), generalizing the temp-then-rename pattern `fs.transfer` already used for downloads.
+- **`api.create_training_data`/`workflows.create_datacube.run_create_datacube` accept
+  `runner="aml"`** end-to-end, with a new `runner_kwargs` dict forwarded to `run_aml` (`cluster=`,
+  `environment=`, `root=`, `identity_client_id=`, ...). `_check_local_seams` now validates against
+  `("local", "aml")` instead of hardcoding `"local"`.
+- Azure **Batch** was evaluated and dropped, not deferred (quota: 6 dedicated cores vs. a 64-core
+  pool VM cannot allocate one node) — `AZURE_INFRA.md` §3.1, spec 36 D1.
+
 ## Declaration persistence — the collection declaration survives write→read (spec 35, 2026-07-21)
 
 Amends spec 34 §2a/§4, closing TODO #42 (below): the collection-level `SourceDeclaration`

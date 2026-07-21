@@ -1,14 +1,26 @@
 # Local-runner Snakefile for batch datacube creation.
-# Spec: specs/08-workflows.md
+# Spec: specs/08-workflows.md, specs/36-scale-runner.md (D7).
 #
 # One job per input.csv row, each shelling out to the runner-agnostic task:
 #     python -m fsd.workflows.task ...
 # start.txt / done.txt sentinels give resumability (Snakemake skips rows whose
-# done.txt exists); a small deterministic jitter staggers parallel job starts.
-# Located at runtime via importlib.resources (see runners._snakefile_path).
+# done.txt exists) *within one invocation on one machine*; a small deterministic
+# jitter staggers parallel job starts. Located at runtime via importlib.resources
+# (see runners._snakefile_path).
+#
+# D7 (spec 36): sentinels live on node-local scratch, keyed by a hash of
+# export_folderpath, decoupled from the artifact destination -- they are this
+# invocation's own bookkeeping, not durable state. The durable "did this cube
+# already get built" signal is the artifact's own existence (datacube.npy), checked
+# by `fsd.workflows.task.run_task` itself (works whether export_folderpath is local
+# or a remote fsd.storage URL, e.g. abfss://). That is what lets a shard retried on a
+# fresh node (no scratch history) skip every cube it already finished, and is why this
+# Snakefile no longer needs to reject a remote export_folderpath.
 
+import hashlib
 import os
 import sys
+import tempfile
 import time
 from zlib import adler32
 
@@ -31,6 +43,8 @@ input_df = pd.read_csv(config["input_csv"])
 njobs = int(config.get("njobs", 1))
 njobs_load_images = int(config.get("njobs_load_images", 1))
 jitter_span = int(config.get("jitter_span", 1))
+# Node-local scratch root for sentinels only (never the artifact destination).
+scratch_dir = config.get("scratch_dir") or os.path.join(tempfile.gettempdir(), "fsd-snakemake-scratch")
 
 START_OUTFILENAME = "start.txt"
 FINAL_OUTFILENAME = "done.txt"
@@ -39,33 +53,15 @@ row_by_done = {}
 final_outputs = []
 for _, row in input_df.iterrows():
     export_folderpath = row["export_folderpath"]
-    if not _fs.is_local(export_folderpath):
-        # The local Snakemake runner's own start.txt/done.txt sentinels (touch(),
-        # below) are plain os.makedirs/open calls, not routed through fsd.storage —
-        # on a remote export_folderpath they would silently create a garbage local
-        # directory (literally named e.g. "abfss:", "data@acct.dfs.core.windows.net",
-        # ...) instead of a real sentinel, breaking resumability without raising
-        # (specs/31 §6 finding, 2026-07-17). Fail loud instead: the per-cube artifact
-        # itself (datacube.npy etc, written by `fsd.workflows.task` via fs.save_npy)
-        # is fully storage-seam-safe on blob — only Snakemake's OWN bookkeeping is
-        # local-only today. Keep `run_folderpath` local (the default is
-        # `<export_folderpath>/run`, so pass `run_folderpath=` explicitly to
-        # `create_training_data` when `export_folderpath` is remote), or invoke
-        # `python -m fsd.workflows.task` directly (TODO: a P2+ remote-sentinel design).
-        raise RuntimeError(
-            f"the local Snakemake runner's sentinel files must live on a local "
-            f"filesystem; got a remote export_folderpath: {export_folderpath!r}. "
-            "Pass a local run_folderpath to create_training_data (the datacube "
-            "artifact writes are storage-seam-safe on blob regardless), or invoke "
-            "`python -m fsd.workflows.task` directly for a single remote build."
-        )
-    # os.path.abspath is only meaningful (and safe) for a local path — setup()
-    # already applied it; re-applying here is idempotent (the raise above rules
-    # out the one case where it would be unsafe).
-    export_folderpath = os.path.abspath(export_folderpath)
-    done_output = os.path.join(export_folderpath, FINAL_OUTFILENAME)
+    if _fs.is_local(export_folderpath):
+        # os.path.abspath is only meaningful (and safe) for a local path — setup()
+        # already applied it; re-applying here is idempotent (specs/31 §6).
+        export_folderpath = os.path.abspath(export_folderpath)
+    key = hashlib.sha1(export_folderpath.encode()).hexdigest()
+    scratch = os.path.join(scratch_dir, key)
+    done_output = os.path.join(scratch, FINAL_OUTFILENAME)
     row_by_done[done_output] = {
-        "start_output": os.path.join(export_folderpath, START_OUTFILENAME),
+        "start_output": os.path.join(scratch, START_OUTFILENAME),
         "shapefilepath": row["shapefilepath"],
         "catalog_filepath": row["catalog_filepath"],
         "startdate": row["startdate"],
