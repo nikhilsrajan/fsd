@@ -89,6 +89,21 @@ class CdseCredentials:
             note=data.get("note"),
         )
 
+    @classmethod
+    def from_json_str(cls, s: str) -> "CdseCredentials":
+        """Sibling of `from_json`: parse an in-memory JSON string using the same
+        legacy key format, instead of a file path (spec 37 D5 — the value read
+        back from a Key Vault secret, which has no filepath of its own)."""
+        data = json.loads(s)
+        return cls(
+            sh_client_id=data.get(_JSON_SH_CLIENT_ID),
+            sh_client_secret=data.get(_JSON_SH_CLIENT_SECRET),
+            s3_access_key=data.get(_JSON_S3_ACCESS_KEY),
+            s3_secret_key=data.get(_JSON_S3_SECRET_KEY),
+            s3_keys_expire=data.get("s3_keys_expire"),
+            note=data.get("note"),
+        )
+
     def to_json(self, filepath: str, **storage_options) -> None:
         """Write to JSON in the legacy key format (round-trips with `from_json`)."""
         data = {
@@ -672,9 +687,10 @@ def download(
     `cog` (default True, spec 14): convert each fetched JP2 band to a lossless COG
     (`Bxx.tif`, with overviews) on arrival — the native ingest format, which the
     datacube build reads far faster (spec 13). `cog=False` keeps the native `.jp2`
-    (and never staggers a convert pool). Conversion needs a **local**
-    `root_folderpath`; a remote (`s3://`/`az://`) dst with `cog=True` raises (the
-    stage-local→convert→upload path is deferred).
+    (and never staggers a convert pool). A remote (`s3://`/`az://`) `root_folderpath`
+    with `cog=True` stages to local scratch, converts there, then pushes the whole
+    run to the remote root (spec 34 §5, `_push_scratch_to_remote` below) — a
+    whole-run batch push, not per-file streaming (that's TODO #31).
 
     `max_convert_procs` (default `config.MAX_CONVERT_PROCS`), `max_staged` (default:
     `_default_max_staged`, disk-aware) and `convert_executor` (default: a real

@@ -20,6 +20,11 @@ from importlib.resources import files
 
 import pandas as pd
 
+from fsd import config
+from fsd import secrets as _secrets
+from fsd.sources import mpc as _mpc
+from fsd.sources.cdse import CdseCredentials as _CdseCredentials
+from fsd.sources.cdse import query_catalog as _cdse_query_catalog
 from fsd.storage import fs
 
 _SNAKEFILE = "workflows/_snakefiles/create_datacube/Snakefile"
@@ -205,10 +210,10 @@ def shard_units(units: list, n_shards: int) -> list[list]:
     return [g for g in groups if g]
 
 
-def _aml_preflight(ml_client, *, cluster: str, environment: str, root: str,
-                    input_csv: str, n_shards: int | None) -> None:
-    """D10: know before you spend. Cheap checks that turn a 20-minutes-later cluster
-    failure into an instant one."""
+def _aml_preflight_common(ml_client, *, cluster: str, environment: str, root: str) -> list[str]:
+    """Cluster/environment/storage-root checks shared by `run_aml` (spec 36 D10)
+    and `run_aml_download` (spec 37 D7). Returns error strings; never raises --
+    each caller aggregates alongside its own source-specific checks."""
     errs = []
     try:
         compute = ml_client.compute.get(cluster)
@@ -233,6 +238,14 @@ def _aml_preflight(ml_client, *, cluster: str, environment: str, root: str,
         fs.rm(probe)
     except Exception as exc:  # noqa: BLE001
         errs.append(f"storage root {root!r} not reachable/writable from the driver: {exc}")
+    return errs
+
+
+def _aml_preflight(ml_client, *, cluster: str, environment: str, root: str,
+                    input_csv: str, n_shards: int | None) -> None:
+    """D10: know before you spend. Cheap checks that turn a 20-minutes-later cluster
+    failure into an instant one."""
+    errs = _aml_preflight_common(ml_client, cluster=cluster, environment=environment, root=root)
     if not fs.exists(input_csv):
         errs.append(f"input_csv does not exist: {input_csv!r}")
     else:
@@ -244,6 +257,87 @@ def _aml_preflight(ml_client, *, cluster: str, environment: str, root: str,
         errs.append(f"n_shards must be >= 1, got {n_shards!r}.")
     if errs:
         raise ValueError("run_aml preflight failed:\n  - " + "\n  - ".join(errs))
+
+
+def _aml_download_preflight(
+    ml_client, *, cluster: str, environment: str, root: str, source: str,
+    n_assets: int, vault_url: str | None, secret_name: str | None,
+    get_secret, remaining_quota_gb: float | None, estimated_gb: float | None,
+) -> list[str]:
+    """D7: know before you spend, for a download dispatch. Cluster/environment/root
+    (shared, `_aml_preflight_common`) + discovery non-emptiness + (CDSE-only) the KV
+    secret resolves/parses and its S3 keys are not expired. Raises on any hard
+    failure; returns a (possibly empty) list of **warnings** (non-fatal) -- today
+    just the CDSE quota estimate (D1/D7)."""
+    errs = _aml_preflight_common(ml_client, cluster=cluster, environment=environment, root=root)
+    if n_assets < 1:
+        errs.append("discovery matched 0 assets for this roi/date-window.")
+    warnings: list[str] = []
+    if source == "cdse":
+        if not vault_url or not secret_name:
+            errs.append("source='cdse' requires vault_url and secret_name (D5 Key Vault creds).")
+        else:
+            try:
+                creds = _CdseCredentials.from_json_str(get_secret(vault_url, secret_name))
+                creds.require_s3()
+                if creds.is_expired():
+                    errs.append(
+                        f"CDSE S3 keys expired (s3_keys_expire={creds.s3_keys_expire!r})."
+                    )
+            except Exception as exc:  # noqa: BLE001 - report, don't crash on a preflight check
+                errs.append(
+                    f"Key Vault secret {secret_name!r} at {vault_url!r} did not resolve/parse: {exc}"
+                )
+        if remaining_quota_gb is not None and estimated_gb is not None and estimated_gb > remaining_quota_gb:
+            warnings.append(
+                f"estimated download (~{estimated_gb:.0f} GB) exceeds the ~{remaining_quota_gb:.0f} GB "
+                "remaining CDSE 30-day quota -- expect throttling to 1 MB/s partway through "
+                "(https://documentation.dataspace.copernicus.eu/Quotas.html)."
+            )
+    if errs:
+        raise ValueError("run_aml_download preflight failed:\n  - " + "\n  - ".join(errs))
+    return warnings
+
+
+def _aml_submit_and_wait(
+    ml_client, jobs: dict, run_root: str, run_id: str, *, poll_interval_seconds: int = 30,
+) -> dict:
+    """Submit each prebuilt AML `command(...)` job in `jobs` (`{k: job}`), wait for
+    all to reach a terminal status, aggregate `<run_root>/_status/<k>.json`, and
+    raise on any failed/circuit-tripped job. Shared by `run_aml` (spec 36 -- one job
+    per datacube shard) and `run_aml_download` (spec 37 -- one CDSE job or N MPC
+    shard jobs, D1/D9); the only difference between the two callers is how `jobs`
+    gets built, not how submission/waiting/aggregation works."""
+    job_names: dict[int, str] = {}
+    for k, job in jobs.items():
+        submitted = ml_client.jobs.create_or_update(job)
+        job_names[k] = submitted.name
+
+    statuses: dict[int, str] = {}
+    while True:
+        statuses = {k: ml_client.jobs.get(name).status for k, name in job_names.items()}
+        if all(s in _TERMINAL_JOB_STATUSES for s in statuses.values()):
+            break
+        time.sleep(poll_interval_seconds)
+
+    failed = [k for k, s in statuses.items() if s != "Completed"]
+    reports: dict[int, dict] = {}
+    for k in job_names:
+        status_url = f"{run_root}/_status/{k}.json"
+        if fs.exists(status_url):
+            with fs.open(status_url, "r") as f:
+                report = json.load(f)
+            reports[k] = report
+            if (report.get("status") != "ok" or report.get("circuit_tripped")) and k not in failed:
+                failed.append(k)
+        else:
+            reports[k] = {"unit": k, "aml_job_status": statuses[k]}
+    failed = sorted(set(failed))
+
+    if failed:
+        raise RuntimeError(f"job(s)/shard(s) failed: {failed} (run_id={run_id!r})")
+
+    return {"run_id": run_id, "job_statuses": statuses, "reports": reports}
 
 
 def run_aml(
@@ -310,13 +404,13 @@ def run_aml(
 
     aml_command = _import_aml_command()
 
-    job_names: dict[int, str] = {}
+    jobs: dict[int, object] = {}
     for k, rows in enumerate(shards):
         shard_url = f"{run_root}/shards/{k}.csv"
         with fs.open(shard_url, "w") as f:
             pd.DataFrame(rows).to_csv(f, index=False)
 
-        job = aml_command(
+        jobs[k] = aml_command(
             command=f"python -m fsd.workflows.shard {shard_url} --cores {cores}",
             environment=environment,
             compute=cluster,
@@ -324,32 +418,176 @@ def run_aml(
             display_name=f"fsd-shard-{run_id}-{k}",
             experiment_name=f"fsd-{run_id}",
         )
-        submitted = ml_client.jobs.create_or_update(job)
-        job_names[k] = submitted.name
 
-    statuses: dict[int, str] = {}
-    while True:
-        statuses = {k: ml_client.jobs.get(name).status for k, name in job_names.items()}
-        if all(s in _TERMINAL_JOB_STATUSES for s in statuses.values()):
-            break
-        time.sleep(poll_interval_seconds)
+    result = _aml_submit_and_wait(ml_client, jobs, run_root, run_id,
+                                   poll_interval_seconds=poll_interval_seconds)
+    return {"run_id": run_id, "n_shards": len(shards),
+            "job_statuses": result["job_statuses"], "shards": result["reports"]}
 
-    failed = sorted(k for k, s in statuses.items() if s != "Completed")
-    shard_reports: dict[int, dict] = {}
-    for k in job_names:
-        status_url = f"{run_root}/_status/{k}.json"
-        if fs.exists(status_url):
-            with fs.open(status_url, "r") as f:
-                report = json.load(f)
-            shard_reports[k] = report
-            if report.get("status") != "ok" and k not in failed:
-                failed.append(k)
-        else:
-            shard_reports[k] = {"shard": k, "aml_job_status": statuses[k]}
-    failed = sorted(set(failed))
 
-    if failed:
-        raise RuntimeError(f"run_aml: shard(s) failed: {failed} (run_id={run_id!r})")
+# --- P2: the Azure ML download dispatcher (spec 37) --------------------------
 
-    return {"run_id": run_id, "n_shards": len(shards), "job_statuses": statuses,
-            "shards": shard_reports}
+
+def _import_command_job_limits():
+    """Lazy handle to `azure.ai.ml.entities.CommandJobLimits` (D6) -- same
+    injection-boundary pattern as `_import_aml_command` (spec 36 D3 invariant 3),
+    so tests substitute a fake and never require the `[aml]` extra."""
+    from azure.ai.ml.entities import CommandJobLimits
+
+    return CommandJobLimits
+
+
+def _estimate_timeout_seconds(
+    estimated_gb: float, *, conservative_mb_per_s: float = 10.0, floor_seconds: int = 1800,
+) -> int:
+    """D6: size an explicit job timeout from a GB estimate at a conservative
+    throughput (well under CDSE's 4x20 MB/s ceiling and MPC's blob throughput, so a
+    healthy transfer never trips it), with a floor so a tiny/empty estimate still
+    gets a sane timeout."""
+    return max(int(estimated_gb * 1024 / conservative_mb_per_s), floor_seconds)
+
+
+def _iso(dt) -> str:
+    return pd.Timestamp(dt).isoformat()
+
+
+def run_aml_download(
+    roi: str,
+    startdate,
+    enddate,
+    bands: list[str],
+    dst_folderpath: str,
+    catalog_filepath: str,
+    *,
+    source: str,
+    cluster: str,
+    environment: str,
+    root: str,
+    identity_client_id: str,
+    max_tiles: int,
+    vault_url: str | None = None,
+    secret_name: str | None = None,
+    max_cloudcover: float | None = None,
+    cog: bool = True,
+    n_shards: int | None = None,
+    remaining_quota_gb: float | None = None,
+    timeout_seconds: int | None = None,
+    run_id: str | None = None,
+    ml_client=None,
+    subscription_id: str | None = None,
+    resource_group_name: str | None = None,
+    workspace_name: str | None = None,
+    poll_interval_seconds: int = 30,
+    get_secret=None,
+) -> dict:
+    """AML download dispatcher (spec 37 D1/D2/D3/D5/D6/D7/D9): per-source dispatch
+    shape -- CDSE submits **exactly one** whole-ROI job; MPC discovers on the
+    driver, `shard_units` the asset list, and submits **N** per-shard jobs. Both
+    wait, aggregate `_status/<k>.json`, and raise on any failed/circuit-tripped job
+    (`_aml_submit_and_wait`, shared with `run_aml`).
+
+    `roi` must be a url (any `fsd.storage`/geopandas-readable path) rather than an
+    in-memory GeoDataFrame -- the job that reads it runs on a different machine.
+
+    `vault_url`/`secret_name` (D5, CDSE only) are Key Vault coordinates -- caller-
+    supplied, never a concrete `rise` identifier hardcoded here (public repo).
+    Secrets never ride in the job spec: only these non-secret names go into the
+    command args; the node reads the value itself via `fsd.secrets.get_secret`
+    (substitutable here via `get_secret`, the D5 test seam) at run time. The same
+    `identity_client_id` (D4) that authorises blob also authorises Key Vault.
+
+    `ml_client` is the test/injection seam (D3 invariant 3, mirrors `run_aml`): pass
+    a fake with `.compute.get`, `.environments.get`, `.jobs.create_or_update`,
+    `.jobs.get` to avoid any network call.
+    """
+    if source not in ("cdse", "mpc"):
+        raise ValueError(f"source={source!r} must be one of 'cdse', 'mpc'.")
+
+    get_secret = get_secret or _secrets.get_secret
+
+    if ml_client is None:
+        from azure.ai.ml import MLClient
+        from azure.identity import DefaultAzureCredential
+
+        ml_client = MLClient(
+            DefaultAzureCredential(), subscription_id, resource_group_name, workspace_name
+        )
+
+    run_id = run_id or pd.Timestamp.now(tz="UTC").strftime("%Y%m%dT%H%M%SZ")
+    run_root = f"{root.rstrip('/')}/runs/{run_id}"
+    aml_command = _import_aml_command()
+    limits_cls = _import_command_job_limits()
+
+    if source == "cdse":
+        tiles = _cdse_query_catalog(roi, startdate, enddate, max_cloudcover=max_cloudcover)
+        n_assets = len(tiles)
+        estimated_gb = len(tiles) * config.APPROX_GB_PER_TILE
+
+        _aml_download_preflight(
+            ml_client, cluster=cluster, environment=environment, root=root,
+            source="cdse", n_assets=n_assets, vault_url=vault_url, secret_name=secret_name,
+            get_secret=get_secret, remaining_quota_gb=remaining_quota_gb, estimated_gb=estimated_gb,
+        )
+
+        timeout = timeout_seconds or _estimate_timeout_seconds(estimated_gb)
+        command = (
+            f"python -m fsd.workflows.download --roi {roi} "
+            f"--startdate {_iso(startdate)} --enddate {_iso(enddate)} "
+            f"--bands {','.join(bands)} --dst {dst_folderpath} --catalog {catalog_filepath} "
+            f"--max-tiles {max_tiles} --vault-url {vault_url} --secret-name {secret_name} "
+            f"--status-url {run_root}/_status/0.json"
+        )
+        if max_cloudcover is not None:
+            command += f" --max-cloudcover {max_cloudcover}"
+        if not cog:
+            command += " --no-cog"
+
+        jobs = {0: aml_command(
+            command=command, environment=environment, compute=cluster,
+            environment_variables={"AZURE_CLIENT_ID": identity_client_id},
+            display_name=f"fsd-download-cdse-{run_id}", experiment_name=f"fsd-download-{run_id}",
+            limits=limits_cls(timeout=timeout),
+        )}
+    else:
+        rows = _mpc.discover_shard_rows(
+            roi, startdate, enddate, bands, dst_folderpath, max_cloudcover=max_cloudcover
+        )
+        n_assets = len(rows)
+
+        _aml_download_preflight(
+            ml_client, cluster=cluster, environment=environment, root=root,
+            source="mpc", n_assets=n_assets, vault_url=vault_url, secret_name=secret_name,
+            get_secret=get_secret, remaining_quota_gb=None, estimated_gb=None,
+        )
+
+        if n_shards is None:
+            compute = ml_client.compute.get(cluster)
+            n_shards = getattr(compute, "max_instances", None) or 1
+        shards = shard_units(rows, n_shards)
+        timeout = timeout_seconds or _estimate_timeout_seconds(
+            n_assets * config.APPROX_GB_PER_TILE / max(len(bands), 1)
+        )
+
+        jobs = {}
+        for k, shard_rows in enumerate(shards):
+            shard_url = f"{run_root}/shards/{k}.csv"
+            with fs.open(shard_url, "w") as f:
+                pd.DataFrame(shard_rows).to_csv(f, index=False)
+
+            jobs[k] = aml_command(
+                command=(
+                    f"python -m fsd.workflows.download --shard {shard_url} "
+                    f"--dst {dst_folderpath} --catalog {catalog_filepath} "
+                    f"--status-url {run_root}/_status/{k}.json"
+                ),
+                environment=environment, compute=cluster,
+                environment_variables={"AZURE_CLIENT_ID": identity_client_id},
+                display_name=f"fsd-download-mpc-{run_id}-{k}",
+                experiment_name=f"fsd-download-{run_id}",
+                limits=limits_cls(timeout=timeout),
+            )
+
+    result = _aml_submit_and_wait(ml_client, jobs, run_root, run_id,
+                                   poll_interval_seconds=poll_interval_seconds)
+    return {"run_id": run_id, "source": source, "n_jobs": len(jobs),
+            "job_statuses": result["job_statuses"], "reports": result["reports"]}

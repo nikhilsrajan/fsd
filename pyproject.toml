@@ -45,6 +45,7 @@ grid = [           # ROI → S2-grid tiling (fsd.grid); optional so core stays l
 azure = [               # P1 compute seam (spec 31), opt-in — core stays lean
     "adlfs",            # fsspec Azure Blob backend
     "azure-identity",   # DefaultAzureCredential (adlfs auto-resolves it; GDAL VSI token needs it directly)
+    "azure-keyvault-secrets",  # spec 37 D5: read CDSE creds / PC_SDK_SUBSCRIPTION_KEY from Key Vault
 ]
 aml = [            # P2 compute seam (spec 36): the Azure ML scale runner, opt-in
     "azure-ai-ml",  # AML SDK v2 -- command jobs, environments, compute (runner="aml" only)
