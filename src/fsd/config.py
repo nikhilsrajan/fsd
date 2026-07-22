@@ -73,6 +73,13 @@ MPC_STAC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1"
 # tile/band runbook is trivial either way; kept small and hotspot-friendly.
 MPC_MAX_CONCURRENT = 4
 
+# Concurrency for `workflows.create_datacube.setup`'s per-shape control-file writes.
+# Unlike MAX_CONCURRENT_S3 (a CDSE *credential* cap) this bounds nothing but our own
+# round-trips: each shape is ~4-7 tiny blob calls whose cost is pure latency, so the
+# loop is latency-bound and scales with threads. Measured 2026-07-22 on `rise`: 900
+# shapes serially = ~1.8 s/shape (~27 min) with the catalog already read once.
+SETUP_MAX_CONCURRENT = 16
+
 # S3 transport timeouts (seconds). Without these a stalled connection hangs a worker
 # forever during a flaky CDSE window (BUG-001); with them it raises and our retry
 # layer handles it. read_timeout is per-socket-read, not total transfer time.

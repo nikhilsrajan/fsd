@@ -48,6 +48,44 @@ def _union_files(*files_values: str) -> str:
     return ",".join(sorted(names))
 
 
+def filter_gdf(
+    gdf: gpd.GeoDataFrame,
+    shapes_gdf: gpd.GeoDataFrame,
+    startdate: datetime.datetime,
+    enddate: datetime.datetime,
+) -> gpd.GeoDataFrame:
+    """Date-range (inclusive) + spatial-overlap filter over an **already-read** catalog.
+
+    The pure half of `TileCatalog.filter`, split out so a caller filtering *many*
+    shapes against *one* catalog can read the file once instead of once per shape.
+    That is not a micro-optimisation on a remote catalog: `create_datacube.setup`
+    over 900 shapes was 900 full downloads of the same `abfss://` parquet (~106 MiB
+    of redundant transfer, ~900 round-trips) because `filter` re-read the file on
+    every call.
+
+    Does not mutate `gdf` — the returned slice is a `.copy()` before the
+    `area_contribution` column is added, so one read is safely shared across calls.
+    `.attrs` (the spec-35 declaration stamp) propagates to the slice through pandas'
+    `__finalize__`, exactly as it did when each call re-read the file.
+    """
+    startdate = pd.to_datetime(startdate, utc=True)
+    enddate = pd.to_datetime(enddate, utc=True)
+
+    in_range = gdf[(gdf["timestamp"] >= startdate) & (gdf["timestamp"] <= enddate)]
+
+    # ROI union in the catalog CRS.
+    union_shape = shapely.unary_union(shapes_gdf.to_crs(gdf.crs)["geometry"])
+
+    overlapping = in_range[in_range.intersects(union_shape)].copy()
+
+    union_area = union_shape.area
+    overlapping["area_contribution"] = overlapping["geometry"].apply(
+        lambda g: g.intersection(union_shape).area / union_area * 100
+    )
+
+    return overlapping
+
+
 class TileCatalog:
     def __init__(self, filepath: str, declaration: SourceDeclaration | None = None):
         self.filepath = filepath
@@ -170,22 +208,8 @@ class TileCatalog:
 
         Adds `area_contribution` (% of the ROI union each tile covers). This is
         exactly the query the datacube builder consumes.
+
+        Reads the catalog file on **every** call. Filtering many shapes against one
+        catalog should read once and call `filter_gdf` per shape instead.
         """
-        gdf = self.read()
-
-        startdate = pd.to_datetime(startdate, utc=True)
-        enddate = pd.to_datetime(enddate, utc=True)
-
-        in_range = gdf[(gdf["timestamp"] >= startdate) & (gdf["timestamp"] <= enddate)]
-
-        # ROI union in the catalog CRS.
-        union_shape = shapely.unary_union(shapes_gdf.to_crs(gdf.crs)["geometry"])
-
-        overlapping = in_range[in_range.intersects(union_shape)].copy()
-
-        union_area = union_shape.area
-        overlapping["area_contribution"] = overlapping["geometry"].apply(
-            lambda g: g.intersection(union_shape).area / union_area * 100
-        )
-
-        return overlapping
+        return filter_gdf(self.read(), shapes_gdf, startdate, enddate)

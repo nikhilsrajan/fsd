@@ -3,6 +3,8 @@
 import datetime
 import importlib.util
 import os
+import time
+from unittest import mock
 
 import geopandas as gpd
 import numpy as np
@@ -77,6 +79,94 @@ def _two_shapes(path):
     gdf = gpd.GeoDataFrame({"id": ["s1", "s2"], "label": [0, 1],
                             "geometry": [g1.iloc[0], g2.iloc[0]]}, crs="EPSG:4326")
     gdf.to_file(str(path), driver="GeoJSON")
+
+
+def test_setup_reads_catalog_once_regardless_of_shape_count(tmp_path, monkeypatch):
+    """setup() must read the catalog file ONCE, not once per shape.
+
+    `TileCatalog.filter` re-reads the file on every call, so the old per-shape call
+    made setup cost one full catalog download per shape -- invisible locally (page
+    cache) and brutal on `abfss://`: 900 shapes = 900 downloads of the same parquet
+    before a single job was dispatched (measured 2026-07-22 on the rise cluster).
+    Counting reads is the only way to keep that from silently coming back.
+    """
+    from fsd.storage import fs as storage_fs
+
+    cat = tmp_path / "catalog.parquet"
+    shapes = tmp_path / "shapes.geojson"
+    _make_catalog(cat, tmp_path)
+    _two_shapes(shapes)
+
+    reads: list[str] = []
+    real_read_parquet = storage_fs.read_parquet
+
+    def counting_read_parquet(path, **kw):
+        reads.append(str(path))
+        return real_read_parquet(path, **kw)
+
+    monkeypatch.setattr(storage_fs, "read_parquet", counting_read_parquet)
+
+    create_datacube.setup(
+        catalog_filepath=str(cat), timestamp_col="timestamp",
+        shapefilepath=str(shapes), id_col="id", run_folderpath=str(tmp_path / "run"),
+        startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
+        bands=["B04", "B08", "SCL"], scl_mask_classes=[8, 9], mosaic_days=20,
+        csv_filepath=str(tmp_path / "run" / "input.csv"), label_col="label",
+    )
+
+    # Two shapes, but the source catalog is read exactly once. (The per-shape slices
+    # written under run/ are different files and are not read back here.)
+    assert [r for r in reads if r == str(cat)] == [str(cat)]
+
+
+def test_setup_manifest_order_is_shapefile_order_not_completion_order(tmp_path):
+    """Concurrency must not reorder `input.csv`.
+
+    Shapes are prepared in a thread pool, so completion order is nondeterministic;
+    rows are placed by index and compacted. Downstream (`shard_units`, the flatten
+    concatenation) treats the manifest as ordered, so a reordering would be a silent
+    behaviour change. Staggering the per-shape cost makes completion order differ
+    from submission order with near-certainty.
+    """
+    from fsd.storage import fs as storage_fs
+
+    cat = tmp_path / "catalog.parquet"
+    shapes = tmp_path / "shapes.geojson"
+    _make_catalog(cat, tmp_path)
+
+    # 6 nested boxes, all overlapping the tile -> every shape yields a work-unit.
+    ids = [f"s{i}" for i in range(6)]
+    geoms = [
+        gpd.GeoSeries([box(500005 - i, 4999965 - i, 500035 + i, 4999995 + i)],
+                      crs=CRS).to_crs("EPSG:4326").iloc[0]
+        for i in range(6)
+    ]
+    gpd.GeoDataFrame({"id": ids, "geometry": geoms}, crs="EPSG:4326").to_file(
+        str(shapes), driver="GeoJSON")
+
+    # Make the first shapes the SLOWEST, so completion order inverts submission order.
+    real_write_parquet = storage_fs.write_parquet
+    order: list[str] = []
+
+    def staggered_write_parquet(path, df, **kw):
+        idx = int(str(path).rsplit("/", 2)[1][1:]) if "/s" in str(path) else 0
+        time.sleep(0.05 * (6 - idx))
+        order.append(str(path))
+        return real_write_parquet(path, df, **kw)
+
+    with mock.patch.object(storage_fs, "write_parquet", staggered_write_parquet):
+        create_datacube.setup(
+            catalog_filepath=str(cat), timestamp_col="timestamp",
+            shapefilepath=str(shapes), id_col="id", run_folderpath=str(tmp_path / "run"),
+            startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
+            bands=["B04"], scl_mask_classes=[8], mosaic_days=20,
+            csv_filepath=str(tmp_path / "run" / "input.csv"), label_col=None,
+            max_concurrent=6,
+        )
+
+    df = pd.read_csv(tmp_path / "run" / "input.csv")
+    assert df["id"].tolist() == ids                    # shapefile order, not completion order
+    assert [o for o in order][0] != df["catalog_filepath"].iloc[0]  # they really did differ
 
 
 def test_setup_writes_workunits(tmp_path):

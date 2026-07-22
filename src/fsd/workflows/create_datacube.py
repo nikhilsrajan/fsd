@@ -2,8 +2,8 @@
 
 Spec: specs/08-workflows.md. Preserves the demo_01 UX of run_create_datacube.
 
-Setup pre-slices the big catalog once per shape (via TileCatalog.filter) so each
-parallel build job reads only its small subset — no shared-file contention. The
+Setup reads the catalog once, then pre-slices it per shape (via `catalog.filter_gdf`)
+so each parallel build job reads only its small subset — no shared-file contention. The
 per-row start/end dates are the *actual* tile-derived min/max (the median_mosaic
 anchor, spec 04 caveat / TODO #2). This is the shape-centric workflow TODO #15 will
 later optimize.
@@ -11,15 +11,17 @@ later optimize.
 
 from __future__ import annotations
 
+import concurrent.futures
 import datetime
 import io
 import os
+import time
 
 import geopandas as gpd
 import pandas as pd
 
 from fsd import config
-from fsd.catalog.catalog import TileCatalog
+from fsd.catalog.catalog import TileCatalog, filter_gdf
 from fsd.storage import fs
 from fsd.workflows import runners
 
@@ -41,11 +43,19 @@ def setup(
     csv_filepath: str,
     label_col: str | None,
     mosaic_scheme: str = config.MOSAIC_SCHEME,
+    max_concurrent: int = config.SETUP_MAX_CONCURRENT,
 ) -> None:
     """Per geometry: write geometry.geojson + catalog.parquet slice + input.csv row.
 
-    Reuses `TileCatalog.filter` for the date+overlap slice (which also persists
-    `area_contribution`). Shapes with no intersecting tiles are skipped with a note.
+    Reads the catalog **once**, then reuses `catalog.filter_gdf` for each shape's
+    date+overlap slice (which also persists `area_contribution`). Shapes with no
+    intersecting tiles are skipped with a note. Prints live progress + ETA: the
+    per-shape writes are network I/O on a remote run folder, so this can run for
+    minutes and must not look like a hang.
+
+    Shapes are prepared concurrently (`max_concurrent` threads) because that work is
+    latency-bound blob I/O, not CPU. `input.csv` row order still follows the
+    shapefile's order. Pass `max_concurrent=1` for the old serial behaviour.
 
     The mosaic anchor written to each row is the caller's `startdate`/`enddate` (not
     the per-shape actual acquisition min/max), so every shape mosaics on the same
@@ -55,15 +65,45 @@ def setup(
     """
     startdate = pd.to_datetime(startdate, utc=True)
     enddate = pd.to_datetime(enddate, utc=True)
-    catalog = TileCatalog(catalog_filepath)
     # D6a (spec 36, TODO #40): read via fsd.storage + BytesIO -- a local path behaves
     # exactly as before (fsd.storage routes file:// transparently), and this closes the
     # last raw-path geometry read that a cluster node (no `shapefiles/` checkout) can't do.
     with fs.open(shapefilepath, "rb") as f:
         shapes_gdf = gpd.read_file(io.BytesIO(f.read()))
 
-    rows = []
-    for _, srow in shapes_gdf.iterrows():
+    # Read the catalog ONCE for the whole run, then filter it in memory per shape
+    # (`filter_gdf`). `TileCatalog.filter` re-reads the file on every call, which on a
+    # remote catalog made setup cost one full download per shape: 900 shapes over
+    # `abfss://` = 900 downloads of the same ~121 KiB parquet (~106 MiB, ~900 VPN
+    # round-trips) before a single job was submitted. Same rows out, one read in.
+    catalog_gdf = TileCatalog(catalog_filepath).read()
+
+    n_shapes = len(shapes_gdf)
+    print(f"[setup] catalog read once: {len(catalog_gdf)} rows, for {n_shapes} shapes",
+          flush=True)
+
+    t0 = time.time()
+    last_print = 0.0
+
+    def _tick(done: int, force: bool = False) -> None:
+        """Live progress + ETA -- setup does per-shape network I/O and can run for
+        many minutes on a remote run folder; silence is indistinguishable from a hang."""
+        nonlocal last_print
+        now = time.time()
+        if not force and now - last_print < 2.0:
+            return
+        last_print = now
+        elapsed = now - t0
+        rate = done / elapsed if elapsed > 0 and done else 0.0
+        eta = f"{(n_shapes - done) / rate:.0f}s" if rate else "?"
+        pct = 100 * done / n_shapes if n_shapes else 100.0
+        print(f"[setup] {done}/{n_shapes} shapes ({pct:.0f}%) | {rate:.1f} shapes/s "
+              f"| elapsed {elapsed:.0f}s | eta {eta}", flush=True)
+
+    def _prepare(srow) -> dict | None:
+        """One shape's control files + its input.csv row. Pure per-shape work: it
+        touches only this shape's own folder, and reads (never mutates) the shared
+        `catalog_gdf` — which is what makes the pool below safe."""
         shape_gdf = gpd.GeoDataFrame(
             {"geometry": [srow["geometry"].buffer(0)], COL_ID: [srow[id_col]]},
             crs=shapes_gdf.crs,
@@ -71,12 +111,10 @@ def setup(
         if label_col is not None:
             shape_gdf[COL_LABEL] = srow[label_col]
 
-        # NOTE: re-reads the catalog per shape (TileCatalog.filter). Fine for v1
-        # setup (not the hot path); a bulk single-read is a TODO #15 optimisation.
-        subset = catalog.filter(shape_gdf, startdate, enddate)
+        subset = filter_gdf(catalog_gdf, shape_gdf, startdate, enddate)
         if subset.shape[0] == 0:
-            print(f"[setup] skip id={srow[id_col]}: no tiles in range/overlap")
-            continue
+            print(f"[setup] skip id={srow[id_col]}: no tiles in range/overlap", flush=True)
+            return None
 
         actual_start = subset[timestamp_col].min()
         actual_end = subset[timestamp_col].max()
@@ -113,7 +151,35 @@ def setup(
         }
         if label_col is not None:
             row[COL_LABEL] = srow[label_col]
-        rows.append(row)
+        return row
+
+    # Threads, not processes: every shape costs ~4-7 tiny blob round-trips
+    # (`makedirs` + `geometry.geojson` + the `catalog.parquet` slice), so the loop is
+    # latency-bound and the GIL is released for the duration of each call. Same
+    # pattern `sources.mpc.download`/`download_shard` already run concurrently through
+    # `fsd.storage` against blob. Measured 2026-07-22: 900 shapes serially = ~1.8
+    # s/shape (~27 min) on `rise` over VPN.
+    #
+    # Results are placed BY INDEX and compacted afterwards, so `input.csv` row order
+    # is the shapefile's order regardless of completion order — parallelism must not
+    # change the manifest. (An exception in a worker still propagates out of
+    # `fut.result()`, as before; the pool's `__exit__` lets in-flight shapes finish
+    # first, so slightly more work lands before it surfaces.)
+    prepared: list[dict | None] = [None] * n_shapes
+    _tick(0, force=True)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent) as pool:
+        futures = {
+            pool.submit(_prepare, srow): i
+            for i, (_, srow) in enumerate(shapes_gdf.iterrows())
+        }
+        done = 0
+        for fut in concurrent.futures.as_completed(futures):
+            prepared[futures[fut]] = fut.result()
+            done += 1
+            _tick(done)
+
+    rows = [r for r in prepared if r is not None]
+    _tick(n_shapes, force=True)
 
     if not rows:
         raise ValueError("setup produced no work-units (no shape had tiles in range).")

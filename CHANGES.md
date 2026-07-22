@@ -4,6 +4,49 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## `create_datacube.setup` reads the catalog once, and reports progress (2026-07-22)
+
+Two changes to `workflows/create_datacube.py::setup`, both provoked by running
+`runbooks/36-aml-runner.md` Phase 3 (900 labelled fields, catalog on `abfss://`), where setup ran
+for many minutes with **no output at all** before submitting a single AML job.
+
+- **One catalog read per run, not one per shape.** `setup` called `TileCatalog.filter(...)` inside
+  its per-shape loop, and `filter` opens with `gdf = self.read()` -- a *full* read of the catalog
+  file (`fs.read_parquet` does `raw = f.read()`, no range read, no cache). Locally that is a ~12 ms
+  page-cache hit and nobody notices; on a remote catalog it is one full download per shape: **900
+  shapes = 900 downloads of the same ~121 KiB parquet, ~106 MiB of redundant transfer and ~900 VPN
+  round-trips** before any work started. The pure filtering logic is now
+  **`catalog.filter_gdf(gdf, shapes_gdf, startdate, enddate)`**, a module-level function;
+  `TileCatalog.filter` is unchanged behaviourally and simply delegates
+  (`return filter_gdf(self.read(), ...)`), while `setup` reads once and calls `filter_gdf` per
+  shape. **Identical output** -- same rows, same files, same order, and `.attrs` (the spec-35
+  declaration stamp) still propagates to each slice, since the same operations run on the same
+  frame. Pinned by `tests/test_workflows.py::test_setup_reads_catalog_once_regardless_of_shape_count`,
+  verified non-vacuous (restoring the per-shape `filter` call makes it fail).
+- **Live progress + ETA.** `setup` now prints a throttled (2 s) `[setup] i/N shapes (p%) | r
+  shapes/s | elapsed Xs | eta Ys` line, plus a one-line note that the catalog was read once. The
+  per-shape writes are genuine network I/O on a remote run folder, so the loop can legitimately run
+  for minutes -- and silence there is indistinguishable from a hang (which is exactly how it was
+  first reported).
+
+- **Shapes are prepared concurrently** (`max_concurrent`, default `config.SETUP_MAX_CONCURRENT =
+  16`; pass `1` for the old serial behaviour). With the catalog read hoisted, the remaining cost is
+  the per-shape *writes* -- `makedirs` + `geometry.geojson` + the `catalog.parquet` slice, ~4-7 tiny
+  blob calls -- which measured **~1.8 s/shape serially on `rise` over VPN (~27 min for 900 shapes)**.
+  That is latency, not bandwidth or CPU, so it parallelises nearly linearly with threads. Each shape
+  touches only its own folder and only *reads* the shared catalog frame, so there is no shared
+  mutable state; this is the same pattern `sources.mpc.download`/`download_shard` already use to
+  drive `fsd.storage` concurrently against blob (proven at 3456 assets on the cluster).
+  **`input.csv` row order is unchanged** -- results are placed by index and compacted, so the
+  manifest follows the shapefile's order, not completion order. Pinned by
+  `test_setup_manifest_order_is_shapefile_order_not_completion_order` (verified non-vacuous: writing
+  results in completion order makes it fail). One behavioural nuance: when a shape raises, the pool
+  lets in-flight shapes finish before the exception propagates, so slightly more work lands than in
+  the serial version -- the exception itself still surfaces from `setup`.
+
+Further collapsing the per-shape writes (batching them into fewer objects) is a design change, not a
+fix -- see TODO #15.
+
 ## Download on Azure ML — `runner="aml"` for `api.download`, per-source dispatch (spec 37, 2026-07-22)
 
 The download sibling of spec 36: dispatches the **already-working** download-to-blob path (spec 34)
