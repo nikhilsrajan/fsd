@@ -4,7 +4,140 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-22_
 
-## ⭐ SPEC 37 **VALIDATED ON THE REAL CLUSTER — `runbooks/37-download-on-aml.md` Phases 0–3 ALL PASS (2026-07-22).** The download dispatcher works end to end on `rise` AML for both sources. **⚠️ ALL SESSION WORK IS UNCOMMITTED** (2 code fixes + ~11 tests + both run-books + `CHANGES.md`/`LIMITATIONS.md`/TODO #47–#50). **→ NEXT SESSION: the 5-item gate list below, then `runbooks/36-aml-runner.md`.**
+## ⭐ SPEC 37 **VALIDATED ON THE REAL CLUSTER — `runbooks/37-download-on-aml.md` Phases 0–3 ALL PASS (2026-07-22).** The download dispatcher works end to end on `rise` AML for both sources. **→ NEXT: run `runbooks/37-verify-archive.md` (gates 1+2, written and waiting on the user), rebuild the AML image (gate 4), then `runbooks/36-aml-runner.md`.**
+
+### Gate-clearing session (2026-07-22, Opus@high) — where the 5 gates stand
+
+| gate | status |
+|---|---|
+| 1 radiometry | ✅ **CLEARED 2026-07-22** — `37-verify-archive.md` steps 4+5 pass (read the caveat below) |
+| 2 catalog completeness | ✅ **CLEARED 2026-07-22** — steps 1+2 pass exactly; step 3's `pass: false` root-caused as benign (TODO #52) |
+| 3 run-book 36 wrong prefix | ✅ **fixed** — and it was three defects, not one (below) |
+| 4 rebuild the AML image | ✅ done — run-book 36 Phases 1+2 ran green on it |
+
+### `runbooks/36-aml-runner.md` — Phases 1+2 GREEN on the real cluster (2026-07-22)
+
+- **Phase 1** (one shard, one cube): job `Completed`, `n_units 1 / n_skipped 0 / n_failed 0`,
+  **47.3 s**. The AML runner builds a datacube on a node from the verified blob archive.
+- **Phase 2** (resume, D7): `n_failed 0`, **5.4 s** (8.8× faster), and `n_skipped == n_units` —
+  **D7 proven**: every unit asked `run_task` to rebuild and every one returned immediately.
+- **⚠️ It reported `n_units: 2` for a ONE-cell ROI → TODO #53.** `create_datacube.setup()`
+  **appends** to `input.csv` with no dedupe (`create_datacube.py:127-131`), so re-running the same
+  script re-dispatches a list that has grown by one copy of every shape. `n_units` means "rows in
+  `input.csv`", not "cells". Cosmetic here (both copies skipped) but **not cosmetic in general**:
+  `shard_units` round-robins, so on an *unbuilt* cell the duplicate pair lands on two shards running
+  **concurrently**, both writing the same `datacube.npy` with no lock — the TODO #51 shape again, on
+  the output artifact. Reachable by re-running a partially-failed Phase 3, i.e. exactly when an
+  operator re-runs. Run-book's Phase 2 PASS check corrected to `n_skipped == n_units` (the literal
+  `n_units: 1` was never the invariant), and Phase 3 now carries a run-once warning.
+- **Phase 3 (the demo, 900 `AT_2018_TRAIN` fields, 8-way fan-out) — first attempt KILLED in
+  `setup()`, which was pathologically slow on a remote catalog. FIXED, ready to restart.**
+  `setup` called `TileCatalog.filter` per shape, and `filter` opens with a **full** `self.read()`
+  of the catalog file → **900 downloads of the same ~121 KiB blob parquet (~106 MiB, ~900 VPN
+  round-trips)** before a single job was submitted, with **zero progress output** (the tell: the
+  `azure-ai-ml` experimental-class warnings never appeared, because `azure.ai.ml` is imported
+  lazily inside `run_aml` — i.e. dispatch had not been reached). Locally the same loop is a 12 ms
+  page-cache read per shape, which is why it had never been felt. **Fix (2026-07-22, in `main`,
+  381 passed/3 skipped, ruff clean):** pure `catalog.filter_gdf(gdf, ...)` extracted;
+  `TileCatalog.filter` delegates to it unchanged; `setup` reads once and filters in memory; plus a
+  throttled progress+ETA line. Identical output (declaration `.attrs` still propagate). Pinned by
+  `test_setup_reads_catalog_once_regardless_of_shape_count`, verified non-vacuous. **`setup` runs on
+  the driver, so this needed no AML image rebuild.** Details in `CHANGES.md`.
+- **Second fix, same session — `setup` now prepares shapes CONCURRENTLY.** With the catalog read
+  hoisted it was still ~**1.8 s/shape → ETA 1607 s** for 900 shapes, because the remaining cost is
+  the per-shape *writes* (`makedirs` + `geometry.geojson` + `catalog.parquet` slice ≈ 4–7 blob
+  round-trips). That is **latency, not bandwidth or CPU**, so it parallelises: `max_concurrent`
+  (default `config.SETUP_MAX_CONCURRENT = 16`, pass `1` for the old serial path). Safe by
+  construction — each shape touches only its own folder and only *reads* the shared catalog frame —
+  and it is the same pattern `sources.mpc.download`/`download_shard` already use to drive
+  `fsd.storage` concurrently against blob at 3456 assets. **`input.csv` order is unchanged**
+  (results placed by index, then compacted), pinned by
+  `test_setup_manifest_order_is_shapefile_order_not_completion_order`, verified non-vacuous.
+  **382 passed / 3 skipped, ruff clean. MEASURED: 900 shapes in 71 s** (~79 ms/shape, 12.7
+  shapes/s) — **22.6× faster** than the 1607 s serial estimate, better than 16 threads alone
+  predict. **This settles TODO #54:** 71 s is well below AML cluster startup (40–380 s), so running
+  setup on the cluster would make this run *slower*; break-even is ~510 shapes against a warm
+  cluster, ~4850 against a cold one, so cluster-side setup only becomes right at P4/P5's
+  tens-of-thousands-of-cells scale.
+- **✅ PHASE 3 GREEN (2026-07-22) — the datacube fan-out works on real data at 16 nodes.**
+  All 16 jobs `Completed`, every shard `status: ok`, **900 units = 4×57 + 12×56, an exact
+  partition** of the 900 `AT_2018_TRAIN` fields, **0 failed, 0 skipped** (a genuinely cold build).
+  Timing: in-job total **2851.8 s** across 16 nodes, **mean 178.2 s**, slowest **213.8 s**, fastest
+  131.8 s → **straggler spread only 1.62×**, against **16.7×** for the spec-37 *download* fan-out at
+  8 shards. Datacube builds are compute-bound and near-uniform per field, so the shards balance
+  themselves — the download path's variance was never inherent to fan-out. **~3.17 s per datacube.**
+  Also confirms **TODO #53 did not bite**: 900 units, not 1800, so `input.csv` was fresh.
+- **✅ PHASE 3b GREEN — THE SEAM CLAIM IS PROVEN (2026-07-22).** 3/3 cells built on an AML node and
+  rebuilt on the operator's laptop from the **same blob archive** are **byte-identical**:
+  `identical: true`, `max_abs_diff: 0.0`, matching dtype and shape for every one. **`runner="aml"`
+  and `runner="local"` produce the same science — the runner is config, not a rewrite.**
+  Stronger than the run-book asked for: the two builds ran on **different OS and architecture**
+  (Ubuntu 22.04 x86_64 node vs. macOS laptop), so the resample/mosaic path is deterministic across
+  platforms, not merely repeatable on one machine — different GDAL/PROJ/numpy builds agreed to the
+  byte. Shapes cross-check clean: `(T=8, H, W, bands=3)` per cell, with **T=8** exactly
+  `compute_n_timestamps(2018-04-01, 2018-09-01, mosaic_days=20)` (the calendar-interval contract
+  `flatten` requires — and identical across all three cells), and **3 bands from 4 requested**
+  because SCL is consumed as the mask and dropped (`builder.py:310-314`,
+  `apply_cloud_mask_scl` → `drop_bands`), not lost. **Spec 36 is demonstrated end to end.**
+- **⚠️ Two things Phase 3 did NOT establish.** (1) **No wall clock was recorded** — run-book 36's
+  `phase3.py` had the same gap TODO #48 flagged in run-book 37, so setup + allocation + queueing
+  cannot be separated from build time and there is no end-to-end number for the demo. **Fixed in the
+  run-book** (it now emits `wall_seconds`/`slowest_shard_seconds`/`driver_overhead_seconds`); the
+  figure must come from the next run. (2) The AML-vs-local equivalence check was missing from the
+  run-book entirely — **added as Phase 3b, and it has now PASSED** (see above).
+| 5 commit | ✅ **already done** last session — `6c322fd` (code) + `5df7088` (run-books/docs). Both **unpushed**; `origin/main` is still `e76a8d5` |
+
+**GATES 1+2 CLEARED — `runbooks/37-verify-archive.md`, all 5 steps run 2026-07-22. The archive is
+trustworthy. Numbers, so nobody re-derives them:**
+- **Step 1** (catalog): 576 granules / 3456 assets / `{"6": 576}` files per granule / bands
+  B02,B03,B04,B08,B8A,SCL / MGRS T33UVP+T33UVQ+T33UWP+T33UWQ / 145 dates 2018-01-01..2019-01-01 /
+  **declaration stamped** (`reference_band='B08'`, SCL mask classes `(0,1,3,7,8,9,10)` — matches
+  run-book 36's `setup(scl_mask_classes=...)` exactly) / 0 duplicate ids.
+- **Step 2** (blob vs catalog): 3456 files on blob = 3456 declared, **0 missing, 0 undeclared**,
+  0 zero-byte in sample. ⇒ **TODO #51's append race did NOT bite this run** (see the note there —
+  that is evidence of one lucky run, *not* evidence the race is absent).
+- **Step 4** (tags): 6/6 correct — B04 `scale=1e-4, offset=0.0`, SCL `scale=1.0, offset=0.0`,
+  `nodata=0`, `EPSG:32633`, 10980²/5490². **0 black-tile-bug hits.**
+- **Step 5** (blob vs a fresh local ingest of the same granule): ids identical, **tags identical,
+  window checksums identical** for B04 and SCL ⇒ the bytes on blob are the bytes MPC serves, and
+  the cluster stamped what this checkout stamps.
+- **⚠️ CAVEAT — gate 1 passed on a weaker test than it looks.** Every granule in this archive has
+  `offset = 0` (step 1: `offset_values {"0": 576}`) because all 576 are pre-baseline-04.00 2018
+  acquisitions. The black-tile bug was stamping `-1000` (DN) where `-0.1` (reflectance) belonged —
+  **at `offset=0` the buggy and fixed code emit the identical tag**, so these results confirm *this
+  archive is correctly tagged* (which is all run-book 36 needs) but do **not** re-prove the
+  `c2bf1f1` fix, and do not tell us the AML image's vintage. The `-0.1` path stays covered only by
+  `runbooks/34-mini-mpc-cross-baseline.md` (2021 vs 2022 items, local). **If the archive is ever
+  extended past 2022-01-25, re-run steps 4+5 — that data will exercise the branch this one didn't.**
+- **TODO #44 is operationally superseded** for the download path: the mis-tagged artifacts live in
+  the old `spec34-demo/` prefix, and the verified `archive/` prefix is what everything now points
+  at. Deleting the stale prefix is a user call, and TODO #50 means `fs.rm(recursive=True)` will not
+  do it cleanly.
+
+**Gate 3 — `runbooks/36-aml-runner.md` had THREE defects, all of which would have wasted a cluster run:**
+1. **Wrong prefix** (the known one): lines 150/208 read `$AZ_ROOT/imagery/catalog.parquet`, run-book
+   34's output, whose COGs carry the pre-fix radiometry tags (TODO #44). Now parameterised as
+   **`AZ_ARCHIVE_CATALOG`** (`$AZ_DOWNLOAD_ROOT/archive/catalog.parquet`) — note the archive lives
+   under a **different root** (`fsd-p2-download`) than this run-book's own runs (`fsd-p2`), so a
+   one-word edit would not have fixed it. Setup now `fs.exists()`-checks it before any job.
+2. **Phase 3's ROI does not intersect the archive at all.**
+   `austria_eurocrops_sampled_ethiopia_translated.geojson` is the Austria fields **translated to
+   Ethiopia** (36.1–36.9°E / 11.4–12.0°N) — deliberately, as the 36°E multi-CRS fixture — while the
+   archive covers T33UVP/T33UVQ/T33UWP/T33UWQ = **13.6–16.5°E / 47.8–49.7°N**. It is the right ROI
+   for a multi-CRS test and the wrong one for this archive (and the Ethiopia imagery behind it is
+   gone anyway). All 1015 fields would have produced empty cubes. Swapped for
+   **`AT_2018_TRAIN.geojson`** (900 labelled fields, `fid`/`crop`, verified 100% inside `AT_ROI`).
+   Phase 1's `s2grid=476da24` was fine — verified 100% inside T33UWP.
+3. **`../../shapefiles/` should be `../shapefiles/`** (the scripts run with cwd = `fsd/`). Run-book
+   37, the one actually executed, uses the correct single `..`.
+
+**⚠️ NEW, from code inspection while writing the verification run-book — TODO #51: the 16 Phase-3
+shards all wrote the SAME `catalog.parquet` via an unsynchronised read-modify-write**
+(`runners.py:645` + `catalog.py:106-136`) and finished inside an ~86 s window. **Predicted, not yet
+measured:** if the appends overlapped, the bytes are all on blob but the catalog **under-declares
+them**, and every datacube silently drops the lost granules' timestamps. `37-verify-archive.md`
+steps 1+2 are built to tell "we lost catalog rows" apart from "we never downloaded it" — files
+present on blob but *undeclared* is the signature.
 
 ### The runbook-37 execution session (2026-07-22, Opus@high) — what it produced
 
@@ -15,23 +148,20 @@ partition 964 = 8 shards), Phase 3 (the real archive: **3456 assets = 576 MGRS t
 circuit-tripped**) → `$AZ_ROOT/archive/` + `catalog.parquet`. B02/B03 were added deliberately so the
 archive can serve true-colour RGB to the mini-MPC/STACNotator stack later without a re-download.
 
-**⛔ GATE LIST — do these before `runbooks/36-aml-runner.md`** (1 and 2 are hard gates):
-1. **Radiometry check on the archive — NEVER DONE.** The `gdalinfo` scale/offset comparison
-   (blob COG vs a local download of the same tile) is spec 34's whole guarantee and the reason
-   TODO #44 exists. Datacubes built from mis-tagged COGs are **silently wrong**. Do not skip.
-2. **Catalog completeness** + resolve a discovery discrepancy: the driver-side dry run counted
-   **3432** assets (572 tiles); the run itself processed **3456** (576 tiles) — 4 tiles more,
-   unexplained (MPC ingest between queries? non-deterministic STAC paging?). The blob catalog is
-   authoritative; verify what actually landed.
-3. **`runbooks/36-aml-runner.md` points at the WRONG PREFIX** — lines 150 + 208 read
-   `$AZ_ROOT/imagery/catalog.parquet` ("runbook 34's output"). The new archive is at
-   `$AZ_ROOT/archive/`. As written, spec 36 would build datacubes against the **old spec-34
-   artifacts — the ones TODO #44 says carry the wrong radiometry tags.** Fix before running.
-4. **Rebuild the AML image** — it still carries the pre-`_roi_gdf` wheel and none of the TODO #49
-   changes (`runbooks/36-aml-runner.md` "Build the AML Environment" + its smoke job, then
-   re-export `AZ_ENV_VERSION`).
-5. **Commit** (see the uncommitted list below). Suggested split: code (2 fixes + tests +
-   `CHANGES.md`) as one commit, run-books/docs as another.
+**✅ 3432 vs 3456 — SOLVED (2026-07-22, `37-verify-archive.md` step 3 + a local proof). It was
+neither MPC churn nor STAC paging: it was `str` vs `pd.Timestamp` → TODO #52.**
+Step 3 returned `discovery_repeatable: true` (3432 twice), `only_in_discovery: 0`, `only_on_blob: 24`
+— and those 24 assets are **4 granules, all sensing date 2019-01-01, one per MGRS tile**, i.e. one
+whole acquisition one day past the window. Cause: both sources forward the caller's dates **raw** to
+`pystac_client.search`, which expands a date-only **string** to the end of its day
+(`2019-01-01T23:59:59Z`) but treats a **datetime** as an exact instant (`2019-01-01T00:00:00Z`).
+Phase 3's run passed bare strings (3456); the 3b dry run wrapped them in `pd.Timestamp` (3432).
+Verified locally against the installed `pystac_client` formatter. **Data verdict: no loss, no
+re-ingest** — the archive is a *superset* of the intended window, and run-book 36's
+2018-04-01..2018-09-01 slice is untouched. **Code verdict: a real defect (TODO #52)** — the CDSE AML
+path normalises on the node (`workflows/download.py:97`) while the MPC AML path does not, so the same
+call means a one-day-shorter window for CDSE than for MPC. Third instance of spec 36 D3's premise
+being violated, after TODO #49.
 
 **Code fixed this session (both green, 380 passed / 3 skipped, ruff clean):**
 - **`sources/cdse._roi_gdf` now reads via `fs.open` + `BytesIO`.** GDAL/pyogrio has no `abfss://`
@@ -87,10 +217,10 @@ these needed real blob paths and a real cluster to surface. Run-book defects cau
 operator's three mistakes (an unannotated CDSE-only `creds_url` next to an annotated `n_shards`; a
 required-step-as-code-comment), so **run-book precision is a correctness concern, not polish.**
 
-**UNCOMMITTED at session end:** `src/fsd/sources/cdse.py`, `src/fsd/workflows/runners.py`,
-`tests/test_cdse.py`, `tests/test_download_aml.py`, `runbooks/36-aml-runner.md`,
-`runbooks/37-download-on-aml.md`, `CHANGES.md`, `LIMITATIONS.md`, `TODO.md` (#47–#50).
-`main` was pushed earlier in the session (`e76a8d5`), so `origin/main` predates all of the above.
+**COMMITTED (gate 5, done):** `6c322fd` "fix two interfaces that promised more than they delivered"
+(code + tests + `CHANGES.md`) and `5df7088` "runbooks 36/37: fix what running them on the real
+cluster exposed" (run-books + `PROGRESS.md`/`LIMITATIONS.md`/`TODO.md` #47–#50). **Both unpushed** —
+`origin/main` is still `e76a8d5`. Run the `RECIPES.md` private-identifier sweep before any push.
 
 - **⚠️ Private-identifier leak — found during the D5 review (2026-07-22), SCRUBBED FORWARD the same
   day.** PRE-EXISTING: introduced by the spec commit `3c5f26f`, not by the D5 delta. `PROGRESS.md`
