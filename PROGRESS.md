@@ -4,10 +4,41 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-22_
 
-## ⭐ SPEC 37 **IMPLEMENTED + REVIEWED + MERGED to `main`** (Sonnet@medium impl 2026-07-22; Opus@high review + merge 2026-07-22, merge commit `6b845fc`). **D5 REVISED delta (keep-both blob-creds fallback) IMPLEMENTED 2026-07-22 in worktree `fsd-spec37-d5` (branch `spec37-d5-delta`), green (369 passed / 3 skipped, ruff clean) — NOT yet reviewed/merged. → NEXT: Opus review + merge/prune, then the user runs `runbooks/37-download-on-aml.md` Phases 0–3.**
+## ⭐ SPEC 37 **IMPLEMENTED + REVIEWED + MERGED to `main`** (Sonnet@medium impl 2026-07-22; Opus@high review + merge 2026-07-22, merge commit `6b845fc`). **D5 REVISED delta (keep-both blob-creds fallback) IMPLEMENTED + REVIEWED + MERGED 2026-07-22 (merge commit `154aa70`; worktree `fsd-spec37-d5` + branch `spec37-d5-delta` pruned), green (369 passed / 3 skipped, ruff clean). `main` is 2 commits ahead of `origin/main` — push pending (not yet asked). → NEXT: the user runs `runbooks/37-download-on-aml.md` Phases 0–3.**
 
-- **D5 REVISED delta — IMPLEMENTED 2026-07-22 (Sonnet@medium, worktree `fsd-spec37-d5`,
-  branch `spec37-d5-delta`, not yet reviewed/merged).** All 6 checklist items landed against the
+- **⚠️ Private-identifier leak — found during the D5 review (2026-07-22), SCRUBBED FORWARD the same
+  day.** PRE-EXISTING: introduced by the spec commit `3c5f26f`, not by the D5 delta. `PROGRESS.md`
+  and `specs/37-download-on-aml.md` had named the **concrete** `rise` Key Vault and compute VM, and
+  a **full sweep of every concrete value in `AZURE_INFRA_PRIVATE.md` against all git-tracked files**
+  turned up one more, older hit: `runbooks/34-download-to-blob.md` named the concrete **storage
+  account**. All are "concrete" values in that doc's placeholder table — `CLAUDE.md` forbids
+  copying those into anything under `fsd/` (public MIT repo). Not credentials (resource names), but
+  a hard-constraint violation, and `3c5f26f` was **already pushed**, so they reached GitHub.
+  **Fix (user's call, 2026-07-22): scrub forward** — replaced with the placeholder form (`kv<proj>`
+  + a pointer to `AZURE_INFRA_PRIVATE.md`) in a follow-up commit. **The names remain in git history
+  (`3c5f26f`) and in the pushed remote** — deliberately accepted, no history rewrite. If that ever
+  becomes unacceptable, the remaining lever is a rewrite + force-push. Post-scrub the sweep is
+  clean — the only remaining matches in tracked files are `identityReference`/`prevent_destroy` in
+  `AZURE_INFRA.md`, which are generic Azure Batch / Terraform API terms, not identifiers.
+  **Lesson for future spec/PROGRESS writing:** a `ForbiddenByRbac`-style ops finding must be
+  recorded with the *placeholder* name, never the concrete one, even when quoting a real error.
+  **Re-run the sweep before any push** — see `RECIPES.md` ("Sweep tracked files for concrete `rise`
+  identifiers").
+- **D5 REVISED delta — IMPLEMENTED 2026-07-22 (Sonnet@medium, worktree `fsd-spec37-d5`, branch
+  `spec37-d5-delta`), REVIEWED at Opus@high + MERGED `--no-ff` (`154aa70`) + pruned 2026-07-22.**
+  Review found **no bugs and needed no fixes**: the exactly-one-creds-source classification was
+  traced across all five input combinations (neither / KV-complete / KV-partial / blob / both — no
+  gap: `vault_url`+`creds_url` with no `secret_name` correctly classifies as "both"); the
+  `creds_arg` splice has correct arg boundaries; `run_roi`'s newly-optional `vault_url`/
+  `secret_name` have no callers outside `main()` and the tests; the no-secret-in-job-spec assertion
+  is non-vacuous (a leak of the creds JSON or `s3_secret_key` would trip it); §7 test 7b is fully
+  covered; the runbook's Phase 0/3 edits match real APIs (`fs.rm` exists,
+  `CdseCredentials.from_json` is blob-capable). Two non-blocking observations, deliberately not
+  "fixed": `run_roi` itself does not re-enforce mutual exclusivity (with both set it silently
+  prefers blob; with neither it fails inside `secrets.get_secret(None, None)`) — unreachable in
+  practice since the dispatcher machine-generates exactly one arg group; and the runbook's Setup
+  block still exports the now-unused `AZ_VAULT_URL`/`AZ_CDSE_SECRET_NAME` (intentional — the
+  "swap back if you have a KV write role" path). All 6 checklist items landed against the
   merged code: (1) `run_aml_download`/`_aml_download_preflight` gained `creds_url: str | None`
   (kept `vault_url`/`secret_name`); preflight now requires exactly one CDSE creds source, erring on
   neither and on both. (2) `workflows/download.py` CLI gained `--creds-url`; `run_roi` uses
@@ -25,9 +56,10 @@ _Last updated: 2026-07-22_
   either — only the `creds_url` location.
 - **⚠️ D5 REVISED 2026-07-22 (keep-both: blob-JSON creds fallback added; KV retained) — the decision
   record.** KV creds delivery (D5 as merged) is **operationally blocked**: no identity the operator
-  can invoke holds a KV *write* role on `kv-rise-westeurope` — the compute UAMI has read-only
+  can invoke holds a KV *write* role on the `rise` Key Vault (`kv<proj>`, `AZURE_INFRA_PRIVATE.md`) —
+  the compute UAMI has read-only
   (`Key Vault Secrets User`), so it can read a secret but not create one. `az keyvault secret set`
-  returned `ForbiddenByRbac` from both the driver laptop **and** the `vm-rise-nsasiraj` VM (the VM call
+  returned `ForbiddenByRbac` from both the driver laptop **and** the operator's `rise` VM (the VM call
   authenticated as the operator's own account, not the VM MSI — but the MSI is the same read-only UAMI).
   Getting write is a platform-admin action unavailable on the demo timeline. The operator **has** blob
   write. **Decision (user, keep-both):** CDSE creds may be delivered **either** via KV

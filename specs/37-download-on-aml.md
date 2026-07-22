@@ -170,10 +170,11 @@ driver alike.
 
 > **⚠️ D5 REVISED 2026-07-22 (keep-both: a blob-JSON creds fallback added; KV retained, unchanged).**
 > Populating the KV secret proved impossible on the demo timeline: **no identity the operator can
-> invoke holds a KV *write* role** (`Key Vault Secrets Officer`) on `kv-rise-westeurope` — the compute
+> invoke holds a KV *write* role** (`Key Vault Secrets Officer`) on the `rise` Key Vault (`kv<proj>`,
+> `AZURE_INFRA_PRIVATE.md`) — the compute
 > UAMI holds only *read* (`Key Vault Secrets User`, D5 above), so it can *read* a secret but not
 > *create* one. `az keyvault secret set` returned `ForbiddenByRbac` from **both** the driver laptop and
-> the `vm-rise-nsasiraj` compute VM (the VM attempt authenticated as the operator's own account, not the
+> the operator's `rise` compute VM (the VM attempt authenticated as the operator's own account, not the
 > VM MSI — but even the MSI is the read-only UAMI). Getting a write role is a platform-admin action not
 > available in the demo window. The operator **does** have blob *write*. So CDSE creds may now be
 > delivered **either** way — caller's choice, **mutually exclusive** (preflight errs if neither or both

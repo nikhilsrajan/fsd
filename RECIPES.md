@@ -526,3 +526,32 @@ identity/environment reuse as spec 36; never hardcode `cluster`/`identity_client
 `AZURE_INFRA_PRIVATE.md`). Full phased validation, including the blob `_secrets/` push/delete
 (D5 REVISED): `runbooks/37-download-on-aml.md`; datacube fan-out validation (spec 36):
 `runbooks/36-aml-runner.md`.
+
+## Sweep tracked files for concrete `rise` identifiers (pre-push hygiene)
+
+`fsd/` is a **public** MIT repo; the concrete `rise` names/IDs live only in
+`AZURE_INFRA_PRIVATE.md` at the workspace root. This catches a placeholder that got
+written as a real value. Found two real leaks on 2026-07-22 (spec 37's Key Vault + VM
+names, and an older storage-account name in `runbooks/34-download-to-blob.md`).
+
+Run from the `fsd/` checkout, with the private doc one level up:
+
+```bash
+grep -oE '`[a-z0-9][a-zA-Z0-9._-]{5,}`' ../AZURE_INFRA_PRIVATE.md | tr -d '`' | sort -u \
+  > /tmp/concrete.txt
+while read -r v; do
+  files=$(git ls-files -z | xargs -0 grep -lF "$v" 2>/dev/null)
+  [ -n "$files" ] && echo "TRACKED HIT: $v -> $(echo $files | tr '\n' ' ')"
+done < /tmp/concrete.txt
+```
+
+- `git ls-files` (not a bare `grep -r`) is the point: it scans **only tracked files**, so
+  gitignored local artifacts (`tests/outputs/`, scratch notebooks) don't drown the signal —
+  they never reach GitHub.
+- **Known-clean false positives:** `identityReference` (an Azure Batch API field) and
+  `prevent_destroy` (a Terraform lifecycle meta-argument) in `AZURE_INFRA.md` — generic API
+  terms that happen to appear in the private doc's Terraform excerpts, not identifiers.
+- A real hit is scrubbed by replacing it with the private doc's **placeholder** form plus a
+  pointer (e.g. `` the `rise` storage account (`st<proj>`, concrete name in
+  `AZURE_INFRA_PRIVATE.md`) ``). Note this is scrub-*forward* only — if the leaking commit
+  is already pushed, the value stays in history unless you rewrite + force-push.

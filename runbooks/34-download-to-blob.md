@@ -28,8 +28,9 @@ is written for someone who has never touched an Azure VM before.
 ## Prerequisites
 
 - [ ] A cloud VM **inside the `rise` VNet**, in/near the subscription/region (see
-      `../P1_AZURE_SETUP.md`). **`strisewesteurope` is deny-by-default firewalled** — a VM
-      outside the project subnets cannot reach it at all, so "any Azure VM" will not do.
+      `../P1_AZURE_SETUP.md`). **The `rise` storage account (`st<proj>`, concrete name in
+      `AZURE_INFRA_PRIVATE.md`) is deny-by-default firewalled** — a VM outside the project
+      subnets cannot reach it at all, so "any Azure VM" will not do.
 - [ ] For CDSE: a `cdse_credentials.json` (gitignored) with your CDSE S3 keys, on the VM.
       Never commit it; see the upload note in Step 0.
 - [ ] For MPC: nothing — anonymous access.
