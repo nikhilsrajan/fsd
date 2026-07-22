@@ -4,6 +4,29 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-22_
 
+## ⭐ SPEC 37 **SIGNED OFF** (user, 2026-07-22, Opus@high). **→ NEXT: implement in a Sonnet@medium session; prerequisite = land spec 35 on `main` first.**
+
+- **`specs/37-download-on-aml.md` — download on Azure ML (P2), the download sibling of spec 36.** Runs
+  the already-working download-to-blob (spec 34) as an AML job so the source→blob byte-flow is
+  cloud-colocated, not relayed through the driver laptop. **Headline decision (D1): per-source dispatch
+  shape** — **CDSE = one job** (its 4-connection cap is per-S3-credential, so fan-out can't help) and
+  **MPC = fan-out across N nodes** (bytes come straight from Azure Blob → throughput scales with
+  parallelism; `rise` is in MPC's region → intra-region, near-linear). MPC fan-out reuses spec 36's
+  `shard_units`; CDSE reuses spec 34's unmodified `download(roi)`.
+- **Secrets = Azure Key Vault (D5), not blob.** The compute identity already holds `Key Vault Secrets
+  User` on the `rise` vault (`AZURE_INFRA_PRIVATE.md`), and the **same `AZURE_CLIENT_ID`** spec 36 D4
+  sets authorises KV too — so zero infra ask, no secret on blob or in the job spec. Needs
+  `azure-keyvault-secrets` in `[azure]` + a thin `fsd.secrets.get_secret` + additive
+  `CdseCredentials.from_json_str`.
+- **Reuse ledger (§4):** `sources/cdse.py` pipeline, `storage/*`, `datacube/`, `raster/`, `catalog/`
+  unchanged; additive only — `sources/mpc.py::download_shard`, `CdseCredentials.from_json_str`,
+  `workflows/download.py` (new thin CLI), `runners.run_aml_download` (+ shared `_aml_submit_and_wait`),
+  `api.download(runner="aml")`. Cross-validated (CDSE quota; MPC direct-from-blob + subscription-key
+  effect; AML `CommandJobLimits.timeout`; KV + UAMI) with per-source credit in §9.
+- **Open (resolve in implementation):** MPC shard granularity (per-asset vs per-tile); crash-resume
+  re-download (D8, lean accept-for-v1); `n_shards`/`timeout` defaults; whether to require
+  `PC_SDK_SUBSCRIPTION_KEY`. **Not committed yet** (commit-only-when-asked).
+
 ## ⭐ SPEC 36 **IMPLEMENTED + REVIEWED + MERGED to `main`** (Sonnet@medium impl 2026-07-22; Opus@high review + merge 2026-07-22). **→ NEXT: the user runs `runbooks/36-aml-runner.md` Phases 1–3 on the real cluster.**
 
 - **Opus@high review outcome (2026-07-22):** the §4 reuse ledger and §5 deliverable table hold; the
