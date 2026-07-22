@@ -204,6 +204,8 @@ def download(
     cog: bool = True,
     progress: bool = True,
     storage=None,
+    runner: str = "local",
+    runner_kwargs: dict | None = None,
 ) -> str:
     """Fetch S2 L2A tiles for the ROI/date range into `dst_folderpath`, build/append its
     TileCatalog, and return the catalog filepath (feed it to `create_training_data`).
@@ -212,19 +214,40 @@ def download(
     `creds`; `"mpc"` wraps `sources.mpc.download` (Microsoft Planetary Computer,
     anonymous by default — `creds` is not required and `cog` is ignored, MPC assets
     are already COG). Preflighted. `storage` is a seam (local only in P0). See specs/16.
+
+    `runner="local"` (default) downloads in-process, as above. `runner="aml"` (spec
+    37 P2) dispatches onto an Azure ML cluster instead, colocated with blob: CDSE
+    runs as **one** job; MPC **fans out** across N (D1). `runner_kwargs` carries
+    `cluster=`/`environment=`/`root=`/`identity_client_id=`/`vault_url=`/
+    `secret_name=` (CDSE only, D5) — see `workflows.runners.run_aml_download`. `creds`
+    is ignored for `runner="aml"`: the dispatched job reads them from Key Vault on
+    the node instead (D5), so `roi` must be a url the node can also read (not an
+    in-memory GeoDataFrame).
     """
-    errs = _check_local_seams("local", storage) + _check_window(startdate, enddate, 20, bands)
+    errs = _check_local_seams(runner, storage) + _check_window(startdate, enddate, 20, bands)
     if source not in ("cdse", "mpc"):
         errs.append(f"source={source!r} must be one of 'cdse', 'mpc'.")
     if max_tiles < 1:
         errs.append(f"max_tiles ({max_tiles}) must be >= 1.")
-    if source == "cdse" and creds is None:
-        errs.append("creds (CdseCredentials) required for source='cdse'.")
+    if runner == "local" and source == "cdse" and creds is None:
+        errs.append("creds (CdseCredentials) required for source='cdse' with runner='local'.")
     _raise_preflight(errs)
 
     _configure_storage(storage)
     fs.makedirs(dst_folderpath)
     catalog_filepath = os.path.join(dst_folderpath, "catalog.parquet")
+
+    if runner == "aml":
+        from fsd.workflows import runners as _runners
+
+        _runners.run_aml_download(
+            roi=roi, startdate=startdate, enddate=enddate, bands=bands,
+            dst_folderpath=dst_folderpath, catalog_filepath=catalog_filepath,
+            source=source, max_tiles=max_tiles, max_cloudcover=max_cloudcover, cog=cog,
+            **(runner_kwargs or {}),
+        )
+        return catalog_filepath
+
     catalog = TileCatalog(catalog_filepath)
     if source == "mpc":
         _mpc_download(

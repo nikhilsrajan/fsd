@@ -474,4 +474,50 @@ Or call the runner directly for a from-a-run-folder `input.csv` without going th
 `create_training_data`: `fsd.workflows.runners.run_aml(csv_filepath, cluster=..., ...)`.
 Never hardcode `cluster`/`identity_client_id` in anything under `fsd/` — they are
 concrete `rise` identifiers (`AZURE_INFRA_PRIVATE.md`, workspace root, not a git repo).
+
+## Run download-to-blob on the AML cluster (spec 37, P2)
+
+`runner="aml"` dispatches the download itself onto `rise`, colocated with blob, instead
+of relaying every byte through the driver machine. Dispatch shape is **per-source**
+(D1): CDSE always runs as **one** job (its S3 concurrency cap is per-credential, so
+fan-out can't help); MPC **fans out** across N nodes (no per-credential cap — Azure
+Blob throughput scales with parallelism):
+
+```python
+from fsd import api
+
+# CDSE -- one job, S3 creds read from Key Vault on the node (D5); roi must be a url
+# the node can also read (not an in-memory GeoDataFrame).
+api.download(
+    "shapefiles/roi.geojson", startdate, enddate, ["B04", "B08", "SCL"],
+    "abfss://<fs>@<account>.dfs.core.windows.net/<prefix>",
+    source="cdse", max_tiles=200, runner="aml",
+    runner_kwargs=dict(
+        cluster="<the d16 cluster name>",        # AZURE_INFRA_PRIVATE.md
+        environment="fsd-aml-env:1",              # spec 36 D5's Environment, reused
+        root="abfss://<fs>@<account>.dfs.core.windows.net/<prefix>",
+        identity_client_id="<compute identity client id>",   # az identity show --query clientId
+        vault_url="<rise Key Vault url>",          # AZURE_INFRA_PRIVATE.md
+        secret_name="<CDSE creds secret name>",
+    ),
+)
+
+# MPC -- fans out across N shards (default: the cluster's max_instances); anonymous,
+# no vault_url/secret_name needed.
+api.download(
+    "shapefiles/roi.geojson", startdate, enddate, ["B04", "B08", "SCL"],
+    "abfss://<fs>@<account>.dfs.core.windows.net/<prefix>",
+    source="mpc", max_tiles=200, runner="aml",
+    runner_kwargs=dict(
+        cluster="<the d16 cluster name>", environment="fsd-aml-env:1",
+        root="abfss://<fs>@<account>.dfs.core.windows.net/<prefix>",
+        identity_client_id="<compute identity client id>", n_shards=8,
+    ),
+)
+```
+
+Or call the dispatcher directly: `fsd.workflows.runners.run_aml_download(roi, startdate,
+enddate, bands, dst_folderpath, catalog_filepath, source=..., cluster=..., ...)`. Same
+identity/environment reuse as spec 36; never hardcode `cluster`/`identity_client_id`/
+`vault_url` in anything under `fsd/` (concrete `rise` identifiers, `AZURE_INFRA_PRIVATE.md`).
 Full phased validation (one shard → resume → real fan-out): `runbooks/36-aml-runner.md`.

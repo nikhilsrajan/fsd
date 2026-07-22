@@ -91,6 +91,10 @@ STOP_CHECK_EVERY_S = 1.0
 # Rough size guard for the download safety check (~GB per tile).
 APPROX_GB_PER_TILE = 0.725
 
+# CDSE's rolling 30-day S3 transfer quota (spec 37 D1/D7): past this, every transfer
+# drops to 1 MB/s / 1 connection. https://documentation.dataspace.copernicus.eu/Quotas.html
+CDSE_MONTHLY_QUOTA_GB = 12 * 1000
+
 # --- COG conversion (convert-on-download; spec 14) ---------------------------
 # Native on-disk format at ingest. DEFLATE + PREDICTOR=2 is fully lossless
 # (reversible integer differencing); uint16 S2 reflectance declares NBITS=15, which

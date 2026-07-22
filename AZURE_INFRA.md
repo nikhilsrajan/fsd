@@ -337,6 +337,16 @@ These are the decisions the future spec 10 must settle. Flagged here so we don't
    `_status/<k>.json` shaped like a spec-24 `_result.json`; the existing spec-11 `timings.json`
    sidecar already lands next to each cube via `fsd.storage` and needed no change. Budget-alert
    wiring itself is still open.
+9. **Download, not just build, on AML — ✅ RESOLVED by spec 37** (implemented, pending review):
+   the same `run_aml`/`shard_units`/D5-Environment/D4-identity/D9-telemetry machinery dispatches
+   the *download*-to-blob path too (`workflows.runners.run_aml_download`), but the dispatch shape
+   is **per-source**, not uniform fan-out (D1): CDSE's S3 concurrency cap is per-credential, so it
+   runs as **one** job at its existing 4-wide concurrency; MPC reads straight from Azure Blob (no
+   per-credential cap), so it **fans out** across N nodes near-linearly. §4.4's Key Vault plan is
+   now concrete: `fsd.secrets.get_secret(vault_url, name)` reads the CDSE creds secret under the
+   same `AZURE_CLIENT_ID` identity spec 36 D4 already sets — one identity covers blob and Key Vault,
+   so this needed **no new infra grant** (the compute identity already holds `Key Vault Secrets
+   User`). See `specs/37-download-on-aml.md`.
 
 ## 8. Things to confirm (not yet verified)
 

@@ -47,6 +47,7 @@ column is what "hitting it" means for each row.
 | **The AML runner (`runner="aml"`) is implemented but not yet validated on the real cluster.** `workflows.runners.run_aml` shards `input.csv`, submits one command job per shard, waits, and raises on failure; all 12 unit tests (spec 36 §7) are mocked at the AML-client boundary. `runbooks/36-aml-runner.md` Phases 1–3 (one shard, resume, real fan-out) are written but not yet run. | someone runs Phases 1–3 and reports back | TODO #41 (closed as implemented); spec 36; `ROADMAP.md` P2 |
 | **There will be no Azure *Batch* runner.** The project's Batch account has a 6 vCPU quota against a 64-core pool VM, so it cannot allocate a node; dropped rather than quota-requested. | someone needs Batch specifically (or a generic task-queue backend: AWS Batch, k8s) | `AZURE_INFRA.md` §3.1 |
 | **Inference/serving output writes are local-only** (`storage_allowed=False` for `run_inference`/`deploy`). | inference outputs need to land on blob | TODO #39 |
+| **The AML *download* dispatcher (`api.download(runner="aml")`) is implemented but not yet validated on the real cluster**, and a job that crashes mid-run loses its un-pushed scratch — a fresh-node resume re-downloads the unpushed remainder (it can't see COGs already on blob, since spec 34's push is whole-run). Cheap for MPC (only the crashed shard's slice re-runs); costs re-downloaded bytes for CDSE. | someone runs `runbooks/37-download-on-aml.md` Phases 0–3; or a crash-resume actually happens | spec 37 D8; TODO (open, composes with #31) |
 
 ## Serving / outputs
 

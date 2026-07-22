@@ -4,6 +4,67 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## Download on Azure ML — `runner="aml"` for `api.download`, per-source dispatch (spec 37, 2026-07-22)
+
+The download sibling of spec 36: dispatches the **already-working** download-to-blob path (spec 34)
+onto the same `rise` AML cluster, colocated with blob, instead of relaying every byte through the
+driver machine. `sources/cdse.py`'s `download()` and `sources/mpc.py`'s `download()` change by
+**zero lines** (spec 37 §4's reuse ledger) — this only adds a dispatcher and two additive source
+entries.
+
+- **Dispatch shape is per-source, not uniform fan-out (D1):** CDSE always submits **exactly one**
+  whole-ROI job (`sources.cdse.download` called unmodified) — its S3 concurrency cap is per
+  credential (4 connections, CDSE *Quotas and Limitations*), so more nodes contend for the same
+  connections rather than adding throughput. MPC **fans out across N shards** — its bytes come
+  straight from Azure Blob (no per-credential cap), so parallel nodes scale near-linearly.
+- **`workflows/runners.py::run_aml_download`** is the new dispatcher; it reuses spec 36's
+  `shard_units`, D5 Environment, D4 identity, D10-style preflight, and D9 telemetry. A shared
+  `_aml_submit_and_wait` was factored out of `run_aml`'s submit/poll/aggregate/raise loop and is
+  now used by both `run_aml` (spec 36) and `run_aml_download` (spec 37) — a pure refactor, `run_aml`'s
+  own tests are unchanged. `_aml_preflight`'s cluster/environment/storage-root checks were
+  similarly split into a shared `_aml_preflight_common`, reused by a new download-specific
+  `_aml_download_preflight` (D7: also checks discovery non-emptiness, the Key Vault secret
+  resolves/parses and isn't expired, and warns — doesn't block — when a CDSE GB estimate exceeds an
+  injected remaining-quota threshold).
+- **`workflows/download.py`** (new): the thin in-job CLI, mirroring `workflows/shard.py`'s role for
+  spec 36. `--roi` mode is the CDSE job (calls `sources.cdse.download` unmodified, reading S3 creds
+  from Key Vault on the node); `--shard` mode is one MPC shard (calls the new
+  `sources.mpc.download_shard` over a pre-discovered, pre-partitioned asset-row CSV). Both write a
+  `_status/<k>.json` (D9), same `_result.json` shape as spec 24/36.
+- **`sources/mpc.py` gained two additive entries** (the ROI-based `download()` is untouched):
+  `discover_shard_rows(...)` — driver-side STAC discovery **without** eager SAS-signing (a new
+  `_search_items_unsigned`, sibling of `_search_items`), flattened to one row per asset; and
+  `download_shard(rows, ...)` — signs each asset's href **on the node** (`_import_pc_sign`, lazy,
+  mirrors `runners._import_aml_command`'s injection pattern) right before the transfer, so a SAS
+  token never sits idle between AML job submit and the job actually starting, then reuses the
+  existing `_transfer_and_stamp_one` per asset.
+- **`sources/cdse.py` gained one additive entry:** `CdseCredentials.from_json_str(s)`, a sibling of
+  `from_json` that parses an in-memory JSON string (the Key Vault secret value) instead of a file
+  path. The stale `download()` docstring line claiming a remote+`cog=True` dst "raises... deferred"
+  (predating spec 34's `_push_scratch_to_remote` fix) is corrected to describe the actual
+  stage→convert→push behavior.
+- **New `fsd/secrets.py`:** `get_secret(vault_url, name)`, a thin `SecretClient(vault_url,
+  DefaultAzureCredential()).get_secret(name).value` (D5) — lazy-imports `azure-keyvault-secrets`
+  (new dependency, added to the `[azure]` extra) so `import fsd` never needs it; substitutable in
+  tests via `get_secret=` on `run_aml_download`/directly monkeypatched on the CLI. Both the CDSE S3
+  creds and (optionally) `PC_SDK_SUBSCRIPTION_KEY` ride this one path, under the **same**
+  `AZURE_CLIENT_ID` identity spec 36 D4 already sets for blob — no new infra grant needed (the
+  compute identity already holds `Key Vault Secrets User` on the `rise` vault).
+- **`api.download` accepts `runner="local"|"aml"` + `runner_kwargs`**, mirroring
+  `create_training_data`'s existing pattern. `creds` is ignored for `runner="aml"` (the dispatched
+  job reads them from Key Vault instead), and `roi` must be a url the node can also read, not an
+  in-memory GeoDataFrame.
+- **Job timeout (D6):** each submitted job now carries `limits=CommandJobLimits(timeout=...)`,
+  sized from a GB estimate at a conservative throughput (`runners._estimate_timeout_seconds`) —
+  `run_aml` (spec 36) had no explicit timeout; `run_aml_download` always sets one.
+- **New `config.CDSE_MONTHLY_QUOTA_GB`** (12,000 — CDSE's rolling-30-day cap) backs the D7 quota
+  warning.
+- **Idempotency/crash-resume limitation, stated plainly (D8):** the skip check is against local
+  scratch, and spec 34's push is whole-run, so a job that crashes mid-run loses its un-pushed
+  scratch — a fresh-node resume re-downloads the unpushed remainder rather than seeing what already
+  landed on blob. Accepted for v1 (see `LIMITATIONS.md`); MPC's fan-out makes this cheap (only the
+  crashed shard's slice re-runs).
+
 ## The AML scale runner — `runner="aml"`, plus local resumability on blob (spec 36, 2026-07-21/22)
 
 Closes TODO #40/#41. Gives the runner seam (spec 10 Seam 2) a second backend without touching the

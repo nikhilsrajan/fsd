@@ -42,6 +42,8 @@ __all__ = [
     "DownloadResult",
     "query_catalog",
     "download",
+    "discover_shard_rows",
+    "download_shard",
 ]
 
 
@@ -113,6 +115,28 @@ def _search_items(roi_gdf: gpd.GeoDataFrame, startdate, enddate, max_cloudcover=
 
     geom = shapely.unary_union(roi_gdf.to_crs("EPSG:4326")["geometry"])
     client = pystac_client.Client.open(config.MPC_STAC_URL, modifier=pc.sign_inplace)
+    query = None
+    if max_cloudcover is not None:
+        query = {"eo:cloud_cover": {"lt": max_cloudcover}}
+    search = client.search(
+        collections=[config.SATELLITE_S2L2A],
+        datetime=[startdate, enddate],
+        intersects=geom,
+        query=query,
+        limit=200,
+    )
+    return list(search.items())
+
+
+def _search_items_unsigned(roi_gdf: gpd.GeoDataFrame, startdate, enddate, max_cloudcover=None):
+    """Same query as `_search_items`, but **without** the `pc.sign_inplace` modifier
+    (spec 37 D2/D5): the AML fan-out's driver-side discovery must not stamp asset
+    hrefs with a SAS token that can expire before a job actually runs on its node --
+    signing happens **on the node**, in `download_shard`, right before the transfer."""
+    import pystac_client
+
+    geom = shapely.unary_union(roi_gdf.to_crs("EPSG:4326")["geometry"])
+    client = pystac_client.Client.open(config.MPC_STAC_URL)
     query = None
     if max_cloudcover is not None:
         query = {"eo:cloud_cover": {"lt": max_cloudcover}}
@@ -362,6 +386,147 @@ def download(
             if progress:
                 print(
                     f"[fsd.mpc.download] {len(results)}/{len(work)} "
+                    f"ok={sum(1 for *_, o in results if o)} fail={len(failures)}",
+                    flush=True,
+                )
+
+    successful = _append_downloaded(catalog, tile_meta, results)
+
+    return DownloadResult(
+        successful_count=successful,
+        total_count=successful + len(failures),
+        skipped_count=skipped,
+        failed_count=len(failures),
+        elapsed_s=time.time() - start,
+        failures=failures,
+    )
+
+
+# --- AML fan-out: driver-side discovery + per-shard download (spec 37 D2) ----
+
+# A `discover_shard_rows` row (also the shard CSV's columns): one MPC asset,
+# unsigned, plus the per-tile catalog metadata `_append_downloaded` needs to
+# upsert a row once the asset lands. `geometry` rides as WKT (CSV-safe).
+_SHARD_ROW_COLUMNS = [
+    "tile_id", "band", "href", "dst", "offset",
+    "satellite", "timestamp", "s3url", "cloud_cover", "nodata", "geometry",
+]
+
+
+def discover_shard_rows(
+    roi,
+    startdate: datetime.datetime,
+    enddate: datetime.datetime,
+    bands: list[str],
+    root_folderpath: str,
+    *,
+    max_cloudcover: float | None = None,
+) -> list[dict]:
+    """Driver-side discovery for the AML fan-out (spec 37 D2): query MPC STAC
+    (cheap, no bytes -- `_search_items_unsigned`, so no href carries a token yet)
+    and flatten the matched items to **one row per asset**. `run_aml_download`
+    partitions the result with `shard_units` (asset-level round-robin, open
+    question #1) and hands each partition to `download_shard`, which signs on
+    the node. The ROI-based `download()` above is untouched -- this is a
+    parallel, additive discovery path feeding the shard CLI instead.
+    """
+    roi_gdf = _roi_gdf(roi)
+    items = _search_items_unsigned(roi_gdf, startdate, enddate, max_cloudcover=max_cloudcover)
+    items = _dedupe_reprocessed_items(items)  # spec 33
+    tiles = _finalize_catalog_gdf(_items_to_gdf(items), roi_gdf, max_cloudcover)
+    tile_meta = {row["id"]: row for _, row in tiles.iterrows()}
+    kept_items = [it for it in items if it.id in tile_meta]
+
+    rows: list[dict] = []
+    for it in kept_items:
+        meta = tile_meta[it.id]
+        for href, dst, band in _select_item_files(it, bands, root_folderpath):
+            rows.append({
+                "tile_id": it.id,
+                "band": band,
+                "href": href,
+                "dst": dst,
+                "offset": meta["offset"],
+                "satellite": meta["satellite"],
+                "timestamp": meta["timestamp"].isoformat(),
+                "s3url": meta["s3url"],
+                "cloud_cover": meta["cloud_cover"],
+                "nodata": meta["nodata"],
+                "geometry": meta["geometry"].wkt,
+            })
+    return rows
+
+
+def _import_pc_sign():
+    """Lazy handle to `planetary_computer.sign` -- same injection-boundary pattern
+    as `workflows.runners._import_aml_command` (spec 36 D3 invariant 3): keeps
+    `download_shard` substitutable in tests without requiring the `[mpc]` extra."""
+    import planetary_computer as pc
+
+    return pc.sign
+
+
+def download_shard(
+    rows: list[dict],
+    root_folderpath: str,
+    catalog,                      # fsd.catalog.catalog.TileCatalog (appended in place)
+    *,
+    max_concurrent: int | None = None,
+    progress: bool = False,
+) -> DownloadResult:
+    """Download one pre-discovered shard of MPC assets (spec 37 D2) -- one of the
+    N per-node jobs `run_aml_download` fans a `discover_shard_rows` work list out
+    to. Each `href` is unsigned (D2/D5): signed here, **on the node**, right
+    before the transfer, so a SAS token never sits idle between AML job submit
+    and the job actually starting. Reuses the same per-asset transfer `download()`
+    uses (`_transfer_and_stamp_one`); `download()` itself is untouched.
+    """
+    import concurrent.futures
+    import time
+
+    sign = _import_pc_sign()
+
+    if _is_local_path(root_folderpath):
+        fs.makedirs(root_folderpath, exist_ok=True)
+
+    workers = max_concurrent if max_concurrent is not None else config.MPC_MAX_CONCURRENT
+    start = time.time()
+    results: list[tuple[str, str, bool]] = []
+    failures: list[tuple[str, str]] = []
+    skipped = 0
+    tile_meta: dict[str, dict] = {}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = {}
+        for row in rows:
+            tid = row["tile_id"]
+            tile_meta.setdefault(tid, {
+                "satellite": row["satellite"],
+                "timestamp": row["timestamp"],
+                "s3url": row["s3url"],
+                "cloud_cover": row["cloud_cover"],
+                "offset": row["offset"],
+                "nodata": row["nodata"],
+                "geometry": shapely.from_wkt(row["geometry"])
+                if isinstance(row["geometry"], str) else row["geometry"],
+            })
+            signed_href = sign(row["href"])
+            fut = pool.submit(
+                _transfer_and_stamp_one, signed_href, row["dst"],
+                band=row["band"], offset=row["offset"],
+            )
+            futs[fut] = (row["href"], row["dst"], tid)
+        for fut in concurrent.futures.as_completed(futs):
+            src, dst, tid = futs[fut]
+            ok, reason = fut.result()
+            if reason == "skipped":
+                skipped += 1
+            if not ok:
+                failures.append((src, reason))
+            results.append((tid, dst, ok))
+            if progress:
+                print(
+                    f"[fsd.mpc.download_shard] {len(results)}/{len(rows)} "
                     f"ok={sum(1 for *_, o in results if o)} fail={len(failures)}",
                     flush=True,
                 )

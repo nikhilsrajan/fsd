@@ -4,7 +4,7 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-22_
 
-## ⭐ SPEC 37 **SIGNED OFF** (user, 2026-07-22, Opus@high). **→ NEXT: implement in a Sonnet@medium session.** (Prerequisite spec 35 is already on `main` — commit `f486c3c`; the stale spec-35 worktree was a superseded earlier draft and has been pruned.)
+## ⭐ SPEC 37 **IMPLEMENTED** (Sonnet@medium, 2026-07-22). **→ NEXT: Opus@high review, then the user runs `runbooks/37-download-on-aml.md` Phases 0–3.**
 
 - **`specs/37-download-on-aml.md` — download on Azure ML (P2), the download sibling of spec 36.** Runs
   the already-working download-to-blob (spec 34) as an AML job so the source→blob byte-flow is
@@ -15,17 +15,45 @@ _Last updated: 2026-07-22_
   `shard_units`; CDSE reuses spec 34's unmodified `download(roi)`.
 - **Secrets = Azure Key Vault (D5), not blob.** The compute identity already holds `Key Vault Secrets
   User` on the `rise` vault (`AZURE_INFRA_PRIVATE.md`), and the **same `AZURE_CLIENT_ID`** spec 36 D4
-  sets authorises KV too — so zero infra ask, no secret on blob or in the job spec. Needs
-  `azure-keyvault-secrets` in `[azure]` + a thin `fsd.secrets.get_secret` + additive
-  `CdseCredentials.from_json_str`.
-- **Reuse ledger (§4):** `sources/cdse.py` pipeline, `storage/*`, `datacube/`, `raster/`, `catalog/`
-  unchanged; additive only — `sources/mpc.py::download_shard`, `CdseCredentials.from_json_str`,
-  `workflows/download.py` (new thin CLI), `runners.run_aml_download` (+ shared `_aml_submit_and_wait`),
-  `api.download(runner="aml")`. Cross-validated (CDSE quota; MPC direct-from-blob + subscription-key
-  effect; AML `CommandJobLimits.timeout`; KV + UAMI) with per-source credit in §9.
-- **Open (resolve in implementation):** MPC shard granularity (per-asset vs per-tile); crash-resume
-  re-download (D8, lean accept-for-v1); `n_shards`/`timeout` defaults; whether to require
-  `PC_SDK_SUBSCRIPTION_KEY`. **Not committed yet** (commit-only-when-asked).
+  sets authorises KV too — so zero infra ask, no secret on blob or in the job spec. New `fsd/secrets.py`
+  (`get_secret`), `azure-keyvault-secrets` added to `[azure]`, additive `CdseCredentials.from_json_str`.
+- **All 8 deliverables (§5) landed.** `workflows/download.py` (new, thin in-job CLI, `--roi`/`--shard`);
+  `sources/mpc.py::discover_shard_rows`/`download_shard` (additive; `download()` untouched, signs
+  **on the node** via a new lazy `_import_pc_sign`); `workflows/runners.py::run_aml_download`
+  (per-source dispatch, D1/D2/D6/D7/D9) built on a shared `_aml_submit_and_wait` **factored out of**
+  `run_aml`'s own submit/poll/aggregate/raise loop (pure refactor — `run_aml`'s 12 spec-36 tests still
+  pass unchanged) and a shared `_aml_preflight_common` (cluster/environment/root checks, reused by both
+  `_aml_preflight` and the new `_aml_download_preflight`); `api.download(runner="local"|"aml",
+  runner_kwargs=...)`; `CommandJobLimits(timeout=...)` (D6, via a lazy `_import_command_job_limits`)
+  sized by `runners._estimate_timeout_seconds`; docs (`AZURE_INFRA.md` §7 item 9, `LIMITATIONS.md`,
+  `RECIPES.md`, `CHANGES.md`, `TODO.md` #46, the stale `cdse.py` remote+cog docstring fixed);
+  run-book `runbooks/37-download-on-aml.md` (Phases 0–3).
+- **All tests (§7) pass, including non-vacuousness (test 8).** New `tests/test_download_aml.py` — 20
+  tests: the CLI's two modes (D3/D9); `mpc.download_shard` signs on the node + reuses
+  `_transfer_and_stamp_one`; CDSE submits **exactly one** job at both 1 and 37 discovered tiles (D1,
+  non-vacuous across tile counts); MPC shards a discovered asset list into N jobs and the shard CSVs
+  partition the asset list (reusing `shard_units`, non-vacuous); job spec carries `AZURE_CLIENT_ID`
+  (D4), `limits.timeout` (D6), and the KV `vault_url`/`secret_name` **without any secret value**
+  (D5); raises on a Failed job and on `circuit_tripped: true` even when AML itself reports Completed
+  (D9); `api.download` accepts `runner="aml"` (threads `runner_kwargs`) and rejects unknown runners;
+  `_aml_download_preflight` (D7) refuses empty discovery / unwritable root / an unparseable or
+  expired KV secret, and warns (doesn't block) on a CDSE quota-exceeded estimate; `fsd.secrets.get_secret`
+  is mockable without the `[azure]` extra. **Full suite: 364 passed / 3 skipped** (baseline 343/3),
+  `ruff check src/ tests/` clean, **on the bare `pip install -e ".[dev]"` venv** — no test needs
+  `azure-ai-ml`, `azure-keyvault-secrets`, or `planetary-computer` (a new `mpc._import_pc_sign` lazy
+  handle mirrors `runners._import_aml_command`'s injection-boundary pattern for exactly this reason).
+- **§4's reuse ledger held**: `sources/cdse.py::download` and `sources/mpc.py::download` change by
+  **zero lines** (verified: only new functions were added, no existing lines touched);
+  `storage/*`/`datacube/`/`raster/`/`catalog/` untouched. `runners.py`'s two shared-helper
+  refactors (`_aml_submit_and_wait`, `_aml_preflight_common`) touch `run_aml`'s internals but not its
+  signature or observable behavior — its own tests needed no changes.
+- **Open, accepted for v1 (D8, not blocking):** a job that crashes mid-run loses its un-pushed local
+  scratch, so a fresh-node resume re-downloads the unpushed remainder rather than seeing COGs already
+  on blob (spec 34's push is whole-run, not per-file). Logged in `LIMITATIONS.md`/`TODO.md` #46;
+  cheap for MPC (only the crashed shard's slice re-runs), costs re-downloaded bytes for CDSE.
+- **Not committed yet** (commit-only-when-asked) — implementation sits on worktree branch
+  `worktree-spec37-download-aml`, pending Opus@high review before merge to `main` + prune (same flow
+  spec 36 went through).
 
 ## ⭐ SPEC 36 **IMPLEMENTED + REVIEWED + MERGED to `main`** (Sonnet@medium impl 2026-07-22; Opus@high review + merge 2026-07-22). **→ NEXT: the user runs `runbooks/36-aml-runner.md` Phases 1–3 on the real cluster.**
 
