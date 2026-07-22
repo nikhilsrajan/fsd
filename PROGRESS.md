@@ -4,7 +4,31 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-22_
 
-## ⭐ SPEC 37 **IMPLEMENTED** (Sonnet@medium, 2026-07-22). **→ NEXT: Opus@high review, then the user runs `runbooks/37-download-on-aml.md` Phases 0–3.**
+## ⭐ SPEC 37 **IMPLEMENTED + REVIEWED + MERGED to `main`** (Sonnet@medium impl 2026-07-22; Opus@high review + merge 2026-07-22, merge commit `6b845fc`). **→ NEXT: the user runs `runbooks/37-download-on-aml.md` Phases 0–3 on the real cluster.**
+
+- **Opus@high review outcome (2026-07-22):** review holds up — **merged, no fixes needed.** §4's
+  central claim verified directly against the diff: `sources/cdse.py::download` and
+  `sources/mpc.py::download` bodies change by **zero lines** (every hunk in those two files is a pure
+  addition + the one documented `cdse.py` docstring fix). The `run_aml` refactor
+  (`_aml_submit_and_wait`, `_aml_preflight_common`) is **proven behaviour-preserving** by
+  `tests/test_scale_runner.py` having a **zero diff**. D5 no-secret-in-job-spec asserted in code +
+  test; D8 crash-resume limitation honestly in `LIMITATIONS.md` + TODO #46. Methods the runner leans on
+  (`is_expired`/`require_s3`/`query_catalog`) are all real; the ISO-string timestamp a shard CSV
+  round-trips is coerced back to tz-aware UTC by `catalog.append`. **364 passed / 3 skipped** on a bare
+  `.[dev]` venv, `ruff` clean, re-verified on `main` post-merge.
+- **Minor nits (non-blocking, not fixed):** (1) `config.CDSE_MONTHLY_QUOTA_GB` is defined but only
+  referenced by a test — the runner uses a caller-supplied `remaining_quota_gb` instead (defensible:
+  *remaining* ≠ *total*). (2) `workflows/download.py::main()`'s argparse layer has no smoke test (tests
+  call `run_roi`/`run_shard` directly). (3) The refactor renamed the missing-status report key from
+  `"shard"` to `"unit"` in `run_aml`'s no-status-file branch (no test depended on it). (4) MPC per-shard
+  timeout is sized from whole-discovery GB, not the shard's byte share (D6 wording) — erring
+  generous/safe. (5) D7 estimates via `query_catalog`×`APPROX_GB_PER_TILE` rather than the spec-named
+  `plan_download` — equivalent.
+- **Prune status:** merged `--no-ff` (`6b845fc`); **worktree + branch NOT yet pruned** — `git worktree
+  remove` is blocked by a live lock (`claude bg-spare`, pid 42181) on
+  `.claude/worktrees/spec37-download-aml`. Run `git worktree remove -f .claude/worktrees/spec37-download-aml
+  && git branch -d worktree-spec37-download-aml` once that session releases it. **`main` push is
+  pending** (push-only-when-asked).
 
 - **`specs/37-download-on-aml.md` — download on Azure ML (P2), the download sibling of spec 36.** Runs
   the already-working download-to-blob (spec 34) as an AML job so the source→blob byte-flow is
@@ -51,9 +75,8 @@ _Last updated: 2026-07-22_
   scratch, so a fresh-node resume re-downloads the unpushed remainder rather than seeing COGs already
   on blob (spec 34's push is whole-run, not per-file). Logged in `LIMITATIONS.md`/`TODO.md` #46;
   cheap for MPC (only the crashed shard's slice re-runs), costs re-downloaded bytes for CDSE.
-- **Not committed yet** (commit-only-when-asked) — implementation sits on worktree branch
-  `worktree-spec37-download-aml`, pending Opus@high review before merge to `main` + prune (same flow
-  spec 36 went through).
+- **Merged to `main`** (`6b845fc`, `--no-ff`) after the Opus@high review above; worktree/branch prune
+  and the `main` push are the only pending items (see **Prune status** at the top of this section).
 
 ## ⭐ SPEC 36 **IMPLEMENTED + REVIEWED + MERGED to `main`** (Sonnet@medium impl 2026-07-22; Opus@high review + merge 2026-07-22). **→ NEXT: the user runs `runbooks/36-aml-runner.md` Phases 1–3 on the real cluster.**
 
