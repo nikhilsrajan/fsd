@@ -263,31 +263,51 @@ def _aml_download_preflight(
     ml_client, *, cluster: str, environment: str, root: str, source: str,
     n_assets: int, vault_url: str | None, secret_name: str | None,
     get_secret, remaining_quota_gb: float | None, estimated_gb: float | None,
+    creds_url: str | None = None,
 ) -> list[str]:
     """D7: know before you spend, for a download dispatch. Cluster/environment/root
-    (shared, `_aml_preflight_common`) + discovery non-emptiness + (CDSE-only) the KV
-    secret resolves/parses and its S3 keys are not expired. Raises on any hard
-    failure; returns a (possibly empty) list of **warnings** (non-fatal) -- today
-    just the CDSE quota estimate (D1/D7)."""
+    (shared, `_aml_preflight_common`) + discovery non-emptiness + (CDSE-only) the
+    supplied creds source resolves/parses and its S3 keys are not expired. Raises on
+    any hard failure; returns a (possibly empty) list of **warnings** (non-fatal) --
+    today just the CDSE quota estimate (D1/D7).
+
+    D5 REVISED: CDSE creds come from **exactly one** of two mutually exclusive
+    sources -- Key Vault (`vault_url`+`secret_name`) or a blob JSON (`creds_url`).
+    Neither or both supplied is a hard preflight error."""
     errs = _aml_preflight_common(ml_client, cluster=cluster, environment=environment, root=root)
     if n_assets < 1:
         errs.append("discovery matched 0 assets for this roi/date-window.")
     warnings: list[str] = []
     if source == "cdse":
-        if not vault_url or not secret_name:
-            errs.append("source='cdse' requires vault_url and secret_name (D5 Key Vault creds).")
+        kv_given = bool(vault_url) or bool(secret_name)
+        blob_given = bool(creds_url)
+        if kv_given and blob_given:
+            errs.append(
+                "source='cdse' requires exactly one CDSE creds source, got both: "
+                "vault_url/secret_name (Key Vault) and creds_url (blob JSON)."
+            )
+        elif not kv_given and not blob_given:
+            errs.append(
+                "source='cdse' requires exactly one CDSE creds source: "
+                "vault_url+secret_name (Key Vault) or creds_url (blob JSON)."
+            )
+        elif kv_given and not (vault_url and secret_name):
+            errs.append("source='cdse' requires both vault_url and secret_name (D5 Key Vault creds).")
         else:
             try:
-                creds = _CdseCredentials.from_json_str(get_secret(vault_url, secret_name))
+                if blob_given:
+                    creds = _CdseCredentials.from_json(creds_url)
+                else:
+                    creds = _CdseCredentials.from_json_str(get_secret(vault_url, secret_name))
                 creds.require_s3()
                 if creds.is_expired():
                     errs.append(
                         f"CDSE S3 keys expired (s3_keys_expire={creds.s3_keys_expire!r})."
                     )
             except Exception as exc:  # noqa: BLE001 - report, don't crash on a preflight check
-                errs.append(
-                    f"Key Vault secret {secret_name!r} at {vault_url!r} did not resolve/parse: {exc}"
-                )
+                source_desc = f"blob {creds_url!r}" if blob_given else \
+                    f"Key Vault secret {secret_name!r} at {vault_url!r}"
+                errs.append(f"CDSE creds ({source_desc}) did not resolve/parse: {exc}")
         if remaining_quota_gb is not None and estimated_gb is not None and estimated_gb > remaining_quota_gb:
             warnings.append(
                 f"estimated download (~{estimated_gb:.0f} GB) exceeds the ~{remaining_quota_gb:.0f} GB "
@@ -467,6 +487,7 @@ def run_aml_download(
     max_tiles: int,
     vault_url: str | None = None,
     secret_name: str | None = None,
+    creds_url: str | None = None,
     max_cloudcover: float | None = None,
     cog: bool = True,
     n_shards: int | None = None,
@@ -489,12 +510,16 @@ def run_aml_download(
     `roi` must be a url (any `fsd.storage`/geopandas-readable path) rather than an
     in-memory GeoDataFrame -- the job that reads it runs on a different machine.
 
-    `vault_url`/`secret_name` (D5, CDSE only) are Key Vault coordinates -- caller-
-    supplied, never a concrete `rise` identifier hardcoded here (public repo).
-    Secrets never ride in the job spec: only these non-secret names go into the
-    command args; the node reads the value itself via `fsd.secrets.get_secret`
-    (substitutable here via `get_secret`, the D5 test seam) at run time. The same
-    `identity_client_id` (D4) that authorises blob also authorises Key Vault.
+    `vault_url`/`secret_name` (D5, CDSE only) are Key Vault coordinates, and
+    `creds_url` (D5 REVISED, CDSE only) is a blob JSON location -- **exactly one**
+    of the two CDSE creds sources is required (mutually exclusive; preflight errs
+    on neither and on both). Neither is a concrete `rise` identifier hardcoded here
+    (public repo) -- caller-supplied. Secrets never ride in the job spec: only
+    these non-secret names/locations go into the command args; the node reads the
+    value itself at run time -- via `fsd.secrets.get_secret` (KV, substitutable
+    here via `get_secret`, the D5 test seam) or `fsd.storage.fs.open` (blob, via
+    `cdse.CdseCredentials.from_json`). The same `identity_client_id` (D4) that
+    authorises blob also authorises Key Vault.
 
     `ml_client` is the test/injection seam (D3 invariant 3, mirrors `run_aml`): pass
     a fake with `.compute.get`, `.environments.get`, `.jobs.create_or_update`,
@@ -527,14 +552,17 @@ def run_aml_download(
             ml_client, cluster=cluster, environment=environment, root=root,
             source="cdse", n_assets=n_assets, vault_url=vault_url, secret_name=secret_name,
             get_secret=get_secret, remaining_quota_gb=remaining_quota_gb, estimated_gb=estimated_gb,
+            creds_url=creds_url,
         )
 
         timeout = timeout_seconds or _estimate_timeout_seconds(estimated_gb)
+        creds_arg = f"--creds-url {creds_url}" if creds_url else \
+            f"--vault-url {vault_url} --secret-name {secret_name}"
         command = (
             f"python -m fsd.workflows.download --roi {roi} "
             f"--startdate {_iso(startdate)} --enddate {_iso(enddate)} "
             f"--bands {','.join(bands)} --dst {dst_folderpath} --catalog {catalog_filepath} "
-            f"--max-tiles {max_tiles} --vault-url {vault_url} --secret-name {secret_name} "
+            f"--max-tiles {max_tiles} {creds_arg} "
             f"--status-url {run_root}/_status/0.json"
         )
         if max_cloudcover is not None:

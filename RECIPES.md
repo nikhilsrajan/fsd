@@ -486,8 +486,9 @@ Blob throughput scales with parallelism):
 ```python
 from fsd import api
 
-# CDSE -- one job, S3 creds read from Key Vault on the node (D5); roi must be a url
-# the node can also read (not an in-memory GeoDataFrame).
+# CDSE -- one job. S3 creds are read on the node from exactly one of two mutually
+# exclusive sources (D5 REVISED): Key Vault OR a blob JSON. roi must be a url the
+# node can also read (not an in-memory GeoDataFrame).
 api.download(
     "shapefiles/roi.geojson", startdate, enddate, ["B04", "B08", "SCL"],
     "abfss://<fs>@<account>.dfs.core.windows.net/<prefix>",
@@ -497,13 +498,15 @@ api.download(
         environment="fsd-aml-env:1",              # spec 36 D5's Environment, reused
         root="abfss://<fs>@<account>.dfs.core.windows.net/<prefix>",
         identity_client_id="<compute identity client id>",   # az identity show --query clientId
-        vault_url="<rise Key Vault url>",          # AZURE_INFRA_PRIVATE.md
+        vault_url="<rise Key Vault url>",          # AZURE_INFRA_PRIVATE.md -- Key Vault path
         secret_name="<CDSE creds secret name>",
+        # -- OR (mutually exclusive with vault_url/secret_name) --
+        # creds_url="abfss://<fs>@<account>.dfs.core.windows.net/<prefix>/_secrets/cdse_credentials.json",
     ),
 )
 
 # MPC -- fans out across N shards (default: the cluster's max_instances); anonymous,
-# no vault_url/secret_name needed.
+# no vault_url/secret_name/creds_url needed.
 api.download(
     "shapefiles/roi.geojson", startdate, enddate, ["B04", "B08", "SCL"],
     "abfss://<fs>@<account>.dfs.core.windows.net/<prefix>",
@@ -519,5 +522,7 @@ api.download(
 Or call the dispatcher directly: `fsd.workflows.runners.run_aml_download(roi, startdate,
 enddate, bands, dst_folderpath, catalog_filepath, source=..., cluster=..., ...)`. Same
 identity/environment reuse as spec 36; never hardcode `cluster`/`identity_client_id`/
-`vault_url` in anything under `fsd/` (concrete `rise` identifiers, `AZURE_INFRA_PRIVATE.md`).
-Full phased validation (one shard → resume → real fan-out): `runbooks/36-aml-runner.md`.
+`vault_url`/`creds_url` in anything under `fsd/` (concrete `rise` identifiers,
+`AZURE_INFRA_PRIVATE.md`). Full phased validation, including the blob `_secrets/` push/delete
+(D5 REVISED): `runbooks/37-download-on-aml.md`; datacube fan-out validation (spec 36):
+`runbooks/36-aml-runner.md`.

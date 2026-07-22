@@ -4,10 +4,27 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-22_
 
-## ⭐ SPEC 37 **IMPLEMENTED + REVIEWED + MERGED to `main`** (Sonnet@medium impl 2026-07-22; Opus@high review + merge 2026-07-22, merge commit `6b845fc`). **⚠️ D5 REVISED 2026-07-22 (keep-both blob-creds fallback) — needs a follow-up Sonnet@medium implementation. → NEXT: switch to Sonnet, implement the D5-revision delta, then the user runs `runbooks/37-download-on-aml.md` Phases 0–3.**
+## ⭐ SPEC 37 **IMPLEMENTED + REVIEWED + MERGED to `main`** (Sonnet@medium impl 2026-07-22; Opus@high review + merge 2026-07-22, merge commit `6b845fc`). **D5 REVISED delta (keep-both blob-creds fallback) IMPLEMENTED 2026-07-22 in worktree `fsd-spec37-d5` (branch `spec37-d5-delta`), green (369 passed / 3 skipped, ruff clean) — NOT yet reviewed/merged. → NEXT: Opus review + merge/prune, then the user runs `runbooks/37-download-on-aml.md` Phases 0–3.**
 
-- **⚠️ D5 REVISED 2026-07-22 (keep-both: blob-JSON creds fallback added; KV retained) — NOT yet
-  implemented.** KV creds delivery (D5 as merged) is **operationally blocked**: no identity the operator
+- **D5 REVISED delta — IMPLEMENTED 2026-07-22 (Sonnet@medium, worktree `fsd-spec37-d5`,
+  branch `spec37-d5-delta`, not yet reviewed/merged).** All 6 checklist items landed against the
+  merged code: (1) `run_aml_download`/`_aml_download_preflight` gained `creds_url: str | None`
+  (kept `vault_url`/`secret_name`); preflight now requires exactly one CDSE creds source, erring on
+  neither and on both. (2) `workflows/download.py` CLI gained `--creds-url`; `run_roi` uses
+  `CdseCredentials.from_json(creds_url)` when given, else the existing KV path (`vault_url`/
+  `secret_name` are now optional params). (3) The command builder emits `--creds-url <url>` xor
+  `--vault-url/--secret-name`. (4) `_aml_download_preflight` resolves/parses/expiry-checks whichever
+  source is supplied (blob via `from_json`, KV via `from_json_str(get_secret(...))`). (5) Tests: 5
+  new (§7 test 7b CLI + dispatcher blob-path, preflight neither/both, preflight blob-resolve) —
+  `tests/test_download_aml.py` 21→26 tests, suite 364→369 passed / 3 skipped, `ruff` clean. (6) Docs:
+  `LIMITATIONS.md` (new plaintext-creds-on-blob row), `runbooks/37-download-on-aml.md` (Phase 0 now
+  pushes local creds JSON to a `_secrets/` blob prefix instead of reading a pre-populated KV secret;
+  Phase 1/3 use `--creds-url`; Phase 3 deletes the blob creds file after the run), `CHANGES.md` (new
+  "D5 REVISED" subsection), `RECIPES.md` (blob `creds_url` alternative shown alongside KV). Invariant
+  verified by test: no secret *value* in `job.command`/`environment_variables` on the blob path
+  either — only the `creds_url` location.
+- **⚠️ D5 REVISED 2026-07-22 (keep-both: blob-JSON creds fallback added; KV retained) — the decision
+  record.** KV creds delivery (D5 as merged) is **operationally blocked**: no identity the operator
   can invoke holds a KV *write* role on `kv-rise-westeurope` — the compute UAMI has read-only
   (`Key Vault Secrets User`), so it can read a secret but not create one. `az keyvault secret set`
   returned `ForbiddenByRbac` from both the driver laptop **and** the `vm-rise-nsasiraj` VM (the VM call

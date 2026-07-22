@@ -2,19 +2,27 @@
 
 > Spec-24 run-book for **spec 37 §6**. **You** run this; paste back each phase's printed JSON.
 > Builds on spec 36's cluster/identity/Environment (already proven, `runbooks/36-phase0-identity-
-> smoke.md` + `runbooks/36-aml-runner.md`) — this run-book adds the **Key Vault** leg (D5) and the
-> **download** dispatch (D1/D2/D3), not a new cluster/identity/Environment.
+> smoke.md` + `runbooks/36-aml-runner.md`) — this run-book adds the **CDSE creds delivery** leg (D5)
+> and the **download** dispatch (D1/D2/D3), not a new cluster/identity/Environment.
+>
+> **D5 REVISED (2026-07-22, keep-both):** Key Vault *write* is operationally blocked for the operator
+> (`ForbiddenByRbac` — the compute UAMI only holds *read*, `Key Vault Secrets User`), so **this
+> run-book uses the blob-JSON `--creds-url` fallback** below (mutually exclusive with the KV path).
+> KV stays wired and is still preferred wherever a write role exists — swap `AZ_CREDS_URL` for
+> `AZ_VAULT_URL`/`AZ_CDSE_SECRET_NAME` in Phase 1/3's `run_aml_download` calls if you have one.
 >
 > **Concrete `rise` values are NOT in this file** (public repo). Paste them as env vars from the
 > uncommitted `../../AZURE_INFRA_PRIVATE.md` (workspace root).
 
 ## Purpose
 
-Prove `api.download(runner="aml")` end to end, for both sources: a node reads its S3 creds from Key
-Vault and authenticates through fsd's storage seam (Phase 0); one tile lands on blob per source with
-**correct** radiometry (Phase 1); MPC's fan-out actually partitions the asset list and is measurably
-faster than `n_shards=1` (Phase 2 — the D1 claim); and the real archive that unblocks spec 36's
-datacube fan-out on real data lands on blob (Phase 3).
+Prove `api.download(runner="aml")` end to end, for both sources: a node reads its S3 creds from
+blob (or Key Vault) and authenticates through fsd's storage seam (Phase 0); one tile lands on blob
+per source with **correct** radiometry (Phase 1); MPC's fan-out actually partitions the asset list
+and is measurably faster than `n_shards=1` (Phase 2 — the D1 claim); and the real archive that
+unblocks spec 36's datacube fan-out on real data lands on blob (Phase 3, which also **deletes the
+blob creds file** once the run completes — D5 REVISED's accepted plaintext-at-rest trade-off is
+scoped to the run's duration only).
 
 ## Prerequisites
 - **VPN connected**, `az login` done, correct subscription selected.
@@ -23,10 +31,10 @@ datacube fan-out on real data lands on blob (Phase 3).
 - The spec-36 AML Environment already built (`runbooks/36-aml-runner.md`'s "Build the AML
   Environment" step) — **rebuild it** if the fsd wheel changed since (it must carry
   `azure-keyvault-secrets`, `s3fs`, `planetary-computer`, `pystac-client` — D10; verify in Phase 1).
-- A **Key Vault secret** already populated with the CDSE creds JSON (the legacy `cdse_credentials.json`
-  shape — `sh_clientid`/`sh_clientsecret`/`s3_access_key`/`s3_secret_key`), and confirmation the
-  compute identity holds `Key Vault Secrets User` on that vault (per `AZURE_INFRA_PRIVATE.md` — this
-  run-book does not grant that role; it only reads the secret).
+- A **local** CDSE creds JSON (the legacy `cdse_credentials.json` shape — `sh_clientid`/
+  `sh_clientsecret`/`s3_access_key`/`s3_secret_key`) to push to the blob `_secrets/` prefix in
+  Phase 0. (If instead you have a KV write role, populate a Key Vault secret the same shape and use
+  the KV path noted above — this run-book does not grant that role.)
 
 ## Setup — paste your concrete values (from `AZURE_INFRA_PRIVATE.md`, uncommitted)
 ```bash
@@ -41,8 +49,11 @@ export AZ_FS='<filesystem/container>'
 export AZ_ROOT="abfss://${AZ_FS}@${AZ_ACCOUNT}.dfs.core.windows.net/fsd-p2-download"
 export AZ_ENV_NAME='fsd-aml-env'          # spec 36 D5's environment, reused
 
-export AZ_VAULT_URL='<rise Key Vault url>'          # e.g. kv<proj>.vault.azure.net
+export AZ_VAULT_URL='<rise Key Vault url>'          # e.g. kv<proj>.vault.azure.net -- KV path (if you have write)
 export AZ_CDSE_SECRET_NAME='<cdse creds secret name>'
+
+export AZ_LOCAL_CREDS_JSON='<path to your local cdse_credentials.json>'   # blob path (used for the demo)
+export AZ_CREDS_URL="${AZ_ROOT}/_secrets/cdse_credentials.json"
 
 export AZ_UAMI_CLIENT_ID="$(az identity show -g "$AZ_RG" -n "$AZ_UAMI_NAME" --query clientId -o tsv)"
 echo "client id resolved: ${AZ_UAMI_CLIENT_ID:0:8}…"
@@ -52,24 +63,28 @@ mkdir -p "$OUT"
 ```
 - **PASS if:** the client-id line prints 8 hex characters.
 
-## Phase 0 — identity + Key Vault secret read
+## Phase 0 — identity + CDSE creds (blob `_secrets/` push, D5 REVISED)
 ```bash
 cat > "$OUT/phase0.py" <<'PY'
 import json, os
-from azure.identity import DefaultAzureCredential
-from azure.keyvault.secrets import SecretClient
-from fsd import secrets
+from fsd.storage import fs
 from fsd.sources.cdse import CdseCredentials
 
-# Same identity spec 36 D4 proved for blob -- confirm it ALSO reaches Key Vault
-# (the compute identity's Key Vault Secrets User role, from the driver's az-login
-# identity here; the node repeats this same call in Phase 1's job).
-value = secrets.get_secret(os.environ["AZ_VAULT_URL"], os.environ["AZ_CDSE_SECRET_NAME"])
-creds = CdseCredentials.from_json_str(value)
+# Push the local CDSE creds JSON to the blob _secrets/ prefix (D5 REVISED: the
+# operator has blob write but no KV write). Same identity spec 36 D4 proved for
+# blob authenticates this write; the node reads it back via the same identity
+# in Phase 1's job (fs.open, CdseCredentials.from_json -- no new read code).
+with open(os.environ["AZ_LOCAL_CREDS_JSON"]) as f:
+    local_json = f.read()
+with fs.open(os.environ["AZ_CREDS_URL"], "w") as f:
+    f.write(local_json)
+
+creds = CdseCredentials.from_json(os.environ["AZ_CREDS_URL"])
 creds.require_s3()
 
 out = {
-    "phase": "phase0-identity-and-kv", "pass": True,
+    "phase": "phase0-identity-and-blob-creds", "pass": True,
+    "creds_url": os.environ["AZ_CREDS_URL"],
     "s3_access_key_set": bool(creds.s3_access_key),
     "s3_keys_expired": creds.is_expired(),
 }
@@ -80,10 +95,10 @@ PY
 .venv/bin/python "$OUT/phase0.py"
 ```
 - **Expect:** `s3_access_key_set: true`, `s3_keys_expired: false` (or `null` if `s3_keys_expire`
-  isn't set in the secret).
-- **PASS if:** no exception and the above. A `Forbidden`/`403` here means the compute identity's
-  `Key Vault Secrets User` role or the vault firewall needs attention **before** Phase 1 (D5's
-  "no infra grant needed" claim rests on that role already being there).
+  isn't set in the JSON).
+- **PASS if:** no exception and the above. A write-permission error here means the compute
+  identity's blob write role needs attention **before** Phase 1. **Note the plaintext-at-rest
+  trade-off** (`LIMITATIONS.md`): the creds file now sits on blob until Phase 3 deletes it.
 
 ## Phase 1 — one tile to blob, per source
 ```bash
@@ -101,8 +116,8 @@ common = dict(
 cdse_result = runners.run_aml_download(
     "../../shapefiles/s2grid=476da24.geojson", "2018-06-01", "2018-06-11", ["B04"],
     os.environ["AZ_ROOT"] + "/cdse", os.environ["AZ_ROOT"] + "/cdse/catalog.parquet",
-    source="cdse", max_tiles=5, vault_url=os.environ["AZ_VAULT_URL"],
-    secret_name=os.environ["AZ_CDSE_SECRET_NAME"], run_id="phase1-cdse", **common,
+    source="cdse", max_tiles=5, creds_url=os.environ["AZ_CREDS_URL"],
+    run_id="phase1-cdse", **common,
 )
 mpc_result = runners.run_aml_download(
     "../../shapefiles/s2grid=476da24.geojson", "2018-06-01", "2018-06-11", ["B04"],
@@ -200,7 +215,7 @@ result = runners.run_aml_download(
     os.environ["AZ_ROOT"] + "/archive", os.environ["AZ_ROOT"] + "/archive/catalog.parquet",
     source="<cdse-or-mpc>", max_tiles=int(os.environ.get("AZ_MAX_TILES", "500")),
     n_shards=int(os.environ.get("AZ_N_SHARDS", "8")),  # ignored for source="cdse" (D1: always 1)
-    vault_url=os.environ.get("AZ_VAULT_URL"), secret_name=os.environ.get("AZ_CDSE_SECRET_NAME"),
+    creds_url=os.environ.get("AZ_CREDS_URL"),  # or vault_url=/secret_name= if you have a KV write role
     run_id="phase3-archive", **common,
 )
 out = {"phase": "phase3-real-archive", "pass": True, "result": result}
@@ -217,6 +232,13 @@ PY
   show `missing_count == 0` afterwards).
 - **This retires TODO #44** (the pre-fix radiometry artifacts) if `archive` replaces or supersedes
   the old `spec34-demo/` prefix — decide with the user whether to also delete the stale prefix.
+- **Delete the blob creds file now that the run is done** (D5 REVISED's plaintext-at-rest trade-off
+  is scoped to the run's duration only):
+  ```bash
+  .venv/bin/python -c "from fsd.storage import fs; import os; fs.rm(os.environ['AZ_CREDS_URL'])"
+  ```
+  **PASS if:** the command exits cleanly (`fs.rm` on an fsspec path); re-running `fs.exists` on
+  `AZ_CREDS_URL` afterwards should return `False`.
 
 ## Success criteria (`_result.json`)
 Each phase writes `$OUT/phase<N>_result.json`, e.g.:
