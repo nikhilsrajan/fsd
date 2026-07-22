@@ -4,7 +4,93 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-22_
 
-## ⭐ SPEC 37 **IMPLEMENTED + REVIEWED + MERGED to `main`** (Sonnet@medium impl 2026-07-22; Opus@high review + merge 2026-07-22, merge commit `6b845fc`). **D5 REVISED delta (keep-both blob-creds fallback) IMPLEMENTED + REVIEWED + MERGED 2026-07-22 (merge commit `154aa70`; worktree `fsd-spec37-d5` + branch `spec37-d5-delta` pruned), green (369 passed / 3 skipped, ruff clean). `main` is 2 commits ahead of `origin/main` — push pending (not yet asked). → NEXT: the user runs `runbooks/37-download-on-aml.md` Phases 0–3.**
+## ⭐ SPEC 37 **VALIDATED ON THE REAL CLUSTER — `runbooks/37-download-on-aml.md` Phases 0–3 ALL PASS (2026-07-22).** The download dispatcher works end to end on `rise` AML for both sources. **⚠️ ALL SESSION WORK IS UNCOMMITTED** (2 code fixes + ~11 tests + both run-books + `CHANGES.md`/`LIMITATIONS.md`/TODO #47–#50). **→ NEXT SESSION: the 5-item gate list below, then `runbooks/36-aml-runner.md`.**
+
+### The runbook-37 execution session (2026-07-22, Opus@high) — what it produced
+
+**Result: Phases 0–3 green.** Phase 0 (ROI + creds on blob, creds deleted after use), Phase 1 (one
+tile per source: CDSE 16 assets/1.06 GB, MPC 12 assets, 0 failed), Phase 2 (MPC fan-out, exact
+partition 964 = 8 shards), Phase 3 (the real archive: **3456 assets = 576 MGRS tiles**, Austria
+`AT_ROI`, full-year 2018, bands **B02/B03/B04/B08/B8A/SCL**, 16 shards × 216, **0 failed, 0
+circuit-tripped**) → `$AZ_ROOT/archive/` + `catalog.parquet`. B02/B03 were added deliberately so the
+archive can serve true-colour RGB to the mini-MPC/STACNotator stack later without a re-download.
+
+**⛔ GATE LIST — do these before `runbooks/36-aml-runner.md`** (1 and 2 are hard gates):
+1. **Radiometry check on the archive — NEVER DONE.** The `gdalinfo` scale/offset comparison
+   (blob COG vs a local download of the same tile) is spec 34's whole guarantee and the reason
+   TODO #44 exists. Datacubes built from mis-tagged COGs are **silently wrong**. Do not skip.
+2. **Catalog completeness** + resolve a discovery discrepancy: the driver-side dry run counted
+   **3432** assets (572 tiles); the run itself processed **3456** (576 tiles) — 4 tiles more,
+   unexplained (MPC ingest between queries? non-deterministic STAC paging?). The blob catalog is
+   authoritative; verify what actually landed.
+3. **`runbooks/36-aml-runner.md` points at the WRONG PREFIX** — lines 150 + 208 read
+   `$AZ_ROOT/imagery/catalog.parquet` ("runbook 34's output"). The new archive is at
+   `$AZ_ROOT/archive/`. As written, spec 36 would build datacubes against the **old spec-34
+   artifacts — the ones TODO #44 says carry the wrong radiometry tags.** Fix before running.
+4. **Rebuild the AML image** — it still carries the pre-`_roi_gdf` wheel and none of the TODO #49
+   changes (`runbooks/36-aml-runner.md` "Build the AML Environment" + its smoke job, then
+   re-export `AZ_ENV_VERSION`).
+5. **Commit** (see the uncommitted list below). Suggested split: code (2 fixes + tests +
+   `CHANGES.md`) as one commit, run-books/docs as another.
+
+**Code fixed this session (both green, 380 passed / 3 skipped, ruff clean):**
+- **`sources/cdse._roi_gdf` now reads via `fs.open` + `BytesIO`.** GDAL/pyogrio has no `abfss://`
+  driver, so a blob ROI failed with a **lying** `DataSourceError: No such file or directory` for a
+  file that existed. `workflows/task.py` already carried this exact fix (spec 36 D6a / TODO #40);
+  `sources/` was never swept. Also covers all three `sources/mpc` call sites. **Blocking — Phase 1
+  could not run without it.** 3 sibling sites still bypass the seam → **TODO #47**.
+- **TODO #49 CLOSED — `run_aml_download` stops ignoring per-source arguments.** (a) creds
+  (`creds_url`/`vault_url`/`secret_name`) are now a hard preflight error for anonymous
+  `source="mpc"` — previously accepted and dropped, so an MPC run wrapped in the run-book's
+  `blob_creds()` staged the CDSE keys on blob for the whole run **unread**. (b) `max_tiles` is now
+  enforced **driver-side for both sources**: `sources/mpc.py:351` raises above the cap locally while
+  the AML path dropped it entirely, so the same call meant different things per runner (breaks
+  spec 36 D3). MPC counts **distinct MGRS tiles**, not shard rows (`n_tiles = assets / len(bands)`).
+  Live consequence: the 576-tile Phase 3 now **fails fast** under the old `max_tiles=500`; run-book
+  default raised to 700.
+
+**Measurements (first real on-Azure fan-out data — detail in TODO #48):**
+- **Fan-out works on the transfer, not (much) on the wall clock.** Phase 2 is the only controlled
+  experiment (same 964 assets, only `n_shards` varied): transfer **577.6 s → 113.7 s = 5.08×**;
+  wall **699.6 s → 493.9 s = 1.42×**. Total work conserved (sum of shards 560.9 s ≈ 577.6 s serial)
+  ⇒ no duplicated effort and **no per-node throughput collapse — MPC is not throttling us at n=8**.
+  The gap is fixed cluster startup: ~380 s of the 8-shard wall, ≈ **+37 s per extra job**.
+- **`n_shards=16` (Phase 3) is NOT evidence that 16 > 8** — no n=1 baseline for that workload and
+  the script recorded no wall clock (now fixed in the run-book: it emits `wall_seconds` /
+  `slowest_shard_seconds` / `driver_overhead_seconds`). Hint only: per-asset 0.704 s at n=16 vs
+  0.582 s at n=8. **Optimal shard width is unmeasured**; the straggler spread collapsing 16.7× → 1.82×
+  when shards got fatter points to *fewer, fatter* shards. Unresolvable until MPC reports bytes.
+- **MPC reports `bytes_downloaded: 0` always** (its `DownloadResult` has no such field) ⇒ no MB/s
+  anywhere, which is *why* the above stays open. Fix that first — TODO #48 item (1).
+
+**Operational facts worth not re-deriving:**
+- The **driver** needs blob access in every phase, not just the node. VPN off ⇒
+  `ErrorCode:AuthorizationFailure` (that code = **network rules**; `AuthorizationPermissionMismatch`
+  = missing RBAC). Confirmed: VPN was off, identical script passed once up.
+- **`fs.rm(prefix, recursive=True)` on `abfss://` deletes every file and THEN raises**
+  `DirectoryIsNotEmpty` (empty dir entries survive). Reads as "nothing happened"; the data is gone.
+  **TODO #50, unfixed.** Don't clear prefixes — re-running is self-healing (idempotent skip +
+  `TileCatalog.append` upserts by id).
+- **The AML Environment must contain fsd itself** — the dispatcher submits a bare
+  `python -m fsd.workflows.download …` with **no `code=` upload and no pip install**. The old
+  run-book step built an image with no fsd in it and PASS-checked a `provisioning_state` field that
+  does not exist in the environment schema. Rewritten as a **Docker build context** (`build.path` +
+  `dockerfile_path`; `conda_file` structurally **cannot** carry a local wheel since it requires
+  `image`, which is mutually exclusive with `build`) + a smoke job that imports fsd on a node.
+  `az ml environment show` requires `--version`/`--label`; versions are auto-assigned, so
+  `AZ_ENV_VERSION` is captured rather than hardcoded `:1`.
+
+**Session takeaway:** three of the four code findings are the same shape — **an interface promising
+something it does not deliver** (a url-accepting reader that isn't, a per-source signature that
+isn't, a backend-agnostic `rm` that isn't). The synthetic suite was green throughout; every one of
+these needed real blob paths and a real cluster to surface. Run-book defects caused two of the
+operator's three mistakes (an unannotated CDSE-only `creds_url` next to an annotated `n_shards`; a
+required-step-as-code-comment), so **run-book precision is a correctness concern, not polish.**
+
+**UNCOMMITTED at session end:** `src/fsd/sources/cdse.py`, `src/fsd/workflows/runners.py`,
+`tests/test_cdse.py`, `tests/test_download_aml.py`, `runbooks/36-aml-runner.md`,
+`runbooks/37-download-on-aml.md`, `CHANGES.md`, `LIMITATIONS.md`, `TODO.md` (#47–#50).
+`main` was pushed earlier in the session (`e76a8d5`), so `origin/main` predates all of the above.
 
 - **⚠️ Private-identifier leak — found during the D5 review (2026-07-22), SCRUBBED FORWARD the same
   day.** PRE-EXISTING: introduced by the spec commit `3c5f26f`, not by the D5 delta. `PROGRESS.md`

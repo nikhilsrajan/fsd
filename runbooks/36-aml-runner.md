@@ -36,9 +36,16 @@ export AZ_ACCOUNT='<storage account>'           # st<proj>
 export AZ_FS='<filesystem/container>'           # e.g. data
 export AZ_ROOT="abfss://${AZ_FS}@${AZ_ACCOUNT}.dfs.core.windows.net/fsd-p2"
 export AZ_ENV_NAME='fsd-aml-env'
+# AZ_ENV_VERSION is exported by "Build the AML Environment" below (AML auto-assigns it).
+# In a *later* shell, re-export the version you built:
+#   export AZ_ENV_VERSION="$(az ml environment list -n "$AZ_ENV_NAME" -g "$AZ_RG" \
+#     -w "$AZ_ML_WORKSPACE" --query "[].version" -o tsv | sort -V | tail -1)"
 
 export AZ_UAMI_CLIENT_ID="$(az identity show -g "$AZ_RG" -n "$AZ_UAMI_NAME" --query clientId -o tsv)"
 echo "client id resolved: ${AZ_UAMI_CLIENT_ID:0:8}…"
+
+# Knob the phase scripts read (inline default 8 if unset -- exported here to keep it visible).
+export AZ_N_SHARDS='8'      # datacube fan-out width (Phase 3)
 
 export OUT="$PWD/tests/outputs/p2_aml_runner"    # gitignored
 mkdir -p "$OUT"
@@ -46,39 +53,93 @@ mkdir -p "$OUT"
 - **PASS if:** the client-id line prints 8 hex characters.
 
 ## Build the AML Environment (spec 36 D5) — once, or whenever the fsd wheel changes
+
+> **The image must contain fsd itself.** `runners.run_aml`/`run_aml_download` submit a bare
+> `python -m fsd.workflows.…` command with **no `code=` upload and no pip install in the command**
+> (`runners.py`, `aml_command(command=…, environment=…, compute=…)`). That is the opposite of
+> `36-phase0-identity-smoke.md`, which uploaded `code: ./job_src` and pip-installed the wheel at job
+> start — fine for a probe, but it produces no *registered* environment for `environment=` to name.
+> So the wheel is baked into the image here, via a **Docker build context**.
+>
+> **Why a build context and not `conda_file`:** in the environment schema, `conda_file` *requires*
+> `image`, and `image`/`build` are mutually exclusive — so a conda spec can't carry a local wheel
+> (only the conda file itself is uploaded, not sibling files). `build.path` uploads the **whole
+> directory**, wheel included. (AML CLI v2 environment YAML schema — see Sources at the bottom.)
+
 ```bash
+# 1. Build context = the wheel + a Dockerfile, in one directory.
+rm -rf "$OUT/env_src" && mkdir -p "$OUT/env_src"
 .venv/bin/pip wheel . --no-deps -w "$OUT/env_src" && ls "$OUT"/env_src/fsd-*.whl
 
-cat > "$OUT/env_src/conda.yaml" <<'YML'
-name: fsd-aml-env
-channels:
-  - conda-forge
-dependencies:
-  - python=3.11
-  - pip
-YML
+cat > "$OUT/env_src/Dockerfile" <<'DOCKER'
+# The same base image phase 0 proved works on this cluster.
+FROM mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04:latest
+COPY fsd-*.whl /tmp/
+# [azure] -> adlfs + azure-identity + azure-keyvault-secrets (blob I/O, D4 identity, D5 KV creds)
+# [mpc]   -> planetary-computer (asset signing). s3fs/pystac-client are core deps.
+# NOT [aml]: azure-ai-ml is a *driver*-side dep; the node never submits jobs.
+RUN python -m pip install --no-cache-dir "$(ls /tmp/fsd-*.whl)[azure,mpc]" \
+ && python -m pip cache purge || true
+DOCKER
 
 cat > "$OUT/env.yml" <<YML
 \$schema: https://azuremlschemas.azureedge.net/latest/environment.schema.json
 name: ${AZ_ENV_NAME}
-image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04:latest
-conda_file: ./env_src/conda.yaml
+build:
+  path: ./env_src
+  dockerfile_path: Dockerfile
 YML
 
-# NOTE: this build installs the wheel via a post-provisioning step is NOT how AML
-# environments work -- the wheel itself must be a pip dependency baked into the conda
-# spec. Simplest correct form: publish the wheel to a location pip can reach (e.g. a
-# private index, or inline as a local path dependency) and add it to conda.yaml's
-# `pip:` list before `az ml environment create`. See AML docs "Manage environments"
-# for the exact pip-from-local-wheel syntax at the version installed
-# (`az ml environment create -f env.yml -g "$AZ_RG" -w "$AZ_ML_WORKSPACE"`).
-az ml environment create -f "$OUT/env.yml" -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query name -o tsv
+# version is omitted on purpose -> AML auto-increments it. Capture what it assigned:
+export AZ_ENV_VERSION="$(az ml environment create -f "$OUT/env.yml" \
+  -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query version -o tsv)"
+echo "built ${AZ_ENV_NAME}:${AZ_ENV_VERSION}"
 ```
-- **Expect:** `${AZ_ENV_NAME}` printed back.
-- **PASS if:** `az ml environment show -n "$AZ_ENV_NAME" -g "$AZ_RG" -w "$AZ_ML_WORKSPACE"
-  --query provisioning_state -o tsv` prints `Succeeded`.
-- **Re-run whenever the fsd wheel changes** — `run_aml`'s preflight (D10) checks the environment
-  resolves, but not that it's current; rebuild after any `src/fsd/` change you want on the cluster.
+- **Expect:** the image build runs (several minutes the first time), then `built fsd-aml-env:<N>`.
+- ⚠️ **Export `AZ_ENV_VERSION` in every later shell** — the phase scripts reference
+  `${AZ_ENV_NAME}:${AZ_ENV_VERSION}`. If you lose it:
+  `az ml environment list -n "$AZ_ENV_NAME" -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query "[].version" -o tsv`
+- **PASS if:** the following prints the name and version back:
+  ```bash
+  az ml environment show -n "$AZ_ENV_NAME" --version "$AZ_ENV_VERSION" \
+    -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query "[name, version]" -o tsv
+  ```
+  `--version` (or `--label`) is **required** — `az ml environment show` without one fails with
+  `Must provide either version or label`. Don't query `provisioning_state`: it is not in the
+  environment schema, and `--query` on a missing field prints an empty line that reads like a
+  failure.
+
+### Verify the image actually contains fsd (do this before Phase 1)
+A registered environment can exist and still be unusable — a wrong base-image `python` on `PATH`
+would put the wheel somewhere the job's interpreter can't see. One cheap job settles it:
+```bash
+cat > "$OUT/env_smoke.yml" <<YML
+\$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+display_name: fsd-env-smoke
+experiment_name: fsd-p2
+command: >-
+  python -c "import fsd, s3fs, adlfs, planetary_computer, pystac_client;
+  import azure.keyvault.secrets;
+  print('FSD_ENV_OK', fsd.__version__)"
+environment: azureml:${AZ_ENV_NAME}:${AZ_ENV_VERSION}
+compute: azureml:${AZ_CLUSTER}
+YML
+az ml job create -f "$OUT/env_smoke.yml" -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query name -o tsv
+# then stream it with the returned job name:
+#   az ml job stream -n <job-name> -g "$AZ_RG" -w "$AZ_ML_WORKSPACE"
+```
+- **PASS if:** the log prints `FSD_ENV_OK 0.1.0` and the job finishes `Completed`.
+- **FAIL — `ModuleNotFoundError: No module named 'fsd'`:** the image's default `python` isn't the
+  one pip installed into. Fix in the Dockerfile (pin an explicit interpreter path, e.g.
+  `RUN /opt/miniconda/bin/python -m pip install …`, and set `ENV PATH=` accordingly), rebuild, and
+  re-run this smoke — **do not** proceed to Phase 1, which would burn cluster time and CDSE quota
+  before hitting the same import.
+- **FAIL — a *different* module missing** (`adlfs`, `planetary_computer`, …): an extra is missing
+  from the Dockerfile's install line; add it and rebuild.
+
+- **Re-run this whole step whenever the fsd wheel changes** — `run_aml`'s preflight (D10) checks the
+  environment *resolves*, not that it's *current*; rebuild after any `src/fsd/` change you want on
+  the cluster, and re-export the new `AZ_ENV_VERSION`.
 
 ## Phase 1 — one shard, one cube
 ```bash
@@ -102,7 +163,7 @@ create_datacube.setup(
 
 result = runners.run_aml(
     csv_filepath,
-    cluster=os.environ["AZ_CLUSTER"], environment=f"{os.environ['AZ_ENV_NAME']}:1",
+    cluster=os.environ["AZ_CLUSTER"], environment=f"{os.environ['AZ_ENV_NAME']}:{os.environ['AZ_ENV_VERSION']}",
     root=os.environ["AZ_ROOT"], identity_client_id=os.environ["AZ_UAMI_CLIENT_ID"],
     n_shards=1, subscription_id=os.environ["AZ_SUBSCRIPTION_ID"],
     resource_group_name=os.environ["AZ_RG"], workspace_name=os.environ["AZ_ML_WORKSPACE"],
@@ -159,7 +220,7 @@ create_datacube.setup(
 
 result = runners.run_aml(
     csv_filepath,
-    cluster=os.environ["AZ_CLUSTER"], environment=f"{os.environ['AZ_ENV_NAME']}:1",
+    cluster=os.environ["AZ_CLUSTER"], environment=f"{os.environ['AZ_ENV_NAME']}:{os.environ['AZ_ENV_VERSION']}",
     root=os.environ["AZ_ROOT"], identity_client_id=os.environ["AZ_UAMI_CLIENT_ID"],
     n_shards=int(os.environ.get("AZ_N_SHARDS", "8")),
     subscription_id=os.environ["AZ_SUBSCRIPTION_ID"],
@@ -200,3 +261,23 @@ Paste these back (not the AML job logs) — Claude diffs them against the PASS c
   cancel them individually with `az ml job cancel -n <job-name> ...` if you don't want that),
   or `az ml job cancel -n <job-name> -g "$AZ_RG" -w "$AZ_ML_WORKSPACE"` per job.
 - Re-run: Phases 1/2 are idempotent by design (D7). Phase 3 is too, but costs more per re-run.
+
+## Sources — the environment-build step
+
+Checked 2026-07-22, after `az ml environment show --query provisioning_state` failed for the
+operator with `Must provide either version or label`.
+
+- **[CLI (v2) environment YAML schema](https://learn.microsoft.com/en-us/azure/machine-learning/reference-yaml-environment?view=azureml-api-2)**
+  — the whole build-context rewrite rests on this table: *"`image` … **One of `image` or `build` is
+  required**"*, *"`conda_file` … **If specified, `image` must be specified as well**"* (so a conda
+  spec can never carry a local wheel), *"`build.path` — Local path to the directory to use as the
+  build context"*, and *"`build.dockerfile_path` … Default: `Dockerfile`"*. Also *"`version` … **If
+  omitted, Azure Machine Learning will autogenerate a version**"* — why the step captures the
+  assigned version into `AZ_ENV_VERSION` instead of hardcoding `:1`. The page's field list contains
+  **no `provisioning_state`**, which is why the old PASS check queried a field that does not exist.
+- **[`az ml environment` CLI reference](https://learn.microsoft.com/en-us/cli/azure/ml/environment?view=azure-cli-latest)**
+  — `az ml environment show` takes `--name` as the only *required* parameter with `--version`/
+  `--label` "optional", but the operator's error shows one of the pair is required in practice;
+  hence the corrected `--version "$AZ_ENV_VERSION"` invocation and the `az ml environment list
+  --query "[].version"` recovery command. Also documents `--build-context/-b` and `--image/-i` as
+  **mutually exclusive**, corroborating the schema's `image` xor `build`.
