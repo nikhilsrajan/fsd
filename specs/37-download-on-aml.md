@@ -1,6 +1,11 @@
 # Spec 37 — download on Azure ML (P2): dispatch the existing download-to-blob onto the cluster
 
-> **Status: ✅ SIGNED OFF (user, 2026-07-22).** **→ NEXT: implement in a Sonnet@medium session against
+> **Status: ✅ SIGNED OFF (user, 2026-07-22) → IMPLEMENTED + REVIEWED + MERGED to `main` (`6b845fc`,
+> 2026-07-22).** **⚠️ D5 REVISED 2026-07-22 (keep-both: a blob-JSON `--creds-url` creds fallback added
+> alongside KV — KV write was unavailable on the demo timeline; see the D5 REVISED note in §3, the
+> re-resolved Open Q2 in §8, and the updated §4/§5/§7). → NEXT: a Sonnet@medium session implements the
+> D5-revision delta against the merged code.** The original (pre-D5-revision) history follows.
+> **→ (historical) NEXT: implement in a Sonnet@medium session against
 > this spec** (§3 D1–D10, §4 reuse ledger, §5 deliverables, §7 tests). **Prerequisite spec 35 is already
 > on `main`** (commit `f486c3c` — AML-downloaded catalogs self-describe via the ingest declaration
 > stamp; no blocker). Then the user runs `runbooks/37-download-on-aml.md` Phases 0–3. Cross-validated
@@ -163,6 +168,37 @@ driver alike.
   dispatcher (spec 36 D3's spirit) for no gain over the KV+identity we already have.
 - New dependency: `azure-keyvault-secrets` in the `[azure]` extra (`azure-identity` is already there).
 
+> **⚠️ D5 REVISED 2026-07-22 (keep-both: a blob-JSON creds fallback added; KV retained, unchanged).**
+> Populating the KV secret proved impossible on the demo timeline: **no identity the operator can
+> invoke holds a KV *write* role** (`Key Vault Secrets Officer`) on `kv-rise-westeurope` — the compute
+> UAMI holds only *read* (`Key Vault Secrets User`, D5 above), so it can *read* a secret but not
+> *create* one. `az keyvault secret set` returned `ForbiddenByRbac` from **both** the driver laptop and
+> the `vm-rise-nsasiraj` compute VM (the VM attempt authenticated as the operator's own account, not the
+> VM MSI — but even the MSI is the read-only UAMI). Getting a write role is a platform-admin action not
+> available in the demo window. The operator **does** have blob *write*. So CDSE creds may now be
+> delivered **either** way — caller's choice, **mutually exclusive** (preflight errs if neither or both
+> is given):
+> - **KV (unchanged, the preferred path wherever a write role exists):** `--vault-url`/`--secret-name`
+>   → `CdseCredentials.from_json_str(get_secret(vault_url, secret_name))`.
+> - **Blob JSON (new fallback, used for the demo):** `--creds-url <abfss://…/_secrets/cdse_credentials.json>`
+>   → the **existing** `CdseCredentials.from_json(creds_url)`, which already reads through
+>   `fsd.storage.fs.open` (`cdse.py:82`), so it supports `abfss://` with **no new read code**. The node
+>   reads it with the same `AZURE_CLIENT_ID` (D4) identity that already reads the ROI and writes the COGs.
+>
+> **Invariant preserved:** neither path puts a secret *value* in the job spec — `creds_url` is a blob
+> *location* (like the ROI/dst paths already in the command), `vault_url`/`secret_name` are non-secret
+> names; the creds value is resolved at run time by the node's identity in both cases.
+>
+> **Trade-offs now consciously accepted for the blob path** (these were D5's original reasons to reject
+> blob, so we own them explicitly): (1) a **plaintext secret at rest on blob** — mitigated by a dedicated
+> `_secrets/` prefix (never the data prefix), **delete-after-run enforced in the runbook** (a Phase-3
+> teardown step), and CDSE keys being time-boxed via `s3_keys_expire`; (2) **no native rotation** —
+> re-upload to rotate, and the keys expire anyway; (3) **read scope = whoever can read that container** —
+> an **infra check the operator must confirm**: `_secrets/` must be no more broadly readable than
+> {compute identity + operator}. KV stays the more secure store and becomes the path again the moment a
+> write role is available — the blob fallback exists because that role is unavailable now, not because it
+> is better.
+
 ### D6 — Job timeout: set `CommandJobLimits(timeout=…)` so a long job is not silently cancelled
 
 Authoritative (`azure.ai.ml.entities.CommandJobLimits`): `limits.timeout` (seconds) cancels the job
@@ -214,9 +250,9 @@ transport, `storage.transfer`), `planetary-computer` + `pystac-client` (MPC sign
 |---|---|
 | `sources/cdse.py` (download-to-blob) | **none** (spec 34 already did it) |
 | `sources/mpc.py` | `+ download_shard(rows, …)` — **additive**; the ROI-based `download()` untouched |
-| `sources/cdse.py` | `+ CdseCredentials.from_json_str(...)` — **additive** (D5, KV secret value); pipeline untouched |
+| `sources/cdse.py` | `+ CdseCredentials.from_json_str(...)` — **additive** (D5, KV secret value); pipeline untouched. **D5-revised:** the blob-creds path *reuses* the existing `from_json(creds_url)` as-is (already blob-capable via `fs.open`) — no new code |
 | `storage/*` (incl. `azure.py`) | **none** — D4 is an env var the dispatcher sets |
-| secrets access | `+ a thin KV read` (`fsd.secrets.get_secret`, `azure-keyvault-secrets` in `[azure]`) — D5 |
+| secrets access | `+ a thin KV read` (`fsd.secrets.get_secret`, `azure-keyvault-secrets` in `[azure]`) — D5 (retained). **D5-revised:** blob-creds path adds a `--creds-url` alternative that needs no KV read |
 | `datacube/`, `raster/`, `catalog/`, `bands/` | **none** |
 | `workflows/runners.py` | `+ run_aml_download`; factor `_aml_submit_and_wait` shared with `run_aml`; reuse `shard_units` |
 | `workflows/download.py` | new, thin CLI (`--roi` / `--shard` modes) |
@@ -233,7 +269,7 @@ transport, `storage.transfer`), `planetary-computer` + `pystac-client` (MPC sign
 | 2 | `sources/mpc.py::download_shard`: additive per-shard signed-transfer entry (D2) — existing `download()` untouched |
 | 3 | `workflows/runners.py::run_aml_download`: per-source dispatch (CDSE 1 job / MPC N shards) → wait → aggregate → raise (D1/D2/D6/D7/D9); factor `_aml_submit_and_wait` shared with `run_aml` |
 | 4 | `api.py`: `download(runner="local"\|"aml", runner_kwargs=…)` end-to-end |
-| 5 | Secret/token delivery (D5): `fsd.secrets.get_secret(vault_url, name)` (Key Vault, compute identity) + `CdseCredentials.from_json_str`; `azure-keyvault-secrets` in `[azure]`; nothing secret on blob or in the job spec |
+| 5 | Secret/token delivery (D5, **keep-both** per the D5-revised note): **either** Key Vault (`fsd.secrets.get_secret` + `CdseCredentials.from_json_str`; `azure-keyvault-secrets` in `[azure]`) **or** a blob-JSON `--creds-url` (reuses the existing `CdseCredentials.from_json`), mutually exclusive; **no secret *value* in the job spec** either way. (The blob path *does* place a plaintext creds file at rest on blob — accepted, mitigated per the D5-revised trade-offs; delete-after-run in the runbook.) |
 | 6 | Preflight (D7) + job timeout (D6) |
 | 7 | Docs: `AZURE_INFRA.md` (download-on-AML, per-source shape); `LIMITATIONS.md` (D8 crash-resume); `RECIPES.md`; `CHANGES.md`; **fix the stale `cdse.py:676` docstring** (says remote+cog "raises… deferred"; the code has staged→pushed since spec 34) |
 | 8 | Run-book `37-download-on-aml.md`: Phases 0–3 (§6), user-run |
@@ -282,6 +318,11 @@ Reuse spec 36's injection pattern: `_FakeMLClient` + the `fake_aml_command` fixt
    exceeds an injected remaining-quota threshold.
 7. D5: `fsd.secrets.get_secret` is mocked (a fake `SecretClient`); the CLI parses the returned value via
    `CdseCredentials.from_json_str` — no secret in argv, no KV network call in the test.
+7b. D5-revised (blob path): the CLI's `--creds-url` mode reads a `memory://…/cdse_credentials.json` via
+   `CdseCredentials.from_json` and calls `cdse.download` (real download mocked) — no KV, no network.
+   Dispatcher: CDSE with `creds_url` puts `--creds-url` (a location, not a secret) in the command and
+   still leaks **no creds value**; preflight resolves/expiry-checks the blob creds and **errs when
+   neither or both** of {`creds_url`, (`vault_url`,`secret_name`)} is supplied.
 8. **Non-vacuousness** (project standard): a mutation making CDSE submit a 2nd job fails test 2's
    single-job assertion; a mutation dropping an MPC asset fails test 3's partition assertion.
 
@@ -294,6 +335,11 @@ Reuse spec 36's injection pattern: `_FakeMLClient` + the `fake_aml_command` fixt
    per-asset round-robin via `shard_units` (matches spec 36); confirm at Phase 2.
 2. ~~**Secret/token delivery** (D5)~~ ✅ **RESOLVED (user, 2026-07-22): Azure Key Vault**, read by the
    compute identity (which already holds `Key Vault Secrets User`). Replaces the earlier blob-JSON draft.
+   **↳ RE-RESOLVED (user, 2026-07-22, later): keep BOTH — KV *and* a blob-JSON `--creds-url` fallback**
+   (see the **D5 REVISED** note in §3). KV write turned out unavailable on the demo timeline
+   (`ForbiddenByRbac` from laptop + VM), so blob is the path used now; KV stays wired for when a write
+   role lands. The earlier "replaces the blob-JSON draft" line is thus superseded — blob is back, as a
+   deliberate, mitigated fallback alongside KV rather than the sole mechanism.
 3. **Crash-resume re-download** (D8) — accept for v1, or add a blob-final-existence skip so a fresh-node
    resume sees COGs already pushed? Lean: accept + open a TODO (composes with TODO #31 streaming).
 4. **`n_shards` / `timeout_seconds` defaults** — `max_instances` for MPC, and timeout from the GB

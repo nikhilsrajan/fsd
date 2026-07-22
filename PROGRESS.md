@@ -4,8 +4,30 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-22_
 
-## ⭐ SPEC 37 **IMPLEMENTED + REVIEWED + MERGED to `main`** (Sonnet@medium impl 2026-07-22; Opus@high review + merge 2026-07-22, merge commit `6b845fc`). **→ NEXT: the user runs `runbooks/37-download-on-aml.md` Phases 0–3 on the real cluster.**
+## ⭐ SPEC 37 **IMPLEMENTED + REVIEWED + MERGED to `main`** (Sonnet@medium impl 2026-07-22; Opus@high review + merge 2026-07-22, merge commit `6b845fc`). **⚠️ D5 REVISED 2026-07-22 (keep-both blob-creds fallback) — needs a follow-up Sonnet@medium implementation. → NEXT: switch to Sonnet, implement the D5-revision delta, then the user runs `runbooks/37-download-on-aml.md` Phases 0–3.**
 
+- **⚠️ D5 REVISED 2026-07-22 (keep-both: blob-JSON creds fallback added; KV retained) — NOT yet
+  implemented.** KV creds delivery (D5 as merged) is **operationally blocked**: no identity the operator
+  can invoke holds a KV *write* role on `kv-rise-westeurope` — the compute UAMI has read-only
+  (`Key Vault Secrets User`), so it can read a secret but not create one. `az keyvault secret set`
+  returned `ForbiddenByRbac` from both the driver laptop **and** the `vm-rise-nsasiraj` VM (the VM call
+  authenticated as the operator's own account, not the VM MSI — but the MSI is the same read-only UAMI).
+  Getting write is a platform-admin action unavailable on the demo timeline. The operator **has** blob
+  write. **Decision (user, keep-both):** CDSE creds may be delivered **either** via KV
+  (`--vault-url`/`--secret-name`, unchanged) **or** via a blob JSON `--creds-url` (new fallback, used
+  now), mutually exclusive. The blob path **reuses the existing `CdseCredentials.from_json(creds_url)`**
+  (already blob-capable via `fs.open`, `cdse.py:82`) — no new read code. Recorded in the spec:
+  **D5 REVISED** note (§3), re-resolved Open Q2 (§8), updated §4 ledger / §5 deliverable 5 / §7 test 7b,
+  and the top status banner. **Implementation delta a Sonnet session must land against the merged code:**
+  (1) `run_aml_download` gains `creds_url: str | None` (keep `vault_url`/`secret_name`); require exactly
+  one CDSE creds source (preflight errs on neither/both). (2) CLI `workflows/download.py`: add
+  `--creds-url`; `run_roi` reads via `from_json(creds_url)` when given, else the existing KV path.
+  (3) Dispatcher command builder emits `--creds-url <url>` xor `--vault-url/--secret-name`. (4)
+  `_aml_download_preflight` resolves/parses/expiry-checks whichever source. (5) Tests: add the §7 test-7b
+  blob-path + neither/both validation cases. (6) Docs: `LIMITATIONS.md` (plaintext-creds-on-blob,
+  delete-after-run), `runbooks/37-download-on-aml.md` Phase 0 (write creds to a `_secrets/` prefix) +
+  Phase 3 (delete them), `CHANGES.md`, `RECIPES.md`. **Invariant to keep:** no secret *value* in the job
+  spec on either path (`creds_url` is a location, like the ROI/dst args).
 - **Opus@high review outcome (2026-07-22):** review holds up — **merged, no fixes needed.** §4's
   central claim verified directly against the diff: `sources/cdse.py::download` and
   `sources/mpc.py::download` bodies change by **zero lines** (every hunk in those two files is a pure
