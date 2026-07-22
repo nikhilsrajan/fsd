@@ -1,9 +1,10 @@
 # Spec 37 — download on Azure ML (P2): dispatch the existing download-to-blob onto the cluster
 
 > **Status: ✅ SIGNED OFF (user, 2026-07-22).** **→ NEXT: implement in a Sonnet@medium session against
-> this spec** (§3 D1–D10, §4 reuse ledger, §5 deliverables, §7 tests). **Prerequisite: land spec 35 on
-> `main` first** (so AML-downloaded catalogs self-describe — see the spec-35 note below). Then the user
-> runs `runbooks/37-download-on-aml.md` Phases 0–3. Cross-validated before sign-off (CDSE quota, MPC
+> this spec** (§3 D1–D10, §4 reuse ledger, §5 deliverables, §7 tests). **Prerequisite spec 35 is already
+> on `main`** (commit `f486c3c` — AML-downloaded catalogs self-describe via the ingest declaration
+> stamp; no blocker). Then the user runs `runbooks/37-download-on-aml.md` Phases 0–3. Cross-validated
+> before sign-off (CDSE quota, MPC
 > rate limits, AML `CommandJobLimits`, Key Vault + managed identity — §9, per-source credit).
 > Written by Opus@high, 2026-07-22, after spec 36
 > (the AML *datacube* runner) merged to `main`. This spec is the **download sibling of spec 36**: it

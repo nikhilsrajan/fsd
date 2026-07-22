@@ -4,7 +4,7 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-22_
 
-## ⭐ SPEC 37 **SIGNED OFF** (user, 2026-07-22, Opus@high). **→ NEXT: implement in a Sonnet@medium session; prerequisite = land spec 35 on `main` first.**
+## ⭐ SPEC 37 **SIGNED OFF** (user, 2026-07-22, Opus@high). **→ NEXT: implement in a Sonnet@medium session.** (Prerequisite spec 35 is already on `main` — commit `f486c3c`; the stale spec-35 worktree was a superseded earlier draft and has been pruned.)
 
 - **`specs/37-download-on-aml.md` — download on Azure ML (P2), the download sibling of spec 36.** Runs
   the already-working download-to-blob (spec 34) as an AML job so the source→blob byte-flow is
