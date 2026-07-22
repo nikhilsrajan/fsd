@@ -65,6 +65,24 @@ entries.
   landed on blob. Accepted for v1 (see `LIMITATIONS.md`); MPC's fan-out makes this cheap (only the
   crashed shard's slice re-runs).
 
+### D5 REVISED (keep-both): blob-JSON `--creds-url` CDSE creds fallback (2026-07-22)
+
+Key Vault *write* turned out operationally blocked for the operator (`ForbiddenByRbac` from both the
+driver laptop and the compute VM — the identity only holds *read*), so CDSE creds delivery now
+accepts **either** source, caller's choice, **mutually exclusive**:
+
+- `run_aml_download`/`workflows/download.py`'s `run_roi` gained `creds_url: str | None` alongside the
+  existing `vault_url`/`secret_name`. Exactly one must be supplied — `_aml_download_preflight` raises
+  on neither and on both.
+- The blob path reuses the **existing** `CdseCredentials.from_json(creds_url)` (already blob-capable
+  via `fs.open`) — no new read code, unlike the KV path which needed the additive `from_json_str`.
+- `run_aml_download`'s command builder emits `--creds-url <url>` **xor** `--vault-url <url>
+  --secret-name <name>` — never both, and never a secret *value* (unchanged invariant, now asserted
+  for the blob path too, spec 37 §7 test 7b).
+- KV stays wired unchanged for when a write role lands; blob creds are a documented plaintext-at-rest
+  trade-off (`LIMITATIONS.md`), mitigated by the runbook writing to a `_secrets/` prefix and deleting
+  the file once the run completes.
+
 ## The AML scale runner — `runner="aml"`, plus local resumability on blob (spec 36, 2026-07-21/22)
 
 Closes TODO #40/#41. Gives the runner seam (spec 10 Seam 2) a second backend without touching the

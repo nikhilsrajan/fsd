@@ -218,11 +218,11 @@ def download(
     `runner="local"` (default) downloads in-process, as above. `runner="aml"` (spec
     37 P2) dispatches onto an Azure ML cluster instead, colocated with blob: CDSE
     runs as **one** job; MPC **fans out** across N (D1). `runner_kwargs` carries
-    `cluster=`/`environment=`/`root=`/`identity_client_id=`/`vault_url=`/
-    `secret_name=` (CDSE only, D5) — see `workflows.runners.run_aml_download`. `creds`
-    is ignored for `runner="aml"`: the dispatched job reads them from Key Vault on
-    the node instead (D5), so `roi` must be a url the node can also read (not an
-    in-memory GeoDataFrame).
+    `cluster=`/`environment=`/`root=`/`identity_client_id=`/ and, for CDSE, exactly
+    one of `vault_url=`+`secret_name=` (Key Vault) or `creds_url=` (blob JSON) — D5
+    REVISED, see `workflows.runners.run_aml_download`. `creds` is ignored for
+    `runner="aml"`: the dispatched job reads them on the node instead, so `roi`
+    must be a url the node can also read (not an in-memory GeoDataFrame).
     """
     errs = _check_local_seams(runner, storage) + _check_window(startdate, enddate, 20, bands)
     if source not in ("cdse", "mpc"):

@@ -96,6 +96,35 @@ def test_download_cli_shard_mode_calls_mpc_download_shard(monkeypatch):
     assert status["status"] == "ok"
 
 
+# --- test 7b: D5-revised -- blob-JSON --creds-url path (CLI) ----------------
+
+def test_download_cli_roi_mode_reads_creds_from_blob_url(monkeypatch):
+    calls = {}
+
+    def _fake_cdse_download(roi, startdate, enddate, bands, root_folderpath, catalog,
+                             creds, *, max_tiles, max_cloudcover=None, cog=True, progress=False):
+        calls["creds"] = creds
+        return cdse.DownloadResult(successful_count=1, total_count=1, skipped_count=0,
+                                    failed_count=0, elapsed_s=0.5, bytes_downloaded=42)
+
+    monkeypatch.setattr(download_cli.cdse, "download", _fake_cdse_download)
+
+    creds_url = "memory://dl_roi_blob/_secrets/cdse_credentials.json"
+    with fs.open(creds_url, "w") as f:
+        f.write(CREDS_JSON)
+
+    status_url = "memory://dl_roi_blob/_status/0.json"
+    status = download_cli.run_roi(
+        roi="memory://dl_roi_blob/roi.geojson", startdate="2018-06-01", enddate="2018-06-11",
+        bands=["B04"], dst="memory://dl_roi_blob/data",
+        catalog="memory://dl_roi_blob/data/catalog.parquet",
+        max_tiles=10, status_url=status_url, creds_url=creds_url,
+    )
+
+    assert calls["creds"].s3_access_key == "ak"
+    assert status["status"] == "ok"
+
+
 # --- test: mpc.download_shard signs on the node + reuses _transfer_and_stamp_one --
 
 def test_mpc_download_shard_signs_on_node_and_transfers(monkeypatch, tmp_path):
@@ -332,6 +361,75 @@ def test_run_aml_download_cdse_job_carries_identity_timeout_and_kv_coords_not_se
     for secret_value in ("sh-secret", "sk", CREDS_JSON):
         assert secret_value not in job.command
         assert secret_value not in json.dumps(job.environment_variables)
+
+
+# --- test 7b: D5-revised -- run_aml_download's blob creds_url path (dispatcher) --
+
+def test_run_aml_download_cdse_creds_url_puts_location_not_value_in_command(
+    fake_aml_command, monkeypatch,
+):
+    monkeypatch.setattr(runners, "_cdse_query_catalog", lambda *a, **kw: list(range(2)))
+    ml_client = _FakeMLClient(["Completed"])
+    root = "memory://aml_dl_blob/root"
+    run_id = "blobrun"
+    _write_status(root, run_id, 0)
+
+    creds_url = "memory://aml_dl_blob/_secrets/cdse_credentials.json"
+    with fs.open(creds_url, "w") as f:
+        f.write(CREDS_JSON)
+
+    runners.run_aml_download(
+        "memory://roi.geojson", "2018-06-01", "2018-06-11", ["B04"],
+        "memory://aml_dl_blob/data", "memory://aml_dl_blob/data/catalog.parquet",
+        source="cdse", cluster="c", environment="fsd-env:1", root=root,
+        identity_client_id="deadbeef", max_tiles=100, creds_url=creds_url,
+        ml_client=ml_client, run_id=run_id,
+    )
+
+    job = ml_client.submitted[0]
+    assert creds_url in job.command
+    assert "--vault-url" not in job.command
+    assert "--secret-name" not in job.command
+    for secret_value in ("sh-secret", "sk", CREDS_JSON):
+        assert secret_value not in job.command
+        assert secret_value not in json.dumps(job.environment_variables)
+
+
+def test_aml_download_preflight_refuses_neither_cdse_creds_source():
+    ml_client = _FakeMLClient(["Completed"])
+    with pytest.raises(ValueError, match="exactly one CDSE creds source"):
+        runners._aml_download_preflight(
+            ml_client, cluster="c", environment="e:1", root="memory://pf/root6",
+            source="cdse", n_assets=1, vault_url=None, secret_name=None,
+            get_secret=_fake_get_secret, remaining_quota_gb=None, estimated_gb=None,
+            creds_url=None,
+        )
+
+
+def test_aml_download_preflight_refuses_both_cdse_creds_sources():
+    ml_client = _FakeMLClient(["Completed"])
+    with pytest.raises(ValueError, match="exactly one CDSE creds source"):
+        runners._aml_download_preflight(
+            ml_client, cluster="c", environment="e:1", root="memory://pf/root7",
+            source="cdse", n_assets=1, vault_url="kv", secret_name="n",
+            get_secret=_fake_get_secret, remaining_quota_gb=None, estimated_gb=None,
+            creds_url="memory://pf/root7/creds.json",
+        )
+
+
+def test_aml_download_preflight_resolves_cdse_creds_from_blob_url():
+    ml_client = _FakeMLClient(["Completed"])
+    creds_url = "memory://pf/root8/creds.json"
+    with fs.open(creds_url, "w") as f:
+        f.write(CREDS_JSON)
+
+    warnings = runners._aml_download_preflight(
+        ml_client, cluster="c", environment="e:1", root="memory://pf/root8",
+        source="cdse", n_assets=1, vault_url=None, secret_name=None,
+        get_secret=_fake_get_secret, remaining_quota_gb=None, estimated_gb=None,
+        creds_url=creds_url,
+    )
+    assert warnings == []
 
 
 # --- test 4: raises on Failed, and on circuit_tripped even if AML says Completed --

@@ -5,9 +5,11 @@ own, mirroring `fsd.workflows.shard`'s role for spec 36. Two modes, matching the
 job shapes `runners.run_aml_download` submits (D1: dispatch shape is per-source):
 
 - `--roi <url> ...` -> the whole-ROI CDSE job (exactly one per run). Calls the
-  unmodified `sources.cdse.download` directly, reading its S3 creds from Key Vault
-  **on the node** (D5: `--vault-url`/`--secret-name` are non-secret command args;
-  the secret value itself is never in the job spec, never on blob).
+  unmodified `sources.cdse.download` directly, reading its S3 creds **on the
+  node** from exactly one of two mutually exclusive sources (D5 REVISED):
+  Key Vault (`--vault-url`/`--secret-name`, non-secret command args) or a blob
+  JSON (`--creds-url`, a non-secret location). The secret value itself is never
+  in the job spec.
 - `--shard <url> ...` -> one of N per-shard MPC jobs. Calls the additive
   `sources.mpc.download_shard` over a pre-discovered, pre-partitioned asset-row CSV
   the driver wrote (`sources.mpc.discover_shard_rows` + `runners.shard_units`).
@@ -19,6 +21,9 @@ Run as:
   python -m fsd.workflows.download --roi <url> --startdate <iso> --enddate <iso> \\
       --bands B04,B08 --dst <url> --catalog <url> --max-tiles N --vault-url <url> \\
       --secret-name <name> --status-url <url>
+  python -m fsd.workflows.download --roi <url> --startdate <iso> --enddate <iso> \\
+      --bands B04,B08 --dst <url> --catalog <url> --max-tiles N \\
+      --creds-url <url> --status-url <url>
   python -m fsd.workflows.download --shard <url> --dst <url> --catalog <url> \\
       --status-url <url>
 """
@@ -74,13 +79,19 @@ def run_roi(
     status_url: str,
     max_cloudcover: float | None = None,
     cog: bool = True,
-    vault_url: str,
-    secret_name: str,
+    vault_url: str | None = None,
+    secret_name: str | None = None,
+    creds_url: str | None = None,
 ) -> dict:
-    """`--roi` mode (D3): the whole-ROI CDSE job. Reads S3 creds from Key Vault
-    (D5) and calls `sources.cdse.download` unmodified."""
-    creds_json = secrets.get_secret(vault_url, secret_name)
-    creds = cdse.CdseCredentials.from_json_str(creds_json)
+    """`--roi` mode (D3): the whole-ROI CDSE job. Reads S3 creds from exactly one
+    of two mutually exclusive sources (D5 REVISED): Key Vault (`vault_url`/
+    `secret_name`) or a blob JSON (`creds_url`), then calls `sources.cdse.download`
+    unmodified."""
+    if creds_url:
+        creds = cdse.CdseCredentials.from_json(creds_url)
+    else:
+        creds_json = secrets.get_secret(vault_url, secret_name)
+        creds = cdse.CdseCredentials.from_json_str(creds_json)
 
     catalog_obj = TileCatalog(catalog)
     start = pd.Timestamp(startdate)
@@ -126,6 +137,8 @@ def _parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--no-cog", action="store_true")
     p.add_argument("--vault-url")
     p.add_argument("--secret-name")
+    p.add_argument("--creds-url", help="blob JSON CDSE creds location (D5 REVISED, mutually "
+                                        "exclusive with --vault-url/--secret-name)")
     p.add_argument("--status-url", required=True)
     return p.parse_args(argv)
 
@@ -142,6 +155,7 @@ def main(argv=None) -> None:
             max_tiles=args.max_tiles, status_url=args.status_url,
             max_cloudcover=args.max_cloudcover, cog=not args.no_cog,
             vault_url=args.vault_url, secret_name=args.secret_name,
+            creds_url=args.creds_url,
         )
     else:
         status = run_shard(shard_url=args.shard, dst=args.dst, catalog=args.catalog,
