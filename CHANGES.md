@@ -65,6 +65,38 @@ entries.
   landed on blob. Accepted for v1 (see `LIMITATIONS.md`); MPC's fan-out makes this cheap (only the
   crashed shard's slice re-runs).
 
+### `run_aml_download` stops ignoring per-source arguments (TODO #49, 2026-07-22)
+
+One signature serves both sources, and two arguments were being accepted and dropped:
+
+- **Credentials are now refused for `source="mpc"`.** MPC is anonymous; supplying `creds_url` /
+  `vault_url` / `secret_name` is a hard preflight error naming the argument, rather than a silent
+  no-op. This was not cosmetic — a run written as `source="mpc"` but wrapped in the run-book's
+  `blob_creds()` staged the CDSE S3 keys in plaintext on blob for the whole run and never read them.
+- **`max_tiles` is now enforced on the driver, for both sources.** Previously it reached CDSE only,
+  via `--max-tiles` on the node (i.e. after the cluster had spun up), and the MPC path dropped it
+  entirely. Since `sources/mpc.download` *does* raise on `len(tiles) > max_tiles`, the same call
+  meant different things by runner — `api.download(source="mpc", max_tiles=N)` raised locally and
+  downloaded everything on AML, breaking spec 36 D3's premise that the runner is not part of the
+  semantics. Preflight now raises before any node starts. **MPC counts distinct MGRS tiles**, not
+  shard rows (assets = tiles x bands), matching the unit the local guard counts.
+
+**Behaviour change to expect:** an MPC AML run whose ROI x window matches more tiles than
+`max_tiles` now fails fast instead of downloading everything. Real case: a 2018 full-year Austria
+run = 572 tiles, which a nominal `max_tiles=500` now refuses.
+
+### `sources/cdse._roi_gdf` reads the roi through the storage seam (2026-07-22)
+
+`_roi_gdf` (used by `cdse.query_catalog`/`download` **and** all three `sources/mpc` entry points)
+passed its path straight to `gpd.read_file`. GDAL/pyogrio has no `abfss://` driver, so a roi on
+blob failed with `DataSourceError: <url>: No such file or directory` — for a file that was
+demonstrably there. It now reads via `fs.open` + `BytesIO`, the same fix `workflows/task.py`
+already carried (spec 36 D6a, TODO #40); local paths and in-memory GeoDataFrames behave exactly as
+before. **Found live** in `runbooks/37-download-on-aml.md` Phase 1, on the first CDSE dispatch with
+the roi on blob — spec 37 is what made a remote roi mandatory (the node has no `shapefiles/`).
+⚠️ **The node runs the wheel baked into the AML image, so the image must be rebuilt** for the fix
+to reach the job. Three sibling sites still bypass the seam — TODO #47.
+
 ### D5 REVISED (keep-both): blob-JSON `--creds-url` CDSE creds fallback (2026-07-22)
 
 Key Vault *write* turned out operationally blocked for the operator (`ForbiddenByRbac` from both the

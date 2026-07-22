@@ -264,19 +264,35 @@ def _aml_download_preflight(
     n_assets: int, vault_url: str | None, secret_name: str | None,
     get_secret, remaining_quota_gb: float | None, estimated_gb: float | None,
     creds_url: str | None = None,
+    n_tiles: int | None = None,
+    max_tiles: int | None = None,
 ) -> list[str]:
     """D7: know before you spend, for a download dispatch. Cluster/environment/root
-    (shared, `_aml_preflight_common`) + discovery non-emptiness + (CDSE-only) the
-    supplied creds source resolves/parses and its S3 keys are not expired. Raises on
-    any hard failure; returns a (possibly empty) list of **warnings** (non-fatal) --
-    today just the CDSE quota estimate (D1/D7).
+    (shared, `_aml_preflight_common`) + discovery non-emptiness + the `max_tiles`
+    guardrail + (CDSE-only) the supplied creds source resolves/parses and its S3 keys
+    are not expired. Raises on any hard failure; returns a (possibly empty) list of
+    **warnings** (non-fatal) -- today just the CDSE quota estimate (D1/D7).
 
     D5 REVISED: CDSE creds come from **exactly one** of two mutually exclusive
     sources -- Key Vault (`vault_url`+`secret_name`) or a blob JSON (`creds_url`).
-    Neither or both supplied is a hard preflight error."""
+    Neither or both supplied is a hard preflight error. `source='mpc'` is anonymous
+    and refuses all three (TODO #49).
+
+    `max_tiles` is enforced **here, on the driver**, for both sources, mirroring the
+    guard the local paths already apply (`sources/mpc.py`, `sources/cdse.py`): the
+    runner must not change what a call means (spec 36 D3). It previously reached
+    only CDSE -- via `--max-tiles` on the node, i.e. after the cluster had already
+    spun up -- and the MPC path dropped it entirely, so an `api.download(source=
+    'mpc', max_tiles=N)` that raises locally would silently download everything on
+    AML. Checking at dispatch time also fails before a single node starts."""
     errs = _aml_preflight_common(ml_client, cluster=cluster, environment=environment, root=root)
     if n_assets < 1:
         errs.append("discovery matched 0 assets for this roi/date-window.")
+    if n_tiles is not None and max_tiles is not None and n_tiles > max_tiles:
+        errs.append(
+            f"{n_tiles} matched tiles exceed max_tiles={max_tiles}. Narrow the query "
+            "or raise max_tiles."
+        )
     warnings: list[str] = []
     if source == "cdse":
         kv_given = bool(vault_url) or bool(secret_name)
@@ -313,6 +329,23 @@ def _aml_download_preflight(
                 f"estimated download (~{estimated_gb:.0f} GB) exceeds the ~{remaining_quota_gb:.0f} GB "
                 "remaining CDSE 30-day quota -- expect throttling to 1 MB/s partway through "
                 "(https://documentation.dataspace.copernicus.eu/Quotas.html)."
+            )
+    else:
+        # MPC is anonymous (D4/D5): it reads no credentials at all, so a creds
+        # argument here is not merely inert -- `creds_url` would put the secret on
+        # blob for the whole run in exchange for nothing. Refuse it rather than
+        # ignore it (TODO #49; found when a hand-written Phase 3 script did exactly
+        # this against a full-year archive run).
+        supplied = [
+            name for name, value in (
+                ("creds_url", creds_url), ("vault_url", vault_url), ("secret_name", secret_name),
+            ) if value
+        ]
+        if supplied:
+            errs.append(
+                f"source='mpc' is anonymous and reads no credentials, but {', '.join(supplied)} "
+                "was supplied -- remove it. (Passing creds_url to an MPC run stages the secret on "
+                "blob for the run's duration and never reads it.)"
             )
     if errs:
         raise ValueError("run_aml_download preflight failed:\n  - " + "\n  - ".join(errs))
@@ -552,7 +585,7 @@ def run_aml_download(
             ml_client, cluster=cluster, environment=environment, root=root,
             source="cdse", n_assets=n_assets, vault_url=vault_url, secret_name=secret_name,
             get_secret=get_secret, remaining_quota_gb=remaining_quota_gb, estimated_gb=estimated_gb,
-            creds_url=creds_url,
+            creds_url=creds_url, n_tiles=len(tiles), max_tiles=max_tiles,
         )
 
         timeout = timeout_seconds or _estimate_timeout_seconds(estimated_gb)
@@ -586,6 +619,10 @@ def run_aml_download(
             ml_client, cluster=cluster, environment=environment, root=root,
             source="mpc", n_assets=n_assets, vault_url=vault_url, secret_name=secret_name,
             get_secret=get_secret, remaining_quota_gb=None, estimated_gb=None,
+            creds_url=creds_url,
+            # one row per asset -> collapse to distinct MGRS tiles, the unit
+            # `max_tiles` counts in `sources/mpc.download`'s own guard.
+            n_tiles=len({r["tile_id"] for r in rows}), max_tiles=max_tiles,
         )
 
         if n_shards is None:

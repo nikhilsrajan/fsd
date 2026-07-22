@@ -598,3 +598,123 @@ def test_cdse_credentials_from_json_str_roundtrips_legacy_keys():
 
 def test_config_has_cdse_monthly_quota():
     assert config.CDSE_MONTHLY_QUOTA_GB > 0
+
+
+# --- TODO #49: MPC is anonymous -- creds arguments are refused, not ignored ----
+# Regression: `creds_url` was accepted and silently dropped for source="mpc" (the
+# MPC branch never passed it to preflight, and the creds block is cdse-gated). A
+# hand-written Phase 3 script wrapped an MPC archive run in blob_creds(), which
+# would have staged the CDSE keys on blob for the whole run and never read them.
+
+@pytest.mark.parametrize(
+    "kwargs, expected",
+    [
+        ({"creds_url": "memory://pf/x.json"}, "creds_url"),
+        ({"vault_url": "https://kv.example/"}, "vault_url"),
+        ({"secret_name": "cdse-creds"}, "secret_name"),
+        ({"vault_url": "https://kv.example/", "secret_name": "n"}, "vault_url, secret_name"),
+    ],
+)
+def test_aml_download_preflight_refuses_creds_for_anonymous_mpc(kwargs, expected):
+    ml_client = _FakeMLClient(["Completed"])
+    with pytest.raises(ValueError, match="anonymous and reads no credentials") as exc:
+        runners._aml_download_preflight(
+            ml_client, cluster="c", environment="e:1", root="memory://pf/root9",
+            source="mpc", n_assets=5, vault_url=kwargs.get("vault_url"),
+            secret_name=kwargs.get("secret_name"), get_secret=_fake_get_secret,
+            remaining_quota_gb=None, estimated_gb=None, creds_url=kwargs.get("creds_url"),
+        )
+    assert expected in str(exc.value)
+
+
+def test_aml_download_preflight_allows_mpc_without_creds():
+    ml_client = _FakeMLClient(["Completed"])
+    assert runners._aml_download_preflight(
+        ml_client, cluster="c", environment="e:1", root="memory://pf/root10",
+        source="mpc", n_assets=5, vault_url=None, secret_name=None,
+        get_secret=_fake_get_secret, remaining_quota_gb=None, estimated_gb=None,
+        creds_url=None,
+    ) == []
+
+
+def test_run_aml_download_mpc_rejects_creds_url_end_to_end(fake_aml_command, monkeypatch):
+    """The dispatcher must surface it too -- preflight is only reached via run_aml_download."""
+    monkeypatch.setattr(
+        runners._mpc, "discover_shard_rows",
+        lambda *a, **kw: [{"href": "h", "dst": "d", "band": "B04", "tile_id": "T33UWP",
+                            "satellite": "S2A", "timestamp": "2018-06-01", "s3url": "",
+                            "cloud_cover": 0.0, "offset": 0, "nodata": 0,
+                            "geometry": "POINT (0 0)"}],
+    )
+    with pytest.raises(ValueError, match="anonymous and reads no credentials"):
+        runners.run_aml_download(
+            "memory://roi.geojson", "2018-06-01", "2018-06-11", ["B04"],
+            "memory://aml_mpc_creds/data", "memory://aml_mpc_creds/data/catalog.parquet",
+            source="mpc", cluster="c", environment="fsd-env:1",
+            root="memory://aml_mpc_creds/root", identity_client_id="deadbeef",
+            max_tiles=100, creds_url="memory://aml_mpc_creds/_secrets/c.json",
+            ml_client=_FakeMLClient(["Completed"]), run_id="mpccreds",
+        )
+
+
+# --- max_tiles is a DRIVER-side guardrail for both sources --------------------
+# Regression: `max_tiles` reached CDSE only, via `--max-tiles` on the node (i.e.
+# after the cluster spun up), and the MPC path dropped it entirely -- so
+# `api.download(source="mpc", max_tiles=N)` raised locally (sources/mpc.py) but
+# silently downloaded everything under runner="aml". The runner must not change
+# what a call means (spec 36 D3).
+
+def _rows_over_n_tiles(n: int) -> list[dict]:
+    return [{"href": f"h{i}", "dst": f"d{i}", "band": "B04", "tile_id": f"T{i:05d}",
+             "satellite": "S2A", "timestamp": "2018-06-01", "s3url": "",
+             "cloud_cover": 0.0, "offset": 0, "nodata": 0,
+             "geometry": "POINT (0 0)"} for i in range(n)]
+
+
+def test_run_aml_download_mpc_enforces_max_tiles_on_the_driver(fake_aml_command, monkeypatch):
+    monkeypatch.setattr(runners._mpc, "discover_shard_rows",
+                        lambda *a, **kw: _rows_over_n_tiles(3))
+    with pytest.raises(ValueError, match=r"3 matched tiles exceed max_tiles=2"):
+        runners.run_aml_download(
+            "memory://roi.geojson", "2018-06-01", "2018-06-11", ["B04"],
+            "memory://aml_cap/data", "memory://aml_cap/data/catalog.parquet",
+            source="mpc", cluster="c", environment="fsd-env:1", root="memory://aml_cap/root",
+            identity_client_id="deadbeef", max_tiles=2,
+            ml_client=_FakeMLClient(["Completed"]), run_id="cap",
+        )
+
+
+def test_run_aml_download_mpc_counts_distinct_tiles_not_assets(fake_aml_command, monkeypatch):
+    """6 assets spread over 2 tiles must pass max_tiles=2 -- the cap counts MGRS
+    tiles (as sources/mpc.download does), not one-row-per-asset shard rows."""
+    rows = [dict(r, tile_id="T33UWP" if i < 3 else "T33UVP")
+            for i, r in enumerate(_rows_over_n_tiles(6))]
+    monkeypatch.setattr(runners._mpc, "discover_shard_rows", lambda *a, **kw: rows)
+    ml_client = _FakeMLClient(["Completed", "Completed"])   # one per shard
+    root = "memory://aml_cap_ok/root"
+    for k in range(2):
+        _write_status(root, "capok", k)
+
+    runners.run_aml_download(
+        "memory://roi.geojson", "2018-06-01", "2018-06-11", ["B04"],
+        "memory://aml_cap_ok/data", "memory://aml_cap_ok/data/catalog.parquet",
+        source="mpc", cluster="c", environment="fsd-env:1", root=root,
+        identity_client_id="deadbeef", max_tiles=2, n_shards=2,
+        ml_client=ml_client, run_id="capok",
+    )
+    assert len(ml_client.submitted) == 2
+
+
+def test_run_aml_download_cdse_enforces_max_tiles_before_dispatch(fake_aml_command, monkeypatch):
+    monkeypatch.setattr(runners, "_cdse_query_catalog", lambda *a, **kw: list(range(3)))
+    ml_client = _FakeMLClient(["Completed"])
+    with pytest.raises(ValueError, match=r"3 matched tiles exceed max_tiles=2"):
+        runners.run_aml_download(
+            "memory://roi.geojson", "2018-06-01", "2018-06-11", ["B04"],
+            "memory://aml_cap_cdse/data", "memory://aml_cap_cdse/data/catalog.parquet",
+            source="cdse", cluster="c", environment="fsd-env:1",
+            root="memory://aml_cap_cdse/root", identity_client_id="deadbeef",
+            max_tiles=2, vault_url="kv", secret_name="n", get_secret=_fake_get_secret,
+            ml_client=ml_client, run_id="capcdse",
+        )
+    assert ml_client.submitted == []      # nothing dispatched -- the point of a driver-side guard

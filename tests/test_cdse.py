@@ -1321,3 +1321,34 @@ def test_fmt_progress_eta_placeholder_before_first_completion():
     assert "ETA ~" in s1
     for token in ("50/200", "25%", "ok=45", "fail=5", "file/s"):
         assert token in s1
+
+
+# --- _roi_gdf reads through fsd.storage, not gpd.read_file(path) ---------------
+# Regression: spec 37 dispatches downloads with the roi on blob. pyogrio/GDAL does
+# not understand `abfss://` and raised `DataSourceError: No such file or directory`
+# for a file that demonstrably existed. Same fix workflows/task.py already carries
+# (spec 36 D6a). `memory://` stands in for blob here: both are fsspec-only schemes
+# that GDAL cannot open, so this test fails on a revert to `gpd.read_file(roi)`.
+
+def test_roi_gdf_reads_a_non_gdal_url_through_the_storage_seam():
+    from fsd.storage import fs
+
+    gdf = gpd.GeoDataFrame(
+        {"id": ["a"]}, geometry=[sg.box(16.0, 48.0, 16.1, 48.1)], crs="EPSG:4326"
+    )
+    url = "memory://roi_seam/s2grid=test.geojson"
+    with fs.open(url, "wb") as f:
+        f.write(gdf.to_json().encode())
+
+    out = cdse._roi_gdf(url)
+    assert len(out) == 1
+    assert out.geometry.iloc[0].bounds == (16.0, 48.0, 16.1, 48.1)
+
+
+def test_roi_gdf_still_accepts_a_local_path_and_a_gdf(tmp_path):
+    gdf = gpd.GeoDataFrame(geometry=[sg.box(0, 0, 1, 1)], crs="EPSG:4326")
+    p = tmp_path / "roi.geojson"
+    gdf.to_file(p, driver="GeoJSON")
+
+    assert len(cdse._roi_gdf(str(p))) == 1
+    assert cdse._roi_gdf(gdf) is gdf
