@@ -4,13 +4,30 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-23_
 
-## ⭐ SPEC 38 (P4, inference at scale on AML) **SIGNED OFF** (user, 2026-07-23, Opus@high) — cross-validated + grilled (Q1–Q11). **→ NEXT: implement in a Sonnet@medium session against `specs/38-inference-on-aml.md`.** Nothing implemented; nothing committed.
+## ⭐ SPEC 38 (P4, inference at scale on AML) **IMPLEMENTED** (Sonnet@medium, 2026-07-23) — all 13 deliverables landed, 388 passed / 4 skipped, ruff clean, in a worktree (`worktree-spec38-inference-aml`), **committed, not yet pushed**. **→ NEXT: Opus@high review** (the model split), then run `runbooks/38-inference-on-aml.md` Phases 0–3 on the real cluster (the only thing left unproven — every unit test is mocked at the AML-client boundary, per spec 38 §7's "no test requires Azure").
 
 - **The spec:** `specs/38-inference-on-aml.md` — P4 = `run_inference(roi=…, runner="aml")` as a **thin
   step-4 dispatch swap** over the spec-21 per-cell build+infer unit (reusing spec 36's `run_aml`
   machinery), **plus the fixes the swap exposes**. 14 decisions (D1a…D14); §4 reuse ledger, §5 the 13
-  deliverables, §6 the 4 run-book phases, §7 the 12 tests. Baseline to preserve: **382 passed / 3
-  skipped, ruff clean.**
+  deliverables, §6 the 4 run-book phases, §7 the 12 tests. Baseline preserved (this session's venv has
+  fewer optional extras installed than the 382/3 baseline was measured with — 4 skips here are
+  `[grid]`/`[azure]`/`[serving]`/`[titiler]` extras not installed, not a regression; **388 passed / 4
+  skipped**, +31 new tests in `tests/test_infer_aml.py`, none of the original 357 broke).
+- **Two latent bugs the implementation surfaced (not just landed features):** (1) `api._merge_outputs`
+  built its raw scratch tif from `dst` itself (`f"{dst}.raw.tif"`) — harmless for a local `dst`, but a
+  **second** instance of the D5 remote-write bug the spec's own grill (Q4) had already found once in
+  `engine._write_output_cog`; fixed alongside D5 (scratch is now always local, `dst` only matters to
+  `to_cog`'s own remote branch). (2) the `create_inference` Snakefile's D6/D7 fix turned out to make the
+  spec-described `is_local`-guarded-`abspath` treatment **moot**: the redesigned (grouped) Snakefile
+  never touches `export_folderpath` at all — resolving it fully inside `infer_task` instead — so there
+  is no `abspath` call left to guard. Functionally equivalent to what the spec asked for (a remote
+  `export_folderpath` plans cleanly), simpler than what it described; noted here so a reviewer doesn't
+  go looking for a guard that was designed out rather than missed.
+- **Deliverable 11 (the inference Environment) and 13 (the run-book) are operator/user-run,** per
+  `CLAUDE.md` — text is written (`runbooks/38-inference-on-aml.md`, mirrors 36/37's phase-script shape;
+  the Setup block documents the `az ml environment create` step for D4's second Environment), nothing
+  executed.
+- **Old signoff context, for the record (nothing left to re-derive from it — superseded by the above):**
 - **Three MANDATORY I/O-seam fixes** (node can't otherwise produce a result on blob): **D5** remote-dst
   COG **in `raster.cog.to_cog`** (not engine — fixes both per-cell `output.tif` AND `merged.tif`; closes
   TODO #17); **D6** the `create_inference` Snakefile D7 blob-safety + `infer_task` skip-if-`output.tif`;

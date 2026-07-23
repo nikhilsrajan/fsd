@@ -27,8 +27,8 @@ import pandas as pd
 
 from fsd import config
 from fsd.datacube import ops
-from fsd.model import bundle as _bundle
 from fsd.model import engine
+from fsd.storage import fs
 from fsd.workflows import task as _task
 
 
@@ -50,12 +50,24 @@ def run_infer_task(
     njobs_load_images: int = 1,
     predict_batch_size: int | None = None,
     skip_nan: bool = True,
+    overwrite: bool = False,
 ) -> str:
     """Build the cell's datacube (reuses `task.run_task`) then infer it to `output_filepath`.
 
-    Returns the output COG path. The bundle is loaded once here (one cell per task); heavy
-    models amortise this by covering K cells per task (a future granularity knob, spec 21).
+    Returns the output COG path.
+
+    D6 (spec 38): returns immediately, without building or inferring, if `output_filepath`
+    already exists and `overwrite=False` — the durable per-cell resume signal (mirrors
+    `task.run_task`'s own `datacube.npy`-exists skip), so a group retried on a fresh node
+    (D6/D7) redoes only its unfinished cells.
+
+    D7 (spec 38, closes TODO #25): the adapter is resolved via the per-process bundle cache
+    (`engine._adapter_from_bundle_cached`), not a fresh `bundle.load` — a bundle loads once
+    per process, not once per cell, when this is called in a loop over a group that shares
+    one process (see `run_infer_group` / the `create_inference` Snakefile).
     """
+    if not overwrite and fs.exists(output_filepath):
+        return output_filepath
     _task.run_task(
         shapefilepath=shapefilepath,
         catalog_filepath=catalog_filepath,
@@ -71,44 +83,121 @@ def run_infer_task(
         njobs_load_images=njobs_load_images,
     )
     datacube_filepath = os.path.join(export_folderpath, "datacube.npy")
-    adapter = _bundle.load(bundle_path)
+    adapter = engine._adapter_from_bundle_cached(bundle_path)
     return engine.infer_datacube_to_cog(
         adapter, datacube_filepath, output_filepath,
         predict_batch_size=predict_batch_size, skip_nan=skip_nan,
     )
 
 
+def run_infer_group(
+    input_csv: str,
+    rows: tuple[int, int],
+    bundle_path: str,
+    *,
+    if_missing_files: str | None = "warn",
+    njobs: int = 1,
+    njobs_load_images: int = 1,
+    predict_batch_size: int | None = None,
+    skip_nan: bool = True,
+    overwrite: bool = False,
+) -> list[str]:
+    """Build+infer rows `[lo, hi)` of `input_csv` **sequentially in one process** (D7, spec 38).
+
+    The whole point of grouping: every row in the group shares the SAME process, so the
+    bundle-cache in `run_infer_task` (`engine._adapter_from_bundle_cached`) loads the bundle
+    once for the group, not once per cell -- this is the "cubes_per_task" amortiser the
+    `create_inference` Snakefile groups rows into. Each row's own D6 skip-if-exists still
+    applies, so a group re-run after a partial failure only redoes its unfinished cells.
+    """
+    with fs.open(input_csv, "r") as f:
+        df = pd.read_csv(f)
+    lo, hi = rows
+    written = []
+    for _, r in df.iloc[lo:hi].iterrows():
+        export_folderpath = str(r["export_folderpath"])
+        output_filepath = os.path.join(export_folderpath, "output.tif")
+        out = run_infer_task(
+            str(r["shapefilepath"]), str(r["catalog_filepath"]),
+            pd.to_datetime(r["startdate"]), pd.to_datetime(r["enddate"]),
+            export_folderpath,
+            bands=str(r["bands"]).split(","),
+            mosaic_days=int(r["mosaic_days"]),
+            scl_mask_classes=[int(v) for v in str(r["scl_mask_classes"]).split(",")],
+            bundle_path=bundle_path,
+            output_filepath=output_filepath,
+            mosaic_scheme=str(r["mosaic_scheme"]) if "mosaic_scheme" in r else config.MOSAIC_SCHEME,
+            if_missing_files=if_missing_files,
+            njobs=njobs, njobs_load_images=njobs_load_images,
+            predict_batch_size=predict_batch_size, skip_nan=skip_nan,
+            overwrite=overwrite,
+        )
+        written.append(out)
+    return written
+
+
 def _parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="python -m fsd.workflows.infer_task",
-        description="Build one datacube and infer it to a COG (one ROI-inference work-unit).",
+        description="Build a cell's datacube and infer it to a COG -- one cell (positional "
+                     "args) or a group of cells sharing one bundle load (--input-csv/--rows, "
+                     "spec 38 D7).",
     )
-    p.add_argument("shapefilepath", help="geometry.geojson for this cell")
-    p.add_argument("catalog_filepath", help="per-cell catalog.parquet slice")
-    p.add_argument("startdate", help="calendar-window start; ISO or 'YYYY-MM-DD'")
-    p.add_argument("enddate", help="calendar-window end")
-    p.add_argument("export_folderpath", help="where datacube.npy + metadata go")
-    p.add_argument("--bands", required=True, help="comma-separated, e.g. B04,B08,B8A,SCL")
+    p.add_argument("shapefilepath", nargs="?", help="geometry.geojson for this cell "
+                   "(single-cell mode)")
+    p.add_argument("catalog_filepath", nargs="?", help="per-cell catalog.parquet slice "
+                   "(single-cell mode)")
+    p.add_argument("startdate", nargs="?", help="calendar-window start; ISO or 'YYYY-MM-DD' "
+                   "(single-cell mode)")
+    p.add_argument("enddate", nargs="?", help="calendar-window end (single-cell mode)")
+    p.add_argument("export_folderpath", nargs="?", help="where datacube.npy + metadata go "
+                   "(single-cell mode)")
+    p.add_argument("--bands", help="comma-separated, e.g. B04,B08,B8A,SCL (single-cell mode)")
     p.add_argument("--mosaic-days", type=int, default=config.MOSAIC_DAYS)
     p.add_argument("--mosaic-scheme", default=config.MOSAIC_SCHEME,
                    choices=list(ops.MOSAIC_SCHEMES))
     p.add_argument("--scl-mask-classes",
                    default=",".join(map(str, config.SCL_MASK_CLASSES)),
-                   help="comma-separated SCL classes to mask")
+                   help="comma-separated SCL classes to mask (single-cell mode)")
     p.add_argument("--if-missing-files", default="warn",
                    choices=["raise_error", "warn", "none"])
     p.add_argument("--njobs", type=int, default=1)
     p.add_argument("--njobs-load-images", type=int, default=1)
     p.add_argument("--bundle", required=True, help="model bundle path")
-    p.add_argument("--output", required=True, help="output COG path")
+    p.add_argument("--output", help="output COG path (single-cell mode)")
+    p.add_argument("--input-csv", help="run manifest (group mode, spec 38 D7)")
+    p.add_argument("--rows", help="row slice 'i:j' of --input-csv (group mode)")
     p.add_argument("--predict-batch-size", type=int, default=None)
     p.add_argument("--no-skip-nan", action="store_true",
                    help="predict on every pixel (default skips all-NaN pixels)")
+    p.add_argument("--overwrite", action="store_true", help="re-infer even if output exists")
     return p.parse_args(argv)
+
+
+def _parse_rows(s: str) -> tuple[int, int]:
+    lo, hi = s.split(":")
+    return int(lo), int(hi)
 
 
 def main(argv=None) -> None:
     args = _parse_args(argv)
+    if bool(args.input_csv) == bool(args.shapefilepath):
+        raise SystemExit(
+            "exactly one of positional single-cell args or --input-csv/--rows is required"
+        )
+    if args.input_csv:
+        if not args.rows:
+            raise SystemExit("--input-csv requires --rows i:j")
+        run_infer_group(
+            args.input_csv, _parse_rows(args.rows), args.bundle,
+            if_missing_files=None if args.if_missing_files == "none" else args.if_missing_files,
+            njobs=args.njobs, njobs_load_images=args.njobs_load_images,
+            predict_batch_size=args.predict_batch_size, skip_nan=not args.no_skip_nan,
+            overwrite=args.overwrite,
+        )
+        return
+    if not (args.bands and args.output):
+        raise SystemExit("single-cell mode requires --bands and --output")
     run_infer_task(
         shapefilepath=args.shapefilepath,
         catalog_filepath=args.catalog_filepath,
@@ -126,6 +215,7 @@ def main(argv=None) -> None:
         njobs_load_images=args.njobs_load_images,
         predict_batch_size=args.predict_batch_size,
         skip_nan=not args.no_skip_nan,
+        overwrite=args.overwrite,
     )
 
 

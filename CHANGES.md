@@ -4,6 +4,72 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## Inference at scale on Azure ML — `runner="aml"` for ROI-mode `run_inference` (spec 38, 2026-07-23)
+
+P4: `run_inference(roi=…, runner="aml")` dispatches the per-cell build+infer unit (spec 21)
+onto the `rise` AML cluster, reusing spec 36's runner machinery — a **thin step-4 dispatch
+swap**, no new pipeline algorithm — plus the I/O-seam fixes the swap exposed:
+
+- **`raster.cog.to_cog` learns a remote-dst branch** (D5, closes TODO #17): when `dst` is a
+  remote `fsd.storage` URL, GDAL still converts on node-local scratch, then `storage.transfer`
+  publishes it. `model.engine._write_output_cog` and `api._merge_outputs` are **unchanged
+  callers** that now land on blob for free. **Bugfix found by this change:** `_merge_outputs`'s
+  raw scratch tif was derived from `dst` itself (`f"{dst}.raw.tif"`) — harmless for a local
+  `dst`, but a remote one made GDAL try to `rasterio.open("abfss://.../merged.tif.raw.tif",
+  "w")` and fail; the scratch path is now always local regardless of `dst`.
+- **Bundle loads once per core per node, not once per cell** (D7, closes TODO #25's root
+  cause): `run_local_inference` now forwards `cubes_per_task` (previously silently dropped);
+  the `create_inference` Snakefile groups `cubes_per_task` cells per job instead of one job per
+  cell; `infer_task.run_infer_task` resolves the adapter via `engine._adapter_from_bundle_cached`
+  (the per-process cache spec 22's infer-only path already used) instead of a fresh
+  `bundle.load` per cell. `infer_task.run_infer_group(input_csv, (lo, hi), bundle_path, …)` is
+  the new grouped entrypoint (mirrors `infer_only_task.run_infer_only`'s shape); the CLI grows an
+  `--input-csv`/`--rows` mode alongside the original single-cell positional-args mode.
+- **`infer_task.run_infer_task` gains a first-line skip-if-`output.tif`-exists** (D6, `overwrite=`
+  kwarg to force a rebuild) — the durable per-cell resume signal, mirroring `task.run_task`'s
+  existing `datacube.npy`-exists skip. The `create_inference` Snakefile no longer touches
+  `export_folderpath` at all (grouping/sentinels are keyed by row-range + node-local scratch), so
+  the D7-style `is_local`-guarded `abspath` this Snakefile predated is now moot rather than
+  reproduced — a remote `export_folderpath` plans cleanly with no special-casing.
+- **New:** `workflows/infer_shard.py` (node entrypoint, mirrors `workflows/shard.py`) and
+  `workflows/adapter_smoke.py` (D11: a one-node adapter-import smoke run once before the N-node
+  fan-out, `skip_smoke=True` opt-out). Bundle staging is manifest-driven (D3): the driver's
+  `runners._stage_bundle` and the node's `infer_shard.fetch_bundle_to_scratch` both walk
+  `bundle.json`'s `artifacts` map — no recursive directory listing, no change to `bundle.load`.
+- **New:** `workflows.runners.run_aml_inference` (D1/D1a/D2/D11) — stages the bundle, shards the
+  already-tiled+`setup`'d cells (`shard_units`, reused verbatim), submits one job per shard (+ the
+  smoke job), waits, aggregates `_status/<k>.json`, raises on failure. `api.run_inference` gains
+  `runner="aml"`/`runner_kwargs` for ROI mode only (D14) — `_check_local_seams`'s
+  `storage_allowed` is now `roi_mode and runner=="aml"` (was unconditionally `False`); the
+  pre-built-cubes path and local ROI mode are unchanged.
+- **Three cross-cutting folds, not P4-specific but surfaced by it:**
+  - **D8 (closes TODO #51, MPC-only):** each MPC AML shard now writes its own
+    `{root}/runs/{run_id}/shards/catalog-<k>.parquet` instead of all shards racing an
+    unsynchronised read-modify-write against the same `catalog.parquet`; the driver
+    sequentially `TileCatalog.append`s each shard catalog into the canonical one after every
+    shard finishes (`runners._merge_shard_catalogs`) — a deliberate serialization, not a lock.
+    CDSE (single job, already single-writer) is untouched.
+  - **D9/D10 (closes TODO #52):** `api._normalize_window` coerces `startdate`/`enddate` to
+    tz-aware UTC `Timestamp`s once, as the first thing `download`/`run_inference` do, raising a
+    `PreflightError` on the driver for an unparseable date — before any AML job, not after a
+    40-380s node cold-start. Closes the CDSE/MPC divergence (only the CDSE AML node path
+    normalized before) and the type-dependent pystac search-window bug (issue #644: a date
+    string expands to end-of-day, a `Timestamp` does not). `run_inference`'s `dt` (the STAC
+    output-item datetime) is coerced too (a minor instance of the same smell); `bands`/
+    `scl_mask_classes`/`mosaic_scheme`/`source`/`merge`/`runner` audited and verified clean.
+  - **D13 (closes TODO #53):** `create_datacube.setup` dedupes `input.csv` on a unit's content
+    identity (`id`+`startdate`+`enddate`+`bands`+`mosaic_days`+`mosaic_scheme`+
+    `scl_mask_classes`, keeping the newest) instead of appending unconditionally forever; **and**
+    `run_aml`/`run_aml_inference`/`run_local_inference` all raise before dispatch if two
+    distinct-content rows still share an `export_folderpath` (keyed by `id` alone — dedupe on
+    content identity does not by itself prevent that collision).
+
+Reuse ledger (spec 38 §4): `workflows/task.py`, `datacube/`, `raster/` (besides `to_cog`),
+`bands/`, `catalog/` query, `model/bundle.py`, and `storage/*` (incl. `azure.py`) are **unchanged**
+— P4 is a dispatcher + a node entrypoint + the I/O-seam fixes above, not a rewrite of the
+build/inference algorithm spec 21/36 already proved. Docs: `docs/adr/0001`, `docs/adr/0002`,
+`CONTEXT.md` (new glossary).
+
 ## `create_datacube.setup` reads the catalog once, and reports progress (2026-07-22)
 
 Two changes to `workflows/create_datacube.py::setup`, both provoked by running

@@ -135,6 +135,35 @@ def _raise_preflight(errs: list[str]) -> None:
         raise PreflightError("preflight failed:\n  - " + "\n  - ".join(errs))
 
 
+def _normalize_window(startdate, enddate) -> tuple[pd.Timestamp | None, pd.Timestamp | None, list[str]]:
+    """D9 (spec 38, TODO #52): coerce the caller's dates to tz-aware UTC `Timestamp`s
+    ONCE, at the API boundary -- the first thing `download`/`run_inference` do -- so
+    every downstream call (window checks, sources, the AML dispatch) forwards the SAME
+    typed value regardless of whether the caller passed a string or a `Timestamp`.
+    Closes the `pystac_client` string-vs-datetime search-window divergence (issue #644:
+    a date-only STRING expands to end-of-day, a `datetime`/`Timestamp` does not) at its
+    source, and the CDSE/MPC runner asymmetry it caused (only the CDSE AML node path
+    normalized before this fix).
+
+    Returns errors instead of raising so callers aggregate them with the rest of
+    preflight in one pass; an unparseable date is reported here, not by pandas/pystac
+    downstream. `(None, None, [...])` on failure -- callers must skip any check that
+    needs the parsed values when errs is non-empty.
+    """
+    errs = []
+    try:
+        start = pd.to_datetime(startdate, utc=True)
+    except (ValueError, TypeError) as exc:
+        errs.append(f"startdate={startdate!r} is not a valid date: {exc}")
+        start = None
+    try:
+        end = pd.to_datetime(enddate, utc=True)
+    except (ValueError, TypeError) as exc:
+        errs.append(f"enddate={enddate!r} is not a valid date: {exc}")
+        end = None
+    return start, end, errs
+
+
 # --- result handle -----------------------------------------------------------
 
 @dataclass
@@ -224,7 +253,10 @@ def download(
     `runner="aml"`: the dispatched job reads them on the node instead, so `roi`
     must be a url the node can also read (not an in-memory GeoDataFrame).
     """
-    errs = _check_local_seams(runner, storage) + _check_window(startdate, enddate, 20, bands)
+    startdate, enddate, date_errs = _normalize_window(startdate, enddate)
+    errs = _check_local_seams(runner, storage) + date_errs
+    if not date_errs:
+        errs += _check_window(startdate, enddate, 20, bands)
     if source not in ("cdse", "mpc"):
         errs.append(f"source={source!r} must be one of 'cdse', 'mpc'.")
     if max_tiles < 1:
@@ -586,7 +618,18 @@ def _merge_outputs(filepaths, dst, nodata, *, reproject_to_dominant: bool = Fals
             for s in srcs:
                 s.close()
 
-    raw = f"{dst}.raw.tif"
+    # D5 (spec 38, ADR 0001): the raw scratch tif must be LOCAL regardless of `dst` -- a
+    # remote `dst` (e.g. abfss://.../merged.tif) would otherwise get "merged.tif.raw.tif"
+    # appended onto the same remote URL, which rasterio (local/VSI-write only) cannot
+    # open. `to_cog` itself already knows how to publish a local raw file to a remote
+    # `dst` (its own remote-dst branch); this only needs to give it a local source.
+    import tempfile
+    import uuid as _uuid
+
+    if fs.is_local(dst):
+        raw = f"{dst}.raw.tif"
+    else:
+        raw = os.path.join(tempfile.gettempdir(), f"fsd-merge-{_uuid.uuid4().hex}.raw.tif")
     try:
         with rasterio.open(raw, "w", **profile) as d:
             d.write(mosaic)
@@ -652,6 +695,7 @@ def run_inference(
     cubes_per_task: int = 1,
     overwrite: bool = False,
     runner: str = "local",
+    runner_kwargs: dict | None = None,
     storage=None,
     collection_id: str = "fsd-inference",
     dt=None,
@@ -677,15 +721,31 @@ def run_inference(
     **idempotent**: existing outputs are skipped unless ``overwrite=True`` (spec 22). ``merge``:
     ``False`` | ``True`` (strict single-CRS) | ``"reproject"`` (cross-UTM-zone-safe merge to one
     CRS — ``merge_crs`` if given, else the max-total-area zone; lossless where a cell already
-    matches the target). `runner`/`storage` are local-only here.
+    matches the target). `runner`/`storage` are local-only for the pre-built-cubes path and for
+    local ROI mode; **ROI mode + ``runner="aml"``** (spec 38 P4) accepts ``storage="azure"``/an
+    ``abfss://`` root and dispatches the per-cell build+infer task onto an Azure ML cluster
+    instead (`runner_kwargs` carries `cluster=`/`environment=`/`root=`/`identity_client_id=`,
+    see `workflows.runners.run_aml_inference`) — the local↔AML equivalence spec 36 Phase 3b
+    proved for datacubes, now for inference.
     """
-    errs = _check_local_seams(runner, storage, storage_allowed=False)
+    # D14 (spec 38): storage-on-blob is P4's own scope -- allowed for ROI mode +
+    # runner="aml" (routes to run_aml_inference), unchanged (local only) for the
+    # pre-built-cubes path and for local ROI mode.
+    roi_mode = roi is not None
+    errs = _check_local_seams(runner, storage, storage_allowed=(roi_mode and runner == "aml"))
     if output_folderpath is None:
         errs.append("output_folderpath is required.")
     if merge not in (False, True, "reproject"):
         errs.append(f'merge must be False, True, or "reproject" (got {merge!r}).')
+    # D10 (spec 38): `dt` (the STAC output-item datetime) is natural-typed `datetime`/
+    # `Timestamp` -- coerce a caller-supplied string at this boundary rather than forward
+    # it raw into `pystac.Item(datetime=...)`, which expects a real datetime object.
+    if dt is not None:
+        try:
+            dt = pd.to_datetime(dt, utc=True).to_pydatetime()
+        except (ValueError, TypeError) as exc:
+            errs.append(f"dt={dt!r} is not a valid date: {exc}")
 
-    roi_mode = roi is not None
     if roi_mode and inference_datacubes is not None:
         errs.append("pass either roi= or inference_datacubes=, not both.")
     if not roi_mode and inference_datacubes is None:
@@ -700,8 +760,8 @@ def run_inference(
             mosaic_days=mosaic_days, bands=bands, grid_size_km=grid_size_km,
             scale_fact=scale_fact, scl_mask_classes=scl_mask_classes,
             predict_batch_size=predict_batch_size, skip_nan=skip_nan, merge=merge,
-            merge_crs=merge_crs, cores=cores, overwrite=overwrite,
-            collection_id=collection_id, dt=dt,
+            merge_crs=merge_crs, cores=cores, cubes_per_task=cubes_per_task, overwrite=overwrite,
+            collection_id=collection_id, dt=dt, runner=runner, runner_kwargs=runner_kwargs,
         )
 
     # --- pre-built cubes path (spec 18) ---
@@ -802,7 +862,8 @@ def _run_inference_roi(
     model, spec, roi, output_folderpath, errs, *,
     catalog_filepath, startdate, enddate, mosaic_days, bands,
     grid_size_km, scale_fact, scl_mask_classes,
-    predict_batch_size, skip_nan, merge, merge_crs, cores, overwrite, collection_id, dt,
+    predict_batch_size, skip_nan, merge, merge_crs, cores, cubes_per_task, overwrite,
+    collection_id, dt, runner="local", runner_kwargs=None,
 ) -> InferenceResult:
     """ROI mode (spec 21): preflight -> tile -> per-cell setup -> runner build+infer -> STAC/merge."""
     from fsd import grid as _grid
@@ -813,6 +874,12 @@ def _run_inference_roi(
                       ("enddate", enddate), ("mosaic_days", mosaic_days), ("bands", bands)]:
         if val is None:
             errs.append(f"roi mode requires {name}=.")
+    # D9 (spec 38): normalize dates to Timestamp HERE, before compute_n_timestamps or any
+    # dispatch -- this is the driver, before any AML job (D11 invariant: an unparseable date
+    # must abort in milliseconds, not after a 40-380s node cold-start).
+    if startdate is not None and enddate is not None:
+        startdate, enddate, date_errs = _normalize_window(startdate, enddate)
+        errs += date_errs
     required = set(spec.get("required_bands") or [])
     want_t = int(spec.get("n_timestamps") or 0)
     if bands is not None:
@@ -871,13 +938,21 @@ def _run_inference_roi(
                 catalog_filepath=catalog_filepath, why=str(exc),
             )) from exc
 
-    # 3) fan out the per-cell build+infer task via the runner seam
-    result = _runners.run_local_inference(
-        csv_filepath, cores=cores, bundle_path=bundle_path,
-        predict_batch_size=predict_batch_size, skip_nan=skip_nan, overwrite=overwrite,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"inference runner failed (snakemake exit {result.returncode}).")
+    # 3) fan out the per-cell build+infer task via the runner seam -- D1a (spec 38): this is
+    #    the ONLY step that swaps; tiling/setup/collect (steps 1-2, 4) are runner-agnostic.
+    if runner == "aml":
+        _runners.run_aml_inference(
+            csv_filepath, bundle_path, cubes_per_task=cubes_per_task, cores=cores,
+            predict_batch_size=predict_batch_size, skip_nan=skip_nan, overwrite=overwrite,
+            **(runner_kwargs or {}),
+        )
+    else:
+        result = _runners.run_local_inference(
+            csv_filepath, cores=cores, bundle_path=bundle_path, cubes_per_task=cubes_per_task,
+            predict_batch_size=predict_batch_size, skip_nan=skip_nan, overwrite=overwrite,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"inference runner failed (snakemake exit {result.returncode}).")
 
     # 4) collect the per-cell outputs (+ each cell's true footprint, for STAC geometry — spec 28)
     with fs.open(csv_filepath, "r") as f:
