@@ -4,7 +4,33 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-23_
 
-## ⭐ SPEC 38 (P4, inference at scale on AML) **IMPLEMENTED** (Sonnet@medium, 2026-07-23) — all 13 deliverables landed, 388 passed / 4 skipped, ruff clean, in a worktree (`worktree-spec38-inference-aml`), **committed, not yet pushed**. **→ NEXT: Opus@high review** (the model split), then run `runbooks/38-inference-on-aml.md` Phases 0–3 on the real cluster (the only thing left unproven — every unit test is mocked at the AML-client boundary, per spec 38 §7's "no test requires Azure").
+## ⭐ SPEC 38 (P4, inference at scale on AML) **IMPLEMENTED + REVIEWED** (impl Sonnet@medium; review Opus@high, both 2026-07-23) — in a worktree (`worktree-spec38-inference-aml`), **committed (impl `347f6f3`), review fix not yet committed, not yet pushed**. **→ NEXT: run `runbooks/38-inference-on-aml.md` Phases 0–3 on the real cluster** (the only thing left unproven — every unit test is mocked at the AML-client boundary, per spec 38 §7's "no test requires Azure").
+
+### Opus@high review outcome (2026-07-23) — 2 fixes applied, 1 item guarded
+- **CRITICAL, FIXED — `engine._write_output_cog` was NOT remote-safe** (the per-cell `output.tif` site
+  an AML node writes for *every* cell, i.e. the whole point of P4). The reuse ledger + the bullet below
+  claimed it was an "unchanged caller that gets blob for free" — **it was not**: it kept the pre-spec-38
+  local-only pattern (`os.makedirs(os.path.dirname(dst))` + `raw_tif = f"{dst}.raw.tif"` +
+  `rasterio.open(raw_tif, "w")`), so a remote `abfss://…/output.tif` dst did a **forbidden remote
+  `rasterio.open(mode="w")`** (D5's explicit "never" clause) and scattered **junk local dirs**
+  (`./abfss:/cont@…/…` — reproduced empirically). The sibling `_merge_outputs` got the local-scratch
+  guard; `_write_output_cog` was missed. **Fix:** same guard mirrored into `_write_output_cog` (local
+  scratch via `tempfile` when dst is remote); test 6 was passing **spuriously** (`memory://` doubles as a
+  valid local literal path in an azure-less venv) — strengthened to assert cwd stays free of junk
+  (verified it FAILS on the pre-fix code). 388→ still green, ruff clean.
+- **FIXED — D7's LOCKED "load-per-core" default now computed on the node.** Was: `run_aml_inference`
+  defaulted `cores=1`/`cubes_per_task`→1, so the default AML run was serial with one bundle-load per
+  cell (the exact TODO #25 pathology D7 set out to kill). Now `infer_shard._resolve_cores_and_group`
+  computes the default from the node's own `os.cpu_count()` + the shard size: `cores`/`cubes_per_task`
+  unset → `cores = cpu_count()`, group = `ceil(n_units/cores)` → bundle loads **once per core per node**
+  (node fully busy); `cores=1` is the heavy-model **load-once-per-node** opt-out (one whole-shard group,
+  one load). Threaded via a `None`=auto sentinel: `api.run_inference` `cores`/`cubes_per_task` default to
+  `None`, `run_aml_inference` omits the `--cores`/`--cubes-per-task` flags when unset (node decides),
+  local/pre-built paths resolve `None`→`1` (behaviour unchanged). `_status/<k>.json` now reports the
+  effective `cores`/`cubes_per_task`/`n_groups` for Phase-3 verification. +2 non-vacuous tests.
+- **FLAGGED, guarded — `_UNIT_IDENTITY_COLS` is duplicated** in `create_datacube` (dedupe) and `runners`
+  (guard) to dodge a circular import. Verified identical; added a test pinning them equal so a future
+  edit can't silently drift the dedupe key from the guard key.
 
 - **The spec:** `specs/38-inference-on-aml.md` — P4 = `run_inference(roi=…, runner="aml")` as a **thin
   step-4 dispatch swap** over the spec-21 per-cell build+infer unit (reusing spec 36's `run_aml`
@@ -16,8 +42,10 @@ _Last updated: 2026-07-23_
 - **Two latent bugs the implementation surfaced (not just landed features):** (1) `api._merge_outputs`
   built its raw scratch tif from `dst` itself (`f"{dst}.raw.tif"`) — harmless for a local `dst`, but a
   **second** instance of the D5 remote-write bug the spec's own grill (Q4) had already found once in
-  `engine._write_output_cog`; fixed alongside D5 (scratch is now always local, `dst` only matters to
-  `to_cog`'s own remote branch). (2) the `create_inference` Snakefile's D6/D7 fix turned out to make the
+  `engine._write_output_cog`; fixed in `_merge_outputs` alongside D5. **⚠️ CORRECTION (Opus review,
+  2026-07-23): `engine._write_output_cog` itself — the FIRST instance, the per-cell node site — was
+  NOT actually fixed by the impl (only `_merge_outputs` was); the review caught + fixed it, see the
+  review-outcome block above.** (2) the `create_inference` Snakefile's D6/D7 fix turned out to make the
   spec-described `is_local`-guarded-`abspath` treatment **moot**: the redesigned (grouped) Snakefile
   never touches `export_folderpath` at all — resolving it fully inside `infer_task` instead — so there
   is no `abspath` call left to guard. Functionally equivalent to what the spec asked for (a remote

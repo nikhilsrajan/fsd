@@ -691,8 +691,8 @@ def run_inference(
     skip_nan: bool = True,
     merge=False,
     merge_crs=None,
-    cores: int = 1,
-    cubes_per_task: int = 1,
+    cores: int | None = None,
+    cubes_per_task: int | None = None,
     overwrite: bool = False,
     runner: str = "local",
     runner_kwargs: dict | None = None,
@@ -709,6 +709,13 @@ def run_inference(
       datacube subfolders, or a list of ``datacube.npy`` filepaths. ``cores=1`` infers in-process
       (sequential); ``cores>1`` fans out via the Snakemake **infer-only** runner (spec 22 — fsd has
       no in-process pool; ``cubes_per_task`` groups cubes per job to amortise the bundle load).
+
+    ``cores``/``cubes_per_task`` default to ``None`` = **auto**: for the local/pre-built paths that
+    means today's ``1`` (sequential, one cube per job); for **ROI mode + ``runner="aml"``** it means
+    D7's *load-per-core* default — the node picks ``cores = os.cpu_count()`` and groups cells so the
+    bundle loads once per core (not once per cell, TODO #25), computed on the node from the shard size
+    (`workflows.infer_shard`). Pass ``cores=1`` there for the heavy-model *load-once-per-node* opt-out
+    (one whole-shard group, one bundle load).
     - **ROI** (spec 21, P0.75 — completes Mode A): pass ``roi`` (+ ``catalog_filepath``,
       ``startdate``/``enddate``/``mosaic_days``/``bands``). fsd tiles the ROI into S2 grid cells
       (``fsd.grid``), then fans out a per-cell **build-datacube + infer -> COG** task through the
@@ -786,10 +793,13 @@ def run_inference(
     _raise_preflight(errs)
 
     fs.makedirs(output_folderpath)
-    if cores > 1:
+    # `None` = auto; the pre-built path has no node to interrogate, so auto == today's default (1).
+    pb_cores = 1 if cores is None else cores
+    pb_cubes_per_task = 1 if cubes_per_task is None else cubes_per_task
+    if pb_cores > 1:
         # cores>1 fans out via the Snakemake infer-only runner (spec 22 — no in-process pool)
         output_filepaths = _run_prebuilt_via_runner(
-            model, pairs, output_folderpath, cores=cores, cubes_per_task=cubes_per_task,
+            model, pairs, output_folderpath, cores=pb_cores, cubes_per_task=pb_cubes_per_task,
             overwrite=overwrite, predict_batch_size=predict_batch_size, skip_nan=skip_nan,
         )
     else:
@@ -941,14 +951,18 @@ def _run_inference_roi(
     # 3) fan out the per-cell build+infer task via the runner seam -- D1a (spec 38): this is
     #    the ONLY step that swaps; tiling/setup/collect (steps 1-2, 4) are runner-agnostic.
     if runner == "aml":
+        # `cores`/`cubes_per_task` pass through as-is: `None` lets the AML node compute D7's
+        # load-per-core default from its own core count + the shard size (`infer_shard`).
         _runners.run_aml_inference(
             csv_filepath, bundle_path, cubes_per_task=cubes_per_task, cores=cores,
             predict_batch_size=predict_batch_size, skip_nan=skip_nan, overwrite=overwrite,
             **(runner_kwargs or {}),
         )
     else:
+        # local has no node to interrogate, so auto (`None`) == today's default (1).
         result = _runners.run_local_inference(
-            csv_filepath, cores=cores, bundle_path=bundle_path, cubes_per_task=cubes_per_task,
+            csv_filepath, cores=(1 if cores is None else cores), bundle_path=bundle_path,
+            cubes_per_task=(1 if cubes_per_task is None else cubes_per_task),
             predict_batch_size=predict_batch_size, skip_nan=skip_nan, overwrite=overwrite,
         )
         if result.returncode != 0:

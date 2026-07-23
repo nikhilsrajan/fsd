@@ -12,11 +12,14 @@ swap**, no new pipeline algorithm — plus the I/O-seam fixes the swap exposed:
 
 - **`raster.cog.to_cog` learns a remote-dst branch** (D5, closes TODO #17): when `dst` is a
   remote `fsd.storage` URL, GDAL still converts on node-local scratch, then `storage.transfer`
-  publishes it. `model.engine._write_output_cog` and `api._merge_outputs` are **unchanged
-  callers** that now land on blob for free. **Bugfix found by this change:** `_merge_outputs`'s
-  raw scratch tif was derived from `dst` itself (`f"{dst}.raw.tif"`) — harmless for a local
-  `dst`, but a remote one made GDAL try to `rasterio.open("abfss://.../merged.tif.raw.tif",
-  "w")` and fail; the scratch path is now always local regardless of `dst`.
+  publishes it. `model.engine._write_output_cog` and `api._merge_outputs` land on blob through
+  it. **Two instances of the same latent bug had to be fixed at the callers** (both derived a
+  raw scratch tif from `dst` itself, `f"{dst}.raw.tif"`, + did `os.makedirs(dirname(dst))` — for
+  a remote `dst` that is a forbidden `rasterio.open("abfss://…","w")` on a remote-looking path
+  that scatters junk local dirs): `api._merge_outputs` (the driver-side `merged.tif`) **and**
+  `model.engine._write_output_cog` (the per-cell `output.tif` an AML node writes — the primary
+  site; the latter was caught in the Opus review, not the initial impl). Both now stage the raw
+  tif on node-local scratch (`tempfile`) regardless of `dst`; `to_cog` handles the remote publish.
 - **Bundle loads once per core per node, not once per cell** (D7, closes TODO #25's root
   cause): `run_local_inference` now forwards `cubes_per_task` (previously silently dropped);
   the `create_inference` Snakefile groups `cubes_per_task` cells per job instead of one job per
@@ -24,7 +27,12 @@ swap**, no new pipeline algorithm — plus the I/O-seam fixes the swap exposed:
   (the per-process cache spec 22's infer-only path already used) instead of a fresh
   `bundle.load` per cell. `infer_task.run_infer_group(input_csv, (lo, hi), bundle_path, …)` is
   the new grouped entrypoint (mirrors `infer_only_task.run_infer_only`'s shape); the CLI grows an
-  `--input-csv`/`--rows` mode alongside the original single-cell positional-args mode.
+  `--input-csv`/`--rows` mode alongside the original single-cell positional-args mode. **The
+  load-per-core default is computed on the node** (`infer_shard._resolve_cores_and_group`): with
+  `cores`/`cubes_per_task` unset the node picks `cores = os.cpu_count()` and groups cells into
+  `ceil(n_units/cores)` so the bundle loads once per core (heavy-model opt-out: `cores=1` →
+  one whole-shard group, one load). `api.run_inference`'s `cores`/`cubes_per_task` now default to
+  `None` (= auto); local/pre-built paths still behave as the old `1`.
 - **`infer_task.run_infer_task` gains a first-line skip-if-`output.tif`-exists** (D6, `overwrite=`
   kwarg to force a rebuild) — the durable per-cell resume signal, mirroring `task.run_task`'s
   existing `datacube.npy`-exists skip. The `create_inference` Snakefile no longer touches

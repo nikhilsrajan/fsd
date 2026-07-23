@@ -593,7 +593,7 @@ def run_aml_inference(
     identity_client_id: str,
     run_id: str | None = None,
     n_shards: int | None = None,
-    cores: int = 1,
+    cores: int | None = None,
     cubes_per_task: int | None = None,
     predict_batch_size: int | None = None,
     skip_nan: bool = True,
@@ -622,6 +622,12 @@ def run_aml_inference(
     N-node fan-out -- the only preflight check that needs a real node (the driver's venv
     is not guaranteed to mirror the inference Environment, ADR 0002); pass `True` once an
     Environment is already proven, to skip the extra node spin-up on repeat runs.
+
+    `cores`/`cubes_per_task` default to `None` = D7's **load-per-core**: the flag is left off
+    the node command so `infer_shard` computes it from the node's own `os.cpu_count()` and the
+    shard size (bundle loads once per core, node stays fully busy -- not once per cell, TODO
+    #25). Pass `cores=1` for the heavy-model **load-once-per-node** opt-out (one whole-shard
+    group, one bundle load); pass explicit values to override entirely.
     """
     if ml_client is None:
         from azure.ai.ml import MLClient
@@ -669,8 +675,12 @@ def run_aml_inference(
         with fs.open(shard_url, "w") as f:
             pd.DataFrame(rows).to_csv(f, index=False)
 
-        cmd = f"python -m fsd.workflows.infer_shard {shard_url} {bundle_url} --cores {cores}"
-        if cubes_per_task:
+        # `cores`/`cubes_per_task` left off the command when None (D7): the NODE then computes
+        # the load-per-core default from `os.cpu_count()` + the shard size (`infer_shard`).
+        cmd = f"python -m fsd.workflows.infer_shard {shard_url} {bundle_url}"
+        if cores is not None:
+            cmd += f" --cores {cores}"
+        if cubes_per_task is not None:
             cmd += f" --cubes-per-task {cubes_per_task}"
         if predict_batch_size is not None:
             cmd += f" --predict-batch-size {predict_batch_size}"

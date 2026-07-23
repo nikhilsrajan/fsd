@@ -32,8 +32,12 @@ n_cells (Phase 3 — the D7 claim, the deliverable that demonstrates Mode C end 
 - The Austria archive catalog already on blob (`runbooks/37-download-on-aml.md` Phase 3 /
   `runbooks/37-verify-archive.md`) — inference never calls CDSE/MPC (SO-6), so imagery must already
   be there.
-- Test ROIs: `s2grid=476da24` (single-tile, verified 100% inside T33UWP — Phase 1/2) and `AT_ROI` or
-  `austria_eurocrops_sampled...` (multi-tile — Phase 3).
+- Test ROIs: `s2grid=476da24` (single-tile, verified 100% inside T33UWP — Phase 1/2) and
+  **`AT_2018_TRAIN.geojson`** (900 labelled fields, verified 100% inside `AT_ROI` = inside the
+  archive footprint — Phase 3). **Do NOT use `austria_eurocrops_sampled_ethiopia_translated.geojson`
+  for Phase 3** — it is the Austria fields *translated to Ethiopia* (36°E), so it has **zero overlap
+  with the Austria archive** and every cell would build an empty cube (the exact mistake that wasted
+  a run in `runbooks/36-aml-runner.md` Phase 3 — see the box there).
 
 ## Setup — paste your concrete values (from `AZURE_INFRA_PRIVATE.md`, uncommitted)
 ```bash
@@ -47,7 +51,10 @@ export AZ_UAMI_CLIENT_ID="$(az identity show -g "$AZ_RG" -n "$AZ_UAMI_NAME" --qu
 export AZ_ACCOUNT='<storage account>'
 export AZ_FS='<filesystem/container>'
 export AZ_ROOT="abfss://${AZ_FS}@${AZ_ACCOUNT}.dfs.core.windows.net/fsd-p4-inference"
-export AZ_CATALOG_URL="abfss://${AZ_FS}@${AZ_ACCOUNT}.dfs.core.windows.net/fsd-p2-download/mpc/catalog.parquet"  # or wherever runbook 37's archive landed
+# ⚠️ The VERIFIED archive catalog is under the download root's `archive/` prefix (runbook 37 Phase 3
+# / runbook 36's `AZ_ARCHIVE_CATALOG`) — NOT `mpc/` (runbook 34's pre-fix-radiometry output). Point
+# at exactly what runbook 36 used, or you build cubes against the wrong bytes.
+export AZ_CATALOG_URL="abfss://${AZ_FS}@${AZ_ACCOUNT}.dfs.core.windows.net/fsd-p2-download/archive/catalog.parquet"
 
 # D4: a SECOND, inference-specific Environment (spec-36's Dockerfile + the adapter package
 # + its deps). Operator run-book step -- Claude never runs `az ml`/`az acr` (CLAUDE.md).
@@ -65,6 +72,18 @@ export AZ_N_SHARDS='16'    # Phase 3 fan-out width (>= the cluster's max_instanc
 
 export OUT="$PWD/tests/outputs/p4_inference_aml"     # gitignored
 mkdir -p "$OUT"
+
+# Fail cheap on the driver BEFORE any cluster spend (the runbook-36 lesson: a wrong
+# catalog prefix or a non-intersecting ROI is a wasted run). Requires VPN + az login.
+.venv/bin/python - <<'PY'
+import os
+from fsd.storage import fs
+cat = os.environ["AZ_CATALOG_URL"]
+assert fs.exists(cat), f"archive catalog NOT found: {cat} (wrong prefix? VPN off? see the warning above)"
+for roi in ("../shapefiles/s2grid=476da24.geojson", "../shapefiles/AT_2018_TRAIN.geojson"):
+    assert os.path.exists(roi), f"ROI missing: {roi} (cwd must be fsd/)"
+print("preflight OK:", cat, "reachable; ROIs present")
+PY
 ```
 
 ## Phase 0 — the inference Environment + adapter-import smoke
@@ -123,12 +142,14 @@ import json, os
 import fsd
 from fsd.model import bundle as fsd_bundle
 
+# NOTE: run_id / n_shards / skip_smoke etc. are `run_aml_inference` args, so they go INSIDE
+# runner_kwargs — `fsd.run_inference` itself has no such params (passing them to it is a TypeError).
 common_kwargs = dict(
     cluster=os.environ["AZ_CLUSTER"],
     environment=f"{os.environ['AZ_INFER_ENV_NAME']}:{os.environ['AZ_INFER_ENV_VERSION']}",
     root=os.environ["AZ_ROOT"], identity_client_id=os.environ["AZ_UAMI_CLIENT_ID"],
     subscription_id=os.environ["AZ_SUBSCRIPTION_ID"], resource_group_name=os.environ["AZ_RG"],
-    workspace_name=os.environ["AZ_ML_WORKSPACE"],
+    workspace_name=os.environ["AZ_ML_WORKSPACE"], run_id="phase1-onecell",
 )
 
 bundle_path = os.environ["AZ_BUNDLE_LOCAL"]
@@ -140,7 +161,6 @@ result = fsd.run_inference(
     startdate="2018-04-01", enddate="2018-09-01", mosaic_days=20,
     bands=["B04", "B08", "B8A", "SCL"],
     runner="aml", runner_kwargs=common_kwargs, storage="azure",
-    run_id="phase1-onecell",
 )
 
 out = {"phase": "phase1-one-cell-to-blob", "pass": bool(result.output_filepaths),
@@ -173,9 +193,12 @@ common_kwargs = dict(
     root=os.environ["AZ_ROOT"], identity_client_id=os.environ["AZ_UAMI_CLIENT_ID"],
     subscription_id=os.environ["AZ_SUBSCRIPTION_ID"], resource_group_name=os.environ["AZ_RG"],
     workspace_name=os.environ["AZ_ML_WORKSPACE"], skip_smoke=True,   # Environment already proven
+    run_id="phase2-resume",   # a run_aml_inference arg -> lives in runner_kwargs, not on run_inference
 )
 
 # Re-run Phase 1 verbatim -- every cell should skip via the D6 output.tif-exists check.
+# NOTE: same output_folderpath as Phase 1 so setup() finds the existing input.csv and each
+# cell's output.tif already on blob; the new run_id only renames this run's staging area.
 result = fsd.run_inference(
     os.environ["AZ_BUNDLE_LOCAL"], roi="../shapefiles/s2grid=476da24.geojson",
     output_folderpath=f"{os.environ['AZ_ROOT']}/phase1_out",
@@ -183,7 +206,6 @@ result = fsd.run_inference(
     startdate="2018-04-01", enddate="2018-09-01", mosaic_days=20,
     bands=["B04", "B08", "B8A", "SCL"],
     runner="aml", runner_kwargs=common_kwargs, storage="azure",
-    run_id="phase2-resume",
 )
 
 # The D13 guard: hand-assemble a duplicated input.csv and confirm dispatch REFUSES it.
@@ -219,34 +241,71 @@ PY
   Phase 3 (a partially-failed Phase 3 re-run is exactly when this bites for real).
 
 ## Phase 3 — the real fan-out
+> ⚠️ **ROI (the runbook-36 lesson):** use **`AT_2018_TRAIN.geojson`** — 900 labelled fields verified
+> 100% inside `AT_ROI` = inside the archive footprint. Do **NOT** use
+> `austria_eurocrops_sampled_ethiopia_translated.geojson` (Austria fields *translated to Ethiopia*,
+> 36°E) — it has **zero overlap** with the Austria archive, so all 900 cells would build empty cubes
+> and the whole run is wasted. This is the exact mistake `runbooks/36-aml-runner.md` Phase 3 hit.
 ```bash
 cat > "$OUT/phase3.py" <<'PY'
 import json, os, time
 import fsd
+from fsd.storage import fs
 
+RUN_ID = "phase3-fanout"
+N_SHARDS = int(os.environ["AZ_N_SHARDS"])
 common_kwargs = dict(
     cluster=os.environ["AZ_CLUSTER"],
     environment=f"{os.environ['AZ_INFER_ENV_NAME']}:{os.environ['AZ_INFER_ENV_VERSION']}",
     root=os.environ["AZ_ROOT"], identity_client_id=os.environ["AZ_UAMI_CLIENT_ID"],
     subscription_id=os.environ["AZ_SUBSCRIPTION_ID"], resource_group_name=os.environ["AZ_RG"],
     workspace_name=os.environ["AZ_ML_WORKSPACE"], skip_smoke=True,
-    n_shards=int(os.environ["AZ_N_SHARDS"]),
+    n_shards=N_SHARDS, run_id=RUN_ID,
 )
 
+# setup() tiles the ROI + writes each cell's slice on the DRIVER before any job submits -- for
+# ~900 cells that is ~1-2 min of blob writes with a throttled progress+ETA line. It is NOT a
+# hang: the tell that you are still in setup (not dispatch) is that the azure-ai-ml
+# "experimental class" warnings have not printed yet (azure.ai.ml is imported lazily at dispatch).
 t0 = time.time()
 result = fsd.run_inference(
-    os.environ["AZ_BUNDLE_LOCAL"], roi="../shapefiles/austria_eurocrops_sampled_ethiopia_translated.geojson",
+    os.environ["AZ_BUNDLE_LOCAL"],
+    roi="../shapefiles/AT_2018_TRAIN.geojson",   # inside the archive; see the box above
     output_folderpath=f"{os.environ['AZ_ROOT']}/phase3_out",
     catalog_filepath=os.environ["AZ_CATALOG_URL"],
     startdate="2018-04-01", enddate="2018-09-01", mosaic_days=20,
     bands=["B04", "B08", "B8A", "SCL"],
     runner="aml", runner_kwargs=common_kwargs, storage="azure",
-    run_id="phase3-fanout", merge=False,
+    cores=1,      # D7 load-once-per-node: one whole-shard group per node -> bundle-loads == n_nodes
+                  # (the clean demo number; RF load is sub-second). Drop it for the load-per-core
+                  # default (bundle-loads == n_nodes * node_cores), then compare against sum(n_groups).
+    merge=False,
 )
 wall_seconds = time.time() - t0
 
-out = {"phase": "phase3-real-fanout", "pass": bool(result.output_filepaths),
-      "wall_seconds": round(wall_seconds, 1), "n_cells": len(result.output_filepaths),
+# run_inference returns the InferenceResult, NOT the runner's per-shard report -- so read the
+# _status/<k>.json files the dispatch aggregated (spec-24 shape) to get timing + the D7 bundle-load
+# count. (This is the telemetry runbook 36 Phase 3 could not record; now machine-checkable.)
+run_root = f"{os.environ['AZ_ROOT'].rstrip('/')}/runs/{RUN_ID}"
+shards = []
+for k in range(N_SHARDS):
+    su = f"{run_root}/_status/{k}.json"
+    if fs.exists(su):
+        with fs.open(su, "r") as f:
+            shards.append(json.load(f))
+n_failed = sum(s["n_failed"] for s in shards)
+slowest = max((s["seconds"] for s in shards), default=0.0)
+
+out = {"phase": "phase3-real-fanout",
+      "pass": bool(result.output_filepaths) and len(shards) > 0 and n_failed == 0,
+      "wall_seconds": round(wall_seconds, 1),
+      "slowest_shard_seconds": round(slowest, 1),
+      "driver_overhead_seconds": round(wall_seconds - slowest, 1),   # setup+alloc+queue (TODO #48/#55)
+      "n_shards_reported": len(shards),
+      "sum_shard_units": sum(s["n_units"] for s in shards),
+      "n_cells_out": len(result.output_filepaths),
+      "n_failed": n_failed, "n_skipped": sum(s["n_skipped"] for s in shards),
+      "bundle_loads": sum(s.get("n_groups", 1) for s in shards),     # cores=1 -> == n_shards == n_nodes
       "output_folderpath": result.output_folderpath,
       "stac_catalog_filepath": result.stac_catalog_filepath}
 print("FSD_RESULT_BEGIN"); print(json.dumps(out, indent=2, default=str)); print("FSD_RESULT_END")
@@ -256,11 +315,13 @@ PY
 .venv/bin/python "$OUT/phase3.py"
 ```
 - **Expect:** `n_shards` jobs (or fewer if `n_cells < n_shards`, D1's degrade), each `Completed`,
-  every shard's `_status/<k>.json` `status: "ok"`, `n_failed: 0` across all shards.
-- **PASS if:** the exact-partition check (sum of every shard's `n_units` == the ROI's total cell
-  count, `n_skipped == 0` on a cold run), 0 failed, and **bundle-loads == n_nodes** (spot-check one
-  node's log: the adapter-load line should print once per node, not once per cell — D7's actual
-  claim). Record `wall_seconds` — the input to TODO #55's timed-demo report.
+  every shard's `_status/<k>.json` `status: "ok"`, `n_failed: 0` across all shards. A ~1–2 min
+  driver-side setup pause (with progress) precedes dispatch — see the note in the script.
+- **PASS if:** `pass: true` in `phase3_result.json`, i.e. the exact-partition check
+  (`sum_shard_units == n_cells_out == the ROI's cell count`, `n_skipped == 0` on a cold run),
+  `n_failed == 0`, **and** the D7 claim `bundle_loads == n_shards_reported` (with `cores=1`, one
+  bundle load per node — not once per cell). `driver_overhead_seconds`/`slowest_shard_seconds`
+  feed TODO #55's timed-demo report.
 - **If it fails:** paste `$OUT/phase3_result.json`; `az ml job stream -n <job-name> ...` for a
   per-node traceback (job names are in the raised `RuntimeError`'s shard list, or
   `_status/*.json`'s `aml_job_status` for a job with no status file at all).
@@ -275,3 +336,10 @@ markers). The run passes when every phase's `pass` is true. **Paste these files 
 - Abort a phase script with Ctrl-C — the AML jobs it already submitted keep running (cancel them in
   the studio/`az ml job cancel` if you want to actually stop spend); re-running the phase script is
   safe (D6/D12 resume) except Phase 2/3's fresh `run_id`s, which start a new run.
+- **To force a truly cold run, point at a NEW `output_folderpath` — do not `fs.rm` the old prefix.**
+  `fs.rm(prefix, recursive=True)` on `abfss://` deletes the files and *then* raises
+  `DirectoryIsNotEmpty` (TODO #50) — it reads as "nothing happened" while the data is gone. Re-running
+  onto the same folder is self-healing anyway (D6 skips finished cells).
+- **VPN must stay up for the whole run** — the driver does blob I/O in every phase (bundle staging,
+  reading `_status/*.json`). VPN off surfaces as `ErrorCode:AuthorizationFailure` (network rules),
+  not a permissions error.

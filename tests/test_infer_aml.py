@@ -387,9 +387,12 @@ def test_to_cog_local_dst_is_unchanged(tmp_path):
     assert nbytes == __import__("os").path.getsize(dst)
 
 
-def test_engine_write_output_cog_lands_on_memory_dst_via_to_cog(tmp_path):
+def test_engine_write_output_cog_lands_on_memory_dst_via_to_cog(tmp_path, monkeypatch):
     from fsd.model.adapter import Output
 
+    # Run in a clean, empty cwd so the non-vacuous assertion below can see any junk a
+    # local-path-op-on-a-remote-URL would scatter.
+    monkeypatch.chdir(tmp_path)
     out = Output(array=np.ones((1, 4, 4), dtype="uint8"), dtype="uint8", nodata=255,
                 band_names=["cls"])
     dst = "memory://cogtest2/output.tif"
@@ -397,6 +400,11 @@ def test_engine_write_output_cog_lands_on_memory_dst_via_to_cog(tmp_path):
     engine._write_output_cog(out, TRANSFORM, CRS, dst)
 
     assert fs.exists(dst)
+    # Non-vacuous (D5): a REMOTE dst must not trigger `os.makedirs`/`rasterio.open(mode="w")`
+    # on the remote-looking URL -- the raw scratch tif is node-local, published via the seam.
+    # Before the fix, `os.makedirs(os.path.dirname(dst))` created a `./memory:/cogtest2` junk
+    # tree in cwd; assert cwd stays empty.
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_merge_outputs_lands_on_memory_dst_via_to_cog(tmp_path):
@@ -409,6 +417,13 @@ def test_merge_outputs_lands_on_memory_dst_via_to_cog(tmp_path):
 
     assert result == dst
     assert fs.exists(dst)
+
+
+def test_unit_identity_cols_do_not_drift_between_modules():
+    # D13: the content-identity tuple is duplicated in `create_datacube` (the dedupe) and
+    # `runners` (the dispatch guard) to avoid a circular import -- a silent divergence would
+    # let a manifest dedupe on one key but be guarded on another. Pin them equal.
+    assert create_datacube._UNIT_IDENTITY_COLS == runners._UNIT_IDENTITY_COLS
 
 
 # --- test 7: D6 -- skip-if-output-exists; a remote export_folderpath dry-run plans -
@@ -562,6 +577,51 @@ def test_run_local_inference_forwards_cubes_per_task(tmp_path):
         cubes_per_task=7, dry_run=True,
     )
     assert result.returncode == 0   # config accepted (the Snakefile reads cubes_per_task)
+
+
+def test_infer_shard_default_is_load_per_core_computed_from_node_cores(monkeypatch):
+    """D7 default: with cores/cubes_per_task unset, the NODE picks cores=os.cpu_count()
+    and groups cells so the bundle loads once PER CORE (not once per cell -- TODO #25),
+    computed from the shard size. Non-vacuous: pin cpu_count and assert the arithmetic."""
+    monkeypatch.setattr(infer_shard.os, "cpu_count", lambda: 4)
+    # 10 cells, 4 cores -> 4 groups of ceil(10/4)=3 -> 4 bundle loads/node (== cores), not 10.
+    assert infer_shard._resolve_cores_and_group(10, None, None) == (4, 3)
+    # load-once-per-node opt-out: cores=1 -> one whole-shard group -> one bundle load.
+    assert infer_shard._resolve_cores_and_group(10, 1, None) == (1, 10)
+    # explicit values override either knob.
+    assert infer_shard._resolve_cores_and_group(10, 2, 5) == (2, 5)
+    # a mutation reverting the default to a constant 1 (the old per-cell pathology) would
+    # make this (4, 3) assertion fail -- 1 cell per group means 10 loads, not 4.
+    assert infer_shard._resolve_cores_and_group(10, None, None) != (4, 1)
+
+
+def test_run_aml_inference_omits_group_flags_by_default_so_node_computes_them(
+    tmp_path, fake_aml_command,
+):
+    """D7: run_aml_inference leaves --cores/--cubes-per-task OFF the node command when the
+    caller didn't set them, so the node computes the load-per-core default; explicit values
+    are threaded through. Non-vacuous across both the default and the override."""
+    bundle_dir = _write_bundle(tmp_path)
+    input_csv = "memory://run_d7flags/cells/input.csv"
+    _write_input_csv(input_csv, n_units=3)
+
+    ml_client = _FakeMLClient({"0": "Completed"})
+    runners.run_aml_inference(
+        input_csv, bundle_dir, cluster="c", environment="e:1",
+        root="memory://run_d7flags/root", identity_client_id="x", n_shards=1,
+        ml_client=ml_client, run_id="d7default", skip_smoke=True,
+    )
+    default_cmd = ml_client.submitted[0][1].command
+    assert "--cores" not in default_cmd and "--cubes-per-task" not in default_cmd
+
+    ml_client2 = _FakeMLClient({"0": "Completed"})
+    runners.run_aml_inference(
+        input_csv, bundle_dir, cluster="c", environment="e:1",
+        root="memory://run_d7flags/root2", identity_client_id="x", n_shards=1,
+        ml_client=ml_client2, run_id="d7explicit", skip_smoke=True, cores=1, cubes_per_task=8,
+    )
+    explicit_cmd = ml_client2.submitted[0][1].command
+    assert "--cores 1" in explicit_cmd and "--cubes-per-task 8" in explicit_cmd
 
 
 # --- test 9: D9 -- date-window normalization, fail-fast on the driver -------------
