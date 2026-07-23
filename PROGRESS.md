@@ -4,7 +4,22 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-22_
 
-## ⭐ SPEC 37 **VALIDATED ON THE REAL CLUSTER — `runbooks/37-download-on-aml.md` Phases 0–3 ALL PASS (2026-07-22).** The download dispatcher works end to end on `rise` AML for both sources. **→ NEXT: run `runbooks/37-verify-archive.md` (gates 1+2, written and waiting on the user), rebuild the AML image (gate 4), then `runbooks/36-aml-runner.md`.**
+## ⭐ DOWNLOAD + DATACUBE ARE PROVEN ON AML (spec 36 + 37, 2026-07-22). `main` pushed at **`980437f`**. **→ NEXT: write SPEC 38 = P4, inference at scale** (Opus@high spec work; baton `/tmp/HANDOFF-spec38-p4-inference.md`). Dispatch the per-cell build+infer task (spec 21) onto AML reusing the P2 runner — a runner/dispatch swap, not new pipeline code — and **fold in TODO #53** (P4 rides the same `setup()` path, so its duplicate-dispatch race lands on the inference COGs). Chosen by user 2026-07-23 over "harden the fan-out first" and "P5 serving".
+
+### Where the cluster work landed (spec 36 + 37, both done + proven)
+
+- **Spec 37 download dispatch — `runbooks/37-download-on-aml.md` Phases 0–3 GREEN**; archive on blob
+  (576 granules / 3456 assets, Austria full-year 2018, 6 bands, 4 MGRS tiles).
+- **`runbooks/37-verify-archive.md` GREEN** — archive is trustworthy (radiometry 6/6, catalog
+  complete, byte-identical to a fresh local ingest). Caveat: all offset=0, so it does not re-prove
+  the `c2bf1f1` black-tile fix; that stays covered by `34-mini-mpc-cross-baseline.md`.
+- **Spec 36 datacube fan-out — `runbooks/36-aml-runner.md` Phases 1–3b GREEN.** 16-node fan-out,
+  exact 900-unit partition, 0 failed; and **Phase 3b: AML-vs-local cubes byte-identical across OS +
+  architecture** — the seam claim proven.
+- **Open from the runs (see TODO):** #51 download append race (measured *not* to have fired — one
+  lucky trial, not safety), #52 window str-vs-Timestamp, #53 setup append duplicates (→ fold into
+  spec 38), #54 cluster-side setup (parked, crossover ~510–4850 shapes; local parallel setup 71 s
+  for 900).
 
 ### Gate-clearing session (2026-07-22, Opus@high) — where the 5 gates stand
 
