@@ -13,11 +13,22 @@ in a uint16 container, which PREDICTOR=2 rejects — we set `NBITS=16`, promotin
 NOTE (specs/10): like all pixel I/O, conversion reads/writes **local** paths through
 rasterio/GDAL (VSI), not fsspec — the documented raster-I/O exception. A remote source
 must be fetched to local scratch first (`fsd.storage.get`).
+
+**Remote dst (spec 38 D5, ADR 0001):** when `dst_path` is a remote `fsd.storage` URL (e.g.
+`abfss://...`), the COG is still produced by GDAL on **node-local scratch** (the identical
+local path above, byte-for-byte), then published to `dst_path` via `storage.transfer`
+(itself a write-to-`.part`-then-atomic-`mv`, spec 36 D7's publish pattern) — never a
+remote `rasterio.open(mode="w")` (TODO #39). This is the single chokepoint that lets both
+the per-cell `output.tif` (`model.engine._write_output_cog`, on an AML node) and the
+merged `merged.tif` (`api._merge_outputs`, on the driver) land on blob — both callers are
+unchanged; only `to_cog` learned the remote-dst branch.
 """
 
 from __future__ import annotations
 
 import os
+import tempfile
+import uuid
 
 import numpy as np
 import rasterio
@@ -25,6 +36,7 @@ import rasterio.shutil
 
 from fsd import config
 from fsd.raster import rio_open
+from fsd.storage import fs
 
 __all__ = ["to_cog", "cog_creation_opts", "stamp_gdal_tags", "stamp_or_reencode"]
 
@@ -67,9 +79,16 @@ def to_cog(
     """Convert a local raster `src_path` -> Cloud-Optimized GeoTIFF `dst_path`.
 
     Lossless (DEFLATE + PREDICTOR, NBITS=16 for uint16). Overviews per `overviews`
-    (``"AUTO"`` builds them, ``"NONE"`` skips). **Atomic:** writes a sibling
-    ``dst.part`` then ``os.replace`` onto ``dst`` — a crash never leaves a truncated
-    ``.tif`` that a resume would mistake for done. Returns bytes written.
+    (``"AUTO"`` builds them, ``"NONE"`` skips). Returns bytes written.
+
+    **Local `dst_path` (unchanged):** writes a sibling ``dst.part`` then ``os.replace``
+    onto ``dst`` — a crash never leaves a truncated ``.tif`` that a resume would mistake
+    for done.
+
+    **Remote `dst_path`** (D5, ADR 0001): GDAL still writes the COG to node-local scratch
+    (byte-identical to the local path above), then `storage.transfer` publishes it to
+    `dst_path` (write-to-`.part`-then-atomic-`mv` on the destination filesystem) and the
+    scratch file is removed. Never a remote `rasterio.open(mode="w")` (TODO #39).
 
     `verify=True` reads both rasters back and asserts they are bit-identical (used in
     tests / a paranoid ingest); off by default since the conversion is deterministic
@@ -82,27 +101,41 @@ def to_cog(
         blocksize=blocksize,
         overviews=overviews,
     )
-    parent = os.path.dirname(dst_path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    tmp = f"{dst_path}.part"
-    try:
-        rasterio.shutil.copy(src_path, tmp, **opts)  # GDAL picks format from driver=
-        os.replace(tmp, dst_path)
-    except BaseException:
-        if os.path.exists(tmp):
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
-        raise
+
+    if fs.is_local(dst_path):
+        parent = os.path.dirname(dst_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = f"{dst_path}.part"
+        try:
+            rasterio.shutil.copy(src_path, tmp, **opts)  # GDAL picks format from driver=
+            os.replace(tmp, dst_path)
+        except BaseException:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+            raise
+        nbytes = os.path.getsize(dst_path)
+    else:
+        fd, scratch = tempfile.mkstemp(suffix=".tif", prefix=f"fsd-cog-{uuid.uuid4().hex}-")
+        os.close(fd)
+        os.remove(scratch)  # GDAL's COG driver must create the file itself
+        try:
+            rasterio.shutil.copy(src_path, scratch, **opts)
+            fs.transfer(scratch, dst_path)  # -> dst_path.part -> atomic mv (spec 36 D7 pattern)
+        finally:
+            if os.path.exists(scratch):
+                os.remove(scratch)
+        nbytes = fs.size(dst_path)
 
     if verify:
         with rio_open(src_path) as s, rio_open(dst_path) as d:
             if not np.array_equal(s.read(), d.read()):
                 raise ValueError(f"to_cog: {dst_path} is not bit-identical to {src_path}")
 
-    return os.path.getsize(dst_path)
+    return nbytes
 
 
 def stamp_gdal_tags(

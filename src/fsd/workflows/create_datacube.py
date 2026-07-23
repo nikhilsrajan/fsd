@@ -28,6 +28,14 @@ from fsd.workflows import runners
 COL_ID = "id"
 COL_LABEL = "label"
 
+# D13 (spec 38, TODO #53): a unit's CONTENT identity -- same id+params means the same
+# work, safe to collapse to one row. `export_folderpath` is keyed by `id` ALONE
+# (below), a narrower thing than this tuple -- two rows can share this identity and
+# still collide on folder (that's the guard in `workflows.runners`, not this dedupe).
+_UNIT_IDENTITY_COLS = (
+    COL_ID, "startdate", "enddate", "bands", "mosaic_days", "mosaic_scheme", "scl_mask_classes",
+)
+
 
 def setup(
     catalog_filepath: str,
@@ -194,8 +202,40 @@ def setup(
     if fs.exists(csv_filepath):
         with fs.open(csv_filepath, "r") as f:
             input_df = pd.concat([pd.read_csv(f), input_df], ignore_index=True)
+    input_df = _dedupe_on_unit_identity(input_df)
     with fs.open(csv_filepath, "w") as f:
         input_df.to_csv(f, index=False)
+
+
+def _dedupe_on_unit_identity(input_df: pd.DataFrame) -> pd.DataFrame:
+    """D13 (spec 38, TODO #53): collapse rows sharing the same content identity
+    (`_UNIT_IDENTITY_COLS`) to one, keeping the NEWEST (`added_on`) -- an idempotent
+    re-run of `setup` (which appends unconditionally) must not grow `input.csv` by one
+    duplicate copy of every unit each time. A re-run adding a genuinely new shape (or a
+    changed window/params for an existing id) still adds a distinct row -- this is a
+    dedupe, not a "one row per id" collapse. Order otherwise preserved (`setup`'s own
+    manifest-order contract, `test_setup_manifest_order_is_shapefile_order_not_completion_order`)."""
+    cols = [c for c in _UNIT_IDENTITY_COLS if c in input_df.columns]
+    if not cols:
+        return input_df
+    # A prior run's rows round-tripped through CSV (dates/added_on came back as
+    # strings); this run's freshly-prepared rows are still in-memory Timestamps. Build
+    # a canonicalized identity key per row (dates normalized to a comparable ISO
+    # string) rather than comparing the raw columns, so the two never fail to match on
+    # type/format alone.
+    date_cols = {"startdate", "enddate"} & set(cols)
+    key_df = input_df[cols].copy()
+    for c in date_cols:
+        key_df[c] = pd.to_datetime(key_df[c], utc=True).astype(str)
+    identity_key = key_df.astype(str).agg("|".join, axis=1)
+
+    if "added_on" not in input_df.columns:
+        return input_df.loc[~identity_key.duplicated(keep="last")]
+    sort_key = pd.to_datetime(input_df["added_on"], utc=True)
+    order = sort_key.argsort(kind="stable")
+    keep_last = ~identity_key.iloc[order].duplicated(keep="last")
+    keep_index = identity_key.iloc[order].index[keep_last.to_numpy()]
+    return input_df.loc[input_df.index.isin(keep_index)]  # restore manifest order
 
 
 def run_create_datacube(

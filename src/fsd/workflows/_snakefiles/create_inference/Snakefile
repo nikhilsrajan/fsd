@@ -1,14 +1,25 @@
 # Local-runner Snakefile for per-cell ROI inference.
-# Spec: specs/21-roi-inference-verb.md
+# Spec: specs/21-roi-inference-verb.md, specs/38-inference-on-aml.md (D6/D7).
 #
-# One job per input.csv row, each shelling out to the runner-agnostic per-cell task:
-#     python -m fsd.workflows.infer_task ...   (build the cell's datacube + infer -> output.tif)
+# Groups `cubes_per_task` rows of input.csv per job, each shelling ONE process that loops its
+# group:
+#     python -m fsd.workflows.infer_task --input-csv <csv> --rows i:j --bundle ...
 # This is the SAME build+infer unit an Azure Batch node dispatches at P4 (the runner seam).
-# done_infer.txt sentinels give resumability (Snakemake skips cells already inferred); a small
-# deterministic jitter staggers parallel job starts. Located at runtime via importlib.resources.
+# `infer_task.run_infer_group` loads the bundle ONCE per group via the per-process cache
+# (`engine._adapter_from_bundle_cached`) instead of once per cell (D7, closes TODO #25's root
+# cause). D6: a group's sentinel lives on node-local scratch (this invocation's own
+# bookkeeping, keyed by the group's own row range -- never touches export_folderpath, so a
+# remote/abfss export_folderpath needs no is_local guard here). The durable "already inferred"
+# signal is each cell's OWN output.tif existence, checked by `infer_task.run_infer_task`'s
+# first-line skip -- so a group retried on a fresh node (no scratch history) redoes only its
+# unfinished cells, not the whole group (resume is per-cell, decoupled from group size).
+# A small deterministic jitter staggers parallel job starts. Located at runtime via
+# importlib.resources (see runners._snakefile_path).
 
+import hashlib
 import os
 import sys
+import tempfile
 import time
 from zlib import adler32
 
@@ -25,71 +36,62 @@ def touch(filepath):
         h.write(pd.Timestamp.now(tz="UTC").isoformat())
 
 
-input_df = pd.read_csv(config["input_csv"])
+input_csv = config["input_csv"]
 bundle_path = config["bundle_path"]
+cubes_per_task = max(int(config.get("cubes_per_task", 1)), 1)
 predict_batch_size = config.get("predict_batch_size", "")
 skip_nan = int(config.get("skip_nan", 1))
+overwrite = int(config.get("overwrite", 0))
 njobs = int(config.get("njobs", 1))
 njobs_load_images = int(config.get("njobs_load_images", 1))
 jitter_span = int(config.get("jitter_span", 1))
+# Node-local scratch root for sentinels only (never the artifact destination -- D6).
+scratch_dir = config.get("scratch_dir") or os.path.join(tempfile.gettempdir(), "fsd-snakemake-scratch")
 
-START_OUTFILENAME = "start.txt"
-FINAL_OUTFILENAME = "done_infer.txt"
+n = len(pd.read_csv(input_csv))
 
-row_by_done = {}
-final_outputs = []
-for _, row in input_df.iterrows():
-    export_folderpath = os.path.abspath(row["export_folderpath"])
-    done_output = os.path.join(export_folderpath, FINAL_OUTFILENAME)
-    row_by_done[done_output] = {
-        "start_output": os.path.join(export_folderpath, START_OUTFILENAME),
-        "shapefilepath": row["shapefilepath"],
-        "catalog_filepath": row["catalog_filepath"],
-        "startdate": row["startdate"],
-        "enddate": row["enddate"],
-        "export_folderpath": export_folderpath,
-        "output_filepath": os.path.join(export_folderpath, "output.tif"),
-        "mosaic_days": row["mosaic_days"],
-        "mosaic_scheme": row["mosaic_scheme"],
-        "scl_mask_classes": row["scl_mask_classes"],
-        "bands": row["bands"],
-    }
-    final_outputs.append(done_output)
+group_by_sentinel = {}
+sentinels = []
+for lo in range(0, n, cubes_per_task):
+    hi = min(lo + cubes_per_task, n)
+    key = hashlib.sha1(f"{input_csv}:{lo}:{hi}".encode()).hexdigest()
+    group_dir = os.path.join(scratch_dir, key)
+    sentinel = os.path.join(group_dir, "done_infer.txt")
+    group_by_sentinel[sentinel] = (lo, hi, os.path.join(group_dir, "start.txt"))
+    sentinels.append(sentinel)
 
 
 rule all:
     input:
-        expand("{final_output}", final_output=final_outputs)
+        sentinels
 
 
 rule run:
     output:
-        _done = "{final_output}"
+        _done = "{sentinel}"
     params:
-        _r = lambda wc: row_by_done[wc.final_output],
+        _g = lambda wc: group_by_sentinel[wc.sentinel],
         _python = sys.executable,
+        _csv = input_csv,
         _bundle = bundle_path,
         _pbs = predict_batch_size,
         _skip = skip_nan,
+        _ow = overwrite,
         _njobs = njobs,
         _njobs_load_images = njobs_load_images,
     threads: 1
     run:
-        r = params._r
+        lo, hi, start_output = params._g
         time.sleep(jitter(key=output._done, span=jitter_span))
-        touch(r["start_output"])
+        touch(start_output)
         pbs = f'--predict-batch-size {params._pbs} ' if str(params._pbs) not in ("", "None") else ""
         skip = "" if int(params._skip) else "--no-skip-nan "
+        ow = "--overwrite " if int(params._ow) else ""
         cmd = (
             f'{params._python} -m fsd.workflows.infer_task '
-            f'{r["shapefilepath"]} {r["catalog_filepath"]} '
-            f'"{r["startdate"]}" "{r["enddate"]}" {r["export_folderpath"]} '
-            f'--bands {r["bands"]} --mosaic-days {r["mosaic_days"]} '
-            f'--mosaic-scheme {r["mosaic_scheme"]} '
-            f'--scl-mask-classes {r["scl_mask_classes"]} '
+            f'--input-csv {params._csv} --rows {lo}:{hi} --bundle {params._bundle} '
             f'--njobs {params._njobs} --njobs-load-images {params._njobs_load_images} '
-            f'--bundle {params._bundle} --output {r["output_filepath"]} '
-            f'{pbs}{skip}'
+            f'{pbs}{skip}{ow}'
         )
         shell(cmd)
         touch(output._done)

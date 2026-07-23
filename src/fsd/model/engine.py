@@ -12,6 +12,7 @@ ROI→tiling→download front-end that produces the datacubes is spec 21 (`run_i
 from __future__ import annotations
 
 import os
+import tempfile
 
 import numpy as np
 import rasterio
@@ -71,18 +72,27 @@ def infer_datacube(adapter, datacube: np.ndarray, band_indices: dict, *,
 def _write_output_cog(out: Output, transform, crs, dst_path: str) -> int:
     """Write an `Output` as a lossless COG (via `raster.cog.to_cog`) at `dst_path`.
 
-    Writes a plain GeoTIFF sibling first, then converts. **Local dst only in P0.5** (like
-    COG-on-download, spec 14); remote-dst staging is deferred to the Azure phase.
+    Writes a plain GeoTIFF sibling first, then converts. `to_cog` publishes to a remote
+    `dst_path` (spec 38 D5). **The raw scratch tif and its parent dir are always node-local**
+    regardless of `dst_path`: a remote dst (e.g. `abfss://.../output.tif`, the per-cell site
+    an AML node writes — spec 38 D5) must NOT `os.makedirs`/`rasterio.open(mode="w")` on the
+    remote URL (a forbidden remote write that scatters junk local dirs, TODO #39); it stages
+    locally, and `to_cog` transfers it to blob. Mirrors `api._merge_outputs`' own local-scratch
+    guard for the identical pattern.
     """
     bands, h, w = out.array.shape
-    parent = os.path.dirname(dst_path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    raw_tif = f"{dst_path}.raw.tif"
     profile = {
         "driver": "GTiff", "height": h, "width": w, "count": bands,
         "dtype": out.dtype, "crs": crs, "transform": transform, "nodata": out.nodata,
     }
+    if fs.is_local(dst_path):
+        parent = os.path.dirname(dst_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        raw_tif = f"{dst_path}.raw.tif"
+    else:
+        fd, raw_tif = tempfile.mkstemp(suffix=".raw.tif", prefix="fsd-out-")
+        os.close(fd)
     try:
         with rasterio.open(raw_tif, "w", **profile) as dst:
             dst.write(out.array)

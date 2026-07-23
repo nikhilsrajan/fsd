@@ -22,6 +22,8 @@ import pandas as pd
 
 from fsd import config
 from fsd import secrets as _secrets
+from fsd.catalog.catalog import TileCatalog as _TileCatalog
+from fsd.model import bundle as _bundle
 from fsd.sources import mpc as _mpc
 from fsd.sources.cdse import CdseCredentials as _CdseCredentials
 from fsd.sources.cdse import query_catalog as _cdse_query_catalog
@@ -30,6 +32,13 @@ from fsd.storage import fs
 _SNAKEFILE = "workflows/_snakefiles/create_datacube/Snakefile"
 _INFER_SNAKEFILE = "workflows/_snakefiles/create_inference/Snakefile"
 _INFER_ONLY_SNAKEFILE = "workflows/_snakefiles/infer_only/Snakefile"
+
+# D13 (spec 38, TODO #53): a unit's content identity -- kept in sync with
+# `create_datacube._UNIT_IDENTITY_COLS` (not imported from there: `create_datacube`
+# already imports this module, and importing back would be circular).
+_UNIT_IDENTITY_COLS = (
+    "id", "startdate", "enddate", "bands", "mosaic_days", "mosaic_scheme", "scl_mask_classes",
+)
 
 
 def _snakefile_path(rel: str = _SNAKEFILE) -> str:
@@ -96,6 +105,7 @@ def run_local_inference(
     *,
     cores: int,
     bundle_path: str,
+    cubes_per_task: int = 1,
     predict_batch_size: int | None = None,
     skip_nan: bool = True,
     overwrite: bool = False,
@@ -108,16 +118,30 @@ def run_local_inference(
     """Local runner for ROI inference (spec 21): drive the per-cell **build+infer** Snakefile
     over `input_csv` rows.
 
-    Same seam as `run_local` — `cores` = how many cells run at once — but each job shells
-    `fsd.workflows.infer_task` (build the cell's datacube, then infer -> output.tif) instead of
-    the build-only task. `bundle_path` is the model the workers reload. `overwrite` forces a
-    recompute (`--forceall`); otherwise `done_infer.txt` sentinels make it resumable. Azure Batch
-    (P4) dispatches this same task; only this runner is swapped.
+    Same seam as `run_local` — `cores` = how many groups run at once — but each job shells one
+    `fsd.workflows.infer_task` group process (build each cell's datacube, then infer ->
+    output.tif) instead of the build-only task. `bundle_path` is the model the workers reload.
+    `cubes_per_task` (spec 38 D7, closes TODO #25's root cause: this used to be silently
+    dropped) groups K cells per job so the bundle loads once per group, not once per cell --
+    default 1 (today's per-cell behaviour). `overwrite` forces a recompute of every cell
+    (`--forceall` **and** `infer_task`'s own per-cell skip is bypassed, config `overwrite=1`);
+    otherwise each cell's `output.tif` existence (D6) makes it resumable, decoupled from group
+    size. Azure Batch (P4) dispatches this same task; only this runner is swapped.
+
+    D13: raises before dispatch if `input_csv` has two distinct-content rows sharing an
+    `export_folderpath` (a malformed manifest -- same exposure as `run_aml`/`run_aml_inference`).
     """
+    with fs.open(input_csv, "r") as f:
+        _dupe_errs = _duplicate_unit_errors(pd.read_csv(f).to_dict("records"))
+    if _dupe_errs:
+        raise ValueError("run_local_inference preflight failed:\n  - " + "\n  - ".join(_dupe_errs))
+
     conf = {
         "input_csv": input_csv,
         "bundle_path": bundle_path,
+        "cubes_per_task": max(int(cubes_per_task), 1),
         "skip_nan": 1 if skip_nan else 0,
+        "overwrite": 1 if overwrite else 0,
         "njobs": njobs,
         "njobs_load_images": njobs_load_images,
         "jitter_span": jitter_span,
@@ -197,6 +221,33 @@ def _import_aml_command():
     return command
 
 
+def _duplicate_export_folderpaths(rows: list[dict]) -> list[str]:
+    """D13 (spec 38, TODO #53): `export_folderpath` is keyed by `id` ALONE
+    (`create_datacube.setup`), a narrower key than the content-identity dedupe
+    (`_UNIT_IDENTITY_COLS`) -- so two rows can pass the dedupe (distinct content) and
+    still collide on the SAME folder (a malformed manifest: which content should that
+    folder hold?). Returns the offending `export_folderpath`s, or `[]` if none."""
+    seen: dict[str, set] = {}
+    for r in rows:
+        identity = tuple(str(r.get(c)) for c in _UNIT_IDENTITY_COLS)
+        seen.setdefault(str(r.get("export_folderpath")), set()).add(identity)
+    return sorted(p for p, ids in seen.items() if len(ids) > 1)
+
+
+def _duplicate_unit_errors(rows: list[dict]) -> list[str]:
+    """D13 aggregatable-error form of `_duplicate_export_folderpaths`, shared by every
+    dispatcher (`run_aml`, `run_aml_inference`, `run_local_inference`) -- same exposure."""
+    dupes = _duplicate_export_folderpaths(rows)
+    if not dupes:
+        return []
+    shown = dupes[:5]
+    more = f" (+{len(dupes) - 5} more)" if len(dupes) > 5 else ""
+    return [
+        "duplicate unit dispatch (D13): distinct-content rows share an export_folderpath "
+        f"-- malformed manifest: {shown}{more}"
+    ]
+
+
 def shard_units(units: list, n_shards: int) -> list[list]:
     """Partition `units` into up to `n_shards` non-empty groups, round-robin (spec 36
     D2 / test 1). A partition: every unit appears in exactly one shard. `n_shards` >
@@ -250,9 +301,11 @@ def _aml_preflight(ml_client, *, cluster: str, environment: str, root: str,
         errs.append(f"input_csv does not exist: {input_csv!r}")
     else:
         with fs.open(input_csv, "r") as f:
-            n_units = len(pd.read_csv(f))
-        if n_units == 0:
+            rows = pd.read_csv(f).to_dict("records")
+        if len(rows) == 0:
             errs.append(f"input_csv is empty: {input_csv!r}")
+        else:
+            errs += _duplicate_unit_errors(rows)
     if n_shards is not None and int(n_shards) < 1:
         errs.append(f"n_shards must be >= 1, got {n_shards!r}.")
     if errs:
@@ -478,6 +531,179 @@ def run_aml(
             "job_statuses": result["job_statuses"], "shards": result["reports"]}
 
 
+# --- P4: the Azure ML inference dispatcher (spec 38) --------------------------
+
+
+def _stage_bundle(bundle_path: str, dst_url: str) -> str:
+    """D3: stage a bundle (local, or already on some `fsd.storage` backend) to `dst_url`
+    -- copy `bundle.json` + every file its `artifacts` map names. No directory
+    listing/new primitive: the manifest already enumerates every file the bundle needs
+    (spec 18 §3.4 -- relative hrefs, no absolute path baked in), so this is the same
+    manifest-driven shape the node uses to fetch it back down (`infer_shard.
+    fetch_bundle_to_scratch`). Returns `dst_url`."""
+    manifest = _bundle.read_spec(bundle_path)
+    with fs.open(os.path.join(bundle_path, _bundle.BUNDLE_MANIFEST), "r") as f:
+        raw = f.read()
+    with fs.open(os.path.join(dst_url, _bundle.BUNDLE_MANIFEST), "w") as f:
+        f.write(raw)
+    for rel in manifest.get("artifacts", {}).values():
+        fs.transfer(os.path.join(bundle_path, rel), os.path.join(dst_url, rel))
+    return dst_url
+
+
+def _aml_inference_preflight(
+    ml_client, *, cluster: str, environment: str, root: str,
+    input_csv: str, n_shards: int | None, max_cells: int | None,
+) -> None:
+    """D11: every check that CAN run on the driver MUST run on the driver, before any
+    AML job is submitted (node cold-start is 40-380s, TODO #48) -- cluster/environment/
+    root (shared, `_aml_preflight_common`), input_csv non-empty, the D13 duplicate-unit
+    guard, and the `max_cells` guardrail (mirrors spec 37's `max_tiles`: refuse an ROI
+    that tiles into more cells than intended, before dispatching thousands of jobs).
+    Model-spec checks (bands/T) already run in `api._run_inference_roi`'s own preflight,
+    ahead of this call (hoisted, not duplicated here)."""
+    errs = _aml_preflight_common(ml_client, cluster=cluster, environment=environment, root=root)
+    if not fs.exists(input_csv):
+        errs.append(f"input_csv does not exist: {input_csv!r}")
+    else:
+        with fs.open(input_csv, "r") as f:
+            rows = pd.read_csv(f).to_dict("records")
+        if len(rows) == 0:
+            errs.append(f"input_csv is empty: {input_csv!r}")
+        else:
+            errs += _duplicate_unit_errors(rows)
+            if max_cells is not None and len(rows) > max_cells:
+                errs.append(
+                    f"{len(rows)} cells exceed max_cells={max_cells}. Narrow the ROI or "
+                    "raise max_cells."
+                )
+    if n_shards is not None and int(n_shards) < 1:
+        errs.append(f"n_shards must be >= 1, got {n_shards!r}.")
+    if errs:
+        raise ValueError("run_aml_inference preflight failed:\n  - " + "\n  - ".join(errs))
+
+
+def run_aml_inference(
+    input_csv: str,
+    bundle_path: str,
+    *,
+    cluster: str,
+    environment: str,
+    root: str,
+    identity_client_id: str,
+    run_id: str | None = None,
+    n_shards: int | None = None,
+    cores: int | None = None,
+    cubes_per_task: int | None = None,
+    predict_batch_size: int | None = None,
+    skip_nan: bool = True,
+    overwrite: bool = False,
+    max_cells: int | None = None,
+    skip_smoke: bool = False,
+    ml_client=None,
+    subscription_id: str | None = None,
+    resource_group_name: str | None = None,
+    workspace_name: str | None = None,
+    poll_interval_seconds: int = 30,
+) -> dict:
+    """AML inference dispatcher (spec 38 D1/D1a/D2/D11): the **thin step-4 swap** over
+    the spec-21 per-cell build+infer unit. Receives the already-produced `input_csv`
+    (tiling + `setup` already ran on the driver -- `api._run_inference_roi` steps 1-3)
+    and `bundle_path`, and does only: stage the bundle to blob (D3) -> shard the cells
+    (reusing `shard_units`, same self-balancing dispatch spec 36 proved) -> submit one
+    job per shard running `python -m fsd.workflows.infer_shard` -> wait -> aggregate
+    `_status/<k>.json` -> raise on any failure. Mirrors `run_aml` almost exactly; the
+    only difference is what each node runs and that a bundle is staged first.
+
+    `identity_client_id`/`ml_client`/`root` follow spec 36 D4'/D3 exactly (see `run_aml`'s
+    docstring) -- no storage-seam or identity-mechanism change for inference.
+
+    `skip_smoke=False` (default, D11) runs a one-node adapter-import smoke BEFORE the
+    N-node fan-out -- the only preflight check that needs a real node (the driver's venv
+    is not guaranteed to mirror the inference Environment, ADR 0002); pass `True` once an
+    Environment is already proven, to skip the extra node spin-up on repeat runs.
+
+    `cores`/`cubes_per_task` default to `None` = D7's **load-per-core**: the flag is left off
+    the node command so `infer_shard` computes it from the node's own `os.cpu_count()` and the
+    shard size (bundle loads once per core, node stays fully busy -- not once per cell, TODO
+    #25). Pass `cores=1` for the heavy-model **load-once-per-node** opt-out (one whole-shard
+    group, one bundle load); pass explicit values to override entirely.
+    """
+    if ml_client is None:
+        from azure.ai.ml import MLClient
+        from azure.identity import DefaultAzureCredential
+
+        ml_client = MLClient(
+            DefaultAzureCredential(), subscription_id, resource_group_name, workspace_name
+        )
+
+    _aml_inference_preflight(ml_client, cluster=cluster, environment=environment, root=root,
+                             input_csv=input_csv, n_shards=n_shards, max_cells=max_cells)
+
+    if n_shards is None:
+        compute = ml_client.compute.get(cluster)
+        n_shards = getattr(compute, "max_instances", None) or 1
+
+    run_id = run_id or pd.Timestamp.now(tz="UTC").strftime("%Y%m%dT%H%M%SZ")
+    run_root = f"{root.rstrip('/')}/runs/{run_id}"
+
+    bundle_url = _stage_bundle(bundle_path, f"{run_root}/_bundle")
+
+    aml_command = _import_aml_command()
+
+    if not skip_smoke:
+        smoke_status_url = f"{run_root}/_status/smoke.json"
+        smoke_job = aml_command(
+            command=(
+                f"python -m fsd.workflows.adapter_smoke {bundle_url} "
+                f"--status-url {smoke_status_url}"
+            ),
+            environment=environment, compute=cluster,
+            environment_variables={"AZURE_CLIENT_ID": identity_client_id},
+            display_name=f"fsd-infer-smoke-{run_id}", experiment_name=f"fsd-infer-{run_id}",
+        )
+        _aml_submit_and_wait(ml_client, {"smoke": smoke_job}, run_root, f"{run_id}-smoke",
+                             poll_interval_seconds=poll_interval_seconds)
+
+    with fs.open(input_csv, "r") as f:
+        units = pd.read_csv(f).to_dict("records")
+    shards = shard_units(units, n_shards)
+
+    jobs: dict[int, object] = {}
+    for k, rows in enumerate(shards):
+        shard_url = f"{run_root}/shards/{k}.csv"
+        with fs.open(shard_url, "w") as f:
+            pd.DataFrame(rows).to_csv(f, index=False)
+
+        # `cores`/`cubes_per_task` left off the command when None (D7): the NODE then computes
+        # the load-per-core default from `os.cpu_count()` + the shard size (`infer_shard`).
+        cmd = f"python -m fsd.workflows.infer_shard {shard_url} {bundle_url}"
+        if cores is not None:
+            cmd += f" --cores {cores}"
+        if cubes_per_task is not None:
+            cmd += f" --cubes-per-task {cubes_per_task}"
+        if predict_batch_size is not None:
+            cmd += f" --predict-batch-size {predict_batch_size}"
+        if not skip_nan:
+            cmd += " --no-skip-nan"
+        if overwrite:
+            cmd += " --overwrite"
+
+        jobs[k] = aml_command(
+            command=cmd,
+            environment=environment,
+            compute=cluster,
+            environment_variables={"AZURE_CLIENT_ID": identity_client_id},
+            display_name=f"fsd-infer-{run_id}-{k}",
+            experiment_name=f"fsd-infer-{run_id}",
+        )
+
+    result = _aml_submit_and_wait(ml_client, jobs, run_root, run_id,
+                                   poll_interval_seconds=poll_interval_seconds)
+    return {"run_id": run_id, "n_shards": len(shards),
+            "job_statuses": result["job_statuses"], "shards": result["reports"]}
+
+
 # --- P2: the Azure ML download dispatcher (spec 37) --------------------------
 
 
@@ -633,16 +859,27 @@ def run_aml_download(
             n_assets * config.APPROX_GB_PER_TILE / max(len(bands), 1)
         )
 
+        # D8 (spec 38, TODO #51 -- MPC only): each shard writes its OWN catalog file
+        # (single writer, no lock) instead of all N shards racing an unsynchronised
+        # read-whole-parquet -> concat -> write-whole-parquet against the SAME
+        # `catalog_filepath` (`TileCatalog.append`, last-writer-wins on blob -- a
+        # silent lost update that under-declares the archive). The driver merges them
+        # sequentially below, after every shard has finished. CDSE is untouched: it
+        # runs as one job writing the canonical catalog directly (D1's asymmetry), so
+        # the race cannot occur there.
+        shard_catalog_urls: dict[int, str] = {}
         jobs = {}
         for k, shard_rows in enumerate(shards):
             shard_url = f"{run_root}/shards/{k}.csv"
             with fs.open(shard_url, "w") as f:
                 pd.DataFrame(shard_rows).to_csv(f, index=False)
 
+            shard_catalog_url = f"{run_root}/shards/catalog-{k}.parquet"
+            shard_catalog_urls[k] = shard_catalog_url
             jobs[k] = aml_command(
                 command=(
                     f"python -m fsd.workflows.download --shard {shard_url} "
-                    f"--dst {dst_folderpath} --catalog {catalog_filepath} "
+                    f"--dst {dst_folderpath} --catalog {shard_catalog_url} "
                     f"--status-url {run_root}/_status/{k}.json"
                 ),
                 environment=environment, compute=cluster,
@@ -654,5 +891,26 @@ def run_aml_download(
 
     result = _aml_submit_and_wait(ml_client, jobs, run_root, run_id,
                                    poll_interval_seconds=poll_interval_seconds)
+
+    if source == "mpc":
+        _merge_shard_catalogs(shard_catalog_urls, catalog_filepath)
+
     return {"run_id": run_id, "source": source, "n_jobs": len(jobs),
             "job_statuses": result["job_statuses"], "reports": result["reports"]}
+
+
+def _merge_shard_catalogs(shard_catalog_urls: dict[int, str], canonical_filepath: str) -> None:
+    """D8 (spec 38, TODO #51): sequentially `TileCatalog.append` each MPC shard's own
+    catalog file into the canonical one, in shard order -- a deliberate single-writer
+    SERIALIZATION (no lock, no ETag/lease -- TODO #50 shows those go badly on
+    `abfss://`), run once after every shard has already finished, so it is not a race.
+    A shard that produced no assets (e.g. every asset in it failed) writes no catalog
+    file at all -- skipped, not an error."""
+    canonical = _TileCatalog(canonical_filepath)
+    for k in sorted(shard_catalog_urls):
+        shard_url = shard_catalog_urls[k]
+        if not fs.exists(shard_url):
+            continue
+        shard_catalog = _TileCatalog(shard_url)
+        rows = shard_catalog.read().to_dict("records")
+        canonical.append(rows, declaration=shard_catalog.declaration)

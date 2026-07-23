@@ -2,7 +2,89 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-22_
+_Last updated: 2026-07-23_
+
+## ⭐ SPEC 38 (P4, inference at scale on AML) **IMPLEMENTED + REVIEWED** (impl Sonnet@medium; review Opus@high, both 2026-07-23) — in a worktree (`worktree-spec38-inference-aml`), **committed (impl `347f6f3`), review fix not yet committed, not yet pushed**. **→ NEXT: run `runbooks/38-inference-on-aml.md` Phases 0–3 on the real cluster** (the only thing left unproven — every unit test is mocked at the AML-client boundary, per spec 38 §7's "no test requires Azure").
+
+### Opus@high review outcome (2026-07-23) — 2 fixes applied, 1 item guarded
+- **CRITICAL, FIXED — `engine._write_output_cog` was NOT remote-safe** (the per-cell `output.tif` site
+  an AML node writes for *every* cell, i.e. the whole point of P4). The reuse ledger + the bullet below
+  claimed it was an "unchanged caller that gets blob for free" — **it was not**: it kept the pre-spec-38
+  local-only pattern (`os.makedirs(os.path.dirname(dst))` + `raw_tif = f"{dst}.raw.tif"` +
+  `rasterio.open(raw_tif, "w")`), so a remote `abfss://…/output.tif` dst did a **forbidden remote
+  `rasterio.open(mode="w")`** (D5's explicit "never" clause) and scattered **junk local dirs**
+  (`./abfss:/cont@…/…` — reproduced empirically). The sibling `_merge_outputs` got the local-scratch
+  guard; `_write_output_cog` was missed. **Fix:** same guard mirrored into `_write_output_cog` (local
+  scratch via `tempfile` when dst is remote); test 6 was passing **spuriously** (`memory://` doubles as a
+  valid local literal path in an azure-less venv) — strengthened to assert cwd stays free of junk
+  (verified it FAILS on the pre-fix code). 388→ still green, ruff clean.
+- **FIXED — D7's LOCKED "load-per-core" default now computed on the node.** Was: `run_aml_inference`
+  defaulted `cores=1`/`cubes_per_task`→1, so the default AML run was serial with one bundle-load per
+  cell (the exact TODO #25 pathology D7 set out to kill). Now `infer_shard._resolve_cores_and_group`
+  computes the default from the node's own `os.cpu_count()` + the shard size: `cores`/`cubes_per_task`
+  unset → `cores = cpu_count()`, group = `ceil(n_units/cores)` → bundle loads **once per core per node**
+  (node fully busy); `cores=1` is the heavy-model **load-once-per-node** opt-out (one whole-shard group,
+  one load). Threaded via a `None`=auto sentinel: `api.run_inference` `cores`/`cubes_per_task` default to
+  `None`, `run_aml_inference` omits the `--cores`/`--cubes-per-task` flags when unset (node decides),
+  local/pre-built paths resolve `None`→`1` (behaviour unchanged). `_status/<k>.json` now reports the
+  effective `cores`/`cubes_per_task`/`n_groups` for Phase-3 verification. +2 non-vacuous tests.
+- **FLAGGED, guarded — `_UNIT_IDENTITY_COLS` is duplicated** in `create_datacube` (dedupe) and `runners`
+  (guard) to dodge a circular import. Verified identical; added a test pinning them equal so a future
+  edit can't silently drift the dedupe key from the guard key.
+
+- **The spec:** `specs/38-inference-on-aml.md` — P4 = `run_inference(roi=…, runner="aml")` as a **thin
+  step-4 dispatch swap** over the spec-21 per-cell build+infer unit (reusing spec 36's `run_aml`
+  machinery), **plus the fixes the swap exposes**. 14 decisions (D1a…D14); §4 reuse ledger, §5 the 13
+  deliverables, §6 the 4 run-book phases, §7 the 12 tests. Baseline preserved (this session's venv has
+  fewer optional extras installed than the 382/3 baseline was measured with — 4 skips here are
+  `[grid]`/`[azure]`/`[serving]`/`[titiler]` extras not installed, not a regression; **388 passed / 4
+  skipped**, +31 new tests in `tests/test_infer_aml.py`, none of the original 357 broke).
+- **Two latent bugs the implementation surfaced (not just landed features):** (1) `api._merge_outputs`
+  built its raw scratch tif from `dst` itself (`f"{dst}.raw.tif"`) — harmless for a local `dst`, but a
+  **second** instance of the D5 remote-write bug the spec's own grill (Q4) had already found once in
+  `engine._write_output_cog`; fixed in `_merge_outputs` alongside D5. **⚠️ CORRECTION (Opus review,
+  2026-07-23): `engine._write_output_cog` itself — the FIRST instance, the per-cell node site — was
+  NOT actually fixed by the impl (only `_merge_outputs` was); the review caught + fixed it, see the
+  review-outcome block above.** (2) the `create_inference` Snakefile's D6/D7 fix turned out to make the
+  spec-described `is_local`-guarded-`abspath` treatment **moot**: the redesigned (grouped) Snakefile
+  never touches `export_folderpath` at all — resolving it fully inside `infer_task` instead — so there
+  is no `abspath` call left to guard. Functionally equivalent to what the spec asked for (a remote
+  `export_folderpath` plans cleanly), simpler than what it described; noted here so a reviewer doesn't
+  go looking for a guard that was designed out rather than missed.
+- **Deliverable 11 (the inference Environment) and 13 (the run-book) are operator/user-run,** per
+  `CLAUDE.md` — text is written (`runbooks/38-inference-on-aml.md`, mirrors 36/37's phase-script shape;
+  the Setup block documents the `az ml environment create` step for D4's second Environment), nothing
+  executed.
+- **Old signoff context, for the record (nothing left to re-derive from it — superseded by the above):**
+- **Three MANDATORY I/O-seam fixes** (node can't otherwise produce a result on blob): **D5** remote-dst
+  COG **in `raster.cog.to_cog`** (not engine — fixes both per-cell `output.tif` AND `merged.tif`; closes
+  TODO #17); **D6** the `create_inference` Snakefile D7 blob-safety + `infer_task` skip-if-`output.tif`;
+  **D3** manifest-driven bundle fetch to node scratch.
+- **User-locked folds:** **D4** dedicated inference Environment + author/operator/dispatcher
+  responsibility split (image-build → P6 `deploy()`); **D7** bundle loaded **per-core per node** (not
+  per cell — closes #25 root cause); **D8** *actual* #51 fix (MPC-only per-shard `catalog-<k>.parquet` +
+  driver sequential-`append` merge; CDSE untouched); **D9+D10** date normalization at the boundary +
+  fail-fast **on the driver before any AML job**, sweep scoped to the datetime-antipattern (bands/scl
+  grep-verified clean); **D13** #53 dedupe on content-identity **+ guard on `export_folderpath`
+  uniqueness** (found `export_folderpath` is keyed by `id` alone, so id+params dedupe alone wouldn't stop
+  the collision).
+- **Grill outcomes worth not re-deriving (Q1–Q11):** each caught a real defect/sharpening, not a
+  rubber-stamp — the step-4 seam (D1 self-contradiction fixed), the reload-vs-parallelism impossibility
+  (D7), `merged.tif` as a second blob-write site (Q4), `fsd.storage.get` being single-file (Q6, from
+  cross-val), the node-cold-start "fail-before-nodes" invariant (Q8, D11), and the `export_folderpath`
+  keying (Q11). Full table + the two web-cross-validated facts (pystac date-vs-datetime issue #644; AML
+  v2 Docker-build-context Environment, not the v1 `add_private_pip_wheel` API) are in the spec §9.
+- **Docs produced as we went (`/grill-with-docs` = grilling + domain-modeling):**
+  `docs/adr/0001-remote-cog-publish-in-to-cog.md`, `docs/adr/0002-bundle-and-inference-image-decoupled.md`,
+  and **`CONTEXT.md`** (new glossary — bundle / manifest / adapter / inference image; grid cell / MGRS
+  tile / unit-of-work / shard / run; driver / node / dispatcher). These are the first `docs/adr/` +
+  `CONTEXT.md` in the repo, and a deliberate input to the future docs refactor (**TODO #55**, parked
+  after a timed e2e demo + report — the C4-model distillation the user requested 2026-07-23).
+- **Implementation guidance for the Sonnet session:** implement against the spec's D-sections; the reuse
+  ledger (§4) makes the "no new *pipeline* code" claim checkable; on completion close TODO
+  **#17/#25/#51/#52/#53** and update `CHANGES.md`/`LIMITATIONS.md`/`RECIPES.md`/`ROADMAP.md` (P4 → done)
+  per deliverable 12. **Not P4's job:** create_training_data(roi=) scaling (labelled fields need no
+  tiling), infer-only AML fan-out (Open Q4), P5 serving.
 
 ## ⭐ DOWNLOAD + DATACUBE ARE PROVEN ON AML (spec 36 + 37, 2026-07-22). `main` pushed at **`980437f`**. **→ NEXT: write SPEC 38 = P4, inference at scale** (Opus@high spec work; baton `/tmp/HANDOFF-spec38-p4-inference.md`). Dispatch the per-cell build+infer task (spec 21) onto AML reusing the P2 runner — a runner/dispatch swap, not new pipeline code — and **fold in TODO #53** (P4 rides the same `setup()` path, so its duplicate-dispatch race lands on the inference COGs). Chosen by user 2026-07-23 over "harden the fan-out first" and "P5 serving".
 

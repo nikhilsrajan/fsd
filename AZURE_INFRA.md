@@ -310,10 +310,12 @@ These are the decisions the future spec 10 must settle. Flagged here so we don't
    green).** `fsd.raster.rio_open` translates `abfss://`/`az://` → `/vsiadls/` (`storage/azure.py`)
    and opens inside a `rasterio.Env` carrying a **fresh `AZURE_STORAGE_ACCESS_TOKEN`** +
    `AZURE_STORAGE_ACCOUNT`; local paths stay a straight passthrough. The build streamed blob COGs
-   this way end to end. **Residual, narrower unknown: GDAL *writes* to blob.** `rio_open` raises on
-   `mode="w"` for a remote path by design (P1 scoped writes local), so **inference-output COGs to
-   blob are still unproven** — that is TODO #39 and lands in **P4**, not P2. Do not re-spike the
-   read path.
+   this way end to end. **Residual GDAL-*writes* question RESOLVED by spec 38 D5 (2026-07-23),
+   without re-spiking `rio_open`:** `raster.cog.to_cog` routes AROUND the write-to-blob gap rather
+   than through it — GDAL still writes only to node-local scratch (`rio_open`'s `mode="w"` guard
+   is untouched), then `storage.transfer` publishes the finished COG to blob. Inference-output COGs
+   to blob are proven at the unit-test level (TODO #17 closed); the real-cluster run is pending
+   (`runbooks/38-inference-on-aml.md`).
 4. ~~**Input/output data layout in blob** — container/paths for the S2 archive, catalogs,
    datacubes, flattened arrays; how the catalog (GeoParquet) is shared to tasks.~~ **✅ RESOLVED
    by spec 36 D6** (signed off 2026-07-21): `<root>/imagery/...` (runbook 34), `<root>/runs/<run_id>/
@@ -347,6 +349,18 @@ These are the decisions the future spec 10 must settle. Flagged here so we don't
    same `AZURE_CLIENT_ID` identity spec 36 D4 already sets — one identity covers blob and Key Vault,
    so this needed **no new infra grant** (the compute identity already holds `Key Vault Secrets
    User`). See `specs/37-download-on-aml.md`.
+10. **Inference, not just build/download, on AML — ✅ RESOLVED by spec 38 (P4, 2026-07-23,
+    pending cluster validation).** `workflows.runners.run_aml_inference` reuses `shard_units`/
+    `_aml_submit_and_wait`/D4-identity verbatim (same machinery as #9), fanning out over **cells**
+    (not per-source, since inference reads only the blob catalog — no CDSE, no per-credential cap,
+    SO-6). **New infra unit: a *second*, model-specific AML Environment** (D4) — item 5's generic
+    build Environment (`fsd[azure,mpc]`, no model) extended with the user's adapter package + its
+    runtime deps (e.g. `scikit-learn`/`joblib`), built the same way (an `az ml environment create`
+    Docker-build-context step) but as a distinct image referenced by name
+    (`run_aml_inference(environment=…)`) — no per-run image build, one image serves many
+    runs/bundles of that model family. Gated by a one-node adapter-import smoke (D11) before the
+    N-node fan-out, so a missing dependency fails once at build/smoke time, not on every node. See
+    `specs/38-inference-on-aml.md`, `docs/adr/0002-bundle-and-inference-image-decoupled.md`.
 
 ## 8. Things to confirm (not yet verified)
 
