@@ -2,7 +2,44 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-22_
+_Last updated: 2026-07-23_
+
+## ⭐ SPEC 38 (P4, inference at scale on AML) **SIGNED OFF** (user, 2026-07-23, Opus@high) — cross-validated + grilled (Q1–Q11). **→ NEXT: implement in a Sonnet@medium session against `specs/38-inference-on-aml.md`.** Nothing implemented; nothing committed.
+
+- **The spec:** `specs/38-inference-on-aml.md` — P4 = `run_inference(roi=…, runner="aml")` as a **thin
+  step-4 dispatch swap** over the spec-21 per-cell build+infer unit (reusing spec 36's `run_aml`
+  machinery), **plus the fixes the swap exposes**. 14 decisions (D1a…D14); §4 reuse ledger, §5 the 13
+  deliverables, §6 the 4 run-book phases, §7 the 12 tests. Baseline to preserve: **382 passed / 3
+  skipped, ruff clean.**
+- **Three MANDATORY I/O-seam fixes** (node can't otherwise produce a result on blob): **D5** remote-dst
+  COG **in `raster.cog.to_cog`** (not engine — fixes both per-cell `output.tif` AND `merged.tif`; closes
+  TODO #17); **D6** the `create_inference` Snakefile D7 blob-safety + `infer_task` skip-if-`output.tif`;
+  **D3** manifest-driven bundle fetch to node scratch.
+- **User-locked folds:** **D4** dedicated inference Environment + author/operator/dispatcher
+  responsibility split (image-build → P6 `deploy()`); **D7** bundle loaded **per-core per node** (not
+  per cell — closes #25 root cause); **D8** *actual* #51 fix (MPC-only per-shard `catalog-<k>.parquet` +
+  driver sequential-`append` merge; CDSE untouched); **D9+D10** date normalization at the boundary +
+  fail-fast **on the driver before any AML job**, sweep scoped to the datetime-antipattern (bands/scl
+  grep-verified clean); **D13** #53 dedupe on content-identity **+ guard on `export_folderpath`
+  uniqueness** (found `export_folderpath` is keyed by `id` alone, so id+params dedupe alone wouldn't stop
+  the collision).
+- **Grill outcomes worth not re-deriving (Q1–Q11):** each caught a real defect/sharpening, not a
+  rubber-stamp — the step-4 seam (D1 self-contradiction fixed), the reload-vs-parallelism impossibility
+  (D7), `merged.tif` as a second blob-write site (Q4), `fsd.storage.get` being single-file (Q6, from
+  cross-val), the node-cold-start "fail-before-nodes" invariant (Q8, D11), and the `export_folderpath`
+  keying (Q11). Full table + the two web-cross-validated facts (pystac date-vs-datetime issue #644; AML
+  v2 Docker-build-context Environment, not the v1 `add_private_pip_wheel` API) are in the spec §9.
+- **Docs produced as we went (`/grill-with-docs` = grilling + domain-modeling):**
+  `docs/adr/0001-remote-cog-publish-in-to-cog.md`, `docs/adr/0002-bundle-and-inference-image-decoupled.md`,
+  and **`CONTEXT.md`** (new glossary — bundle / manifest / adapter / inference image; grid cell / MGRS
+  tile / unit-of-work / shard / run; driver / node / dispatcher). These are the first `docs/adr/` +
+  `CONTEXT.md` in the repo, and a deliberate input to the future docs refactor (**TODO #55**, parked
+  after a timed e2e demo + report — the C4-model distillation the user requested 2026-07-23).
+- **Implementation guidance for the Sonnet session:** implement against the spec's D-sections; the reuse
+  ledger (§4) makes the "no new *pipeline* code" claim checkable; on completion close TODO
+  **#17/#25/#51/#52/#53** and update `CHANGES.md`/`LIMITATIONS.md`/`RECIPES.md`/`ROADMAP.md` (P4 → done)
+  per deliverable 12. **Not P4's job:** create_training_data(roi=) scaling (labelled fields need no
+  tiling), infer-only AML fan-out (Open Q4), P5 serving.
 
 ## ⭐ DOWNLOAD + DATACUBE ARE PROVEN ON AML (spec 36 + 37, 2026-07-22). `main` pushed at **`980437f`**. **→ NEXT: write SPEC 38 = P4, inference at scale** (Opus@high spec work; baton `/tmp/HANDOFF-spec38-p4-inference.md`). Dispatch the per-cell build+infer task (spec 21) onto AML reusing the P2 runner — a runner/dispatch swap, not new pipeline code — and **fold in TODO #53** (P4 rides the same `setup()` path, so its duplicate-dispatch race lands on the inference COGs). Chosen by user 2026-07-23 over "harden the fan-out first" and "P5 serving".
 
