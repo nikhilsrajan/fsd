@@ -2,7 +2,58 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-23_
+_Last updated: 2026-07-24_
+
+## ⭐ SPEC 39 (create_training_data e2e on AML: flatten→land-local) **IMPLEMENTED, awaiting Opus@high review** (impl Sonnet@medium, 2026-07-24, worktree `spec39-implement`). **→ NEXT: Opus review, then `--no-ff` merge to `main` + prune the worktree** (per the standing worktree-merge/prune practice). All 8 spec §7 tests landed in `tests/test_training_data_aml.py` (14 test functions after non-vacuousness splits); full suite 405 passed/4 skipped, `ruff` clean (a git-worktree-specific ruff config-discovery quirk means `ruff check` must be run with `--select E4,E7,E9,F,I` explicitly in this worktree to match `main`'s real ruleset — verified equivalent, not a scope reduction). No test requires Azure. Runbook `runbooks/39-training-data-on-aml.md` Phases 0-2 written, not run (Claude never runs networked/pipeline scripts). Docs updated: `CHANGES.md`, `LIMITATIONS.md`, `TODO.md` #56, `RECIPES.md`, `ROADMAP.md` P3, `CONTEXT.md` ("reduce job", "land-local"). Baton this session was: **`runbooks/HANDOFF-spec39-implement.md`**.
+
+**What spec 39 is.** `create_training_data` becomes the **one-verb e2e façade** — `download → build →
+flatten → land-local` — with a new sibling `flatten_training_data` for flatten-only over already-built
+blob cubes (runbook-36 Phase-3 `input.csv`). Flatten runs as a **single-node AML reduce** (not fan-out)
+on the **existing general-purpose fsd Environment**, then `storage.transfer`s the **compact** array to
+the **local** `export_folderpath` (driver stays control-plane-only, ADR-0004). Net code delta is small +
+reuse-heavy: `flatten_training_data` + `workflows/flatten.py` CLI + `runners.run_aml_flatten` (on the
+spec-37 `_aml_submit_and_wait`) + an `api._land_local` transfer loop, plus download-phase/label/split
+changes to `create_training_data`. `datacube.flatten`, the build fan-out, download, and the whole
+feature path are **unchanged**.
+
+**The 5 grilled decisions (2026-07-24 `/grill-with-docs`), so they aren't re-litigated:**
+- **Q1 → features stay, driver-side.** The feature transform already runs on the driver today
+  (`api.py:416→427`), never on a cluster node. Cluster flatten emits **raw**; after land-local,
+  `create_training_data` runs `_apply_training_features` on the driver → `features.npy`, unchanged.
+  **Spec 18 / ADR-0018 / Adapter glossary / `eurocrops_rf.py` NOT touched.** Recorded as **ADR-0020**
+  (general-purpose images emit raw; adapter transform only at model-specific endpoints).
+- **Q2 → local `export_folderpath` + blob `root` in `runner_kwargs`** (spec-36/37 convention); verb
+  auto-lands the compact array. `run_folderpath=export/run` default is **local-runner only**.
+- **Q3 → accept an in-memory GeoDataFrame**; verb auto-stages it to one GeoJSON under the blob `root`,
+  used as **both** download-ROI and build-shapefile.
+- **D-labels → `label_col` optional** (drop the required check `api.py:368-369`; keep `id_col`).
+  `ids.npy` is the label join key; labels are a separable overlay (CONTEXT.md "Label").
+- **Q4 → prove via Phase 1** (flatten-reduce over the existing 900 blob cubes = scale) **+ Phase 2**
+  (small fresh e2e = composition). **No redundant full-scale Phase 3.**
+- **D6 → drop the adapter `n_timestamps` preflight** (`api.py:348-354`); DemoRF **retrains at T=8**
+  (Apr–Sep 2018 @ mosaic_days=20). `required_bands` preflight stays. Calendar-mosaic same-`timestamps`
+  invariant unchanged.
+
+**Docs already written this session:** `specs/39-training-data-on-aml.md` (D1–D7 + D-labels, §4 reuse
+ledger, §5 deliverables, §6 runbook phases, §7 tests, §9 sources), `docs/adr/0020-*.md` (+ README row),
+`CONTEXT.md` "Label" term. **Still to write during impl:** `workflows/flatten.py`, `run_aml_flatten`,
+`flatten_training_data`, `_land_local`, the `create_training_data` deltas, `runbooks/39-*.md`, and the
+`CHANGES.md`/`LIMITATIONS.md`/`TODO.md`/`RECIPES.md`/`ROADMAP.md` updates (spec §5 deliverable 7).
+
+**Then (unchanged order):** (2) user trains DemoRF locally at T=8 + metrics (user-side, permanent);
+(3) return to `runbooks/38-inference-on-aml.md` (still has the T=8-vs-10 caveat below — now resolved to
+T=8 — and the `adapters` module Dockerfile `COPY`).
+
+### ⚠️ Runbook 38 has a DemoRF-mismatch to fix before it can run (this session, 2026-07-24)
+The user's actual inference bundle is **`adapters:DemoRF`** (`required_bands=[B04,B08]`,
+**`n_timestamps=10`**), NOT `eurocrops_rf:EuroCropsRF`. Runbook 38's Phase 1/2/3 scripts hardcode
+`2018-04-01…2018-09-01, mosaic_days=20` → **T=8**, so the driver preflight (`api.py:353`) fails
+`T=8 but adapter.n_timestamps=10` before any cluster spend. **Before running 38:** (a) pin its window/
+mosaic_days to DemoRF's *training* config (must give T=10; unknown — get from user), bands stay a valid
+superset ([B04,B08,B8A,SCL] ⊇ [B04,B08], preflight `api.py:727`); (b) the new "Build the inference
+Environment (D4)" section's Dockerfile must `COPY` the **`adapters`** module + `ENV PYTHONPATH` so
+`adapters:DemoRF` imports (not `eurocrops_rf`). This session added that build section to runbook 38
+(uncommitted). The `adapters` module is not in the repo — user has it locally.
 
 ## ⭐ SPEC 38 (P4, inference at scale on AML) **IMPLEMENTED + REVIEWED** (impl Sonnet@medium; review Opus@high, both 2026-07-23) — in a worktree (`worktree-spec38-inference-aml`), **committed (impl `347f6f3`), review fix not yet committed, not yet pushed**. **→ NEXT: run `runbooks/38-inference-on-aml.md` Phases 0–3 on the real cluster** (the only thing left unproven — every unit test is mocked at the AML-client boundary, per spec 38 §7's "no test requires Azure").
 

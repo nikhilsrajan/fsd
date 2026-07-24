@@ -45,14 +45,15 @@ from fsd.storage.azure import configure_storage as _configure_storage
 from fsd.workflows import create_datacube as _create_datacube
 
 __all__ = [
+    "InferenceResult",
     "PreflightError",
     "TrainingData",
-    "InferenceResult",
-    "download",
-    "create_training_data",
-    "run_inference",
-    "deploy",
     "compute_n_timestamps",
+    "create_training_data",
+    "deploy",
+    "download",
+    "flatten_training_data",
+    "run_inference",
 ]
 
 
@@ -296,6 +297,10 @@ def download(
     return catalog_filepath
 
 
+_download_verb = download  # internal alias: `create_training_data`'s `download` bool param
+                           # shadows the module-level `download` verb within its own body.
+
+
 def create_training_data(
     label_polygons,
     catalog_filepath: str,
@@ -304,102 +309,167 @@ def create_training_data(
     mosaic_days: int,
     bands: list[str],
     id_col: str,
-    label_col: str,
     export_folderpath: str,
     *,
+    label_col: str | None = None,
     scl_mask_classes: list[int] = config.SCL_MASK_CLASSES,
     adapter=None,
     feature_sequence=None,
     aggregate=None,
     cores: int = 1,
+    source: str = "mpc",
+    download: bool = False,
+    max_tiles: int | None = None,
+    max_cloudcover: float | None = None,
+    cog: bool = True,
+    creds: CdseCredentials | None = None,
     runner: str = "local",
     runner_kwargs: dict | None = None,
     storage=None,
     run_folderpath: str | None = None,
 ) -> TrainingData:
-    """Turn known-label polygons + a downloaded catalog into flattened training arrays.
+    """Label polygons (+ imagery) -> flattened, locally-landed training arrays: the
+    full-pipeline façade (spec 39 D1).
 
-    Orchestrates `workflows.create_datacube` (one datacube per polygon, calendar mosaic) then
-    `datacube.flatten` — the user never types "flatten". Returns a `TrainingData` handle.
+    Orchestrates an optional download phase, `workflows.create_datacube` (one datacube per
+    polygon, calendar mosaic), then `flatten_training_data` — the user never types "flatten".
+    Returns a `TrainingData` handle.
 
-    Feature engineering (P0.5, spec 18): pass an `adapter` (preferred — its `feature_sequence`
-    is the *same* one used at inference, the F1 anti-skew guarantee) **or** a raw
-    `feature_sequence` (adapter-less/exploratory). `aggregate` ∈ {None, "median_per_id",
+    **Download phase (D1):** `download=False` (default, back-compat) requires `catalog_filepath`
+    to already exist (run `fsd.download` first — compute never fetches from a provider
+    implicitly, spec 23 D13). `download=True` first calls `fsd.download(roi=label_polygons, ...)`
+    into `catalog_filepath`'s folder (`source="mpc"` demo default; `"cdse"` needs `creds` for
+    `runner="local"`), then proceeds to build + flatten. `max_tiles` is required when
+    `download=True` (spec 37 D7 guardrail — no silent default).
+
+    **Blob-vs-local split (Q2, `runner="aml"` only):** `export_folderpath` is always the LOCAL
+    landing target for the compact array; the blob working root is `runner_kwargs["root"]`
+    (catalog/cubes/`input.csv`/the raw flatten output all live there). `run_folderpath` defaults
+    to a folder under that blob root for `runner="aml"`, and to `export_folderpath/run` only for
+    `runner="local"`.
+
+    **In-memory polygons (Q3):** for `runner="aml"`, an in-memory `label_polygons` GeoDataFrame
+    is materialized once to a GeoJSON under the blob `root` and that one URL serves as both the
+    download ROI and the per-cell build shapefile. A path/URL `label_polygons` is used as-is.
+
+    Feature engineering (P0.5, spec 18 / ADR-0020): pass an `adapter` (preferred — its
+    `feature_sequence` is the *same* one used at inference, the F1 anti-skew guarantee) **or** a
+    raw `feature_sequence` (adapter-less/exploratory). `aggregate` ∈ {None, "median_per_id",
     callable} reduces per-pixel samples before the transform. When any is given, fsd writes
-    `features.npy` (+ `feature_ids`/`feature_labels`) additively; the raw `data.npy` is kept.
+    `features.npy` (+ `feature_ids`/`feature_labels`) additively **on the driver, after
+    land-local** — the raw `data.npy` is kept; cluster images stay general-purpose.
 
-    `runner="local"` (default) or `"aml"` (spec 36 P2: dispatches the build fan-out onto an
-    Azure ML cluster, `runner_kwargs` carries its `cluster=`/`environment=`/`root=`/
-    `identity_client_id=`, see `workflows.runners.run_aml`). `storage` is local-only for now.
+    `label_col` (D-labels) is optional: when omitted, no `labels.npy` is written and `ids.npy`
+    is the join key for labels joined in later, without re-flattening.
+
+    `runner="local"` (default) or `"aml"` (spec 36/37/39 P2: dispatches download + the build
+    fan-out + the flatten reduce onto an Azure ML cluster, `runner_kwargs` carries its
+    `cluster=`/`environment=`/`root=`/`identity_client_id=`, see `workflows.runners`).
     """
     if adapter is not None and feature_sequence is not None:
         raise PreflightError(
             "pass either `adapter` or `feature_sequence`, not both (ambiguous feature transform)."
         )
 
-    errs = _check_local_seams(runner, storage) + _check_window(
-        startdate, enddate, mosaic_days, bands
-    )
+    startdate, enddate, date_errs = _normalize_window(startdate, enddate)
+    errs = _check_local_seams(runner, storage) + date_errs
+    if not date_errs:
+        errs += _check_window(startdate, enddate, mosaic_days, bands)
     if adapter is not None:
         req = list(getattr(adapter, "required_bands", []) or [])
         missing = [b for b in req if b not in bands]
         if missing:
             errs.append(f"adapter.required_bands not in requested bands: {missing}")
-        want_t = int(getattr(adapter, "n_timestamps", 0) or 0)
-        if want_t:
-            got_t = compute_n_timestamps(startdate, enddate, mosaic_days)
-            if got_t != want_t:
-                errs.append(
-                    f"dates/mosaic_days give T={got_t} but adapter.n_timestamps={want_t}."
-                )
+        # D6: no n_timestamps preflight -- T is caller-set; DemoRF retrains at whatever
+        # T the window/mosaic_days produce. The calendar-mosaic same-timestamps
+        # cross-cube invariant (spec 15) still holds -- flatten raises on disagreement.
     try:
         _resolve_aggregate(aggregate)
     except ValueError as exc:
         errs.append(str(exc))
-    catalog_present = fs.exists(catalog_filepath)
-    if not catalog_present:
-        errs.append(
-            f"catalog_filepath does not exist: {catalog_filepath} "
-            "— run fsd.download first (compute never fetches from CDSE; spec 23 D13)."
-        )
+
     gdf = None
     try:
         gdf = _as_gdf(label_polygons)
-        for col in (id_col, label_col):
-            if col not in gdf.columns:
-                errs.append(f"column {col!r} not in label_polygons.")
+        if id_col not in gdf.columns:
+            errs.append(f"column {id_col!r} not in label_polygons.")
+        if label_col is not None and label_col not in gdf.columns:
+            errs.append(f"column {label_col!r} not in label_polygons.")
         if len(gdf) == 0:
             errs.append("label_polygons is empty.")
         elif gdf.geometry.isna().any():
             errs.append("label_polygons has null geometries.")
     except Exception as exc:  # unreadable polygons is a preflight failure, not a crash
         errs.append(f"could not read label_polygons: {exc}")
-    # D13 guardrail: catalog exists but covers NONE of the fields in-window -> actionable download
-    # plan (the offline .filter is cheap; the STAC-backed plan only fires on the empty case).
-    if catalog_present and gdf is not None and len(gdf) and not gdf.geometry.isna().any():
-        try:
-            covered = TileCatalog(catalog_filepath).filter(gdf, startdate, enddate)
-        except Exception:  # noqa: BLE001 - a bad filter just means "skip the coverage hint"
-            covered = None
-        if covered is not None and len(covered) == 0:
-            errs.append(_imagery_missing_message(
-                gdf, startdate, enddate, bands, catalog_filepath=catalog_filepath,
-                why="no catalog tiles intersect the label polygons in-window",
-            ))
+
+    root = (runner_kwargs or {}).get("root")
+    if runner == "aml" and not root:
+        errs.append("runner_kwargs['root'] (the blob working root) is required for runner='aml'.")
+
+    if download:
+        if source not in ("cdse", "mpc"):
+            errs.append(f"source={source!r} must be one of 'cdse', 'mpc'.")
+        if max_tiles is None or max_tiles < 1:
+            errs.append(f"max_tiles (>= 1) is required when download=True (got {max_tiles!r}).")
+        if runner == "local" and source == "cdse" and creds is None:
+            errs.append("creds (CdseCredentials) required for source='cdse' with runner='local'.")
+    else:
+        catalog_present = fs.exists(catalog_filepath)
+        if not catalog_present:
+            errs.append(
+                f"catalog_filepath does not exist: {catalog_filepath} "
+                "— run fsd.download first, or pass download=True (compute never fetches "
+                "from a provider implicitly; spec 23 D13)."
+            )
+        # D13 guardrail: catalog exists but covers NONE of the fields in-window -> actionable
+        # download plan (the offline .filter is cheap; the STAC-backed plan only fires on the
+        # empty case). Only meaningful when NOT auto-downloading.
+        if catalog_present and gdf is not None and len(gdf) and not gdf.geometry.isna().any():
+            try:
+                covered = TileCatalog(catalog_filepath).filter(gdf, startdate, enddate)
+            except Exception:  # noqa: BLE001 - a bad filter just means "skip the coverage hint"
+                covered = None
+            if covered is not None and len(covered) == 0:
+                errs.append(_imagery_missing_message(
+                    gdf, startdate, enddate, bands, catalog_filepath=catalog_filepath,
+                    why="no catalog tiles intersect the label polygons in-window",
+                ))
     _raise_preflight(errs)
 
     _configure_storage(storage)
-    if run_folderpath is None:
+
+    run_id = None
+    if runner == "aml":
+        run_id = (runner_kwargs or {}).get("run_id") or pd.Timestamp.now(tz="UTC").strftime(
+            "%Y%m%dT%H%M%SZ"
+        )
+        if run_folderpath is None:
+            run_folderpath = f"{root.rstrip('/')}/runs/{run_id}"
+    elif run_folderpath is None:
         run_folderpath = os.path.join(export_folderpath, "run")
+
     fs.makedirs(run_folderpath)
     fs.makedirs(export_folderpath)
 
-    # The workflow reads a path; materialize an in-memory GeoDataFrame to a temp GeoJSON.
+    # Materialize an in-memory GeoDataFrame once, under run_folderpath (the blob root for
+    # aml, per Q3) -- the SAME url feeds both the download ROI and the build shapefile.
+    # Written via the storage seam (not gdf.to_file, which needs a real local path) so
+    # this lands correctly on a blob run_folderpath too (mirrors create_datacube.setup).
     if isinstance(label_polygons, gpd.GeoDataFrame):
         shapefilepath = os.path.join(run_folderpath, "label_polygons.geojson")
-        gdf.to_file(shapefilepath, driver="GeoJSON")
+        with fs.open(shapefilepath, "w") as f:
+            f.write(gdf.to_json())
     else:
         shapefilepath = label_polygons
+
+    if download:
+        dst_folderpath = os.path.dirname(catalog_filepath.rstrip("/")) or "."
+        _download_verb(
+            roi=shapefilepath, startdate=startdate, enddate=enddate, bands=bands,
+            dst_folderpath=dst_folderpath, creds=creds, source=source,
+            max_tiles=max_tiles, max_cloudcover=max_cloudcover, cog=cog,
+            storage=storage, runner=runner, runner_kwargs=runner_kwargs,
+        )
 
     csv_filepath = os.path.join(run_folderpath, "input.csv")
     _create_datacube.run_create_datacube(
@@ -411,12 +481,104 @@ def create_training_data(
         runner_kwargs=runner_kwargs,
     )
 
-    with fs.open(csv_filepath, "r") as f:
-        input_df = pd.read_csv(f)
-    _flatten.flatten(
-        filepaths_df=input_df, filepath_col="datacube_filepath",
-        id_col="id", label_col="label", export_folderpath=export_folderpath,
+    # Flatten phase delegates to `flatten_training_data` (D5) -- no duplicated reduce/
+    # land/features logic. Reuse the SAME run_id (aml) so the flatten reduce writes to a
+    # sibling `.../_flatten` prefix under the build's own run_folderpath (D7).
+    flatten_runner_kwargs = runner_kwargs
+    if runner == "aml":
+        flatten_runner_kwargs = dict(runner_kwargs or {})
+        flatten_runner_kwargs["run_id"] = run_id
+
+    td = flatten_training_data(
+        csv_filepath, export_folderpath,
+        id_col="id", label_col=("label" if label_col is not None else None),
+        filepath_col="datacube_filepath",
+        adapter=adapter, feature_sequence=feature_sequence, aggregate=aggregate,
+        runner=runner, runner_kwargs=flatten_runner_kwargs,
     )
+
+    return TrainingData(
+        export_folderpath=td.export_folderpath, run_folderpath=run_folderpath,
+        n_pixels=td.n_pixels, n_timestamps=td.n_timestamps, bands=td.bands,
+        feature_bands=td.feature_bands,
+    )
+
+
+def flatten_training_data(
+    input_csv: str,
+    export_folderpath: str,
+    *,
+    id_col: str = "id",
+    label_col: str | None = None,
+    filepath_col: str = "datacube_filepath",
+    nodata: int = config.NODATA,
+    adapter=None,
+    feature_sequence=None,
+    aggregate=None,
+    runner: str = "local",
+    runner_kwargs: dict | None = None,
+    storage=None,
+) -> TrainingData:
+    """Flatten already-built cubes (an `input_csv` of `datacube_filepath`s) into one training
+    array, landed locally (spec 39 D5) — the flatten-only sibling of `create_training_data`, for
+    cubes that already exist on blob (e.g. runbook 36 Phase 3's `input.csv`).
+
+    `runner="local"` (default): `datacube.flatten.flatten` runs in-process (cubes stream over the
+    storage seam) straight to the local `export_folderpath`. `runner="aml"`: dispatches the D3
+    single-node cluster reduce (writes to a blob prefix under `runner_kwargs["root"]`, no
+    `shard_units` fan-out — flatten concatenates ALL cubes into ONE array), then `storage.transfer`s
+    the compact result down to the local `export_folderpath` (D4 land-local; the driver never pulls
+    the raw cubes itself, ADR-0004). Both branches then apply the optional driver-side feature
+    transform (D2/ADR-0020: general-purpose cluster images emit raw; `adapter`/`feature_sequence`
+    only ever runs on the driver).
+
+    `label_col` (D-labels) optional: `labels.npy` is written only when given.
+    """
+    if adapter is not None and feature_sequence is not None:
+        raise PreflightError(
+            "pass either `adapter` or `feature_sequence`, not both (ambiguous feature transform)."
+        )
+
+    errs = _check_local_seams(runner, storage)
+    try:
+        _resolve_aggregate(aggregate)
+    except ValueError as exc:
+        errs.append(str(exc))
+    if runner == "aml":
+        rk = runner_kwargs or {}
+        for key in ("cluster", "environment", "root", "identity_client_id"):
+            if not rk.get(key):
+                errs.append(f"runner_kwargs[{key!r}] is required for runner='aml'.")
+    if not fs.exists(input_csv):
+        errs.append(f"input_csv does not exist: {input_csv!r}")
+    _raise_preflight(errs)
+
+    _configure_storage(storage)
+    fs.makedirs(export_folderpath)
+
+    if runner == "aml":
+        from fsd.workflows import runners as _runners
+
+        rk = dict(runner_kwargs or {})
+        aml_root = rk.pop("root")
+        run_id = rk.pop("run_id", None) or pd.Timestamp.now(tz="UTC").strftime("%Y%m%dT%H%M%SZ")
+        blob_export = f"{aml_root.rstrip('/')}/runs/{run_id}/_flatten"
+
+        _runners.run_aml_flatten(
+            input_csv, blob_export, id_col=id_col, label_col=label_col,
+            filepath_col=filepath_col, nodata=nodata, root=aml_root, run_id=run_id, **rk,
+        )
+        files = ["data.npy", "coords.npy", "ids.npy", "metadata.pickle.npy"]
+        if label_col is not None:
+            files.append("labels.npy")
+        _land_local(blob_export, export_folderpath, files)
+    else:
+        with fs.open(input_csv, "r") as f:
+            filepaths_df = pd.read_csv(f)
+        _flatten.flatten(
+            filepaths_df=filepaths_df, filepath_col=filepath_col, id_col=id_col,
+            export_folderpath=export_folderpath, label_col=label_col, nodata=nodata,
+        )
 
     data = fs.load_npy(os.path.join(export_folderpath, "data.npy"))
     metadata = fs.load_npy(
@@ -431,10 +593,23 @@ def create_training_data(
         )
 
     return TrainingData(
-        export_folderpath=export_folderpath, run_folderpath=run_folderpath,
+        export_folderpath=export_folderpath, run_folderpath=os.path.dirname(input_csv),
         n_pixels=int(data.shape[0]), n_timestamps=len(metadata["timestamps"]),
         bands=list(metadata["bands"]), feature_bands=feature_bands,
     )
+
+
+def _land_local(blob_prefix: str, local_folder: str, files: list[str]) -> None:
+    """D4: bring the compact flatten-reduce output home. One `storage.transfer` per file
+    (`data.npy`/`coords.npy`/`ids.npy`/`metadata.pickle.npy` + `labels.npy` iff present) --
+    `transfer` is single-object + atomic (`.part` + rename, `fs.py:282`), so a failed copy
+    never leaves a truncated `.npy` and this loop is safe to re-run (existence = already landed)."""
+    fs.makedirs(local_folder)
+    for name in files:
+        dst = os.path.join(local_folder, name)
+        if fs.exists(dst):
+            continue
+        fs.transfer(os.path.join(blob_prefix, name), dst)
 
 
 def _apply_training_features(export_folderpath, metadata, *, adapter, feature_sequence,
@@ -820,7 +995,7 @@ def _ensure_bundle(model, output_folderpath, *, why):
             model, getattr(model, "artifacts", {}) or {},
             os.path.join(output_folderpath, "_bundle"),
         )
-    except Exception as exc:  # noqa: BLE001 - surfaced as a preflight error
+    except Exception as exc:
         raise PreflightError(
             f"{why} needs a model bundle; auto-saving the live adapter failed ({exc}). Pass a "
             "bundle path (fsd.model.bundle.save) whose adapter class is importable by module:attr "

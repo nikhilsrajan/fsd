@@ -58,6 +58,22 @@ _Avoid_: batch, partition (the shards *form* a partition; a shard is one slice o
 One dispatched execution, identified by `run_id`, with all its inputs/outputs/telemetry laid out under
 `<root>/runs/<run_id>/` (`shards/`, `_status/`, `_bundle/`).
 
+**Reduce job**:
+A dispatched unit that collapses MANY inputs into ONE output, run as a single node — the opposite shape
+from a fan-out. The flatten reduce (`workflows.runners.run_aml_flatten`, spec 39 D3) reads every cube
+named in `input.csv` and writes one training array; no `shard_units`, `n=1` always.
+_Avoid_: shard (a shard is one slice of a fan-out; a reduce job is not sharded).
+
+## Training data
+
+**Label** (as a separable overlay):
+The class assigned to a training polygon. **Separable from training-data generation** — the flattened
+training array is keyed by per-pixel `id`; labels attach by joining on `id`, and can be re-derived
+(combine classes, split/invent classes) across experiment iterations **without re-flattening**. Required
+for model deploy / supervised training; **optional** when *generating* training data (you often download
++ flatten once, then iterate labels many times).
+_Avoid_: target, y (fine in code, not the domain term).
+
 ## Control plane vs data plane
 
 **Driver**:
@@ -77,3 +93,10 @@ The `runners.run_aml*` function on the driver that shards a work list, submits o
 and raises on any failure. The only place that knows about AML; the unit-of-work never does.
 _Avoid_: runner (the *local* Snakemake orchestration is also a "runner"; the dispatcher is the *cloud*
 one).
+
+**Land-local**:
+Bringing a run's compact output home to the operator's laptop after a cloud dispatch, via
+`storage.transfer` (single-object, atomic) — never the raw inputs, only the small result (spec 39 D4:
+the flatten reduce's `data.npy`/`coords.npy`/`ids.npy`/`metadata.pickle.npy`/`labels.npy?`). Keeps the
+driver control-plane-only: it orchestrates and receives results, it does not pull bulk data over the WAN.
+_Avoid_: download (ambiguous with `fsd.download`, the imagery-fetch verb).
