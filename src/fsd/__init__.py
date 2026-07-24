@@ -16,6 +16,7 @@ from fsd.api import (
     create_training_data,
     deploy,
     download,
+    flatten_training_data,
     run_inference,
 )
 from fsd.model import BaseModelAdapter, ModelAdapter, Output, load_bundle, save_bundle
@@ -23,18 +24,19 @@ from fsd.model import BaseModelAdapter, ModelAdapter, Output, load_bundle, save_
 __version__ = "0.1.0"
 
 __all__ = [
+    "BaseModelAdapter",
+    "InferenceResult",
+    "ModelAdapter",
+    "Output",
     "PreflightError",
     "TrainingData",
-    "InferenceResult",
+    "__version__",
     "compute_n_timestamps",
     "create_training_data",
     "deploy",
     "download",
-    "run_inference",
-    "ModelAdapter",
-    "BaseModelAdapter",
-    "Output",
+    "flatten_training_data",
     "load_bundle",
+    "run_inference",
     "save_bundle",
-    "__version__",
 ]

@@ -527,6 +527,70 @@ identity/environment reuse as spec 36; never hardcode `cluster`/`identity_client
 (D5 REVISED): `runbooks/37-download-on-aml.md`; datacube fan-out validation (spec 36):
 `runbooks/36-aml-runner.md`.
 
+## Flatten already-built blob cubes on the AML cluster + land locally (spec 39, P2)
+
+`flatten_training_data(runner="aml")` turns an existing `input.csv` of blob cube paths (e.g.
+runbook 36 Phase 3's own `input.csv`) into ONE compact training array — a single-node reduce,
+not a fan-out — and brings the array home to a **local** folder:
+
+```python
+from fsd import api
+
+td = api.flatten_training_data(
+    "abfss://<fs>@<account>.dfs.core.windows.net/<prefix>/runs/<phase3-run-id>/input.csv",
+    export_folderpath="tests/outputs/training_data",   # LOCAL
+    id_col="id", label_col="label",                    # label_col optional (D-labels)
+    runner="aml",
+    runner_kwargs=dict(
+        cluster="<the d16 cluster name>",        # AZURE_INFRA_PRIVATE.md
+        environment="fsd-aml-env:1",              # spec 36 D5's Environment, reused (no adapter)
+        root="abfss://<fs>@<account>.dfs.core.windows.net/<prefix>",
+        identity_client_id="<compute identity client id>",
+    ),
+)
+print(td.n_pixels, td.n_timestamps, td.bands)
+```
+
+Or dispatch the reduce directly: `fsd.workflows.runners.run_aml_flatten(input_csv,
+export_folderpath, id_col=..., cluster=..., ...)` — `export_folderpath` there is the **blob**
+prefix the node writes to; land-local is `api._land_local`, called for you above.
+
+## Full one-verb e2e: download → build → flatten → land-local on AML (spec 39, P2)
+
+`create_training_data` grows an optional download phase and becomes the full-pipeline façade —
+one call chains MPC/CDSE download, the per-cell build fan-out (spec 36), and the flatten reduce
++ land-local (spec 39), all against the SAME blob `root`:
+
+```python
+from fsd import api
+import geopandas as gpd
+
+fields = gpd.read_file("shapefiles/austria_eurocrops_sampled_ethiopia_translated.geojson")
+
+td = api.create_training_data(
+    label_polygons=fields,   # in-memory gdf -- auto-staged to the blob root once (Q3)
+    catalog_filepath="abfss://<fs>@<account>.dfs.core.windows.net/<prefix>/catalog.parquet",
+    startdate="2018-04-01", enddate="2018-09-01", mosaic_days=20,
+    bands=["B04", "B08", "B8A", "SCL"], id_col="fid", label_col="EC_hcat_n",
+    export_folderpath="tests/outputs/training_data",   # LOCAL -- always, both runners
+    source="mpc", download=True, max_tiles=700,        # max_tiles required when download=True
+    runner="aml",
+    runner_kwargs=dict(
+        cluster="<the d16 cluster name>", environment="fsd-aml-env:1",
+        root="abfss://<fs>@<account>.dfs.core.windows.net/<prefix>",   # catalog/cubes/input.csv/
+                                                                        # the raw reduce output
+        identity_client_id="<compute identity client id>",
+    ),
+    # adapter=DemoRF(),   # optional -- runs on the DRIVER after land-local (D2/ADR-0020),
+                           # never on a cluster node.
+)
+```
+
+`download=False` (default) keeps the existing "catalog must already exist" behavior — pass
+`download=True` only when there is no catalog yet. `export_folderpath` is always the LOCAL
+landing target; never pass a blob URL there. Full phased validation:
+`runbooks/39-training-data-on-aml.md`.
+
 ## Sweep tracked files for concrete `rise` identifiers (pre-push hygiene)
 
 `fsd/` is a **public** MIT repo; the concrete `rise` names/IDs live only in

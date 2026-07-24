@@ -4,6 +4,65 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## `create_training_data` becomes the download→build→flatten→land-local façade (spec 39, 2026-07-24)
+
+The flatten → single-array → land-local half of "training data on the cloud" (the build fan-out
+was already proven, spec 36/37): `create_training_data` grows an optional download phase, and
+flatten gains its own AML dispatch + a local-landing step, so the full pipeline runs as one call.
+
+- **New verb `flatten_training_data`** (D5) — the flatten-only sibling: an `input_csv` of
+  already-built `datacube_filepath`s -> one training array. `runner="local"` calls
+  `datacube.flatten.flatten` in-process (unchanged); `runner="aml"` dispatches the new single-node
+  cluster reduce (D3) then lands the compact result locally (D4). `create_training_data`'s own
+  flatten phase now delegates here instead of calling `datacube.flatten.flatten` directly.
+- **New `workflows/flatten.py` + `runners.run_aml_flatten`** (D3) — a thin in-job CLI (mirrors
+  `workflows/download.py`'s shape) + a dispatcher that submits **exactly ONE** `command(...)` job
+  (`n=1`, no `shard_units` — flatten is a reduce, not a per-cell fan-out), reusing
+  `_aml_preflight_common`/`_aml_submit_and_wait` (spec 37) unchanged. Runs on the **existing
+  general-purpose fsd Environment** — no adapter, no new image (ADR-0020).
+- **New `api._land_local`** (D4) — after the reduce writes to a blob export prefix, one
+  `storage.transfer` per compact array file (`data.npy`/`coords.npy`/`ids.npy`/
+  `metadata.pickle.npy` + `labels.npy` iff present) brings it down to the local
+  `export_folderpath`. `transfer` is already single-object + atomic, so this loop is a safe re-run.
+- **`create_training_data` gains an optional download phase** (D1): new `source="mpc"` (demo
+  default), `download: bool = False`, `max_tiles`, `max_cloudcover`, `cog`, `creds`. When
+  `download=True` it calls `api.download(roi=label_polygons, …)` into `catalog_filepath`'s folder
+  before building — `download=False` (the back-compat default) keeps the existing "catalog must
+  already exist" preflight. The *build* step still never fetches from a provider itself (spec 23
+  D13 unchanged) — download is an explicit prior phase the façade now orchestrates, not a change
+  to what the build reads.
+- **Blob-vs-local split for `runner="aml"`** (D1/D4): `export_folderpath` is always the LOCAL
+  landing target; the blob working root comes from `runner_kwargs["root"]` (catalog, cubes,
+  `input.csv`, and the raw flatten output all live there, under `root/runs/<run_id>/…`).
+  `run_folderpath` defaults to a folder under that blob root for `runner="aml"`, and to
+  `export_folderpath/run` (unchanged) only for `runner="local"`.
+- **In-memory `label_polygons` auto-staged for `runner="aml"`** (Q3): the GeoDataFrame is written
+  once, via the storage seam (`fs.open` + `gdf.to_json()`, not `gdf.to_file` — which needs a real
+  local path and cannot target a blob `run_folderpath`), to one GeoJSON under the blob root that
+  serves as both the download ROI and the per-cell build shapefile. `runner="local"` still writes
+  it the same way (behavior-preserving; previously used `gdf.to_file(driver="GeoJSON")` on a
+  guaranteed-local path).
+- **`label_col` is now optional** (D-labels) in both `create_training_data` and
+  `flatten_training_data` — `label_col: str | None = None`. When omitted, no `labels.npy` is
+  written; `ids.npy` is the join key for labels joined in later without re-flattening. The
+  required-`label_col` preflight check is dropped (`id_col` stays required).
+- **Adapter `n_timestamps` preflight dropped** (D6): `create_training_data` no longer asserts
+  `compute_n_timestamps(...) == adapter.n_timestamps` — `T` is whatever the caller's window/
+  `mosaic_days` produce; a model is retrained at that `T`, not the other way around. The
+  cross-cube calendar-mosaic invariant flatten enforces (spec 15) is unchanged and still raises.
+- **Driver-side features unchanged, now explicitly after land-local** (D2/ADR-0020): the feature
+  transform (`adapter=`/`feature_sequence=` -> `features.npy`) already ran on the driver before
+  this spec; for `runner="aml"` it now runs *after* `flatten_training_data` lands the array
+  locally, reading/writing the local `export_folderpath` — no cluster node ever imports an
+  adapter. Behavior for `runner="local"` is unchanged.
+
+Reuse ledger (spec 39 §4): `datacube/flatten.py::flatten`, `api.download`,
+`api._apply_training_features`, `workflows/runners.py::_aml_submit_and_wait`/
+`_aml_preflight_common`, `storage/fs.py::transfer`, `workflows/create_datacube.py`, and
+`raster/`/`bands/`/`catalog/`/`sources/`/`fsd.model` are **unchanged** — spec 39 is orchestration +
+land-local, not new pipeline code. Docs: `docs/adr/0020`, `CONTEXT.md` ("reduce job",
+"land-local").
+
 ## Inference at scale on Azure ML — `runner="aml"` for ROI-mode `run_inference` (spec 38, 2026-07-23)
 
 P4: `run_inference(roi=…, runner="aml")` dispatches the per-cell build+infer unit (spec 21)

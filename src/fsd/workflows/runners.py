@@ -531,6 +531,103 @@ def run_aml(
             "job_statuses": result["job_statuses"], "shards": result["reports"]}
 
 
+# --- P2: the Azure ML flatten reduce dispatcher (spec 39) ---------------------
+
+
+def _aml_flatten_preflight(
+    ml_client, *, cluster: str, environment: str, root: str,
+    input_csv: str, id_col: str, label_col: str | None,
+) -> None:
+    """D3: cluster/environment/root (shared, `_aml_preflight_common`) + `input_csv`
+    non-empty and carrying `id_col` (+ `label_col` iff requested). No `_duplicate_unit_errors`
+    check here -- unlike a build/inference fan-out, a flatten reduce reads every row into ONE
+    job; a duplicate `id` is a labeling question for the caller, not a dispatch hazard."""
+    errs = _aml_preflight_common(ml_client, cluster=cluster, environment=environment, root=root)
+    if not fs.exists(input_csv):
+        errs.append(f"input_csv does not exist: {input_csv!r}")
+    else:
+        with fs.open(input_csv, "r") as f:
+            df = pd.read_csv(f)
+        if len(df) == 0:
+            errs.append(f"input_csv is empty: {input_csv!r}")
+        else:
+            if id_col not in df.columns:
+                errs.append(f"input_csv missing id_col {id_col!r}.")
+            if label_col is not None and label_col not in df.columns:
+                errs.append(f"input_csv missing label_col {label_col!r}.")
+    if errs:
+        raise ValueError("run_aml_flatten preflight failed:\n  - " + "\n  - ".join(errs))
+
+
+def run_aml_flatten(
+    input_csv: str,
+    export_folderpath: str,
+    *,
+    id_col: str = "id",
+    label_col: str | None = None,
+    filepath_col: str = "datacube_filepath",
+    nodata: int = config.NODATA,
+    cluster: str,
+    environment: str,
+    root: str,
+    identity_client_id: str,
+    run_id: str | None = None,
+    ml_client=None,
+    subscription_id: str | None = None,
+    resource_group_name: str | None = None,
+    workspace_name: str | None = None,
+    poll_interval_seconds: int = 30,
+) -> dict:
+    """AML flatten dispatcher (spec 39 D3): flatten concatenates ALL cubes into ONE array, so
+    the cluster form is exactly **one** command job (`python -m fsd.workflows.flatten ...`) --
+    no `shard_units`, no fan-out. Submits via the shared `_aml_submit_and_wait` (spec 37) and
+    reuses `_aml_preflight_common`. Runs on the **general-purpose** fsd Environment (spec 36) --
+    flatten is pure `fsd`, no adapter, no new image (ADR-0020).
+
+    `input_csv` is a blob url of `id`/[`label`]/`datacube_filepath` rows (e.g. runbook-36
+    Phase 3's `input.csv`). `export_folderpath` is the **blob** prefix the reduce writes its raw
+    output to (`data.npy`/`coords.npy`/`ids.npy`/`metadata.pickle.npy`/`labels.npy?`) -- landing
+    it locally is the caller's job (D4, `api._land_local`), not this dispatcher's.
+
+    `identity_client_id`/`ml_client`/`root` follow spec 36 D4'/D3 exactly (see `run_aml`'s
+    docstring).
+    """
+    if ml_client is None:
+        from azure.ai.ml import MLClient
+        from azure.identity import DefaultAzureCredential
+
+        ml_client = MLClient(
+            DefaultAzureCredential(), subscription_id, resource_group_name, workspace_name
+        )
+
+    _aml_flatten_preflight(ml_client, cluster=cluster, environment=environment, root=root,
+                           input_csv=input_csv, id_col=id_col, label_col=label_col)
+
+    run_id = run_id or pd.Timestamp.now(tz="UTC").strftime("%Y%m%dT%H%M%SZ")
+    run_root = f"{root.rstrip('/')}/runs/{run_id}"
+
+    aml_command = _import_aml_command()
+
+    command = (
+        f"python -m fsd.workflows.flatten --input-csv {input_csv} "
+        f"--filepath-col {filepath_col} --id-col {id_col} --export {export_folderpath} "
+        f"--nodata {nodata} --status-url {run_root}/_status/0.json"
+    )
+    if label_col is not None:
+        command += f" --label-col {label_col}"
+
+    jobs = {0: aml_command(
+        command=command, environment=environment, compute=cluster,
+        environment_variables={"AZURE_CLIENT_ID": identity_client_id},
+        display_name=f"fsd-flatten-{run_id}", experiment_name=f"fsd-flatten-{run_id}",
+    )}
+
+    result = _aml_submit_and_wait(ml_client, jobs, run_root, run_id,
+                                   poll_interval_seconds=poll_interval_seconds)
+    return {"run_id": run_id, "n_jobs": len(jobs),
+            "job_statuses": result["job_statuses"], "reports": result["reports"]}
+
+
 # --- P4: the Azure ML inference dispatcher (spec 38) --------------------------
 
 
