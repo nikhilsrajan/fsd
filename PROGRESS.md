@@ -4,7 +4,24 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-24_
 
-## ⭐ SPEC 39 (create_training_data e2e on AML: flatten→land-local) **IMPLEMENTED + MERGED + OPUS-REVIEWED on `main`** (impl Sonnet@medium, 2026-07-24; merge commit `9e20623`, `--no-ff` over impl commit `684e0de`; worktree `spec39-implement` pruned, branch deleted). **→ NEXT: run `runbooks/39-training-data-on-aml.md` Phases 0-2 on the real cluster** (the only thing unproven — every unit test is mocked at the AML-client boundary, spec 39 §7's "no test requires Azure"). All 8 spec §7 tests landed in `tests/test_training_data_aml.py` (14 test functions after non-vacuousness splits); full suite on `main` post-merge: 430 passed/3 skipped, `ruff` clean. Docs updated: `CHANGES.md`, `LIMITATIONS.md`, `TODO.md` #56, `RECIPES.md`, `ROADMAP.md` P3, `CONTEXT.md` ("reduce job", "land-local"). **`main` is 3 commits ahead of `origin/main`, UNPUSHED** (push only when the user asks). (Aside, not spec-39's: the impl worktree's `ruff` auto-discovery resolved a much broader ruleset than `main`'s real config — a git-worktree-specific quirk, `.git` file vs directory — worked around with `--select E4,E7,E9,F,I`; `main`'s own `ruff check` is unaffected and was used for the final verification above.)
+## ⭐ NEXT STEP — write `runbooks/40-train-and-bundle.md` (the missing link into runbook 38). Baton: `runbooks/HANDOFF-train-and-bundle.md`.
+The demo pipeline is **download → build → flatten → [train + bundle] → inference**. Everything but
+**train + bundle** is proven; that step produces the bundle runbook 38 Phase 0 consumes. **Locked
+2026-07-27 (user):** (1) demo model = **`adapters:DemoRF`** (user's local module, `[B04,B08]`, T=8 —
+inference image must `COPY` it; not reproducible from the public repo, accepted); (2) **new
+train+bundle runbook, keep runbook 38 intact** (it's ~ready — its image-build section is written but
+**uncommitted**). Runbook 40 phases: (1) `features.npy` for the landed 900-field set via
+`flatten_training_data(..., adapter=DemoRF())` (aml reduce re-runs ~7 min, features land driver-side,
+D2); (2) train DemoRF at T=8 (RF+LabelEncoder→joblib — **user-side, ADR-0018, fsd does NOT train**,
+sketched in spec 19 demo_02); (3) bundle via `fsd.model.bundle.save` (exists). **Runbook-first — no
+fsd code** unless a tiny `apply_features` convenience verb is chosen over re-running the reduce (option
+(b) in the baton; needs a 1-para spec + test). Then commit runbook 38's image-build section + verify
+its T=8/adapter-`COPY` details → 38 is runnable. **git:** `main` @ `a13c98c`, **1 ahead of
+`origin/main`, UNPUSHED** (spec 39's `1781331` is pushed); `runbooks/38-inference-on-aml.md` modified +
+uncommitted (deliberate, pairs with the DemoRF decision). Run the RECIPES.md identifier sweep before
+pushing (last run clean).
+
+## ⭐ SPEC 39 (create_training_data e2e on AML: flatten→land-local) **DONE — IMPLEMENTED + MERGED + OPUS-REVIEWED + VALIDATED ON THE REAL CLUSTER** (runbook 39 Phases 0–2 GREEN 2026-07-27; the Timestamp-staging bug found there is fixed + pushed, `1781331`). (impl Sonnet@medium, 2026-07-24; merge commit `9e20623`, `--no-ff` over impl commit `684e0de`; worktree `spec39-implement` pruned, branch deleted). **→ NEXT: run `runbooks/39-training-data-on-aml.md` Phases 0-2 on the real cluster** (the only thing unproven — every unit test is mocked at the AML-client boundary, spec 39 §7's "no test requires Azure"). All 8 spec §7 tests landed in `tests/test_training_data_aml.py` (14 test functions after non-vacuousness splits); full suite on `main` post-merge: 430 passed/3 skipped, `ruff` clean. Docs updated: `CHANGES.md`, `LIMITATIONS.md`, `TODO.md` #56, `RECIPES.md`, `ROADMAP.md` P3, `CONTEXT.md` ("reduce job", "land-local"). **`main` is 3 commits ahead of `origin/main`, UNPUSHED** (push only when the user asks). (Aside, not spec-39's: the impl worktree's `ruff` auto-discovery resolved a much broader ruleset than `main`'s real config — a git-worktree-specific quirk, `.git` file vs directory — worked around with `--select E4,E7,E9,F,I`; `main`'s own `ruff check` is unaffected and was used for the final verification above.)
 
 ### ⚠️ Real-cluster run (runbook 39, 2026-07-27) found bugs the mocked review missed — Phase 1 GREEN, Phase 2 fixed & pending re-run
 - **Env gap (runbook defect, not code):** the general-purpose AML Environment bakes the fsd wheel in at build time, and spec 39 **adds a new node-side module `fsd.workflows.flatten`** — so the spec-36/37 image failed with `No module named fsd.workflows.flatten`. Runbook 39 wrongly said "no rebuild needed (ADR-0020)"; ADR-0020 only excuses a *model-specific* image, not new fsd code. **Fixed runbook 39 Prerequisites** (rebuild from current `main` + extend the smoke to `import fsd.workflows.flatten`). Same latent trap noted for runbook 38's inference image.
