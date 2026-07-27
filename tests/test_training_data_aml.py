@@ -295,6 +295,54 @@ def test_create_training_data_download_stages_gdf_once_for_download_and_build(
     assert seen["download_roi"] == seen["build_shapefilepath"]  # ONE staged geojson, reused
 
 
+def test_create_training_data_stages_gdf_with_timestamp_column(tmp_path, monkeypatch):
+    """Regression (runbook 39 Phase 2, 2026-07-27): staging an in-memory gdf that carries a
+    Timestamp/datetime property column (e.g. EuroCrops' obs date) must not crash. The staging
+    write uses `gdf.to_json()`, which routes through json.dumps and raises
+    `TypeError: Object of type Timestamp is not JSON serializable` without `default=str`.
+    The pre-fix code (and every existing test's clean int/str-only fixture) let this slip."""
+    catalog = str(tmp_path / "data" / "catalog.parquet")
+
+    def fake_download_verb(*, roi, **kw):
+        fs.makedirs(str(tmp_path / "data"))
+        with open(catalog, "w") as f:
+            f.write("")
+        # the staged geojson must be real, readable, and preserve id/label
+        staged = gpd.read_file(roi)
+        assert "fid" in staged.columns and "crop" in staged.columns
+        return catalog
+
+    def fake_run_create_datacube(*, csv_filepath, **kw):
+        pd.DataFrame(
+            {"datacube_filepath": ["x/datacube.npy"], "id": [0], "label": ["a"]}
+        ).to_csv(csv_filepath, index=False)
+
+    def fake_flatten(*, export_folderpath, **kw):
+        fs.makedirs(export_folderpath)
+        fs.save_npy(f"{export_folderpath}/data.npy", np.zeros((1, 1, 1)))
+        fs.save_npy(f"{export_folderpath}/ids.npy", np.zeros(1))
+        fs.save_npy(f"{export_folderpath}/coords.npy", np.zeros((1, 2)))
+        fs.save_npy(
+            f"{export_folderpath}/metadata.pickle.npy",
+            {"timestamps": [0], "bands": ["B04"]}, allow_pickle=True,
+        )
+
+    monkeypatch.setattr(api, "_download_verb", fake_download_verb)
+    monkeypatch.setattr(api._create_datacube, "run_create_datacube", fake_run_create_datacube)
+    monkeypatch.setattr(api._flatten, "flatten", fake_flatten)
+
+    gdf = _polys()
+    gdf["obs_date"] = [pd.Timestamp("2018-05-01"), pd.Timestamp("2018-06-01")]  # the trap
+
+    # must NOT raise TypeError: Object of type Timestamp is not JSON serializable
+    fsd.create_training_data(
+        label_polygons=gdf, catalog_filepath=catalog,
+        startdate=JAN1, enddate=JAN1_NEXT, mosaic_days=20, bands=["B04"],
+        id_col="fid", label_col="crop", export_folderpath=str(tmp_path / "export"),
+        source="mpc", download=True, max_tiles=5,
+    )
+
+
 # --- test 5: driver-side features (D2/ADR-0020) ------------------------------------
 
 class _FakeAdapter:

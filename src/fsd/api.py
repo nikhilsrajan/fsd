@@ -458,7 +458,10 @@ def create_training_data(
     if isinstance(label_polygons, gpd.GeoDataFrame):
         shapefilepath = os.path.join(run_folderpath, "label_polygons.geojson")
         with fs.open(shapefilepath, "w") as f:
-            f.write(gdf.to_json())
+            # `default=str` so Timestamp/datetime property columns (e.g. EuroCrops' obs
+            # date) serialize -- gdf.to_json() routes through json.dumps, which (unlike
+            # the GDAL GeoJSON driver the old gdf.to_file used) can't encode a Timestamp.
+            f.write(gdf.to_json(default=str))
     else:
         shapefilepath = label_polygons
 

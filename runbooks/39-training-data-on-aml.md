@@ -20,8 +20,16 @@ chains MPC download → build → flatten → land-local in one call, on a small
 - **VPN connected**, `az login` done, correct subscription selected (driver does blob I/O:
   reading `input.csv`, writing `_status/*.json`, `storage.transfer` land-local reads).
 - The fsd venv with the `[aml]` extra: `cd fsd && source .venv/bin/activate && pip install -e ".[dev,aml,mpc]"`.
-- The spec-36 AML Environment already built and smoke-tested (`runbooks/36-aml-runner.md`) — flatten
-  runs on the **same general-purpose Environment**, no rebuild needed (ADR-0020: no adapter image).
+- **REBUILD the general-purpose AML Environment from current `main` first** (`runbooks/36-aml-runner.md`
+  → "Build the AML Environment"). Flatten runs on the same general-purpose image — **no *adapter*
+  image is needed (ADR-0020)** — but spec 39 adds a **new node-side module `fsd.workflows.flatten`**,
+  and the image bakes the fsd wheel in at build time (the dispatcher submits a bare
+  `python -m fsd.workflows.flatten` with no code upload). An Environment built during spec 36/37
+  **does not contain that module** → the node fails with `No module named fsd.workflows.flatten`.
+  ADR-0020 excuses a *model-specific* rebuild, **not** picking up new fsd code — runbook 36 itself
+  says "rebuild after any `src/fsd/` change you want on the cluster." **Extend the spec-36 smoke job
+  to also `import fsd.workflows.flatten`** so this exact gap is caught before Phase 1 spends cluster
+  time. Re-export the new `AZ_ENV_VERSION` after the rebuild.
 - **Phase 0's precondition**: runbook 36 Phase 3's cubes + `input.csv` (`id`/`label`/
   `datacube_filepath`) already on blob. This run-book does not build them.
 
@@ -138,9 +146,16 @@ PY
 
 ## Phase 2 — full one-verb e2e on a SMALL fresh subset (proves the composition)
 
-> Pick a **few** `AT_2018_TRAIN` fields (bound the MPC download cost — this is not a scale test,
-> Phase 1 already proved scale). 3–5 fields is enough to prove download→build→flatten→land-local
-> chains correctly.
+> Pick a **few** fields (bound the MPC download cost — this is not a scale test, Phase 1 already
+> proved scale). 3–5 fields is enough to prove download→build→flatten→land-local chains correctly.
+>
+> **`max_tiles` counts granule-*items*, not spatial MGRS tiles** (`n_tiles = distinct MPC `it.id``,
+> and a Sentinel-2 item id is one granule per MGRS tile **per acquisition date**). So the count is
+> dominated by the **length of the date window**, not the field count: a few fields over Apr–Sep 2018
+> (~5-day revisit, sometimes 2 orbits) resolve to **~150 granules**. Set `max_tiles` accordingly
+> (200 below gives headroom for the 5-month window) — narrowing to fewer fields barely moves it;
+> **shortening the window** is the real lever if you want to cut the download. Each granule = 4 band
+> COGs, so ~150 granules ≈ ~600 MPC assets (anonymous, intra-region, fans out — a few minutes).
 
 ```bash
 cat > "$OUT/phase2.py" <<'PY'
@@ -169,7 +184,7 @@ td = api.create_training_data(
     startdate=STARTDATE, enddate=ENDDATE, mosaic_days=MOSAIC_DAYS, bands=BANDS,
     id_col="fid", label_col="EC_hcat_n",
     export_folderpath=f"{os.environ['OUT']}/phase2_landed",   # LOCAL
-    source="mpc", download=True, max_tiles=10,
+    source="mpc", download=True, max_tiles=200,   # counts granule-dates, not spatial tiles (~150 over Apr-Sep)
     runner="aml", runner_kwargs=runner_kwargs,
 )
 
@@ -195,7 +210,9 @@ PY
   data band); the run completes with no failed job at any of the three phases (download/build/
   flatten).
 - **If it fails:** paste `$OUT/phase2_result.json`; a `PreflightError` naming `max_tiles` means the
-  subset's window matched more MGRS tiles than expected — narrow the fields or raise `max_tiles`.
+  window matched more **granules** than the cap (remember it counts granule-dates, not spatial tiles
+  — see the note above) — **raise `max_tiles`** or **shorten the date window** (narrowing the field
+  count barely moves it). Fails fast on the driver, before any cluster/download spend.
 
 ## Success criteria (`_result.json`)
 Each phase writes `$OUT/phase<N>_result.json`, e.g.:
