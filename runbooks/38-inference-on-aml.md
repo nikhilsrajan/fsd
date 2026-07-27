@@ -22,13 +22,18 @@ n_cells (Phase 3 — the D7 claim, the deliverable that demonstrates Mode C end 
 - VPN connected, `az login` done, correct subscription selected — the driver does blob I/O in every
   phase (bundle staging, reading `_status/*.json`).
 - The fsd venv with `[aml,azure,mpc,grid]` (grid tiles the ROI) **plus your adapter's own runtime
-  deps** if you want to exercise the driver-side `_ensure_bundle`/local-baseline comparison locally:
-  `cd fsd && source .venv/bin/activate && pip install -e ".[dev,azure,aml,mpc,grid,model-example]"`.
+  deps** (sklearn + joblib for DemoRF) if you want to exercise the driver-side
+  `_ensure_bundle`/local-baseline comparison locally:
+  `cd fsd && source .venv/bin/activate && pip install -e ".[dev,azure,aml,mpc,grid]" scikit-learn joblib`
+  (plus your `adapters` module on `PYTHONPATH`).
 - **The spec-36 datacube Environment already built** (`runbooks/36-aml-runner.md`) — untouched by
   this run-book, just a precondition for the cluster being usable at all.
-- **A model bundle** you can point at (`fsd.model.bundle.save(adapter, artifacts, dst)`), and its
-  adapter packaged as an **installable pip package with pinned deps** (D4) — for the demo this can
-  be a thin local package (`pip install .` of `examples/eurocrops_rf.py`'s module, or equivalent).
+- **The demo bundle from `runbooks/40-train-and-bundle.md`** (`$OUT/demo_rf_bundle`, adapter ref
+  **`adapters:DemoRF`**) — export its path as `AZ_BUNDLE_LOCAL`. Its adapter is `demos/adapters.py`
+  (in the repo, but **not in the fsd wheel**), so the inference image below must `COPY` that module
+  (D4) — that is what the "Build the inference Environment" section does. Any other bundle
+  (`fsd.model.bundle.save(adapter, artifacts, dst)`) works too, as long as the image resolves its
+  `bundle.json` `adapter` ref.
 - The Austria archive catalog already on blob (`runbooks/37-download-on-aml.md` Phase 3 /
   `runbooks/37-verify-archive.md`) — inference never calls CDSE/MPC (SO-6), so imagery must already
   be there.
@@ -54,7 +59,7 @@ export AZ_ROOT="abfss://${AZ_FS}@${AZ_ACCOUNT}.dfs.core.windows.net/fsd-p4-infer
 # ⚠️ The VERIFIED archive catalog is under the download root's `archive/` prefix (runbook 37 Phase 3
 # / runbook 36's `AZ_ARCHIVE_CATALOG`) — NOT `mpc/` (runbook 34's pre-fix-radiometry output). Point
 # at exactly what runbook 36 used, or you build cubes against the wrong bytes.
-export AZ_CATALOG_URL="abfss://${AZ_FS}@${AZ_ACCOUNT}.dfs.core.windows.net/fsd-p2-download/archive/catalog.parquet"
+export AZ_CATALOG_URL="abfss://${AZ_FS}@${AZ_ACCOUNT}.dfs.core.windows.net/nsasiraj/fsd-p2/archive/catalog.parquet"
 
 # D4: a SECOND, inference-specific Environment (spec-36's Dockerfile + the adapter package
 # + its deps). Operator run-book step -- Claude never runs `az ml`/`az acr` (CLAUDE.md).
@@ -85,6 +90,115 @@ for roi in ("../shapefiles/s2grid=476da24.geojson", "../shapefiles/AT_2018_TRAIN
 print("preflight OK:", cat, "reachable; ROIs present")
 PY
 ```
+
+## Build the inference Environment (D4) — once, or whenever the fsd wheel / adapter changes
+
+> **Do this BEFORE the Setup block's `AZ_INFER_ENV_VERSION=$(az ml environment list …)` line and
+> before Phase 0.** That line only *reads back* the auto-assigned version — it assumes the
+> environment already exists. If you run it first, `AZ_INFER_ENV_VERSION` comes back **empty** and
+> every phase's `environment="…:$AZ_INFER_ENV_VERSION"` breaks.
+>
+> This is the **second**, model-specific Environment (D4). It is spec-36's datacube image
+> (`runbooks/36-aml-runner.md` "Build the AML Environment") **plus** the adapter's runtime deps
+> (here `scikit-learn` + `joblib`) **plus** the adapter module itself, made importable. Operator
+> step — **Claude never runs `az ml`/`az acr`** (`CLAUDE.md`).
+>
+> ⚠️ **The coupling that decides whether this works:** a bundle stores its adapter as a
+> `module:attribute` import string in `bundle.json`, resolved on the node via
+> `importlib.import_module(module_path)` (`fsd.model.bundle.resolve_ref`). The image must import
+> **exactly that module string.** Check yours: `cat "$AZ_BUNDLE_LOCAL/bundle.json"` → the `adapter`
+> field. For the demo that is **`"adapter": "adapters:DemoRF"`** (the locked demo model — `demos/
+> adapters.py`, trained at T=8, built + bundled by `runbooks/40-train-and-bundle.md`; it is in the
+> repo but **not in the fsd wheel**, so the image must `COPY` it in). The recipe below makes the
+> `adapters` module importable as `adapters` so it matches that ref. If your ref differs, change the
+> `COPY`/`PYTHONPATH`
+> (or `pip install` your real adapter package) so the module resolves — a mismatch is the exact
+> `ModuleNotFoundError` Phase 0 exists to catch.
+
+```bash
+# (Requires the Setup block's AZ_* vars already exported: AZ_RG, AZ_ML_WORKSPACE, OUT, …)
+export AZ_INFER_ENV_NAME='fsd-infer-env'
+
+# 1. Build context = fsd wheel + the `adapters` module + a Dockerfile, in one directory.
+#    The demo adapter (`adapters:DemoRF`) lives at demos/adapters.py -- in the repo, but NOT in the
+#    fsd wheel (the wheel packages only src/fsd/), so the image must COPY it in. AZ_ADAPTERS_SRC
+#    defaults to it; point it elsewhere for your own adapter (must import as the bundle.json ref's module).
+export AZ_ADAPTERS_SRC="${AZ_ADAPTERS_SRC:-demos/adapters.py}"
+rm -rf "$OUT/infer_env_src" && mkdir -p "$OUT/infer_env_src/adapter_src"
+.venv/bin/pip wheel . --no-deps -w "$OUT/infer_env_src" && ls "$OUT"/infer_env_src/fsd-*.whl
+cp -r "$AZ_ADAPTERS_SRC" "$OUT/infer_env_src/adapter_src/"   # -> adapter_src/adapters.py == module `adapters`
+
+cat > "$OUT/infer_env_src/Dockerfile" <<'DOCKER'
+# The same base image spec 36 proved works on this cluster.
+FROM mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04:latest
+COPY fsd-*.whl /tmp/
+COPY adapter_src/ /opt/adapter/
+# [azure] -> adlfs + azure-identity + azure-keyvault-secrets (blob I/O, D3 identity, bundle staging)
+# [mpc]   -> planetary-computer. s3fs/pystac-client are core deps. NOT [aml] (driver-side only).
+# PLUS the adapter's runtime deps (scikit-learn, joblib) -- the two lines D4 adds over spec 36.
+RUN python -m pip install --no-cache-dir "$(ls /tmp/fsd-*.whl)[azure,mpc]" scikit-learn joblib \
+ && python -m pip cache purge || true
+# Make the adapter importable as `adapters` -- the SAME name bundle.json's `adapter` ref uses
+# (`adapters:DemoRF`). If your ref differs, change this to match, or `pip install` your package.
+ENV PYTHONPATH=/opt/adapter
+DOCKER
+
+cat > "$OUT/infer-environment.yml" <<YML
+\$schema: https://azuremlschemas.azureedge.net/latest/environment.schema.json
+name: ${AZ_INFER_ENV_NAME}
+build:
+  path: ./infer_env_src
+  dockerfile_path: Dockerfile
+YML
+
+# version is omitted on purpose -> AML auto-increments it. Capture what it assigned:
+export AZ_INFER_ENV_VERSION="$(az ml environment create -f "$OUT/infer-environment.yml" \
+  -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query version -o tsv)"
+echo "built ${AZ_INFER_ENV_NAME}:${AZ_INFER_ENV_VERSION}"
+```
+- **Expect:** the image build runs (several minutes the first time), then `built fsd-infer-env:<N>`.
+- ⚠️ **Export `AZ_INFER_ENV_VERSION` in every later shell** (the phase scripts reference
+  `${AZ_INFER_ENV_NAME}:${AZ_INFER_ENV_VERSION}`). To recover it: the Setup block's
+  `az ml environment list … --query "[].version" -o tsv | sort -V | tail -1` line.
+- **PASS if:** the following prints the name and version back (`--version` is **required** —
+  `az ml environment show` without it fails with `Must provide either version or label`):
+  ```bash
+  az ml environment show -n "$AZ_INFER_ENV_NAME" --version "$AZ_INFER_ENV_VERSION" \
+    -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query "[name, version]" -o tsv
+  ```
+
+### Verify the image imports fsd AND the adapter (cheap check before Phase 0)
+A registered environment can exist and still be unusable (wrong `python` on `PATH`, missing dep,
+`PYTHONPATH` that doesn't resolve the adapter). One cheap job settles it **without** needing a
+staged bundle — do it before Phase 0 (which additionally needs `AZ_BUNDLE_LOCAL`):
+```bash
+cat > "$OUT/infer_env_smoke.yml" <<YML
+\$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+display_name: fsd-infer-env-smoke
+experiment_name: fsd-infer-phase0
+command: >-
+  python -c "import fsd, s3fs, adlfs, planetary_computer, pystac_client, sklearn, joblib;
+  from fsd.model.bundle import resolve_ref;
+  print('FSD_INFER_ENV_OK', fsd.__version__, resolve_ref('adapters:DemoRF').__name__)"
+environment: azureml:${AZ_INFER_ENV_NAME}:${AZ_INFER_ENV_VERSION}
+compute: azureml:${AZ_CLUSTER}
+YML
+az ml job create -f "$OUT/infer_env_smoke.yml" -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query name -o tsv
+# then stream it with the returned job name:
+#   az ml job stream -n <job-name> -g "$AZ_RG" -w "$AZ_ML_WORKSPACE"
+```
+- **PASS if:** the log prints `FSD_INFER_ENV_OK 0.1.0 DemoRF` and the job finishes `Completed`.
+- **FAIL — `ModuleNotFoundError: No module named 'fsd'`:** the image's default `python` isn't the
+  one pip installed into (pin an explicit interpreter in the Dockerfile, rebuild, re-smoke).
+- **FAIL — `ModuleNotFoundError: No module named 'adapters'`** (or your adapter's module): the
+  `PYTHONPATH`/module name in the image doesn't match your `bundle.json`'s `adapter` ref
+  (`adapters:DemoRF`) — fix the `COPY`/`ENV PYTHONPATH` (or `pip install` the real package), rebuild,
+  re-smoke. **Do not** proceed to Phase 0 — it would hit the same import after paying to stage a
+  bundle.
+- **FAIL — a *different* module missing** (`sklearn`, `adlfs`, …): add it to the Dockerfile's install
+  line and rebuild.
+
+- **Re-run this whole step whenever the fsd wheel OR the adapter changes** — the image bakes both.
 
 ## Phase 0 — the inference Environment + adapter-import smoke
 ```bash
