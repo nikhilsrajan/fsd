@@ -4,20 +4,35 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-24_
 
-## ⭐ NEXT STEP — the user RUNS `runbooks/40-train-and-bundle.md` (features → train DemoRF@T=8 → bundle), then `runbooks/38-inference-on-aml.md`.
+## ⭐ NEXT STEP — the user RUNS `runbooks/38-inference-on-aml.md` (inference at scale). Bundle from runbook 40 is READY.
 The demo pipeline is **download → build → flatten → [train + bundle] → inference**. Everything but
-**train + bundle → inference** is proven. **Runbook 40 is now WRITTEN + COMMITTED** (2026-07-27,
-Opus@high), runbook 38 **reconciled to `adapters:DemoRF` + committed**, and a new
-**`runbooks/README.md`** maps the messy numeric order → the real run order (`36-phase0 → 37 →
-37-verify → 36 → 39 → 40 → 38`) until the C4 refactor (TODO #55).
+the final **inference** leg is now proven — **runbook 40 (train + bundle) is GREEN end to end
+(2026-07-28)**, closing the last gap before inference. Runbook 38 was **reconciled to `adapters:DemoRF`
++ committed**, and **`runbooks/README.md`** maps the messy numeric order → the real run order
+(`36-phase0 → 37 → 37-verify → 36 → 39 → 40 → 38`) until the C4 refactor (TODO #55).
 
-**Runbook 40 phases (option (a) — KISS, zero new fsd code):** (1) `flatten_training_data(input_csv,
-export_folderpath=<the 39 landed folder>, adapter=DemoRF(), runner="aml")` — the aml reduce re-runs
-(~7 min, one node), `_land_local` **skips** the already-landed raw arrays, then
-`_apply_training_features` writes `features.npy` **driver-side** (ADR-0020; the adapter never reaches
-a node). Expect `features (172781, 8, 2)` = NDVI+SAVI. (2) train DemoRF@T=8 (RF+LabelEncoder→joblib,
-**user-side, ADR-0018**). (3) bundle via `fsd.model.bundle.save`. Option (b) (a public `apply_features`
-verb over already-landed arrays, avoids the re-run) noted as deferred YAGNI.
+**Runbook 38 hand-off:** `export AZ_BUNDLE_LOCAL=<repo>/tests/outputs/p40_train_and_bundle/demo_rf_bundle`
+(what Phase 0 stages to blob). Build the **inference** Environment first (38's Dockerfile now `COPY`s
+`demos/adapters.py` → smoke prints `FSD_INFER_ENV_OK … DemoRF`), then Phases 0→3. Its window/bands give
+T=8 ⊇ `[B04,B08]`, matching the bundle. The T=8 manifest means 38's preflight now **enforces** T (not
+skips it).
+
+### ✅ Runbook 40 (train + bundle) — RUN GREEN, all 3 phases (2026-07-28)
+Option (a), KISS, **zero new fsd code** — orchestration of existing verbs.
+- **Phase 1** (`flatten_training_data(..., adapter=DemoRF(), runner="aml")`): PASS in **145.7 s** (aml
+  reduce only — `_land_local` skipped the already-landed raw arrays; `_apply_training_features` ran
+  **driver-side**, ADR-0020). `features (172781, 8, 2)` = **NDVI+SAVI**; `feature_ids`/`feature_labels`
+  both 172781; raw `data.npy` kept.
+- **Phase 2** (train DemoRF@T=8, **user-side, ADR-0018** — RF + LabelEncoder → `rf.joblib`): PASS.
+  172781 px, `n_features=16` (=T·Bf=8·2, reshape contract intact), **9 classes**, train acc **0.863** /
+  test acc **0.696** (ordinary RF overfit; fine for the demo).
+- **Phase 3** (`bundle.save`): PASS + round-trip. `bundle.json` → `adapter: "adapters:DemoRF"`,
+  `required_bands:[B04,B08]`, **`n_timestamps: 8`** (set on the instance before save — DemoRF pins 0),
+  `uint8`/`255`, `artifacts:{model: rf.joblib}`; `bundle.load` resolved→instantiated→validated→`.load()`
+  clean (`roundtrip_loaded: true`). Bundle at `tests/outputs/p40_train_and_bundle/demo_rf_bundle/`.
+
+Option (b) (a public `apply_features` verb over already-landed arrays, avoids the ~2.4 min re-run)
+remains deferred YAGNI — the re-run is cheap.
 
 **⚠️ Corrections found against the ACTUAL `demos/adapters.py:DemoRF` (baton was imprecise):**
 - **DemoRF is at `demos/adapters.py` — IN the repo, but NOT in the fsd wheel** (wheel = `src/fsd/`
@@ -34,9 +49,9 @@ verb over already-landed arrays, avoids the re-run) noted as deferred YAGNI.
   2's `features.reshape(len, -1)` matches inference (F1 anti-skew). Artifact `(clf, le)` + bundle key
   `"model"` match `DemoRF.load`.
 
-**git:** `main` is **1 commit ahead of `origin/main` (`e7d8ba6`), UNPUSHED** — the runbook-40 +
-README + reconcile-38 commit (docs only). Run the RECIPES.md identifier sweep before pushing (new
-runbook/README use placeholders only — quick sweep was clean).
+**git:** `main` is **2 commits ahead of `origin/main` (`e7d8ba6`), UNPUSHED** — (1) runbook-40 +
+README + reconcile-38; (2) this PROGRESS flush marking runbook 40 GREEN (docs only). Run the
+RECIPES.md identifier sweep before pushing (new runbook/README use placeholders only — sweep clean).
 
 ## ⭐ SPEC 39 (create_training_data e2e on AML: flatten→land-local) **DONE — IMPLEMENTED + MERGED + OPUS-REVIEWED + VALIDATED ON THE REAL CLUSTER** (runbook 39 Phases 0–2 GREEN 2026-07-27; the Timestamp-staging bug found there is fixed + pushed, `1781331`). (impl Sonnet@medium, 2026-07-24; merge commit `9e20623`, `--no-ff` over impl commit `684e0de`; worktree `spec39-implement` pruned, branch deleted). **→ NEXT: run `runbooks/39-training-data-on-aml.md` Phases 0-2 on the real cluster** (the only thing unproven — every unit test is mocked at the AML-client boundary, spec 39 §7's "no test requires Azure"). All 8 spec §7 tests landed in `tests/test_training_data_aml.py` (14 test functions after non-vacuousness splits); full suite on `main` post-merge: 430 passed/3 skipped, `ruff` clean. Docs updated: `CHANGES.md`, `LIMITATIONS.md`, `TODO.md` #56, `RECIPES.md`, `ROADMAP.md` P3, `CONTEXT.md` ("reduce job", "land-local"). **`main` is 3 commits ahead of `origin/main`, UNPUSHED** (push only when the user asks). (Aside, not spec-39's: the impl worktree's `ruff` auto-discovery resolved a much broader ruleset than `main`'s real config — a git-worktree-specific quirk, `.git` file vs directory — worked around with `--select E4,E7,E9,F,I`; `main`'s own `ruff check` is unaffected and was used for the final verification above.)
 
