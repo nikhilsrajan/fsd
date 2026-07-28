@@ -17,9 +17,11 @@ Turn the landed training arrays (`runbooks/39-training-data-on-aml.md` Phase 1 �
 `tests/outputs/p39_training_data_aml/landed/`, a `(172781, 8, 3)` uint16 `data.npy` over bands
 **B04/B08/B8A**, **T=8**) into a trained + bundled **`adapters:DemoRF`**:
 
-1. **Phase 1** — add `features.npy` to the landed set, applying **DemoRF's feature transform on the
-   driver** (ADR-0020: the general-purpose cluster image emits raw; the adapter never reaches a node).
-2. **Phase 2** — **you** train DemoRF at **T=8** (RF + `LabelEncoder` → `joblib`). fsd does not train.
+1. **Phase 1** — add `features.npy` to the landed set: **median-per-field** aggregation
+   (`aggregate="median_per_id"`, ~900 field rows) + **DemoRF's feature transform, on the driver**
+   (ADR-0020: the general-purpose cluster image emits raw; the adapter never reaches a node).
+2. **Phase 2** — **you** train DemoRF at **T=8** on the ~900 field medians (RF + `LabelEncoder` →
+   `joblib`, a few-hundred-KB model). fsd does not train.
 3. **Phase 3** — **bundle** it (`fsd.model.bundle.save`) and prove the bundle round-trips. This bundle
    folder is exactly what `runbooks/38-inference-on-aml.md` **Phase 0** stages to blob (`AZ_BUNDLE_LOCAL`).
 
@@ -78,8 +80,9 @@ export AZ_PHASE3_INPUT_CSV="${AZ_ROOT}/runs/<phase3-run-id>/input.csv"
 # The arrays runbook 39 Phase 1 landed. Phase 1 below adds features.npy INTO this folder.
 export LANDED="$PWD/tests/outputs/p39_training_data_aml/landed"
 
-export OUT="$PWD/tests/outputs/p40_train_and_bundle"     # gitignored
-mkdir -p "$OUT"
+export OUT40="$PWD/tests/outputs/p40_train_and_bundle"   # gitignored. Distinct from runbook 38's OUT38,
+                                                         # so running the two back-to-back can't cross-write.
+mkdir -p "$OUT40"
 
 # Fail cheap on the driver BEFORE any cluster spend: the landed raw arrays must already exist.
 .venv/bin/python - <<'PY'
@@ -105,25 +108,39 @@ PY
 ```
 - **PASS if:** the preflight prints `preflight OK: …`. A failing assert names exactly what to fix.
 
-## Phase 1 — add `features.npy` (DemoRF's transform, driver-side)
+## Phase 1 — `features.npy` = median-per-field + DemoRF's transform (driver-side)
 
+> **`aggregate="median_per_id"` — the modelling unit, not just a size trick.** The labels are
+> **per field** (one crop class per `id`), so the honest training sample is the field, not the pixel.
+> `median_per_id` (`np.nanmedian` over each field's pixels, one row per `id`, label by first
+> occurrence — `fsd/model/features.py:40`) collapses the **172,781 pixels → ≤900 field medians**
+> *before* DemoRF's NDVI/SAVI transform runs. This (a) denoises mixed/edge pixels, matching legacy
+> demo_02, and (b) keeps the trained model **tiny** — an *un*aggregated per-pixel RF on 172k rows
+> bloats to ~1 GB, and **the bundle is fetched to every inference node** (D3), so size matters. It is
+> **training-only**: `aggregate` is separate from `DemoRF.feature_sequence`, so inference still applies
+> the same NDVI/SAVI transform **per pixel** → a per-pixel crop map (the demo_02/03 design, not skew).
+>
 > **Why this re-runs the aml reduce (design note, option (a)):** `flatten_training_data(...,
-> adapter=DemoRF())` on `runner="aml"` dispatches the single-node reduce again (~7 min, one node),
-> but `_land_local` **skips** every array that is already landed locally (`api.py:613` — existence =
-> already landed), so nothing is re-transferred; then `_apply_training_features` runs DemoRF's
-> `feature_sequence` **on the driver** over the local `data.npy` and writes `features.npy`
-> (+ `feature_ids`/`feature_labels`). This is the KISS path — **zero new fsd code**. The re-run is
-> the only waste (the raw arrays already exist); a public `fsd.apply_features(export_folderpath,
-> adapter=…)` verb over already-landed arrays would avoid it (option (b) in
-> `runbooks/HANDOFF-train-and-bundle.md`), but it needs a 1-para spec + a test and the ~7-min re-run
+> adapter=DemoRF(), aggregate="median_per_id")` on `runner="aml"` dispatches the single-node reduce
+> again (**~2.5 min**, one node — measured 146 s), but `_land_local` **skips** every array already
+> landed locally (`api.py:613` — existence = already landed), so nothing is re-transferred; then
+> `_apply_training_features` runs the median **then** DemoRF's `feature_sequence` **on the driver** over
+> the local `data.npy` and writes `features.npy` (+ `feature_ids`/`feature_labels`, at field level).
+> This is the KISS path — **zero new fsd code**. A public `fsd.apply_features(export_folderpath,
+> adapter=…, aggregate=…)` verb over already-landed arrays would avoid the re-run (option (b) in
+> `runbooks/HANDOFF-train-and-bundle.md`), but it needs a 1-para spec + a test and the ~2.5-min re-run
 > does not justify it (YAGNI). **The adapter never reaches a node** (ADR-0020): the reduce command is
 > a bare `python -m fsd.workflows.flatten …` with no `--adapter` flag — the transform is driver-only.
+>
+> **Note on nodata:** `median_per_id` uses `np.nanmedian`, but raw nodata is `0` (not NaN), so a
+> fully/partly-cloudy field-timestep leans on `mask_invalid_and_interpolate` (the FIRST step of
+> `DemoRF.feature_sequence`, which runs *after* the median) to clean up — same as legacy demo_02.
 
 ```bash
-cat > "$OUT/phase1.py" <<'PY'
+cat > "$OUT40/phase1.py" <<'PY'
 import json, os, time
 from fsd import api
-from adapters import DemoRF     # your local module (NOT in this repo — locked decision)
+from adapters import DemoRF     # demos/adapters.py (in repo, not in the wheel) -- demos/ on PYTHONPATH
 
 t0 = time.time()
 td = api.flatten_training_data(
@@ -131,6 +148,7 @@ td = api.flatten_training_data(
     export_folderpath=os.environ["LANDED"],   # the runbook-39 landed folder; land-local skips existing arrays
     id_col="id", label_col="label",
     adapter=DemoRF(),                          # -> features.npy applied DRIVER-SIDE after land-local (ADR-0020)
+    aggregate="median_per_id",                 # -> ~900 field medians BEFORE NDVI/SAVI (denoise + tiny model)
     runner="aml",
     runner_kwargs=dict(
         cluster=os.environ["AZ_CLUSTER"],
@@ -155,7 +173,7 @@ out = {
     "raw_data_kept": os.path.exists(os.path.join(os.environ["LANDED"], "data.npy")),
     "n_timestamps": td.n_timestamps, "bands": td.bands,
 }
-# machine-check the shape contract: (pixels, T=8, n_feature_bands); labels align 1:1 with features.
+# machine-check the shape contract: (n_fields, T=8, n_feature_bands); labels align 1:1 with features.
 out["pass"] = (
     feats.ndim == 3 and feats.shape[1] == 8 and feats.shape[2] >= 1
     and out["feature_ids_len"] == feats.shape[0]
@@ -163,24 +181,26 @@ out["pass"] = (
     and out["raw_data_kept"]
 )
 print("FSD_RESULT_BEGIN"); print(json.dumps(out, indent=2, default=str)); print("FSD_RESULT_END")
-with open(f"{os.environ['OUT']}/phase1_result.json", "w") as f:
+with open(f"{os.environ['OUT40']}/phase1_result.json", "w") as f:
     json.dump(out, f, indent=2, default=str)
 PY
-.venv/bin/python "$OUT/phase1.py"
+.venv/bin/python "$OUT40/phase1.py"
 ```
 - **Expect:** **one** AML job in the Studio UI (a reduce, not a fan-out); then `features.npy`,
   `feature_ids.npy`, `feature_labels.npy` appear under `$LANDED` alongside the kept raw `data.npy`.
-- **PASS if:** `pass: true`, i.e. `features_shape` is **`(172781, 8, 2)`** — DemoRF's
-  `feature_sequence` computes NDVI+SAVI then removes B04/B08/B8A, so `feature_bands == ["NDVI",
-  "SAVI"]` (2 bands); T=8. (`pixels` matches runbook 39 Phase 1's `(172781, 8, 3)`.)
-  `feature_labels_present: true` and both `feature_ids_len`/`feature_labels_len` equal
-  `features_shape[0]`; `raw_data_kept: true` (the transform is additive — `data.npy` stays).
+- **PASS if:** `pass: true`, i.e. `features_shape` is **`(≈900, 8, 2)`** — one row **per field**
+  (`median_per_id` collapsed the 172,781 pixels to ≤900 unique `id`s; the exact count = fields with ≥1
+  valid pixel), T=8, and 2 feature bands (`feature_bands == ["NDVI", "SAVI"]` — DemoRF computes NDVI+SAVI
+  then removes B04/B08/B8A). `feature_labels_present: true` and both `feature_ids_len`/`feature_labels_len`
+  equal `features_shape[0]`; `raw_data_kept: true` (the transform is additive — `data.npy` stays).
+  **Without** `aggregate` you'd instead see `(172781, 8, 2)` — one row per pixel, and a ~1 GB model
+  downstream; the median is what keeps it field-level and small.
 - **FAIL — `adapter.required_bands not in requested bands`:** the landed cube bands (B04/B08/B8A)
   don't cover DemoRF's `required_bands` — but `[B04,B08] ⊆ [B04,B08,B8A]`, so this only fires if
   DemoRF was edited; check its `required_bands`.
 - **FAIL — a KeyError / band-not-found inside the transform:** DemoRF's `feature_sequence` references
   a band not in `metadata["bands"]` (B04/B08/B8A). Its indices must be computable from those three.
-- **If it fails:** paste `$OUT/phase1_result.json`.
+- **If it fails:** paste `$OUT40/phase1_result.json`.
 
 ## Phase 2 — train DemoRF at T=8 (YOUR sklearn code — fsd does NOT train)
 
@@ -188,9 +208,15 @@ PY
 > adds no fsd code. Below is the reference flow (spec 19 demo_02 / `examples/eurocrops_rf.py`
 > docstring) — adapt it to your own metrics/validation. The artifact must be whatever `DemoRF.load()`
 > expects to `joblib.load` (the sketch loads `(clf, label_encoder)`).
+>
+> **Keep the model small — it's fetched to every inference node** (D3). With `median_per_id` you're
+> training on ~900 field rows, so a plain `RandomForestClassifier` is already a few hundred KB (the
+> result below records `model_bytes` — sanity-check it's MB, not GB). If you ever drop the aggregate
+> and train per-pixel (172k rows), an unpruned RF balloons to ~1 GB; then add `min_samples_leaf=50`
+> and `joblib.dump(..., compress=3)`. At field level you don't need either.
 
 ```bash
-cat > "$OUT/phase2_train.py" <<'PY'
+cat > "$OUT40/phase2_train.py" <<'PY'
 import json, os
 import joblib
 import numpy as np
@@ -201,9 +227,9 @@ from sklearn.metrics import accuracy_score
 from fsd.storage import fs
 
 LANDED = os.environ["LANDED"]
-features = fs.load_npy(os.path.join(LANDED, "features.npy"))          # (pixels, T=8, Bf=2)
+features = fs.load_npy(os.path.join(LANDED, "features.npy"))          # (n_fields≈900, T=8, Bf=2)
 feature_labels = fs.load_npy(os.path.join(LANDED, "feature_labels.npy"))
-X = features.reshape(len(features), -1)                 # (pixels, T*Bf) -- T-outer, band-inner
+X = features.reshape(len(features), -1)                 # (n_fields, T*Bf) -- T-outer, band-inner
 y_raw = feature_labels
 
 le = LabelEncoder().fit(y_raw)
@@ -215,42 +241,57 @@ train_acc = accuracy_score(ytr, clf.predict(Xtr))
 test_acc = accuracy_score(yte, clf.predict(Xte))
 
 # Persist EXACTLY what DemoRF.load() expects to joblib.load (adapt if your adapter differs).
-artifact = os.path.join(os.environ["OUT"], "rf.joblib")
+artifact = os.path.join(os.environ["OUT40"], "rf.joblib")
 joblib.dump((clf, le), artifact)
 
-out = {"phase": "phase2-train", "pass": os.path.exists(artifact) and test_acc > 0.0,
+model_bytes = os.path.getsize(artifact)
+out = {"phase": "phase2-train",
+       "pass": os.path.exists(artifact) and test_acc > 0.0 and model_bytes < 50_000_000,
        "n_samples": int(X.shape[0]), "n_features": int(X.shape[1]),
        "n_classes": int(len(le.classes_)),
        "train_accuracy": round(float(train_acc), 4), "test_accuracy": round(float(test_acc), 4),
-       "artifact": artifact}
+       "model_bytes": model_bytes, "artifact": artifact}
 print("FSD_RESULT_BEGIN"); print(json.dumps(out, indent=2, default=str)); print("FSD_RESULT_END")
-with open(f"{os.environ['OUT']}/phase2_result.json", "w") as f:
+with open(f"{os.environ['OUT40']}/phase2_result.json", "w") as f:
     json.dump(out, f, indent=2, default=str)
 PY
-.venv/bin/python "$OUT/phase2_train.py"
+.venv/bin/python "$OUT40/phase2_train.py"
 ```
-- **Expect:** an `rf.joblib` under `$OUT`; a train/test accuracy printed. (Absolute accuracy is your
-  call — this run-book only checks the artifact was produced and the model does better than chance.)
-- **PASS if:** `pass: true` — `rf.joblib` exists and `test_accuracy > 0`. **Inspect `test_accuracy`
-  and `n_classes` yourself** — a very low score, or a class count that doesn't match your labels,
-  means the features/labels are off (re-check Phase 1), not something the bundle step will fix.
-- **Note:** `X.reshape(len, -1)` flattens `(T=8, Bf)` per pixel in **T-outer, band-inner** order,
-  which is exactly what DemoRF uses at inference — it inherits `BaseModelAdapter.datacube_to_X`
+- **Expect:** an `rf.joblib` under `$OUT40` (a few hundred KB at field level); a train/test accuracy
+  printed. `n_samples` ≈ 900 (fields), `n_features == 16` (`T·Bf == 8·2`). (Absolute accuracy is your
+  call — this run-book checks the artifact was produced, beats chance, and is **small**.)
+- **PASS if:** `pass: true` — `rf.joblib` exists, `test_accuracy > 0`, **and `model_bytes < 50 MB`**
+  (the size gate: a per-pixel unpruned RF trips this at ~1 GB; `median_per_id` keeps it tiny).
+  **Inspect `test_accuracy` and `n_classes` yourself** — a very low score, or a class count that
+  doesn't match your labels, means the features/labels are off (re-check Phase 1). If `model_bytes` is
+  huge, you likely dropped `aggregate="median_per_id"` in Phase 1 — re-run it.
+- **Accuracy is now HONEST (report it as such).** One row per field means the train/test split is
+  inherently **field-wise** — no field appears in both. Per-pixel training with a random split leaks:
+  pixels from the *same* field (near-identical spectra) land in both train and test, so the score
+  measures memorization, not generalization (in this demo: an inflated **0.696** per-pixel vs a real
+  **~0.29** field-wise). The field-wise number is the one for the demo report. A `train_accuracy` of
+  ~1.0 with a much lower test score is an **overfit** tell (200 unpruned trees memorizing ~675 train
+  fields, 16 features): to lift generalization — *not* size — add `min_samples_leaf` / `max_depth` or
+  cut `n_estimators`. But ~29% honest 9-class crop accuracy from only NDVI+SAVI over 8 mosaics is a
+  plausible feature ceiling; improving it (more bands/features) is a modelling exercise, permanently
+  your side (ADR-0018). It does **not** block the pipeline demo — the bundle is valid either way.
+- **Note:** `X.reshape(len, -1)` flattens `(T=8, Bf)` per row in **T-outer, band-inner** order, which
+  is exactly what DemoRF uses at inference — it inherits `BaseModelAdapter.datacube_to_X`
   (`adapter.py:111`: `(T,H,W,B) -> (H*W, T*B)`, T slower / B faster). Same ordering both sides = the
   F1 anti-skew guarantee. (DemoRF does not override `datacube_to_X`, so no mirroring needed.)
 
 ## Phase 3 — bundle `adapters:DemoRF` + prove it round-trips
 
 ```bash
-cat > "$OUT/phase3_bundle.py" <<'PY'
+cat > "$OUT40/phase3_bundle.py" <<'PY'
 import json, os, shutil
 from fsd.model import bundle as fsd_bundle
 from adapters import DemoRF
 
-BUNDLE_DIR = os.path.join(os.environ["OUT"], "demo_rf_bundle")
+BUNDLE_DIR = os.path.join(os.environ["OUT40"], "demo_rf_bundle")
 if os.path.isdir(BUNDLE_DIR):
     shutil.rmtree(BUNDLE_DIR)   # clean rebuild
-artifact = os.path.join(os.environ["OUT"], "rf.joblib")
+artifact = os.path.join(os.environ["OUT40"], "rf.joblib")
 
 # DemoRF pins n_timestamps=0 (model-determined) -> set T=8 on the instance so the bundle RECORDS 8.
 # save() reads spec fields off the object; runbook 38's inference preflight reads them back via
@@ -280,14 +321,14 @@ out["pass"] = (
     and out["roundtrip_loaded"]
 )
 print("FSD_RESULT_BEGIN"); print(json.dumps(out, indent=2, default=str)); print("FSD_RESULT_END")
-with open(f"{os.environ['OUT']}/phase3_result.json", "w") as f:
+with open(f"{os.environ['OUT40']}/phase3_result.json", "w") as f:
     json.dump(out, f, indent=2, default=str)
 print(f"\nBUNDLE READY: {BUNDLE_DIR}")
 print("→ point runbook 38's  export AZ_BUNDLE_LOCAL=<this path>  at it (Phase 0 stages it to blob).")
 PY
-.venv/bin/python "$OUT/phase3_bundle.py"
+.venv/bin/python "$OUT40/phase3_bundle.py"
 ```
-- **Expect:** `$OUT/demo_rf_bundle/` containing `bundle.json` + `rf.joblib`; the printed
+- **Expect:** `$OUT40/demo_rf_bundle/` containing `bundle.json` + `rf.joblib`; the printed
   `BUNDLE READY: …` path.
 - **PASS if:** `pass: true` — `bundle.json`'s `adapter` is **`adapters:DemoRF`**,
   `required_bands == [B04, B08]`, **`n_timestamps == 8`**, `output_dtype/nodata` are `uint8`/`255`,
@@ -302,16 +343,16 @@ PY
   edited `n_timestamps` between save and load). Re-bundle from the current class.
 
 ## Hand-off to runbook 38
-`$OUT/demo_rf_bundle/` is the bundle `runbooks/38-inference-on-aml.md` **Phase 0** consumes:
+`$OUT40/demo_rf_bundle/` is the bundle `runbooks/38-inference-on-aml.md` **Phase 0** consumes:
 ```bash
-export AZ_BUNDLE_LOCAL="$OUT/demo_rf_bundle"   # carry into the runbook-38 shell
+export AZ_BUNDLE_LOCAL="$OUT40/demo_rf_bundle"   # carry into the runbook-38 shell
 ```
 Runbook 38's image-build section must `COPY` your `adapters` module (so `adapters:DemoRF` resolves
 on a node) and its window/bands (`2018-04-01..2018-09-01`, `mosaic_days=20`, `[B04,B08,B8A,SCL]`)
 already give **T=8** ⊇ `required_bands=[B04,B08]` — consistent with this bundle.
 
 ## Success criteria (`_result.json`)
-Each phase writes `$OUT/phase<N>_result.json` (also printed between `FSD_RESULT_BEGIN`/`_END`).
+Each phase writes `$OUT40/phase<N>_result.json` (also printed between `FSD_RESULT_BEGIN`/`_END`).
 The run passes when every phase's `pass` is true. **Paste these files back** (not the AML job logs).
 ```json
 { "phase": "phase3-bundle", "pass": true,

@@ -6,6 +6,14 @@
 > **adapter-import smoke** (D11), and the **inference dispatch** (D1/D1a/D2). It does NOT rebuild
 > the cluster or the spec-36 datacube Environment; it builds a **second**, model-specific one.
 >
+> **▶ Picking up from `runbooks/40-train-and-bundle.md`:** this is the **last** leg of the demo
+> pipeline (see `runbooks/README.md`). Runbook 40 left you a trained + bundled `adapters:DemoRF` at
+> `tests/outputs/p40_train_and_bundle/demo_rf_bundle/`. You point this run-book at it via
+> **`AZ_BUNDLE_LOCAL`** (exported in the Setup block below) and it stages that bundle to blob +
+> dispatches inference. The archive imagery must already be on blob (runbook 37). If you're arriving
+> straight from runbook 40, you already have the venv + `demos/adapters.py` on `PYTHONPATH` — the one
+> new thing here is the **inference Environment** (below), which bakes that adapter into the image.
+>
 > **Concrete `rise` values are NOT in this file** (public repo). Paste them as env vars from the
 > uncommitted `../../AZURE_INFRA_PRIVATE.md` (workspace root). Run the private-identifier sweep
 > (`RECIPES.md`) before pushing anything derived from this run-book.
@@ -13,27 +21,30 @@
 ## Purpose
 
 Prove `run_inference(roi=…, runner="aml")` end to end: the inference Environment builds and the
-adapter actually imports inside it (Phase 0); one cell's `output.tif` lands on blob, byte-identical
-to a local `run_inference(roi=…)` of the same cell (Phase 1); resume + the D13 duplicate guard both
-work (Phase 2); and a real multi-cell ROI fans out across N nodes with bundle-loads == n_nodes, not
+adapter actually imports inside it (Phase 0); a small single-MGRS-tile ROI tiles into its grid cells
+and every cell's `output.tif` lands on blob, one of them byte-identical to a local
+`run_inference(roi=…)` of the matching cell (Phase 1); resume + the D13 duplicate guard both work
+(Phase 2); and a real multi-cell ROI fans out across N nodes with bundle-loads == n_nodes, not
 n_cells (Phase 3 — the D7 claim, the deliverable that demonstrates Mode C end to end).
 
 ## Prerequisites
 - VPN connected, `az login` done, correct subscription selected — the driver does blob I/O in every
   phase (bundle staging, reading `_status/*.json`).
-- The fsd venv with `[aml,azure,mpc,grid]` (grid tiles the ROI) **plus your adapter's own runtime
+- The fsd venv with `[aml,azure,mpc,grid]` (grid tiles the ROI) **plus the adapter's own runtime
   deps** (sklearn + joblib for DemoRF) if you want to exercise the driver-side
   `_ensure_bundle`/local-baseline comparison locally:
   `cd fsd && source .venv/bin/activate && pip install -e ".[dev,azure,aml,mpc,grid]" scikit-learn joblib`
-  (plus your `adapters` module on `PYTHONPATH`).
+  and `export PYTHONPATH="$PWD/demos:$PYTHONPATH"` (so `adapters:DemoRF` resolves — **same as
+  runbook 40**; if you came straight from it this is already set).
 - **The spec-36 datacube Environment already built** (`runbooks/36-aml-runner.md`) — untouched by
   this run-book, just a precondition for the cluster being usable at all.
-- **The demo bundle from `runbooks/40-train-and-bundle.md`** (`$OUT/demo_rf_bundle`, adapter ref
-  **`adapters:DemoRF`**) — export its path as `AZ_BUNDLE_LOCAL`. Its adapter is `demos/adapters.py`
-  (in the repo, but **not in the fsd wheel**), so the inference image below must `COPY` that module
-  (D4) — that is what the "Build the inference Environment" section does. Any other bundle
-  (`fsd.model.bundle.save(adapter, artifacts, dst)`) works too, as long as the image resolves its
-  `bundle.json` `adapter` ref.
+- **The demo bundle from `runbooks/40-train-and-bundle.md` Phase 3** — `tests/outputs/p40_train_and_bundle/demo_rf_bundle`
+  (adapter ref **`adapters:DemoRF`**, `n_timestamps=8`). **If runbook 40 is green, this exists and
+  you're done here** — the Setup block exports it as `AZ_BUNDLE_LOCAL`. Its adapter is
+  `demos/adapters.py` (in the repo, but **not in the fsd wheel**), so the inference image below must
+  `COPY` that module (D4) — that is what the "Build the inference Environment" section does. Any other
+  bundle (`fsd.model.bundle.save(adapter, artifacts, dst)`) works too, as long as the image resolves
+  its `bundle.json` `adapter` ref.
 - The Austria archive catalog already on blob (`runbooks/37-download-on-aml.md` Phase 3 /
   `runbooks/37-verify-archive.md`) — inference never calls CDSE/MPC (SO-6), so imagery must already
   be there.
@@ -55,7 +66,7 @@ export AZ_UAMI_NAME='<compute identity name>'
 export AZ_UAMI_CLIENT_ID="$(az identity show -g "$AZ_RG" -n "$AZ_UAMI_NAME" --query clientId -o tsv)"
 export AZ_ACCOUNT='<storage account>'
 export AZ_FS='<filesystem/container>'
-export AZ_ROOT="abfss://${AZ_FS}@${AZ_ACCOUNT}.dfs.core.windows.net/fsd-p4-inference"
+export AZ_ROOT="abfss://${AZ_FS}@${AZ_ACCOUNT}.dfs.core.windows.net/nsasiraj/fsd-p4-inference"
 # ⚠️ The VERIFIED archive catalog is under the download root's `archive/` prefix (runbook 37 Phase 3
 # / runbook 36's `AZ_ARCHIVE_CATALOG`) — NOT `mpc/` (runbook 34's pre-fix-radiometry output). Point
 # at exactly what runbook 36 used, or you build cubes against the wrong bytes.
@@ -64,22 +75,36 @@ export AZ_CATALOG_URL="abfss://${AZ_FS}@${AZ_ACCOUNT}.dfs.core.windows.net/nsasi
 # D4: a SECOND, inference-specific Environment (spec-36's Dockerfile + the adapter package
 # + its deps). Operator run-book step -- Claude never runs `az ml`/`az acr` (CLAUDE.md).
 export AZ_INFER_ENV_NAME='fsd-infer-env'
-# (Build once, e.g.:)
-#   az ml environment create -f infer-environment.yml -g "$AZ_RG" -w "$AZ_ML_WORKSPACE"
-# where infer-environment.yml's build.path Dockerfile is spec-36's
-# (`runbooks/36-aml-runner.md`'s "Build the AML Environment" step) plus two added
-# `pip install` lines: the adapter package, and its deps (e.g. scikit-learn, joblib).
+# ⚠️ FIRST RUN: this Environment does NOT exist yet -- go BUILD it via the "Build the inference
+#    Environment (D4)" section below (that `az ml environment create` step is what sets
+#    AZ_INFER_ENV_VERSION), THEN come back here. The line below only READS BACK the version of an
+#    ALREADY-built env (for later runs). On a first run `az ml environment list -n <missing>` errors
+#    with a cryptic `System.Net.Http...HttpConnectionResponseContent` -- that just means "not built
+#    yet". `2>/dev/null` swallows it; the guard below tells you what to do.
 export AZ_INFER_ENV_VERSION="$(az ml environment list -n "$AZ_INFER_ENV_NAME" -g "$AZ_RG" \
-  -w "$AZ_ML_WORKSPACE" --query "[].version" -o tsv | sort -V | tail -1)"
-echo "inference environment: ${AZ_INFER_ENV_NAME}:${AZ_INFER_ENV_VERSION}"
+  -w "$AZ_ML_WORKSPACE" --query "[].version" -o tsv 2>/dev/null | sort -V | tail -1)"
+if [ -z "$AZ_INFER_ENV_VERSION" ]; then
+  echo "AZ_INFER_ENV_VERSION is EMPTY -> the inference Environment isn't built yet. Run the"
+  echo "'Build the inference Environment (D4)' section below FIRST (it sets this var), then continue."
+else
+  echo "inference environment: ${AZ_INFER_ENV_NAME}:${AZ_INFER_ENV_VERSION}"
+fi
 
 export AZ_N_SHARDS='16'    # Phase 3 fan-out width (>= the cluster's max_instances is fine, D1 degrades)
 
-export OUT="$PWD/tests/outputs/p4_inference_aml"     # gitignored
-mkdir -p "$OUT"
+# ▶ The bundle runbook 40 Phase 3 produced -- the thing every phase here stages + runs. If you used a
+#   different OUT40 in runbook 40, point this at that bundle dir instead.
+export AZ_BUNDLE_LOCAL="$PWD/tests/outputs/p40_train_and_bundle/demo_rf_bundle"
 
-# Fail cheap on the driver BEFORE any cluster spend (the runbook-36 lesson: a wrong
-# catalog prefix or a non-intersecting ROI is a wasted run). Requires VPN + az login.
+# OUT38 is THIS run-book's OWN scratch (Docker build context, env ymls, phase scripts + results).
+# It is DISTINCT from runbook 40's OUT40 on purpose: running the two run-books back-to-back in one
+# shell can't cross-write, because neither reuses a bare `OUT`. The only thing that crosses over from
+# runbook 40 is AZ_BUNDLE_LOCAL (above), the bundle path.
+export OUT38="$PWD/tests/outputs/p4_inference_aml"   # gitignored
+mkdir -p "$OUT38"
+
+# Fail cheap on the driver BEFORE any cluster spend (the runbook-36 lesson: a wrong catalog prefix,
+# a non-intersecting ROI, or a missing bundle is a wasted run). Requires VPN + az login.
 .venv/bin/python - <<'PY'
 import os
 from fsd.storage import fs
@@ -87,7 +112,16 @@ cat = os.environ["AZ_CATALOG_URL"]
 assert fs.exists(cat), f"archive catalog NOT found: {cat} (wrong prefix? VPN off? see the warning above)"
 for roi in ("../shapefiles/s2grid=476da24.geojson", "../shapefiles/AT_2018_TRAIN.geojson"):
     assert os.path.exists(roi), f"ROI missing: {roi} (cwd must be fsd/)"
-print("preflight OK:", cat, "reachable; ROIs present")
+# The bundle from runbook 40 must exist + parse, and its adapter ref must import in THIS venv
+# (the same check the inference image must pass on a node -- catch a bad AZ_BUNDLE_LOCAL now).
+bundle = os.environ["AZ_BUNDLE_LOCAL"]
+assert os.path.isdir(bundle), f"AZ_BUNDLE_LOCAL is not a dir: {bundle} (did runbook 40 Phase 3 run? right OUT40?)"
+from fsd.model.bundle import read_spec, resolve_ref
+spec = read_spec(bundle)
+assert spec["adapter"] == "adapters:DemoRF", f"bundle adapter ref is {spec['adapter']!r} (expected adapters:DemoRF)"
+assert spec["n_timestamps"] == 8, f"bundle n_timestamps={spec['n_timestamps']} (expected 8 -- runbook 40 Phase 3 sets it)"
+resolve_ref(spec["adapter"])   # imports demos/adapters.py -> DemoRF; fails here if demos/ not on PYTHONPATH
+print("preflight OK:", cat, "reachable; ROIs present; bundle", spec["adapter"], "T=", spec["n_timestamps"])
 PY
 ```
 
@@ -116,7 +150,7 @@ PY
 > `ModuleNotFoundError` Phase 0 exists to catch.
 
 ```bash
-# (Requires the Setup block's AZ_* vars already exported: AZ_RG, AZ_ML_WORKSPACE, OUT, …)
+# (Requires the Setup block's AZ_* vars already exported: AZ_RG, AZ_ML_WORKSPACE, OUT38, …)
 export AZ_INFER_ENV_NAME='fsd-infer-env'
 
 # 1. Build context = fsd wheel + the `adapters` module + a Dockerfile, in one directory.
@@ -124,11 +158,11 @@ export AZ_INFER_ENV_NAME='fsd-infer-env'
 #    fsd wheel (the wheel packages only src/fsd/), so the image must COPY it in. AZ_ADAPTERS_SRC
 #    defaults to it; point it elsewhere for your own adapter (must import as the bundle.json ref's module).
 export AZ_ADAPTERS_SRC="${AZ_ADAPTERS_SRC:-demos/adapters.py}"
-rm -rf "$OUT/infer_env_src" && mkdir -p "$OUT/infer_env_src/adapter_src"
-.venv/bin/pip wheel . --no-deps -w "$OUT/infer_env_src" && ls "$OUT"/infer_env_src/fsd-*.whl
-cp -r "$AZ_ADAPTERS_SRC" "$OUT/infer_env_src/adapter_src/"   # -> adapter_src/adapters.py == module `adapters`
+rm -rf "$OUT38/infer_env_src" && mkdir -p "$OUT38/infer_env_src/adapter_src"
+.venv/bin/pip wheel . --no-deps -w "$OUT38/infer_env_src" && ls "$OUT38"/infer_env_src/fsd-*.whl
+cp -r "$AZ_ADAPTERS_SRC" "$OUT38/infer_env_src/adapter_src/"   # -> adapter_src/adapters.py == module `adapters`
 
-cat > "$OUT/infer_env_src/Dockerfile" <<'DOCKER'
+cat > "$OUT38/infer_env_src/Dockerfile" <<'DOCKER'
 # The same base image spec 36 proved works on this cluster.
 FROM mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04:latest
 COPY fsd-*.whl /tmp/
@@ -143,7 +177,7 @@ RUN python -m pip install --no-cache-dir "$(ls /tmp/fsd-*.whl)[azure,mpc]" sciki
 ENV PYTHONPATH=/opt/adapter
 DOCKER
 
-cat > "$OUT/infer-environment.yml" <<YML
+cat > "$OUT38/infer-environment.yml" <<YML
 \$schema: https://azuremlschemas.azureedge.net/latest/environment.schema.json
 name: ${AZ_INFER_ENV_NAME}
 build:
@@ -152,7 +186,7 @@ build:
 YML
 
 # version is omitted on purpose -> AML auto-increments it. Capture what it assigned:
-export AZ_INFER_ENV_VERSION="$(az ml environment create -f "$OUT/infer-environment.yml" \
+export AZ_INFER_ENV_VERSION="$(az ml environment create -f "$OUT38/infer-environment.yml" \
   -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query version -o tsv)"
 echo "built ${AZ_INFER_ENV_NAME}:${AZ_INFER_ENV_VERSION}"
 ```
@@ -172,7 +206,7 @@ A registered environment can exist and still be unusable (wrong `python` on `PAT
 `PYTHONPATH` that doesn't resolve the adapter). One cheap job settles it **without** needing a
 staged bundle — do it before Phase 0 (which additionally needs `AZ_BUNDLE_LOCAL`):
 ```bash
-cat > "$OUT/infer_env_smoke.yml" <<YML
+cat > "$OUT38/infer_env_smoke.yml" <<YML
 \$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
 display_name: fsd-infer-env-smoke
 experiment_name: fsd-infer-phase0
@@ -183,7 +217,7 @@ command: >-
 environment: azureml:${AZ_INFER_ENV_NAME}:${AZ_INFER_ENV_VERSION}
 compute: azureml:${AZ_CLUSTER}
 YML
-az ml job create -f "$OUT/infer_env_smoke.yml" -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query name -o tsv
+az ml job create -f "$OUT38/infer_env_smoke.yml" -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query name -o tsv
 # then stream it with the returned job name:
 #   az ml job stream -n <job-name> -g "$AZ_RG" -w "$AZ_ML_WORKSPACE"
 ```
@@ -202,7 +236,7 @@ az ml job create -f "$OUT/infer_env_smoke.yml" -g "$AZ_RG" -w "$AZ_ML_WORKSPACE"
 
 ## Phase 0 — the inference Environment + adapter-import smoke
 ```bash
-cat > "$OUT/phase0.py" <<'PY'
+cat > "$OUT38/phase0.py" <<'PY'
 import json, os
 from fsd.model import bundle as fsd_bundle
 from fsd.workflows import runners
@@ -236,10 +270,10 @@ with fs.open(status_url, "r") as f:
 out = {"phase": "phase0-environment-smoke", "pass": smoke_status["status"] == "ok",
       "staged_bundle_url": staged, "smoke_status": smoke_status}
 print("FSD_RESULT_BEGIN"); print(json.dumps(out, indent=2)); print("FSD_RESULT_END")
-with open(f"{os.environ['OUT']}/phase0_result.json", "w") as f:
+with open(f"{os.environ['OUT38']}/phase0_result.json", "w") as f:
     json.dump(out, f, indent=2)
 PY
-.venv/bin/python "$OUT/phase0.py"
+.venv/bin/python "$OUT38/phase0.py"
 ```
 - **Expect:** one AML job scales a node 0→1, `smoke_status.status == "ok"`, `smoke_status.error is
   null`.
@@ -249,12 +283,23 @@ PY
   dependency (or the adapter package itself) — rebuild it per the Setup block's `az ml environment
   create` note, then re-run this phase.
 
-## Phase 1 — one cell to blob
+## Phase 1 — a small single-MGRS-tile ROI → its grid cells, to blob
+
+> ⚠️ **"single-tile" here = single MGRS *tile*, NOT single grid *cell*** (CLAUDE.md's terminology
+> rule). `s2grid=476da24` is a **~4.6 km ROI whose imagery all comes from one MGRS tile (T33UWP,
+> one CRS)** — chosen so the datacube *build* needs no cross-CRS merge. But `run_inference(roi=…)`
+> **always tiles** the ROI into ~5 km S2 grid cells (`grid_size_km=5`, `scale_fact=1.1`), and this
+> grid-unaligned ROI spills into a ~3×3 neighborhood → **9 grid cells**, each = one datacube = one
+> `output.tif`. So this phase produces **~9 per-cell COGs**, not one — a *good* thing: it exercises
+> the multi-cell fan-out-to-blob at tiny scale before Phase 3's 900. (One literal cell would need a
+> grid-*aligned* single-cell geometry; not worth it for a smoke.)
+
 ```bash
-cat > "$OUT/phase1.py" <<'PY'
-import json, os
+cat > "$OUT38/phase1.py" <<'PY'
+import io, json, os
 import fsd
-from fsd.model import bundle as fsd_bundle
+import geopandas as gpd
+from fsd.storage import fs
 
 # NOTE: run_id / n_shards / skip_smoke etc. are `run_aml_inference` args, so they go INSIDE
 # runner_kwargs — `fsd.run_inference` itself has no such params (passing them to it is a TypeError).
@@ -263,7 +308,7 @@ common_kwargs = dict(
     environment=f"{os.environ['AZ_INFER_ENV_NAME']}:{os.environ['AZ_INFER_ENV_VERSION']}",
     root=os.environ["AZ_ROOT"], identity_client_id=os.environ["AZ_UAMI_CLIENT_ID"],
     subscription_id=os.environ["AZ_SUBSCRIPTION_ID"], resource_group_name=os.environ["AZ_RG"],
-    workspace_name=os.environ["AZ_ML_WORKSPACE"], run_id="phase1-onecell",
+    workspace_name=os.environ["AZ_ML_WORKSPACE"], run_id="phase1-roi",
 )
 
 bundle_path = os.environ["AZ_BUNDLE_LOCAL"]
@@ -277,27 +322,37 @@ result = fsd.run_inference(
     runner="aml", runner_kwargs=common_kwargs, storage="azure",
 )
 
-out = {"phase": "phase1-one-cell-to-blob", "pass": bool(result.output_filepaths),
+# how many cells did the ROI tile into? (grids.geojson is written by run_inference via the seam)
+with fs.open(result.grids_filepath, "rb") as f:
+    n_cells = len(gpd.read_file(io.BytesIO(f.read())))
+
+out = {"phase": "phase1-roi-cells-to-blob",
+      # every tiled cell must have produced an output.tif (collect drops any that didn't exist)
+      "pass": bool(result.output_filepaths) and len(result.output_filepaths) == n_cells,
+      "n_grid_cells": n_cells, "n_outputs": len(result.output_filepaths),
       "output_filepaths": result.output_filepaths,
       "stac_catalog_filepath": result.stac_catalog_filepath}
 print("FSD_RESULT_BEGIN"); print(json.dumps(out, indent=2, default=str)); print("FSD_RESULT_END")
-with open(f"{os.environ['OUT']}/phase1_result.json", "w") as f:
+with open(f"{os.environ['OUT38']}/phase1_result.json", "w") as f:
     json.dump(out, f, indent=2, default=str)
 PY
-.venv/bin/python "$OUT/phase1.py"
+.venv/bin/python "$OUT38/phase1.py"
 ```
-- **Expect:** the smoke job (D11, on by default) then one shard job, both scale a node 0→1; exactly
-  one `output.tif` under `phase1_out/cells/.../output.tif` on blob.
-- **PASS if:** `output_filepaths` has one entry that exists on blob (`fs.exists`), with the correct
-  nodata/CRS/transform (`gdalinfo <vsiadls-path>`), **and** compare it against a **local**
-  `fsd.run_inference(roi=..., runner="local")` of the SAME cell — should be byte-identical (mirrors
-  spec 36 Phase 3b's AML-vs-local proof, now for inference outputs).
-- **If it fails:** paste `$OUT/phase1_result.json`; a `ModuleNotFoundError` here despite Phase 0
-  passing means the Environment changed between phases — rebuild + re-smoke.
+- **Expect:** the smoke job (D11, on by default) then one shard job, both scale a node 0→1; **one
+  `output.tif` per tiled grid cell** under `phase1_out/cells/<window>/<cell-id>/output.tif` on blob
+  (≈ 9 for this ROI — the exact count = `roi_to_s2_grids`'s output, printed as `n_grid_cells`).
+- **PASS if:** `n_outputs == n_grid_cells` (every tiled cell produced a COG — none silently dropped)
+  and each exists on blob (`fs.exists`), with correct nodata/CRS/transform (`gdalinfo <vsiadls-path>`
+  on one). For the AML-vs-local proof (mirrors spec 36 Phase 3b), run the SAME call with
+  `runner="local"` and compare **one matching cell by id** (`.../cells/<window>/<cell-id>/output.tif`)
+  — should be byte-identical. You need only one cell for that check, not all nine.
+- **If it fails:** paste `$OUT38/phase1_result.json`; `n_outputs < n_grid_cells` means some cells
+  failed (read their `_status`/`az ml job stream`); a `ModuleNotFoundError` despite Phase 0 passing
+  means the Environment changed between phases — rebuild + re-smoke.
 
 ## Phase 2 — resume + the D13 duplicate guard
 ```bash
-cat > "$OUT/phase2.py" <<'PY'
+cat > "$OUT38/phase2.py" <<'PY'
 import json, os
 import fsd
 
@@ -344,10 +399,10 @@ except ValueError as exc:
 out = {"phase": "phase2-resume-and-guard", "pass": bool(result.output_filepaths) and guard_raised,
       "resume_output_filepaths": result.output_filepaths, "d13_guard_raised": guard_raised}
 print("FSD_RESULT_BEGIN"); print(json.dumps(out, indent=2, default=str)); print("FSD_RESULT_END")
-with open(f"{os.environ['OUT']}/phase2_result.json", "w") as f:
+with open(f"{os.environ['OUT38']}/phase2_result.json", "w") as f:
     json.dump(out, f, indent=2, default=str)
 PY
-.venv/bin/python "$OUT/phase2.py"
+.venv/bin/python "$OUT38/phase2.py"
 ```
 - **Expect:** the resume run reports the same `n_units`/`n_skipped == n_units` shape as
   `runbooks/36-aml-runner.md` Phase 2 (D6/D7 now for inference); `d13_guard_raised: true`.
@@ -361,7 +416,7 @@ PY
 > 36°E) — it has **zero overlap** with the Austria archive, so all 900 cells would build empty cubes
 > and the whole run is wasted. This is the exact mistake `runbooks/36-aml-runner.md` Phase 3 hit.
 ```bash
-cat > "$OUT/phase3.py" <<'PY'
+cat > "$OUT38/phase3.py" <<'PY'
 import json, os, time
 import fsd
 from fsd.storage import fs
@@ -423,10 +478,10 @@ out = {"phase": "phase3-real-fanout",
       "output_folderpath": result.output_folderpath,
       "stac_catalog_filepath": result.stac_catalog_filepath}
 print("FSD_RESULT_BEGIN"); print(json.dumps(out, indent=2, default=str)); print("FSD_RESULT_END")
-with open(f"{os.environ['OUT']}/phase3_result.json", "w") as f:
+with open(f"{os.environ['OUT38']}/phase3_result.json", "w") as f:
     json.dump(out, f, indent=2, default=str)
 PY
-.venv/bin/python "$OUT/phase3.py"
+.venv/bin/python "$OUT38/phase3.py"
 ```
 - **Expect:** `n_shards` jobs (or fewer if `n_cells < n_shards`, D1's degrade), each `Completed`,
   every shard's `_status/<k>.json` `status: "ok"`, `n_failed: 0` across all shards. A ~1–2 min
@@ -436,12 +491,12 @@ PY
   `n_failed == 0`, **and** the D7 claim `bundle_loads == n_shards_reported` (with `cores=1`, one
   bundle load per node — not once per cell). `driver_overhead_seconds`/`slowest_shard_seconds`
   feed TODO #55's timed-demo report.
-- **If it fails:** paste `$OUT/phase3_result.json`; `az ml job stream -n <job-name> ...` for a
+- **If it fails:** paste `$OUT38/phase3_result.json`; `az ml job stream -n <job-name> ...` for a
   per-node traceback (job names are in the raised `RuntimeError`'s shard list, or
   `_status/*.json`'s `aml_job_status` for a job with no status file at all).
 
 ## Success criteria (`_result.json`)
-Each phase writes `$OUT/phase<N>_result.json` (also printed between `FSD_RESULT_BEGIN`/`_END`
+Each phase writes `$OUT38/phase<N>_result.json` (also printed between `FSD_RESULT_BEGIN`/`_END`
 markers). The run passes when every phase's `pass` is true. **Paste these files back** (not logs).
 
 ## Stop / observe
