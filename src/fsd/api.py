@@ -1103,7 +1103,13 @@ def _run_inference_roi(
         grid_size_km=grid_size_km, scale_fact=scale_fact,
     )
     grids_filepath = os.path.join(output_folderpath, "grids.geojson")
-    grids.to_file(grids_filepath, driver="GeoJSON")
+    # GDAL/pyogrio has no abfss:// write driver, so a blob output_folderpath makes
+    # grids.to_file(grids_filepath) fail ("Failed to create GeoJSON datasource"). Stage via the
+    # storage seam instead -- mirrors create_training_data's gdf staging and the seam READ in
+    # create_datacube.setup (create_datacube.py:79). to_json(default=str) guards any non-JSON-native
+    # column (spec 39 lesson); grids carry only id + geometry, but keep the guard for safety.
+    with fs.open(grids_filepath, "w") as f:
+        f.write(grids.to_json(default=str))
 
     # 2) per-cell setup (reuse the build workflow's setup; no labels). Skip if input.csv exists
     #    so a re-run resumes (Snakemake then skips already-inferred cells).

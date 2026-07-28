@@ -364,6 +364,61 @@ def test_run_inference_roi_mode_threads_runner_kwargs_to_run_aml_inference(tmp_p
     assert calls["kw"]["identity_client_id"] == "id"
 
 
+def test_run_inference_roi_stages_grids_geojson_via_seam_on_non_gdal_dst(tmp_path, monkeypatch):
+    """Regression: a blob/seam-only `output_folderpath` made `grids.to_file(grids_filepath)` fail
+    (GDAL/pyogrio has no abfss:// write driver -- "Failed to create GeoJSON datasource"). The
+    gridded ROI must be staged through `fsd.storage`. `memory://` stands in for a GDAL-unwritable,
+    seam-writable dst (same trick as the D5 to_cog tests). Non-vacuous: on the pre-fix `grids.to_file`
+    this asserts False (grids.geojson never lands on the memory fs)."""
+    bundle_dir = _write_bundle(tmp_path)
+
+    def _fake_run_aml_inference(input_csv, bundle_path, **kw):
+        # collect (step 4) only fs.exists()-checks output.tif; a 1-byte seam write is enough.
+        with fs.open(input_csv, "r") as f:
+            for exp in pd.read_csv(f)["export_folderpath"]:
+                with fs.open(f"{exp}/output.tif", "w") as g:
+                    g.write("x")
+        return {"run_id": "r"}
+
+    monkeypatch.setattr(runners, "run_aml_inference", _fake_run_aml_inference)
+    monkeypatch.setattr(
+        "fsd.grid.roi_to_s2_grids",
+        lambda roi, **kw: gpd.GeoDataFrame({"id": ["s1"], "geometry": [TILE_4326]}, crs="EPSG:4326"),
+    )
+    # short-circuit the STAC/merge tail -- rasterio on a memory:// COG is out of scope for THIS test.
+    monkeypatch.setattr(api, "_finalize_outputs", lambda outs, folder, *a, **k: api.InferenceResult(
+        output_folderpath=folder, output_filepaths=list(outs), stac_catalog_filepath="memory://x"))
+
+    cat = tmp_path / "catalog.parquet"
+    from fsd.catalog import declaration as declaration_module
+    from fsd.catalog.declaration import S2_L2A_DECLARATION
+    gdf = gpd.GeoDataFrame(
+        [{"id": "T_0", "satellite": "sentinel-2-l2a", "timestamp": TS[0], "s3url": "s3://x",
+          "local_folderpath": str(tmp_path), "files": "B04.tif,B08.tif", "cloud_cover": 0.0,
+          "geometry": TILE_4326, "area_contribution": 100.0}],
+        crs="EPSG:4326",
+    )
+    declaration_module.to_attrs(gdf, S2_L2A_DECLARATION)
+    fs.write_parquet(str(cat), gdf)
+
+    out = "memory://roiout"
+    api.run_inference(
+        bundle_dir, roi=gpd.GeoDataFrame({"geometry": [TILE_4326]}, crs="EPSG:4326"),
+        output_folderpath=out, catalog_filepath=str(cat),
+        startdate="2018-06-01", enddate="2018-06-11", mosaic_days=20,
+        bands=["B04", "B08"], runner="aml",
+        runner_kwargs={"cluster": "c", "environment": "e:1", "root": "memory://r",
+                       "identity_client_id": "id"},
+        storage="azure",
+    )
+    import io
+    grids_url = f"{out}/grids.geojson"
+    assert fs.exists(grids_url), "grids.geojson was not staged through the storage seam"
+    with fs.open(grids_url, "rb") as f:
+        back = gpd.read_file(io.BytesIO(f.read()))
+    assert list(back["id"]) == ["s1"]
+
+
 # --- test 6: D5 -- to_cog remote-dst; engine + api._merge_outputs unchanged callers -
 
 def test_to_cog_remote_dst_writes_a_valid_cog_via_transfer(tmp_path):
