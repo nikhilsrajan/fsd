@@ -1065,6 +1065,45 @@ def _run_prebuilt_via_runner(model, pairs, output_folderpath, *, cores, cubes_pe
     return [out for _, out in pairs if fs.exists(out)]
 
 
+def _output_key(path: str) -> str:
+    """`…/<window>/<cell_id>/output.tif` -> `<window>/<cell_id>/output.tif`.
+
+    The trailing components are the only scheme-independent part of the path, and that
+    is the whole point: `fs.glob` returns the *filesystem's* path form (adlfs gives
+    `container/path/…`, with no `abfss://` scheme), so a globbed hit never string-equals
+    the url a caller built with `os.path.join`. Matching on the tail makes the two
+    comparable under either form — and cell ids are unique within a run (spec 21
+    D-GRID-1), so `<window>/<cell_id>/output.tif` is unique too.
+    """
+    return "/".join(str(path).rstrip("/").replace("\\", "/").split("/")[-3:])
+
+
+def _existing_outputs(candidates, *, run_folderpath: str) -> list[str]:
+    """Which of `candidates` (per-cell `output.tif` urls) exist — in ONE listing rather
+    than one `fs.exists` per cell (TODO #61).
+
+    Measured on run-book 38 Phase 3: the driver's post-run collect was **729 s of a
+    2066.9 s wall**, roughly three sequential blob round-trips per cell over VPN. This
+    removes one of the three. Order follows `candidates`, as the per-cell `fs.exists`
+    comprehension it replaces did.
+
+    A pattern that matches nothing yields an empty list, and the caller already raises
+    "no per-cell outputs were produced" on that — a loud failure, not a silent one.
+
+    ⚠️ The `*/*` depth is a **contract with `create_datacube.setup`**, which builds
+    `export_folderpath = run_folderpath/<window>/<id>` (`workflows/create_datacube.py:147-151`).
+    The `<window>` folder is derived from each shape's *actual* timestamp range, so it
+    varies between cells — which is fine here (the glob spans any window, and the key
+    carries whichever one a cell got), but a change to that layout must change this
+    pattern too.
+    """
+    hits = {
+        _output_key(h)
+        for h in fs.glob(os.path.join(str(run_folderpath), "*", "*", "output.tif"))
+    }
+    return [c for c in candidates if _output_key(c) in hits]
+
+
 def _imagery_missing_message(roi, startdate, enddate, bands, *, catalog_filepath, why) -> str:
     """Build the D13 guardrail message: the plumbing found no imagery for this request, so turn the
     error into an actionable `fsd.download(...)` plan (spec 23). Degrades gracefully if the STAC
@@ -1231,7 +1270,7 @@ def _run_inference_roi(
         os.path.join(str(exp), "output.tif"): str(sp)
         for exp, sp in zip(rows["export_folderpath"], rows["shapefilepath"])
     }
-    output_filepaths = [cog for cog in geometries if fs.exists(cog)]
+    output_filepaths = _existing_outputs(list(geometries), run_folderpath=run_folderpath)
     if not output_filepaths:
         raise RuntimeError("no per-cell outputs were produced.")
 

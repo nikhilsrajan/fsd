@@ -234,3 +234,61 @@ def test_merge_reproject_merge_crs_override(tmp_path):
                          reproject_to_dominant=True, merge_crs=32636)
     with rasterio.open(out) as s:
         assert s.crs.to_epsg() == 32636                        # forced target
+
+
+# --- TODO #61: the collect is one listing, not one exists() per cell -------------------
+
+def _cell_out(root, window, cell_id):
+    import os
+
+    return os.path.join(str(root), window, cell_id, "output.tif")
+
+
+def test_output_key_is_scheme_independent():
+    """The reason the collect can use `fs.glob` at all: a globbed hit and a caller-built
+    url never string-equal on blob (adlfs drops the `abfss://` scheme), but their trailing
+    `<window>/<cell>/output.tif` do match."""
+    from fsd.api import _output_key
+
+    url = "abfss://data@acct.dfs.core.windows.net/pfx/out/cells/20180406_20180928/165b09c/output.tif"
+    globbed = "data/pfx/out/cells/20180406_20180928/165b09c/output.tif"
+    local = "/tmp/out/cells/20180406_20180928/165b09c/output.tif"
+    assert _output_key(url) == _output_key(globbed) == _output_key(local)
+    assert _output_key(url) == "20180406_20180928/165b09c/output.tif"
+
+
+def test_existing_outputs_uses_one_listing_and_keeps_order(tmp_path, monkeypatch):
+    """One `fs.glob` for the whole run, zero `fs.exists` — the TODO #61 fix. Order must
+    still follow the caller's candidate list, as the comprehension it replaced did."""
+    from fsd import api as _api
+
+    run = tmp_path / "cells"
+    window = "20180406_20180928"
+    for cid in ("aaa", "ccc"):                       # 'bbb' never produced an output
+        d = run / window / cid
+        d.mkdir(parents=True)
+        (d / "output.tif").write_bytes(b"x")
+
+    calls = {"glob": 0, "exists": 0}
+    real_glob = _api.fs.glob
+    monkeypatch.setattr(_api.fs, "glob",
+                        lambda p, **kw: (calls.__setitem__("glob", calls["glob"] + 1),
+                                         real_glob(p, **kw))[1])
+    monkeypatch.setattr(_api.fs, "exists",
+                        lambda p, **kw: calls.__setitem__("exists", calls["exists"] + 1))
+
+    candidates = [_cell_out(run, window, c) for c in ("ccc", "bbb", "aaa")]
+    got = _api._existing_outputs(candidates, run_folderpath=str(run))
+
+    assert got == [_cell_out(run, window, "ccc"), _cell_out(run, window, "aaa")]
+    assert calls == {"glob": 1, "exists": 0}          # ONE round trip, regardless of N
+
+
+def test_existing_outputs_empty_when_nothing_matches(tmp_path):
+    """A pattern that matches nothing returns empty so the caller raises its own loud
+    'no per-cell outputs were produced' — never a silent success."""
+    from fsd.api import _existing_outputs
+
+    run = tmp_path / "cells"
+    run.mkdir()
+    assert _existing_outputs([_cell_out(run, "w", "id")], run_folderpath=str(run)) == []

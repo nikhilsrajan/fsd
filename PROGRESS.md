@@ -15,7 +15,21 @@ cells consumed, `merged.tif` = **14.1 MB** on blob (6867x6828 px, 3.3:1 COG comp
 **1082.1 s**. ✅ **VISUALLY VALIDATED in QGIS (user, 2026-07-28)** — the merged map looks right;
 seams are clean. That is the real completion criterion, not `merged_bytes > 0` (CLAUDE.md).
 
-### ⭐ NEXT STEP — two sessions, in this order (user, 2026-07-28)
+### ⭐ NEXT STEP — IMPLEMENT SPEC 40 in a Sonnet session (user, 2026-07-28)
+**Session A is CLOSED.** The report exists (`demos/E2E_AUSTRIA_AML.md`), the overhead is decomposed
+to the second, and the free recovery is complete (run-book 41, all 4 steps). **Run-book 42 is
+SUPERSEDED and will not be run** — its two numbers arrive free once spec 40's telemetry lands, so
+the two cells stay honestly "not measured" until then.
+
+**→ `specs/40-e2e-aml-demo-script.md` (grilled, 10 decisions, signed off) + `docs/adr/0021`.**
+Hand-off doc: `runbooks/HANDOFF-spec40-implementation.md`. Sonnet@medium.
+**TODO #61 fix (a) already landed here** (`api._existing_outputs`, one glob instead of 300
+`fs.exists`); **(b) threaded metadata reads and (c) batched STAC writes are still open** and are the
+bigger halves — they are listed as optional follow-ups in the hand-off, not part of spec 40.
+**Parked:** TODO #62 (re-run the local demo on current code, so both sides are measured on the same
+code — do it when spec 40's demo run lands), TODO #59 (cluster sizing — now waiting on #61 (b)/(c)).
+
+### The Session-A record — two sessions, in this order (user, 2026-07-28)
 **SESSION A — the local-vs-AML timing report. 📝 DRAFTED 2026-07-28 → `demos/E2E_AUSTRIA_AML.md`,
 waiting on two run-books.** Every measured figure is in it; the **two unmeasured driver walls**
 (run-book 36 P3 build, 37 P3 download) are marked "not measured" and close via

@@ -1,5 +1,25 @@
 # Run-book: 42 — timed COLD re-runs of the two untimed AML steps
 
+> # ⛔ NOT RUN — SUPERSEDED (user's call, 2026-07-28). Do not execute this run-book.
+>
+> It was written to buy two real `wall_seconds` for run-books 36 P3 and 37 P3, at the cost of two
+> cluster allocations and a **418 GB** duplicate archive. Two things then made that a bad trade:
+>
+> 1. **Run-book 41 recovered tight lower bounds for free** — 36 P3 ≥ 343 s, 37 P3 ≥ 354 s — so the
+>    only thing left to buy was each run's *pre-dispatch* window.
+> 2. **Spec 40 makes those windows native telemetry.** Every future dispatch writes
+>    `<run_root>/_timing.json` (ADR 0021), so the demo run measures pre-dispatch, admission, work and
+>    collect as it goes. Paying today for two numbers that arrive free tomorrow is waste.
+>
+> **The two cells stay "not measured" in `demos/E2E_AUSTRIA_AML.md` until spec 40's demo run
+> supplies them.** That is the honest outcome, and it is why the report marks them rather than
+> estimating them.
+>
+> Kept in full, unexecuted, because it records *how* to take a cold measurement without fooling
+> yourself — the fresh-prefix requirement and the `sum_skipped == 0` cold-ness proof are the lessons
+> spec 40 D5 inherits.
+
+
 > Spec-24 run-book. **You** run it; paste back each step's `_result.json`. Claude never runs it
 > (CLAUDE.md).
 > **⚠️ This one spends money.** It allocates the 16-node cluster twice and writes a second copy of
