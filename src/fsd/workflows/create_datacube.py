@@ -140,8 +140,8 @@ def setup(
         catalog_path = os.path.join(export_folderpath, "catalog.parquet")
         # D6a (spec 36): write via fsd.storage rather than gpd.to_file(path) directly, so
         # this per-unit geometry lands correctly on a remote export_folderpath too.
-        with fs.open(shape_path, "w") as f:
-            f.write(shape_gdf.to_json())
+        # write_text (not fs.open) so a concurrent adlfs InvalidBlockList retries (TODO #57).
+        fs.write_text(shape_path, shape_gdf.to_json())
         fs.write_parquet(catalog_path, subset)
 
         row = {

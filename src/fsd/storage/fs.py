@@ -24,7 +24,8 @@ import io
 import json
 import os
 import shutil
-from typing import Any
+import time
+from typing import Any, Callable
 
 import fsspec
 import numpy as np
@@ -48,8 +49,59 @@ __all__ = [
     "transfer",
     "to_vsi",
     "is_local",
+    "write_bytes",
+    "write_text",
     "SOURCE_PATH_ATTRS_KEY",
 ]
+
+# TODO #57: adlfs stages a block-blob as parallel block uploads + a final
+# commit_block_list; under real concurrency (many threads sharing one adlfs
+# client) that staging/commit races and raises transiently -- a fresh write
+# re-stages clean blocks and commits. Matched by message substring (not an
+# azure import) so this stays backend-agnostic -- fs.py must not import azure.
+#
+# The markers are the *Azure storage error codes* that mean "retry me", never
+# adlfs's own wrapper text. adlfs re-raises EVERY write failure from a catch-all
+# `except Exception` as `RuntimeError(f"Failed to upload block: {e}!")`
+# (adlfs/spec.py `_async_upload_chunk`), so "Failed to upload block" carries no
+# information about whether the failure is transient -- a blocked credential, a
+# missing container or an RBAC denial all arrive wearing that prefix. Matching it
+# would retry permanent failures 6x with backoff instead of failing fast. The
+# genuine race is still caught because adlfs interpolates the underlying
+# `HttpResponseError` into that message, and azure-storage-blob always appends
+# "\nErrorCode:<code>" to it (azure/storage/blob/_shared/response_handlers.py).
+_TRANSIENT_WRITE_MARKERS = (
+    "InvalidBlockList",
+    "The specified block list is invalid",
+    "ServerBusy",
+    "OperationTimedOut",
+)
+_WRITE_RETRIES = 5
+_WRITE_BACKOFF_SECONDS = 0.5
+
+
+def _is_transient_write_error(exc: BaseException) -> bool:
+    message = str(exc)
+    return any(marker in message for marker in _TRANSIENT_WRITE_MARKERS)
+
+
+def _write_with_retry(writer: Callable[[], None], *, what: str) -> None:
+    """Run `writer()` (a full open->write->close), retrying on a transient
+    concurrent-write error with exponential backoff. A non-transient error
+    re-raises immediately; a transient error re-raises once retries exhaust."""
+    for attempt in range(_WRITE_RETRIES + 1):
+        try:
+            writer()
+            return
+        except Exception as exc:
+            if not _is_transient_write_error(exc) or attempt == _WRITE_RETRIES:
+                raise
+            print(
+                f"[storage] transient write error on {what} "
+                f"(attempt {attempt + 1}/{_WRITE_RETRIES + 1}): {exc}",
+                flush=True,
+            )
+            time.sleep(_WRITE_BACKOFF_SECONDS * 2**attempt)
 
 # spec 35 §2/§5a. `PANDAS_ATTRS_FOOTER_KEY` is the upstream pandas/geopandas
 # convention (pandas issue #54321, geopandas PR #3597) that `.attrs` is
@@ -162,6 +214,25 @@ def glob(pattern: str, **storage_options: Any) -> list[str]:
     return fs.glob(p)
 
 
+def write_bytes(path: str, data: bytes, **storage_options: Any) -> None:
+    """Write raw bytes to `path`, retrying a transient concurrent-write error
+    (TODO #57)."""
+    fs, p = _fs_and_path(path, storage_options)
+    _ensure_parent(fs, p)
+
+    def _write() -> None:
+        with fs.open(p, "wb") as f:
+            f.write(data)
+
+    _write_with_retry(_write, what=path)
+
+
+def write_text(path: str, text: str, **storage_options: Any) -> None:
+    """Write a text string to `path`, retrying a transient concurrent-write
+    error (TODO #57)."""
+    write_bytes(path, text.encode("utf-8"), **storage_options)
+
+
 def size(url: str, **storage_options: Any) -> int:
     """Byte size of a file (0 if empty). Used to distinguish a real download from a
     zero-byte "touched" leftover."""
@@ -182,8 +253,12 @@ def save_npy(
     """
     fs, p = _fs_and_path(path, storage_options)
     _ensure_parent(fs, p)
-    with fs.open(p, "wb") as f:
-        np.save(f, arr, allow_pickle=allow_pickle)
+
+    def _write() -> None:
+        with fs.open(p, "wb") as f:
+            np.save(f, arr, allow_pickle=allow_pickle)
+
+    _write_with_retry(_write, what=path)
 
 
 def load_npy(path: str, allow_pickle: bool = False, **storage_options: Any):
@@ -260,8 +335,11 @@ def write_parquet(path: str, df, **storage_options: Any) -> None:
         buf = io.BytesIO()
         pq.write_table(table.replace_schema_metadata(metadata), buf)
 
-    with fs.open(p, "wb") as f:
-        f.write(buf.getvalue())
+    def _write() -> None:
+        with fs.open(p, "wb") as f:
+            f.write(buf.getvalue())
+
+    _write_with_retry(_write, what=path)
 
 
 def peek_parquet_attrs(path: str, **storage_options: Any) -> dict:

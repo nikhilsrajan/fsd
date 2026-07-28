@@ -2,18 +2,76 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-28 (handoff)_
+_Last updated: 2026-07-28 (TODO #57 implemented)_
 
-## ⭐ NEXT STEP — implement the **adlfs concurrent-write retry** in the storage seam (fully designed below), then finish `runbooks/38-inference-on-aml.md` **Phase 3**.
+## ⭐ NEXT STEP — user re-runs `runbooks/38-inference-on-aml.md` **Phase 3** now that the adlfs seam retry (TODO #57) has landed.
 The demo pipeline is **download → build → flatten → [train + bundle] → inference**. Runbook 40
-(train+bundle) is GREEN; runbook 38 (inference) is **GREEN through Phase 2** on the real cluster and
-**BLOCKED at Phase 3** by a storage-seam concurrency bug (NOT a data/design problem). Baton:
-`runbooks/HANDOFF-inference-phase3.md`. **git:** `main` **4 commits ahead of `origin/main`
-(`e7d8ba6`), UNPUSHED** — `4050b3b` (runbooks 40/38/README) · `511c300` (PROGRESS: rb40 green) ·
-`9422a1a` (**fix**: grids.geojson seam write) · `265bec4` (runbooks: median + OUT40/OUT38 + rb38 Phase1
-tiling). Plus this handoff flush. Run the RECIPES.md identifier sweep before pushing.
+(train+bundle) is GREEN; runbook 38 (inference) is **GREEN through Phase 2** on the real cluster.
+**Phase 3's blocker (a storage-seam concurrency bug, NOT a data/design problem) is FIXED** (below),
+**implemented Sonnet@medium + reviewed Opus@high** — `pytest -q` **441 passed / 2 skipped** (= the
+436/2 baseline + 5 new tests), `ruff check src/ tests/` clean. Baton:
+`runbooks/HANDOFF-inference-phase3.md`. Awaiting: user re-runs Phase 3, pastes `phase3_result.json`
+(expect `sum_shard_units == n_cells_out == 1167`, `n_failed == 0`).
 
-### 🔴 THE NEXT TASK — seam retry for adlfs `InvalidBlockList` (code + test; ~Sonnet@medium against this design)
+**⚠️ Worktree-venv gotcha (diagnosed 2026-07-28 — supersedes the earlier "git-worktree
+config-auto-discovery" explanation in the spec-39 aside, which was WRONG):** a worktree `.venv` built
+with a bare `pip install -e ".[dev]"` diverges from the repo `.venv` in two ways that look like
+regressions and are not.
+1. **`pytest -q` reports 411 passed / 4 skipped, not 436/2** — because the fresh venv lacks the
+   **optional** extras, so `tests/test_azure_seam.py` (**25** tests, needs `adlfs`) and
+   `tests/test_grid.py` (**4** tests, needs `s2sphere`) `importorskip` at module level. Nothing is
+   silently uncollected; 411 + 25 + 4 = 440. Verified by running the worktree's code with the repo
+   venv's site-packages on `PYTHONPATH` → **440 passed / 2 skipped** pre-review.
+   **This matters:** `test_azure_seam.py` is the module most relevant to any `fsd.storage` change
+   (`test_memory_scheme_roundtrip_parquet_and_npy` covers `save_npy`/`write_parquet` directly), so a
+   storage-seam change validated only in a bare worktree venv has NOT been validated where it counts.
+2. **`ruff check` reports hundreds of errors unless narrowed to `--select E4,E7,E9,F,I`** — because
+   the fresh venv resolves a **newer ruff** (0.16.0 vs the repo venv's 0.15.20) whose default rule set
+   is much larger; `pyproject.toml` is read correctly in both. Confirmed: ruff 0.16.0 flags 262 issues
+   repo-wide on unmodified `main`; the repo's own ruff 0.15.20 over the same worktree code →
+   **All checks passed**. Do NOT narrow the `--select`; run the **repo venv's** ruff instead.
+
+**Recipe (use it for any future worktree):**
+`PYTHONPATH=<repo>/.venv/lib/python3.11/site-packages <worktree>/.venv/bin/python -m pytest -q` and
+`<repo>/.venv/bin/ruff check --config pyproject.toml src tests` — the worktree's editable `fsd` still
+wins on `sys.path` (a `.pth` editable finder in a `PYTHONPATH` dir is not processed), so this tests the
+**worktree's** code against the **repo's** full dependency set.
+
+### ✅ DONE — seam retry for adlfs `InvalidBlockList` (TODO #57, implemented 2026-07-28 Sonnet@medium, reviewed + corrected Opus@high)
+Implemented test-first to the design below: `_is_transient_write_error` + `_write_with_retry`
+(exp backoff, 5 retries, message-matched, no azure import) in `src/fsd/storage/fs.py`; new
+`write_bytes`/`write_text`; `save_npy`/`write_parquet` writes wrapped; `create_datacube.py:143` routed
+through `fs.write_text`. New tests in `tests/test_storage.py` (recovers after k transient failures /
+re-raises non-transient immediately / re-raises transient after exhausting retries / `write_text`
+memory:// round-trip) — all non-vacuous (asserted call counts, not just "no exception"). One
+pre-existing test (`test_setup_does_not_corrupt_a_remote_run_folderpath`) mocked `fs.open("w")` for the
+old call site; updated to mock `fs.write_text` instead, matching the new seam. `LIMITATIONS.md` row +
+`TODO.md` #57 both flipped to fixed.
+
+**🔧 REVIEW FINDING (Opus@high, fixed in the same worktree) — the transient classifier was too broad
+and would have retried PERMANENT failures.** The design's marker list included the literal
+`"Failed to upload block"`. Reading `adlfs/spec.py` (2026.5.0) `_async_upload_chunk` shows that string
+is adlfs's **catch-all** wrapper — `except Exception as e: raise RuntimeError(f"Failed to upload block:
+{e}!")` — so a blocked credential, an RBAC denial, a missing container and a malformed path all wear
+it. Matching it meant *any* adlfs write error got 6 attempts with 15.5 s of cumulative backoff per
+file, across a 1167-cell × 16-thread fan-out, instead of failing fast. **Observed live, not
+hypothetical:** reverting the call site during review produced
+`RuntimeError: Failed to upload block: ERROR: AADSTS53003: Access has been blocked by Conditional
+Access policies…` — a permanent auth error that the old marker set classified as transient (proven: 6
+attempts). **Fix:** drop the wrapper prefix, key only off the Azure **storage error codes**
+(`InvalidBlockList` / `The specified block list is invalid` / `ServerBusy` / `OperationTimedOut`). The
+genuine race is still matched because adlfs interpolates the inner `HttpResponseError` and
+azure-storage-blob always appends `"\nErrorCode:<code>"`
+(`azure/storage/blob/_shared/response_handlers.py`). **+1 regression test**
+(`test_write_with_retry_reraises_a_wrapped_auth_error_immediately`) and the two transient tests now use
+the verbatim wrapped-message shape rather than a bare `"InvalidBlockList"` string.
+**Also hardened:** `test_setup_does_not_corrupt_a_remote_run_folderpath` now asserts the recorded
+`write_text`/`write_parquet` paths. It already failed on a call-site regression, but only by escaping
+the mock into a **real ~97 s abfss:// round-trip**; it now fails offline and instantly.
+Everything else in the diff was checked and stands: `fs.py` has no azure import (`fsd.storage.azure`
+is fsd's own module and imports only `fsspec`), the `print` prefix matches the repo's `[setup]`
+convention, wrapping `save_npy`/`write_parquet` is justified (both are per-cell concurrent-write
+sites), and all 5 new tests fail with the fix reverted. Original design (kept for the record):
 **Symptom (real, runbook 38 Phase 3, 2026-07-28):** `create_datacube.setup()` for the 1167-cell ROI
 died at shape 0/1167 with `azure.core...HttpResponseError: The specified block list is invalid`
 (`ErrorCode:InvalidBlockList`), re-raised by adlfs as `RuntimeError("Failed to upload block: ...")`,
