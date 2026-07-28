@@ -22,7 +22,8 @@ prerequisites in `demos/E2E_AUSTRIA_AML.md` §8 (VM inside the project's compute
 Run as (see E2E_AUSTRIA_AML.md for the full env-var contract):
 
     export AZ_RG=... AZ_ML_WORKSPACE=... AZ_SUBSCRIPTION_ID=... AZ_CLUSTER=...
-    export AZ_UAMI_CLIENT_ID=... AZ_ACCOUNT=... AZ_FS=...
+    export AZ_UAMI_CLIENT_ID=...
+    export AZ_ROOT=abfss://<fs>@<account>.dfs.core.windows.net/<prefix>
     export AZ_ENV_NAME=fsd-aml-env AZ_ENV_VERSION=...
     export AZ_INFER_ENV_NAME=fsd-infer-env AZ_INFER_ENV_VERSION=...
     export AZ_LOCAL_CREDS_JSON=/path/to/cdse_credentials.json   # or AZ_VAULT_URL/AZ_CDSE_SECRET_NAME
@@ -38,6 +39,7 @@ import contextlib
 import datetime
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -83,7 +85,6 @@ _LOCAL_OUTDIR_BASE = os.path.join(_HERE, "..", "tests/outputs/demo_e2e_aml")  # 
 FIGDIR = os.path.join(_HERE, "figures")
 
 STEP_RESULTS: dict = {}   # {step: spec-24 result dict}, rewritten to timings.json every step
-_INTERRUPTED = False
 
 
 def log(msg):
@@ -107,17 +108,21 @@ class DemoInterrupted(RuntimeError):
 
 
 def _install_signal_handlers():
-    """D7: SIGINT/SIGTERM finish the current step's result before exiting -- a step's
+    """D7: SIGINT/SIGTERM both exit through the same clean path -- a step's
     `_result.json` is only ever written once its call returns (D3), so there is no
-    partial file to corrupt; this just turns a SIGTERM into the same clean abort path
-    Python already gives SIGINT (KeyboardInterrupt), so `main`'s except clause runs
-    either way."""
+    partial file to corrupt; every step that already finished keeps its numbers, and
+    the operator gets the resume line instead of a traceback.
+
+    SIGINT is handled explicitly rather than left to Python's default. The default
+    raises `KeyboardInterrupt`, which is a `BaseException`: it slips past `run_step`'s
+    `except Exception` *and* past `main`'s `except DemoInterrupted`, so a ^C on an
+    unattended run would print a raw traceback and skip the resume hint -- the one
+    moment the operator most needs it."""
     def _handler(signum, frame):
-        global _INTERRUPTED
-        _INTERRUPTED = True
         raise DemoInterrupted(f"signal {signum}")
 
     signal.signal(signal.SIGTERM, _handler)
+    signal.signal(signal.SIGINT, _handler)
 
 
 # --- driver location (D10) -----------------------------------------------------------
@@ -240,33 +245,56 @@ def _cdse_creds_kwargs() -> dict:
          "exactly one CDSE creds source is required).")
 
 
-def _measure_clock_skew(root: str) -> float:
-    """D11: write a scratch blob, read back its `last_modified`, compare to the driver's
-    own clock -- this session measured ~8s of laptop-vs-Azure skew, a third of a warm
-    admission. Recorded, not fatal (D4)."""
+def _measure_clock_skew(root: str) -> dict:
+    """D11: write a scratch blob, read back the stamp STORAGE put on it, compare to the
+    driver's own clock -- this session measured ~8s of laptop-vs-Azure skew, a third of
+    a warm admission. Recorded, not fatal (D4).
+
+    The write is bracketed (`before`/`after`) because the storage account stamps the
+    blob at some unknown instant *during* the call: comparing against `before` alone
+    charges the whole round-trip latency to skew. The midpoint is the estimate and the
+    half-width is its own uncertainty, reported alongside -- a skew figure every
+    admission number inherits should not quietly include the network.
+
+    Returns `{"seconds": None, ...}` when the backend records no mtime at all, so the
+    bound reads as *unmeasured* rather than as a confident zero."""
     probe_url = f"{root.rstrip('/')}/.fsd_clock_skew_probe"
     before = pd.Timestamp.now(tz="UTC")
     with fs.open(probe_url, "w") as f:
         f.write("skew-probe")
-    info = fs.ls(probe_url)
+    after = pd.Timestamp.now(tz="UTC")
+    remote_mtime = fs.modified(probe_url)
     with contextlib.suppress(Exception):
         fs.rm(probe_url)
-    # Fall back to "now" if the backend's ls doesn't expose mtime cheaply -- skew is then
-    # reported as ~0, which is conservative (undercounts, never overcounts, the bound).
-    remote_mtime = before
-    if info and isinstance(info[0], dict) and info[0].get("last_modified"):
-        remote_mtime = pd.Timestamp(info[0]["last_modified"])
-    return (remote_mtime - before).total_seconds()
+
+    if remote_mtime is None:
+        return {"seconds": None, "uncertainty_seconds": None,
+                "note": "backend records no mtime -- skew is UNMEASURED, not zero."}
+    midpoint = before + (after - before) / 2
+    return {
+        "seconds": (pd.Timestamp(remote_mtime) - midpoint).total_seconds(),
+        "uncertainty_seconds": (after - before).total_seconds() / 2,
+        "note": "driver clock vs storage-account clock; every job_admission figure "
+                "carries this bound (D11).",
+    }
 
 
 def step_preflight(ml_client, root: str) -> dict:
     errs: list[str] = []
     warnings: list[str] = []
 
+    # D4 wants each failure to name its own exact fix, so "a credential resolves" is
+    # checked on its own -- NOT by whether some cluster call happens to work. Asking
+    # for an ARM token is the cheapest thing that fails when, and only when, there is
+    # no `az login` and no managed identity; a wrong AZ_CLUSTER then reports as a
+    # cluster problem below rather than as a bogus credential problem.
     try:
-        ml_client.compute.get(os.environ["AZ_CLUSTER"])
+        from azure.identity import DefaultAzureCredential
+
+        DefaultAzureCredential().get_token("https://management.azure.com/.default")
     except Exception as exc:  # noqa: BLE001
-        errs.append(f"credential/cluster resolution failed (az login? managed identity?): {exc}")
+        errs.append(f"no credential resolves on this host -- run `az login` over SSH, or give "
+                    f"the VM a managed identity (E2E_AUSTRIA_AML.md §8.1 step 2): {exc}")
 
     try:
         probe = f"{root.rstrip('/')}/.fsd_preflight_probe"
@@ -287,12 +315,26 @@ def step_preflight(ml_client, root: str) -> dict:
     except Exception as exc:  # noqa: BLE001
         errs.append(f"cluster {os.environ['AZ_CLUSTER']!r} not found/unreachable: {exc}")
 
-    for env_var, name in (("AZ_ENV_NAME", "build"), ("AZ_INFER_ENV_NAME", "inference")):
+    # NB the version var is NOT f"{name_var}_VERSION" -- the documented contract
+    # (E2E_AUSTRIA_AML.md §8.2, and what `runner_kwargs` reads below) is
+    # AZ_ENV_NAME/AZ_ENV_VERSION, not AZ_ENV_NAME_VERSION. Naming them as a pair
+    # keeps the two readers of these vars from drifting apart again.
+    for name_var, version_var, label in (
+        ("AZ_ENV_NAME", "AZ_ENV_VERSION", "build"),
+        ("AZ_INFER_ENV_NAME", "AZ_INFER_ENV_VERSION", "inference"),
+    ):
+        unset = [v for v in (name_var, version_var) if not os.environ.get(v)]
+        if unset:
+            # An unset env var and an unbuilt Environment need different fixes (D4).
+            errs.append(f"{label} Environment: {', '.join(unset)} not set "
+                        f"(E2E_AUSTRIA_AML.md §8.2).")
+            continue
         try:
-            ml_client.environments.get(name=os.environ[env_var],
-                                       version=os.environ[f"{env_var}_VERSION"])
+            ml_client.environments.get(name=os.environ[name_var],
+                                       version=os.environ[version_var])
         except Exception as exc:  # noqa: BLE001
-            errs.append(f"{name} Environment {os.environ.get(env_var)!r} does not resolve -- "
+            errs.append(f"{label} Environment "
+                        f"{os.environ[name_var]}:{os.environ[version_var]!r} does not resolve -- "
                         f"build it first (D4 is verify-only): {exc}")
 
     for name, fp in [("ROI", ROI_FP), ("train", TRAIN_FP)]:
@@ -306,18 +348,23 @@ def step_preflight(ml_client, root: str) -> dict:
         if n_tiles > MAX_TILES:
             errs.append(f"{n_tiles} discovered tiles exceed max_tiles={MAX_TILES}.")
 
-    clock_skew_seconds = None
+    clock_skew = None
     if not any("blob read+write" in e for e in errs):
-        clock_skew_seconds = _measure_clock_skew(root)
-        if abs(clock_skew_seconds) > 5:
-            warnings.append(f"clock skew {clock_skew_seconds:.1f}s -- job_admission figures "
-                            "carry this bound (D11).")
+        clock_skew = _measure_clock_skew(root)
+        if clock_skew["seconds"] is None:
+            warnings.append(clock_skew["note"])
+        elif abs(clock_skew["seconds"]) > 5:
+            warnings.append(
+                f"clock skew {clock_skew['seconds']:.1f}s "
+                f"(±{clock_skew['uncertainty_seconds']:.1f}s) -- job_admission figures "
+                "carry this bound (D11).")
 
     if errs:
         fail("preflight failed:\n  - " + "\n  - ".join(errs))
 
-    return {"n_discovered_tiles": n_tiles, "clock_skew_seconds": clock_skew_seconds,
-            "warnings": warnings}
+    return {"n_discovered_tiles": n_tiles,
+            "clock_skew_seconds": None if clock_skew is None else clock_skew["seconds"],
+            "clock_skew": clock_skew, "warnings": warnings}
 
 
 # --- step 1: tiling (D1: duplicated on both sides, load-bearing, do not "fix") ------
@@ -366,37 +413,100 @@ def _new_dispatch_timings(root: str, before: set) -> list:
 
 # --- step 2: download (D13 scope, D14 archive-trust assertions) --------------------
 
+_BASELINE_RE = re.compile(r"_N(\d{2})(\d{2})_")
+
+
+def _asset_key(path: str) -> str:
+    """`…/<granule_id>/<filename>` -> `<granule_id>/<filename>`.
+
+    Same trap as `api._output_key`: `fs.glob` returns the *filesystem's* path form
+    (adlfs gives `container/path/…`, with no `abfss://` scheme), so a globbed hit never
+    string-equals a url built from the catalog's `local_folderpath`. The last two
+    components are both scheme-independent and unique.
+
+    Two components, not one: the catalog's `files` column holds bare **basenames**
+    (`B04.tif,B08.tif,B8A.tif,MTD_TL.xml,SCL.tif`) which are *identical on every row*,
+    so comparing basenames alone collapses 207 granules into 5 names and cannot detect
+    a missing granule at all. The granule id is what makes the key unique.
+    """
+    return "/".join(str(path).rstrip("/").replace("\\", "/").split("/")[-2:])
+
+
+def _expected_offset(granule_id: str) -> int | None:
+    """The additive reflectance offset this granule's own processing baseline implies
+    (`…_N0500_…` -> 05.00 -> -1000; -1000 for baseline >= 04.00, else 0 -- ESA, via
+    `fsd.sources._s2_radiometry`), or `None` if the id carries no baseline token.
+
+    Deliberately an INDEPENDENT re-derivation rather than a call into the source module
+    that wrote the column: D14 exists to catch a catalog that disagrees with its own
+    granules, and that is the *invisible* failure mode -- the pipeline goes green and
+    every reflectance is ~1000 DN high (the exact defect the workspace's old Ethiopia
+    archive carries). Asserting a value against the function that produced it would
+    catch nothing.
+    """
+    m = _BASELINE_RE.search(str(granule_id))
+    if not m:
+        return None
+    return -1000 if (int(m.group(1)), int(m.group(2))) >= (4, 0) else 0
+
+
 def _assert_archive_trustworthy(catalog_fp: str, dst_folderpath: str) -> dict:
     """D14: fold trust assertions into the download step (not a new step, D1 survives).
     Seconds of listing/tag reads -- the expensive cross-source pixel comparison stays in
-    `runbooks/37-verify-archive.md`."""
+    `runbooks/37-verify-archive.md`.
+
+    D14 names `scale`/`offset`/`nodata`; the catalog schema carries `offset` and
+    `nodata` (spec 34 §1) and no `scale` column -- scale is a fixed per-band constant
+    (`config.S2_REFLECTANCE_SCALE`), stamped on the COG rather than declared per row,
+    so there is nothing per-granule to disagree with.
+    """
     catalog = TileCatalog(catalog_fp)
     rows = catalog.read()
     if catalog.declaration is None:
         fail("D14: catalog carries no stamped SourceDeclaration.")
 
-    present = {p.rstrip("/").replace("\\", "/").split("/")[-1] for p in fs.glob(f"{dst_folderpath}/**/*.tif")}
-    declared_names = set()
-    for files in rows["files"]:
-        declared_names |= {f.strip() for f in str(files).split(",") if f.strip()}
-    missing = declared_names - present
+    # Every declared asset, keyed `<granule_id>/<filename>`; the extensions come from
+    # the catalog itself (not a hardcoded `*.tif`) so a declared sidecar -- CDSE
+    # declares `MTD_TL.xml` alongside the bands -- is globbed for rather than reported
+    # as missing from a listing that never looked for it.
+    declared: set[str] = set()
+    for _, row in rows.iterrows():
+        granule = str(row["local_folderpath"]).rstrip("/").replace("\\", "/").split("/")[-1]
+        declared |= {f"{granule}/{f.strip()}"
+                     for f in str(row["files"]).split(",") if f.strip()}
+    exts = {os.path.splitext(k)[1] for k in declared if os.path.splitext(k)[1]}
+    present: set[str] = set()
+    for ext in sorted(exts):
+        present |= {_asset_key(p) for p in fs.glob(f"{dst_folderpath}/**/*{ext}")}
+
+    missing = declared - present
     if missing:
-        fail(f"D14: {len(missing)} declared file(s) not found on blob, e.g. {sorted(missing)[:3]}.")
-    undeclared = present - declared_names
+        fail(f"D14: {len(missing)} of {len(declared)} declared asset(s) not found on blob, "
+             f"e.g. {sorted(missing)[:3]}.")
+    undeclared = present - declared
     # not fatal (a catalog can be a strict subset of what's on blob, e.g. a partial re-run's
     # leftovers) but worth surfacing.
 
     sample = rows.sample(min(10, len(rows)), random_state=7)
     for _, row in sample.iterrows():
         if row.get("nodata") != config.NODATA:
-            fail(f"D14: row {row['id']!r} nodata={row.get('nodata')!r} != config.NODATA "
-                f"({config.NODATA}) -- un-harmonized radiometry.")
+            fail(f"D14: row {row['id']!r} declares nodata={row.get('nodata')!r}, not "
+                 f"config.NODATA ({config.NODATA}) -- the builder treats {config.NODATA} "
+                 "as nodata, so any other declared value silently mixes real pixels "
+                 "with fill.")
+        expected_offset = _expected_offset(row["id"])
+        if expected_offset is not None and row.get("offset") != expected_offset:
+            fail(f"D14: row {row['id']!r} declares offset={row.get('offset')!r}, but its "
+                 f"processing baseline implies {expected_offset} -- un-harmonized "
+                 "radiometry: cubes built from this archive would be ~1000 DN off and "
+                 "nothing downstream would notice.")
         for fn in str(row["files"]).split(","):
-            fp = os.path.join(row["local_folderpath"], fn.strip())
+            fp = f"{str(row['local_folderpath']).rstrip('/')}/{fn.strip()}"
             if fs.size(fp) <= 0:
                 fail(f"D14: zero-byte asset {fp!r}.")
 
-    return {"n_catalog_rows": len(rows), "n_undeclared_objects": len(undeclared)}
+    return {"n_catalog_rows": len(rows), "n_declared_assets": len(declared),
+            "n_undeclared_objects": len(undeclared)}
 
 
 def step_download(ml_client, root: str) -> dict:
@@ -592,7 +702,9 @@ def step_report(demo: Demo) -> dict:
         payload = json.load(f)
     print(f"  timings.json -> {demo.timings_fp}")
     print(f"  send this ONE file back (D9): {json.dumps({k: v for k, v in payload.items() if k != 'steps'}, indent=2)}")
-    return {"timings_fp": demo.timings_fp, "n_steps_recorded": len(payload["steps"])}
+    # +1: timings.json on disk is one step behind -- it is rewritten *after* each step
+    # returns, so this step is not in the copy just read.
+    return {"timings_fp": demo.timings_fp, "n_steps_recorded": len(payload["steps"]) + 1}
 
 
 # --- D6: cost guard ------------------------------------------------------------------
@@ -610,15 +722,42 @@ def _dry_run_estimate():
     }, indent=2))
 
 
-def _print_delete_command(prev_run_id: str):
+def _print_delete_command(prev_run_id: str, az_root: str):
+    """D5: the script prints the delete, the operator runs it -- nothing here ever
+    deletes 80 GB by itself.
+
+    Account/filesystem/path are resolved from `AZ_ROOT` rather than emitted as
+    `"$AZ_FS"`/`"$AZ_ACCOUNT"` shell references: those two are not part of §8.2's
+    exported contract, so the quoted form pasted into a shell that never set them
+    silently expands to empty. The directory is also `<AZ_ROOT's path>/demo_runs/<id>`,
+    NOT a bare `demo_runs/<id>` -- `az storage fs directory delete -n` takes a path
+    relative to the filesystem root, and AZ_ROOT carries its own prefix."""
+    from fsd.storage.azure import account_from_url, to_vsi
+
+    prev_root = f"{az_root.rstrip('/')}/demo_runs/{prev_run_id}"
+    try:
+        if not prev_root.startswith(("abfss://", "az://")):
+            raise ValueError(prev_root)  # `to_vsi` passes non-blob paths through unchanged
+        _, _, filesystem, path = to_vsi(prev_root).split("/", 3)
+    except Exception:  # noqa: BLE001 - a non-blob root has no `az storage` command at all
+        print(f"  ! previous run {prev_run_id!r} left data at {prev_root} -- delete it by hand "
+              f"(fsd's own recursive delete is broken, TODO #50).")
+        return
+    account = account_from_url(prev_root)
+    account_arg = f'--account-name "{account}"' if account else "--account-name <account>"
     print(f"  ! previous run {prev_run_id!r} left data on blob. To reclaim it (fsd's own "
           f"recursive delete is broken, TODO #50 -- the OPERATOR runs this, never this "
           f"script):\n"
-          f"      az storage fs directory delete -f \"$AZ_FS\" --account-name \"$AZ_ACCOUNT\" "
-          f"-n demo_runs/{prev_run_id} --auth-mode login -y")
+          f"      az storage fs directory delete -f \"{filesystem}\" {account_arg} "
+          f"-n \"{path}\" --auth-mode login -y")
 
 
 def _last_run_marker_fp() -> str:
+    """Which run last *spent* anything -- written when the download step starts, not
+    when a run id is allocated. A run that dies in preflight has an empty prefix and
+    must not overwrite the id of the run that actually holds the data; with fsd's
+    recursive delete broken (TODO #50), a forgotten id is orphaned storage nobody can
+    name."""
     return os.path.join(_LOCAL_OUTDIR_BASE, ".last_run_id")
 
 
@@ -647,22 +786,22 @@ def main(argv=None):
               file=sys.stderr)
         raise SystemExit(1)
 
+    az_root = os.environ["AZ_ROOT"].rstrip("/")
+
     os.makedirs(_LOCAL_OUTDIR_BASE, exist_ok=True)
+    marker = _last_run_marker_fp()
     if args.fresh:
-        marker = _last_run_marker_fp()
         if os.path.exists(marker):
             with open(marker) as f:
                 prev = f.read().strip()
             if prev:
-                _print_delete_command(prev)
+                _print_delete_command(prev, az_root)
         run_id, resume = _allocate_run_id(), False
-        with open(marker, "w") as f:
-            f.write(run_id)
     else:
         run_id, resume = args.run_id, True
 
     demo = Demo(run_id, resume)
-    root = f"{os.environ['AZ_ROOT'].rstrip('/')}/demo_runs/{run_id}"
+    root = f"{az_root}/demo_runs/{run_id}"
     _install_signal_handlers()
 
     print(f"run_id={run_id} root={root} outdir={demo.outdir}", flush=True)
@@ -673,6 +812,13 @@ def main(argv=None):
         demo.run_step("0_preflight", step_preflight, ml_client, root)
 
         demo.run_step("1_tiling", step_tiling, demo.outdir)
+
+        # Claim the marker HERE, not at run-id allocation: this is the first step that
+        # puts real bytes on blob, so from this line on the prefix is worth a delete
+        # command. A run that never got past preflight leaves the previous (spending)
+        # run's id intact for the next `--fresh` to print.
+        with open(marker, "w") as f:
+            f.write(run_id)
 
         dl = demo.run_step("2_download", step_download, ml_client, root)
 

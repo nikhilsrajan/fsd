@@ -201,6 +201,26 @@ def size(url: str, **storage_options: Any) -> int:
     return fs.size(p)
 
 
+def modified(url: str, **storage_options: Any) -> Any | None:
+    """The backend's own last-modified time for a file, or `None` when the backend
+    does not record one.
+
+    The *server's* clock, not this process's — which is the point: spec 40 D11
+    measures driver-vs-storage clock skew by writing a scratch blob and reading back
+    the stamp the storage account put on it. `ls`/`glob` deliberately return bare
+    path strings (`ls` passes `detail=False`), so there is no other route to an
+    mtime through this module.
+
+    `None` rather than a raise for a backend without mtimes, so a caller measuring
+    skew can report "unavailable" instead of silently reporting zero skew.
+    """
+    fs, p = _fs_and_path(url, storage_options)
+    try:
+        return fs.modified(p)
+    except (NotImplementedError, KeyError, AttributeError):
+        return None
+
+
 # --- typed helpers -----------------------------------------------------------
 
 

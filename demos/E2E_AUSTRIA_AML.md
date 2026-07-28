@@ -412,8 +412,10 @@ python demos/e2e_austria_aml.py --fresh --dry-run
 # 2. The real run, under tmux/nohup so it survives a dropped SSH session (D7).
 tmux new -s fsd-demo
 python demos/e2e_austria_aml.py --fresh --confirm-spend
-# ^C / SIGTERM finishes the in-flight step's own _result.json before exiting (D7);
-# earlier steps' numbers are already on disk (D3) either way.
+# ^C / SIGTERM both exit cleanly, printing the resume line rather than a traceback
+# (D7). Every step that already FINISHED keeps its numbers (D3, each wrote its own
+# _result.json); the step that was in flight did not complete, so it has none, and
+# resuming re-runs it from the start on a fresh prefix (D5).
 
 # 3. If it stops partway (preflight failure, a failed dispatch, or an interrupt),
 #    resume with the SAME run id it printed at the start -- completed steps skip

@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import statistics
 
 PALETTE = {
     "blue": "#2a78d6", "orange": "#eb6834", "aqua": "#1baf7a",
@@ -81,8 +82,10 @@ def plot_job_admission(timings: dict, out_fp: str) -> str | None:
             continue
         ax.scatter(admissions, [row] * len(admissions), color=PALETTE["blue"],
                   s=36, alpha=0.85, zorder=3)
-        median = sorted(admissions)[len(admissions) // 2]
-        ax.plot([median, median], [row - 0.3, row + 0.3], color=INK, linewidth=2, zorder=4)
+        # statistics.median, not sorted(...)[n//2]: the latter is the UPPER median for
+        # even n, and even n is the expected case here (16 jobs per run, D11).
+        med = statistics.median(admissions)
+        ax.plot([med, med], [row - 0.3, row + 0.3], color=INK, linewidth=2, zorder=4)
     ax.set_yticks(range(len(runs)))
     ax.set_yticklabels([r["label"] for r in runs])
     ax.set_xlabel("job admission (seconds)")
