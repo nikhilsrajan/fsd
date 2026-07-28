@@ -58,6 +58,20 @@ _Avoid_: batch, partition (the shards *form* a partition; a shard is one slice o
 One dispatched execution, identified by `run_id`, with all its inputs/outputs/telemetry laid out under
 `<root>/runs/<run_id>/` (`shards/`, `_status/`, `_bundle/`).
 
+**Demo run**:
+One end-to-end execution of the whole pipeline for a region — the thing `demos/e2e_austria.py` (local)
+and its cluster sibling perform. A demo run **contains** several *runs* in the sense below (the cluster
+one dispatches four: download, cube build, flatten reduce, inference) plus driver-only work that
+dispatches nothing.
+_Avoid_: run (reserved, below), pipeline run.
+
+**Step**:
+One of the labelled parts a demo run is divided into and timed by — `0_preflight`, `1_tiling`,
+`2_download`, `3_training_data`, `4_train_bundle`, `5_run_inference`, `6_plots`, `7_report`. The same
+labels on the local and cluster sides, so the two are comparable line by line. A step may dispatch one
+run, several, or none.
+_Avoid_: phase (means a run-book's manual stage — "run-book 38 Phase 3" — and is not this), stage.
+
 **Reduce job**:
 A dispatched unit that collapses MANY inputs into ONE output, run as a single node — the opposite shape
 from a fan-out. The flatten reduce (`workflows.runners.run_aml_flatten`, spec 39 D3) reads every cube
@@ -78,9 +92,19 @@ _Avoid_: target, y (fine in code, not the domain term).
 
 **Driver**:
 The machine that orchestrates a run — tiles the ROI, runs `setup`, stages inputs, submits jobs,
-aggregates `_status/*.json`, assembles the run-level STAC. Typically the operator's laptop on VPN.
+aggregates `_status/*.json`, assembles the run-level STAC. Either the operator's laptop on VPN or a VM
+in-region; **which one is a property of the run, not a detail** — the driver does per-unit blob I/O, so
+its distance from the data moves measured timings substantially. A run records where its driver ran.
 Preflight and fan-in happen here.
 _Avoid_: client, control node.
+
+**Dispatch telemetry**:
+The dispatcher's own record of a run's shape — when each job was submitted, admitted and finished —
+written to `<run_root>/_timing.json` beside `_status/`, as the run proceeds. Durable by design: timings
+held only in driver memory are lost on a crash and unrecoverable afterwards, which is why reconstructing
+them once cost a session of forensics against job history and blob mtimes. Runner-agnostic — a non-AML
+dispatcher writes the same file.
+_Avoid_: metrics, profiling (this is a run's own record, not a sampling profiler).
 
 **Node**:
 An AML cluster worker executing one shard's units, reading imagery/catalog/bundle from blob and writing
@@ -93,6 +117,16 @@ The `runners.run_aml*` function on the driver that shards a work list, submits o
 and raises on any failure. The only place that knows about AML; the unit-of-work never does.
 _Avoid_: runner (the *local* Snakemake orchestration is also a "runner"; the dispatcher is the *cloud*
 one).
+
+**Job admission**:
+The wait between the dispatcher submitting a job and that job's code beginning to execute on a node —
+queueing, node allocation, container image pull, process start. A property of **each job**, not of the
+cluster: on an already-scaled cluster nothing "starts up" and admission is still dominated by the image
+pull. Cluster **scale-out** (the autoscaler adding nodes) is not measured separately; it is read off the
+*spread* of admission times within a dispatch, since late-admitted jobs are the ones that waited for a
+node.
+_Avoid_: cluster start-up (wrong in the common warm-cluster case), cold start (conflates the image pull
+with the node), spin-up.
 
 **Land-local**:
 Bringing a run's compact output home to the operator's laptop after a cloud dispatch, via
