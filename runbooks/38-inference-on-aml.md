@@ -410,10 +410,23 @@ PY
   Phase 3 (a partially-failed Phase 3 re-run is exactly when this bites for real).
 
 ## Phase 3 — the real fan-out
+> 🔴 **BLOCKED until TODO #57 lands (adlfs `InvalidBlockList` seam retry).** First real attempt
+> (2026-07-28) died in driver-side `create_datacube.setup()` at shape 0/1167 with
+> `ErrorCode:InvalidBlockList` — the seam's 16-thread concurrent blob writes race on adlfs's block
+> commit. Not a data error; needs the seam retry (PROGRESS.md "🔴 THE NEXT TASK" / TODO #57). Re-run
+> this phase once that fix is in the local venv (driver-side → no image rebuild needed).
+>
+> ⚠️ **`AT_2018_TRAIN.geojson` tiles into ~1167 grid CELLS, not 900 fields.** `run_inference(roi=…)`
+> tiles the ROI's **convex hull** into ~5 km cells (`grid_size_km=5`); the 900 fields are scattered
+> across ~4 MGRS tiles, so their hull is a large mostly-empty region → **1167 cells** (each = one
+> build+infer task → one `output.tif`). That's a heavy region-wide crop-map fan-out — **accepted**
+> (user, 2026-07-28: "keep 1167 + fix adlfs"). Watch the `[setup] … N shapes` line: **N is your
+> cluster workload.** For fewer cells later: a compact contiguous ROI or a larger `grid_size_km`.
+>
 > ⚠️ **ROI (the runbook-36 lesson):** use **`AT_2018_TRAIN.geojson`** — 900 labelled fields verified
 > 100% inside `AT_ROI` = inside the archive footprint. Do **NOT** use
 > `austria_eurocrops_sampled_ethiopia_translated.geojson` (Austria fields *translated to Ethiopia*,
-> 36°E) — it has **zero overlap** with the Austria archive, so all 900 cells would build empty cubes
+> 36°E) — it has **zero overlap** with the Austria archive, so all its cells would build empty cubes
 > and the whole run is wasted. This is the exact mistake `runbooks/36-aml-runner.md` Phase 3 hit.
 ```bash
 cat > "$OUT38/phase3.py" <<'PY'

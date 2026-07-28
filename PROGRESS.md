@@ -2,20 +2,109 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-24_
+_Last updated: 2026-07-28 (handoff)_
 
-## ⭐ NEXT STEP — the user RUNS `runbooks/38-inference-on-aml.md` (inference at scale). Bundle from runbook 40 is READY.
-The demo pipeline is **download → build → flatten → [train + bundle] → inference**. Everything but
-the final **inference** leg is now proven — **runbook 40 (train + bundle) is GREEN end to end
-(2026-07-28)**, closing the last gap before inference. Runbook 38 was **reconciled to `adapters:DemoRF`
-+ committed**, and **`runbooks/README.md`** maps the messy numeric order → the real run order
-(`36-phase0 → 37 → 37-verify → 36 → 39 → 40 → 38`) until the C4 refactor (TODO #55).
+## ⭐ NEXT STEP — implement the **adlfs concurrent-write retry** in the storage seam (fully designed below), then finish `runbooks/38-inference-on-aml.md` **Phase 3**.
+The demo pipeline is **download → build → flatten → [train + bundle] → inference**. Runbook 40
+(train+bundle) is GREEN; runbook 38 (inference) is **GREEN through Phase 2** on the real cluster and
+**BLOCKED at Phase 3** by a storage-seam concurrency bug (NOT a data/design problem). Baton:
+`runbooks/HANDOFF-inference-phase3.md`. **git:** `main` **4 commits ahead of `origin/main`
+(`e7d8ba6`), UNPUSHED** — `4050b3b` (runbooks 40/38/README) · `511c300` (PROGRESS: rb40 green) ·
+`9422a1a` (**fix**: grids.geojson seam write) · `265bec4` (runbooks: median + OUT40/OUT38 + rb38 Phase1
+tiling). Plus this handoff flush. Run the RECIPES.md identifier sweep before pushing.
 
-**Runbook 38 hand-off:** `export AZ_BUNDLE_LOCAL=<repo>/tests/outputs/p40_train_and_bundle/demo_rf_bundle`
-(what Phase 0 stages to blob). Build the **inference** Environment first (38's Dockerfile now `COPY`s
-`demos/adapters.py` → smoke prints `FSD_INFER_ENV_OK … DemoRF`), then Phases 0→3. Its window/bands give
-T=8 ⊇ `[B04,B08]`, matching the bundle. The T=8 manifest means 38's preflight now **enforces** T (not
-skips it).
+### 🔴 THE NEXT TASK — seam retry for adlfs `InvalidBlockList` (code + test; ~Sonnet@medium against this design)
+**Symptom (real, runbook 38 Phase 3, 2026-07-28):** `create_datacube.setup()` for the 1167-cell ROI
+died at shape 0/1167 with `azure.core...HttpResponseError: The specified block list is invalid`
+(`ErrorCode:InvalidBlockList`), re-raised by adlfs as `RuntimeError("Failed to upload block: ...")`,
+thrown from `create_datacube.py:143` (`with fs.open(shape_path, "w")`).
+**Root cause:** adlfs stages a block-blob as parallel block uploads + a final `commit_block_list`.
+`setup()` fans per-cell `geometry.geojson` + `catalog.parquet` writes across **16 threads**
+(`config.SETUP_MAX_CONCURRENT`) through the **one shared** adlfs async client; under that concurrency
+(worsened by this session's flaky West-Europe link) the block staging/commit races → `InvalidBlockList`.
+It is a transient race, **not** a data error — a fresh write re-stages clean blocks and commits.
+Runbook 36 got lucky at 900 shapes; 1167 tripped it. **`config.SETUP_MAX_CONCURRENT` is bound at
+import as `setup`'s default arg, so setting the global at runtime does NOT change it** — not a usable
+workaround.
+**The FIX (designed, verified reachable — I had started it, then reverted to hand off clean):**
+Add a **seam-level retry** in `src/fsd/storage/fs.py` (backend-agnostic — match by MESSAGE, fs.py must
+not import azure):
+1. `import time`; constants `_TRANSIENT_WRITE_MARKERS = ("InvalidBlockList", "Failed to upload block",
+   "ServerBusy", "OperationTimedOut")`, `_WRITE_RETRIES = 5`, `_WRITE_BACKOFF_SECONDS = 0.5`.
+2. `_is_transient_write_error(exc) -> bool` (substring match on `str(exc)`), and `_write_with_retry(
+   writer, *, what)` that runs `writer()` (a full open→write→close), retries on transient with
+   exponential backoff (`_WRITE_BACKOFF_SECONDS * 2**attempt`), re-raises non-transient immediately and
+   the transient once retries exhaust.
+3. New seam fns `write_bytes(path, data)` / `write_text(path, text)` (encode utf-8) that wrap
+   `fs.open(p,"wb")+write` in `_write_with_retry`; add both to `__all__`.
+4. Wrap the blob writes inside `save_npy` (`fs.py:185`) and `write_parquet` (`fs.py:263`) in
+   `_write_with_retry` too (both are concurrent-write sites).
+5. In `workflows/create_datacube.py:143` replace `with fs.open(shape_path,"w") as f: f.write(
+   shape_gdf.to_json())` with `fs.write_text(shape_path, shape_gdf.to_json())`. The sibling
+   `fs.write_parquet(catalog_path, subset)` (line 145) is auto-covered by (4).
+**Tests (non-vacuous):** unit-test `_write_with_retry` — recovers after k transient failures (assert
+call count), re-raises a non-transient (`ValueError`) immediately, re-raises transient after exhausting
+retries; monkeypatch `_WRITE_BACKOFF_SECONDS=0` to avoid sleeps. Plus a `write_text` memory:// round-trip.
+**Verify:** `pytest -q` (baseline **436 passed / 2 skipped**) + `ruff check src/ tests/`. Then the user
+re-runs runbook 38 Phase 3 (setup should push all 1167 shapes through). **Docs:** LIMITATIONS.md row +
+TODO #57 (both added this handoff — flip them to "fixed" when it lands) + CHANGES.md if warranted.
+**Note the 1167-cell scope (accepted by user 2026-07-28, "keep 1167 + fix adlfs"):** `run_inference(
+roi=…)` tiles the ROI's **convex hull**, so AT_2018_TRAIN's 900 scattered fields → 1167 grid cells over
+a large mostly-empty region. That's a heavy but valid crop-map fan-out; the user chose to keep it. If a
+future run wants fewer cells: a compact contiguous ROI or a larger `grid_size_km`.
+
+### ✅ Runbook 38 (inference on AML) — Phases 0-2 GREEN on the real cluster (2026-07-28); Phase 3 blocked (above)
+- **Env build + smoke GREEN:** the 2nd (inference) AML Environment builds from `demos/adapters.py` +
+  sklearn/joblib; node smoke printed `FSD_INFER_ENV_OK 0.1.0 DemoRF` (D4/D11 — `resolve_ref('adapters:
+  DemoRF')` imports on a node). First-run gotcha now guarded in the runbook Setup: `az ml environment
+  list -n <missing>` throws a cryptic `System.Net.Http...` and leaves `AZ_INFER_ENV_VERSION` empty →
+  build the env FIRST.
+- **Phase 0 GREEN** (D3 bundle-stage + node fetch + adapter import): `smoke_status.status=="ok"`.
+- **Phase 1 GREEN:** ROI `s2grid=476da24` (a **single-MGRS-tile** ROI — one CRS, simple build — NOT one
+  grid cell) tiled into **9 grid cells** → 9 `output.tif` COGs + STAC on blob, `n_outputs==n_grid_cells`.
+  The old "one cell" label was the grid-cell/MGRS-tile terminology trap; runbook Phase 1 rewritten.
+  **This is where the grids.geojson seam bug was found + fixed (`9422a1a`)** — see below.
+- **Phase 2 GREEN:** resume (D6/D7 — all 9 cells skip via output.tif-exists) + D13 duplicate guard
+  (`d13_guard_raised: true`).
+- **CODE FIX `9422a1a` — `run_inference(roi=)` staged `grids.geojson` via GDAL** (`grids.to_file`),
+  which has no `abfss://` write driver → failed on a blob `output_folderpath`. Fixed to write through the
+  storage seam (`fs.open`+`to_json(default=str)`), mirroring `create_datacube.setup`'s seam READ
+  (`create_datacube.py:79`). **4th instance** of the repo's "GDAL assumed to handle abfss://" class
+  (after cdse `_roi_gdf`, `task.py`, spec-39 gdf staging). +1 non-vacuous regression test (memory:// dst).
+  Every prior unit test used a local `tmp_path`, so `grids.to_file` (GDAL-local) always passed — only the
+  real blob path exposed it. **The adlfs #57 fix is the SAME lesson one layer down** (seam not resilient
+  under real concurrency + real network).
+
+### Bundle facts (do not re-derive) + the modelling insight
+- **Demo bundle = `tests/outputs/p40_train_and_bundle/demo_rf_bundle/`** (adapter `adapters:DemoRF`,
+  `n_timestamps=8`, `required_bands=[B04,B08]`, `uint8`/255). **`rf.joblib` = 13 MB** after switching
+  Phase 1 to **`aggregate="median_per_id"`** (≤900 field medians, not 172k pixels). `AZ_BUNDLE_LOCAL`
+  points here for runbook 38.
+- **Why median-per-id (user chose it 2026-07-28):** labels are per-field, so the field median is the
+  honest training unit; it also fixed a **1.1 GB** model — an *un*aggregated per-pixel RF (200 unpruned
+  trees × 172k rows) is ~1 GB, and the bundle is fetched to **every** inference node. Median → 13 MB.
+  It is **training-only** (`aggregate` ≠ `DemoRF.feature_sequence`); inference stays **per-pixel** →
+  per-pixel crop map (demo_02/03 design, not skew).
+- **Accuracy is now HONEST:** per-pixel random split **leaked** (pixels of the same field in train+test
+  → inflated **0.696**); field-wise median split → **0.293** test / **1.0** train (real generalization +
+  a clear overfit tell). ~29% 9-class crop accuracy from NDVI+SAVI over 8 mosaics is a plausible feature
+  ceiling; better accuracy = a modelling exercise (more bands/features, `min_samples_leaf`/`max_depth`),
+  permanently user-side (ADR-0018). Does NOT block the pipeline demo.
+- **Operational learnings (so they aren't re-chased):** (1) the **627 s bundle-stage was NOT an
+  IMDS/credential hang** — it was a 1.1 GB upload at ~1.9 MB/s over a slow VPN; I over-diagnosed a
+  DefaultAzureCredential/IMDS hang off a misleading `System.Net.Http` error (which was really the
+  missing-env `az` quirk). `AZURE_TOKEN_CREDENTIALS=dev` was **deliberately held out** of the runbook —
+  no evidence it was needed. (2) **OUT40/OUT38** are distinct scratch vars per runbook (running 40→38
+  back-to-back in one shell used to cross-write). (3) All runbook commands assume **cwd = `fsd/`** —
+  the `$PWD`-based `OUT` export compounds into a bad nested path if run from a subdir.
+
+**Runbook 38 hand-off recap** (for the Phase-3 re-run after #57 lands): `export
+AZ_BUNDLE_LOCAL=<repo>/tests/outputs/p40_train_and_bundle/demo_rf_bundle`; `export OUT38=<repo>/tests/
+outputs/p4_inference_aml`. **The #57 fix unblocks Phase 3 with NO image rebuild** — the failing
+`create_datacube.setup()` runs **driver-side** (the fix in the local venv is enough). Rebuilding the
+inference Environment is optional hygiene (so nodes' own writes get the same retry), not required to get
+past the setup blocker. Phases 0-2 are idempotent to re-run. `runbooks/README.md` maps the full run
+order (`36-phase0 → 37 → 37-verify → 36 → 39 → 40 → 38`) until the C4 refactor (TODO #55).
 
 ### ✅ Runbook 40 (train + bundle) — RUN GREEN, all 3 phases (2026-07-28)
 Option (a), KISS, **zero new fsd code** — orchestration of existing verbs.
