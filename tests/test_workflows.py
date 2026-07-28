@@ -213,29 +213,12 @@ def test_setup_does_not_corrupt_a_remote_run_folderpath(tmp_path, monkeypatch):
     remote_root = "abfss://data@acct.dfs.core.windows.net/p1-demo/run"
     written = {}
 
-    class _FakeWriteHandle:
-        def __init__(self, path):
-            self._path = path
-        def __enter__(self):
-            return self
-        def __exit__(self, *a):
-            return False
-        def write(self, data):
-            written.setdefault("geojson", self._path)
-
-    _real_open = fs.open
-
-    def _open(path, mode="rb", **kw):
-        # D6a (spec 36): the per-shape geometry now writes via `fs.open(path, "w")` +
-        # `to_json()`, not `gpd.GeoDataFrame.to_file` -- mock only that write; the
-        # caller's (local) input geojson still reads for real.
-        if mode == "w" and path.startswith(remote_root):
-            return _FakeWriteHandle(path)
-        return _real_open(path, mode, **kw)
-
+    # TODO #57: the per-shape geometry now writes via `fs.write_text` (retry-wrapped),
+    # not `fs.open(path, "w")` + `to_json()` directly -- mock only that write; the
+    # caller's (local) input geojson still reads for real.
     monkeypatch.setattr(fs, "makedirs", lambda *a, **kw: None)
     monkeypatch.setattr(fs, "write_parquet", lambda path, df, **kw: written.setdefault("parquet", path))
-    monkeypatch.setattr(fs, "open", _open)
+    monkeypatch.setattr(fs, "write_text", lambda path, text, **kw: written.setdefault("geojson", path))
 
     csv_local = tmp_path / "input.csv"  # the work-unit ledger itself can stay local
     create_datacube.setup(
@@ -252,6 +235,13 @@ def test_setup_does_not_corrupt_a_remote_run_folderpath(tmp_path, monkeypatch):
         assert p.startswith(remote_root + "/")
         assert "abfss:/" + "/" not in p.replace(remote_root, "")  # no mangled second scheme
         assert str(tmp_path) not in p  # no local-cwd prefix leaked in (the abspath bug)
+    # TODO #57: pin the call site too -- the per-shape geometry must go through the
+    # retry-wrapped `fs.write_text`. Without this assert a regression to a raw
+    # `fs.open(path, "w")` still fails the test, but only by escaping the mock and
+    # attempting a REAL abfss:// write (~97 s of credential + network round-trips).
+    assert written["geojson"].startswith(remote_root + "/")
+    assert written["geojson"].endswith("/geometry.geojson")
+    assert written["parquet"].startswith(remote_root + "/")
 
 
 @pytest.mark.skipif(importlib.util.find_spec("snakemake") is None,

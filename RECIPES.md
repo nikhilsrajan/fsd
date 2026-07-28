@@ -619,3 +619,34 @@ done < /tmp/concrete.txt
   pointer (e.g. `` the `rise` storage account (`st<proj>`, concrete name in
   `AZURE_INFRA_PRIVATE.md`) ``). Note this is scrub-*forward* only — if the leaking commit
   is already pushed, the value stays in history unless you rewrite + force-push.
+
+## Verify a worktree's code against the repo's FULL dependency set (test/lint parity)
+
+A per-spec worktree `.venv` built with a bare `pip install -e ".[dev]"` is **not** equivalent
+to the repo `.venv`, and the difference reads as a regression when it isn't. Two traps
+(diagnosed 2026-07-28 while reviewing TODO #57):
+
+- **Fewer tests.** The optional extras aren't installed, so `tests/test_azure_seam.py` (25
+  tests, needs `adlfs`) and `tests/test_grid.py` (4 tests, needs `s2sphere`) `importorskip` at
+  module level → `411 passed / 4 skipped` instead of `436 / 2`. Nothing is silently
+  uncollected, but **`test_azure_seam.py` is exactly the module that covers `fsd.storage`**
+  (`test_memory_scheme_roundtrip_parquet_and_npy` exercises `save_npy`/`write_parquet`), so a
+  storage change "verified" in a bare worktree venv is unverified where it matters.
+- **A different ruff.** The fresh venv resolves a newer ruff (0.16.0 vs the repo venv's
+  0.15.20) with a much larger default rule set → hundreds of findings, which invites narrowing
+  to `--select E4,E7,E9,F,I` and thereby *hiding* real ones. `pyproject.toml` is read correctly
+  in both — it is a version difference, **not** a git-worktree config-discovery quirk.
+
+Run the worktree's **code** against the repo's **deps** instead of rebuilding the venv:
+
+```bash
+REPO=/path/to/fsd; WT=$REPO/.claude/worktrees/<name>
+cd "$WT"
+PYTHONPATH="$REPO/.venv/lib/python3.11/site-packages" "$WT/.venv/bin/python" -m pytest -q
+"$REPO/.venv/bin/ruff" check --config pyproject.toml src tests
+```
+
+The worktree's own editable `fsd` still wins on `sys.path`: a `.pth`-installed editable finder
+is only processed in a real *site* directory, not in a `PYTHONPATH` entry — so imports resolve
+to the worktree's `src/fsd`, while `adlfs`/`s2sphere`/etc. come from the repo venv. Sanity-check
+with `python -c "import fsd; print(fsd.__file__)"` before trusting the run.
