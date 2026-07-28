@@ -16,19 +16,24 @@ Run as: python -m fsd.workflows.infer_shard <shard_csv_url> <bundle_url> --cores
 
 from __future__ import annotations
 
-import argparse
-import json
-import math
-import os
-import shutil
-import tempfile
-import time
+import datetime as _dt
 
-import pandas as pd
+# spec 40 D2: stamped before any heavy import (see workflows/shard.py for the same pattern).
+_PROCESS_START_AT = _dt.datetime.now(_dt.timezone.utc).isoformat()
 
-from fsd.model import bundle as _bundle
-from fsd.storage import fs
-from fsd.workflows import runners
+import argparse  # noqa: E402
+import json  # noqa: E402
+import math  # noqa: E402
+import os  # noqa: E402
+import shutil  # noqa: E402
+import tempfile  # noqa: E402
+import time  # noqa: E402
+
+import pandas as pd  # noqa: E402
+
+from fsd.model import bundle as _bundle  # noqa: E402
+from fsd.storage import fs  # noqa: E402
+from fsd.workflows import runners  # noqa: E402
 
 EXPORT_FOLDERPATH_COL = "export_folderpath"
 
@@ -108,6 +113,7 @@ def run_infer_shard(
         eff_cores, eff_group = _resolve_cores_and_group(n_units, cores, cubes_per_task)
         n_skipped = _n_final_exists(shard_df[EXPORT_FOLDERPATH_COL])
         t0 = time.time()
+        work_start_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
         error = None
         try:
             result = runners.run_local_inference(
@@ -124,6 +130,7 @@ def run_infer_shard(
             os.remove(local_csv)
         shutil.rmtree(scratch_dir, ignore_errors=True)
 
+    work_end_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
     n_done = _n_final_exists(shard_df[EXPORT_FOLDERPATH_COL])
     n_failed = n_units - n_done
     status = {
@@ -137,9 +144,13 @@ def run_infer_shard(
         "cores": eff_cores,
         "cubes_per_task": eff_group,
         "n_groups": math.ceil(n_units / eff_group) if n_units else 0,
+        "process_start_at": _PROCESS_START_AT,
+        "work_start_at": work_start_at,
+        "work_end_at": work_end_at,
         "seconds": round(time.time() - t0, 3),
         "error": error,
     }
+    status["ended_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
     with fs.open(_status_url(shard_csv_url), "w") as f:
         json.dump(status, f, indent=2)
     return status

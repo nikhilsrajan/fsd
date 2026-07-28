@@ -2,7 +2,52 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-28 (🎉 runbook 38 Phase 3 GREEN — the demo pipeline is COMPLETE end to end)_
+_Last updated: 2026-07-28 (spec 40 IMPLEMENTED — Sonnet session, all 6 deliverables, tests green)_
+
+## ⭐ SPEC 40 IMPLEMENTED (Sonnet@medium, 2026-07-28) — the cluster demo run as one script
+
+All six deliverables landed against the signed-off spec (`specs/40-e2e-aml-demo-script.md`,
+`docs/adr/0021`), in a worktree (`worktree-spec40-impl`), tests green (`pytest -q`: 473 passed / 2
+skipped, up from 451/2 at hand-off — 22 new tests), `ruff check src/ tests/ demos/` clean.
+
+1. **The four in-job stamps** (`process_start_at`/`work_start_at`/`work_end_at`/`ended_at`) in
+   `workflows/{shard,download,infer_shard,flatten}.py`'s `_status/<k>.json`. `process_start_at` is
+   captured as literally the first statement after `from __future__ import annotations` (stdlib
+   `datetime` only), before `pandas`/`fsd.*` load — the four files' entrypoint-level `# noqa: E402`
+   blocks are why.
+2. **Dispatch telemetry**: `workflows.runners._aml_submit_and_wait` now records `submitted_at`
+   per job and `returned_at` (first poll at which that job is observed terminal — poll-quantized,
+   D11), and writes `<run_root>/_timing.json` via a new pure function `_derive_timing` (per-job
+   `job_admission_seconds`/`import_seconds`/`dispatch_overhead_seconds` + the 5-leg additive wall
+   split). Written **before** raising on a failed job (D3). No return-value change (ADR 0021 held).
+3. **`demos/e2e_austria_aml.py`** — the 8-step cluster demo script, mirroring
+   `demos/e2e_austria.py`'s step labels exactly (D1). `--fresh`/`--run-id` (D5, resumable, never
+   deletes — prints the `az storage fs directory delete` command instead), `--dry-run`/
+   `--confirm-spend` (D6), `0_preflight` covers creds/blob-rw/cluster/both-Environments/ROI+label
+   files/`max_tiles`/clock skew (D4/D11), D14's archive-trust assertions folded into `2_download`,
+   D13's exact download scope (207 granules, 4 bands, Apr–Sep), D8's single `merge="reproject"`
+   call. **Not run by this session** (CLAUDE.md) — it goes to the operator per §8 of
+   `demos/E2E_AUSTRIA_AML.md` (new section, this session).
+4. **`demos/plot_aml_timings.py`** — renders off-box from `timings.json` alone: a job-admission
+   strip plot, a where-the-wall-went stacked bar (D11's split, the dataviz skill's validated
+   5-slot categorical order — blue/orange/aqua/yellow/magenta — direct labels gated on segment
+   width so small legs don't collide), and an optional per-job gantt (dropped above 80 rows).
+   Rendered against synthetic data and eyeballed (dataviz skill step 7) before shipping.
+5. **Operator notes** — `demos/E2E_AUSTRIA_AML.md` §8 "Reproduce it" (prerequisites, env-var
+   contract, the two commands, what to send back) + a `RECIPES.md` entry.
+6. **Tests** — `tests/test_workflows_status.py` (6, the stamp round-trip across all four
+   entrypoints + a failed-shard degenerate case), `tests/test_runners.py` (9: `_seconds_between`,
+   the additive invariant, negative-admission-not-floored, a status-file-missing degenerate case,
+   end-to-end `_aml_submit_and_wait` writing `_timing.json` incl. on failure),
+   `tests/test_plot_aml_timings.py` (7: both figures + the gantt, one-job and zero-spread runs,
+   the negative-leg clamp, the >80-row drop).
+
+**Not done here (explicitly out of scope, HANDOFF/spec §"NOT in scope"):** TODO #61 (b)/(c),
+TODO #59/#62, run-book 42 (superseded), rewriting `E2E_AUSTRIA_AML.md`'s existing numbers (that
+happens once the operator returns a real `timings.json`, per spec §7/§8.4).
+
+**Next:** operator runs `demos/e2e_austria_aml.py --fresh --dry-run` per §8, then the real run.
+Opus review recommended before merge (deliverables 1+2 touch every dispatch's entrypoint + seam).
 
 ## 🎉 THE DEMO PIPELINE IS COMPLETE — download → build → flatten → train+bundle → inference → **merged crop map**, all GREEN on the real cluster.
 **Runbook 38 Phase 3 PASSED 2026-07-28**, first attempt with the corrected ROI: `AT_ROI.geojson` →

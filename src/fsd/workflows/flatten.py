@@ -16,15 +16,20 @@ Run as:
 
 from __future__ import annotations
 
-import argparse
-import json
-import time
+import datetime as _dt
 
-import pandas as pd
+# spec 40 D2: stamped before any heavy import (see workflows/shard.py for the same pattern).
+_PROCESS_START_AT = _dt.datetime.now(_dt.timezone.utc).isoformat()
 
-from fsd import config
-from fsd.datacube import flatten as _flatten
-from fsd.storage import fs
+import argparse  # noqa: E402
+import json  # noqa: E402
+import time  # noqa: E402
+
+import pandas as pd  # noqa: E402
+
+from fsd import config  # noqa: E402
+from fsd.datacube import flatten as _flatten  # noqa: E402
+from fsd.storage import fs  # noqa: E402
 
 
 def _write_status(status_url: str, status: dict) -> None:
@@ -49,18 +54,24 @@ def run(
     with fs.open(input_csv, "r") as f:
         df = pd.read_csv(f)
 
+    work_start_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
     _flatten.flatten(
         filepaths_df=df, filepath_col=filepath_col, id_col=id_col,
         export_folderpath=export_folderpath, label_col=label_col, nodata=nodata,
     )
+    work_end_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
 
     status = {
         "unit": "flatten",
         "status": "ok",
         "n_cubes": len(df),
+        "process_start_at": _PROCESS_START_AT,
+        "work_start_at": work_start_at,
+        "work_end_at": work_end_at,
         "seconds": round(time.monotonic() - start, 3),
         "error": None,
     }
+    status["ended_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
     _write_status(status_url, status)
     return status
 

@@ -11,16 +11,22 @@ Run as: python -m fsd.workflows.shard <shard_csv_url> --cores N
 
 from __future__ import annotations
 
-import argparse
-import json
-import os
-import tempfile
-import time
+import datetime as _dt
 
-import pandas as pd
+# spec 40 D2: stamped before any heavy import, so it reflects process start, not "after
+# argparse/pandas/fsd loaded".
+_PROCESS_START_AT = _dt.datetime.now(_dt.timezone.utc).isoformat()
 
-from fsd.storage import fs
-from fsd.workflows import runners
+import argparse  # noqa: E402
+import json  # noqa: E402
+import os  # noqa: E402
+import tempfile  # noqa: E402
+import time  # noqa: E402
+
+import pandas as pd  # noqa: E402
+
+from fsd.storage import fs  # noqa: E402
+from fsd.workflows import runners  # noqa: E402
 
 EXPORT_FOLDERPATH_COL = "export_folderpath"
 
@@ -54,6 +60,7 @@ def run_shard(shard_csv_url: str, *, cores: int) -> dict:
         n_units = len(shard_df)
         n_skipped = _n_final_exists(shard_df[EXPORT_FOLDERPATH_COL])
         t0 = time.time()
+        work_start_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
         error = None
         try:
             result = runners.run_local(local_csv, cores=cores)
@@ -65,6 +72,7 @@ def run_shard(shard_csv_url: str, *, cores: int) -> dict:
         if os.path.exists(local_csv):
             os.remove(local_csv)
 
+    work_end_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
     n_done = _n_final_exists(shard_df[EXPORT_FOLDERPATH_COL])
     n_failed = n_units - n_done
     status = {
@@ -73,9 +81,13 @@ def run_shard(shard_csv_url: str, *, cores: int) -> dict:
         "n_units": n_units,
         "n_skipped": n_skipped,
         "n_failed": n_failed,
+        "process_start_at": _PROCESS_START_AT,
+        "work_start_at": work_start_at,
+        "work_end_at": work_end_at,
         "seconds": round(time.time() - t0, 3),
         "error": error,
     }
+    status["ended_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
     with fs.open(_status_url(shard_csv_url), "w") as f:
         json.dump(status, f, indent=2)
     return status

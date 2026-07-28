@@ -1,0 +1,713 @@
+"""The cluster sibling of `demos/e2e_austria.py` (spec 40): one script, one command,
+unattended, from an empty Azure, emitting a `timings.json` of the same shape so
+local-vs-cluster is a diff rather than an essay.
+
+Same **eight steps** as the local demo (D1): `0_preflight` .. `7_report`. `3_training_data`
+is ONE call that dispatches both the cube-build fan-out and the flatten reduce
+internally (`api.create_training_data(runner="aml")`) -- which is exactly why dispatch
+telemetry is a file (`<run_root>/_timing.json`, ADR 0021) rather than a return value: one
+step here contains two runs. `1_tiling` duplicates work `run_inference` re-tiles
+internally in its own preflight -- symmetric with the local demo, cheap, and load-bearing
+for the step-for-step comparison (do not "fix" it).
+
+The download step (`2_download`, D13) uses the local demo's EXACT scope --
+2018-04-01..09-30, bands B04/B08/B8A/SCL, max_cloudcover=70, max_tiles=207 -- five times
+cheaper than the existing 418 GB six-band archive, and for the first time a like-for-like
+row against the local run's 207 granules.
+
+**Claude never runs this script** (CLAUDE.md): it is handed to the operator with the
+prerequisites in `demos/E2E_AUSTRIA_AML.md` §8 (VM inside the project's compute subnet,
+`az login`, `--dry-run` first).
+
+Run as (see E2E_AUSTRIA_AML.md for the full env-var contract):
+
+    export AZ_RG=... AZ_ML_WORKSPACE=... AZ_SUBSCRIPTION_ID=... AZ_CLUSTER=...
+    export AZ_UAMI_CLIENT_ID=... AZ_ACCOUNT=... AZ_FS=...
+    export AZ_ENV_NAME=fsd-aml-env AZ_ENV_VERSION=...
+    export AZ_INFER_ENV_NAME=fsd-infer-env AZ_INFER_ENV_VERSION=...
+    export AZ_LOCAL_CREDS_JSON=/path/to/cdse_credentials.json   # or AZ_VAULT_URL/AZ_CDSE_SECRET_NAME
+    python demos/e2e_austria_aml.py --fresh --dry-run
+    python demos/e2e_austria_aml.py --fresh --confirm-spend      # after az login, under tmux
+    python demos/e2e_austria_aml.py --run-id <id> --confirm-spend   # resume a partial run
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import datetime
+import json
+import os
+import signal
+import sys
+import time
+
+import geopandas as gpd
+import pandas as pd
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+os.environ["PYTHONPATH"] = _HERE + os.pathsep + os.environ.get("PYTHONPATH", "")
+
+from adapters import DemoRF  # noqa: E402
+
+import fsd  # noqa: E402
+from fsd import config, grid  # noqa: E402
+from fsd.api import TrainingData  # noqa: E402
+from fsd.catalog.catalog import TileCatalog  # noqa: E402
+from fsd.model import bundle  # noqa: E402
+from fsd.sources import cdse  # noqa: E402
+from fsd.storage import fs  # noqa: E402
+
+ROOT = os.path.dirname(os.path.dirname(_HERE))  # workspace root
+
+# --- D13: the local demo's exact download scope, reproduced verbatim ---------------
+ROI_FP = os.path.join(ROOT, "shapefiles/AT_ROI.geojson")
+TRAIN_FP = os.path.join(ROOT, "shapefiles/AT_2018_TRAIN.geojson")
+ID_COL = "fid"
+LABEL_COL = "crop"
+BANDS = ["B04", "B08", "B8A", "SCL"]
+SCL_MASK = [0, 1, 3, 7, 8, 9, 10]
+MOSAIC_DAYS = 20
+START = datetime.datetime(2018, 4, 1)
+END = datetime.datetime(2018, 9, 30)
+MAX_TILES = 207
+MAX_CLOUDCOVER = 70
+
+STEP_LABELS = [
+    "0_preflight", "1_tiling", "2_download", "3_training_data",
+    "4_train_bundle", "5_run_inference", "6_plots", "7_report",
+]
+
+_LOCAL_OUTDIR_BASE = os.path.join(_HERE, "..", "tests/outputs/demo_e2e_aml")  # gitignored
+FIGDIR = os.path.join(_HERE, "figures")
+
+STEP_RESULTS: dict = {}   # {step: spec-24 result dict}, rewritten to timings.json every step
+_INTERRUPTED = False
+
+
+def log(msg):
+    print(f"\n=== {msg} ===", flush=True)
+
+
+def ok(msg):
+    print(f"  ✓ {msg}", flush=True)
+
+
+def fail(msg):
+    raise PreflightFailure(msg)
+
+
+class PreflightFailure(RuntimeError):
+    pass
+
+
+class DemoInterrupted(RuntimeError):
+    pass
+
+
+def _install_signal_handlers():
+    """D7: SIGINT/SIGTERM finish the current step's result before exiting -- a step's
+    `_result.json` is only ever written once its call returns (D3), so there is no
+    partial file to corrupt; this just turns a SIGTERM into the same clean abort path
+    Python already gives SIGINT (KeyboardInterrupt), so `main`'s except clause runs
+    either way."""
+    def _handler(signum, frame):
+        global _INTERRUPTED
+        _INTERRUPTED = True
+        raise DemoInterrupted(f"signal {signum}")
+
+    signal.signal(signal.SIGTERM, _handler)
+
+
+# --- driver location (D10) -----------------------------------------------------------
+
+def _driver_location() -> dict:
+    """Where THIS demo run's driver executed -- recorded, no causal claim derived from
+    it (D10). No network calls: a VM-vs-laptop guess from environment, not a fact."""
+    on_azure_vm = os.path.exists("/var/lib/waagent") or bool(os.environ.get("AZ_ON_VM"))
+    return {
+        "hostname": os.uname().nodename,
+        "on_azure_vm": on_azure_vm,
+        "note": "best-effort: set AZ_ON_VM=1 on the VM if waagent is absent",
+    }
+
+
+# --- step-level plumbing: resumable, self-contained timings (D3/D5/D9) --------------
+
+class Demo:
+    def __init__(self, run_id: str, resume: bool):
+        self.run_id = run_id
+        self.resume = resume
+        self.outdir = os.path.join(_LOCAL_OUTDIR_BASE, run_id)
+        os.makedirs(self.outdir, exist_ok=True)
+        self.timings_fp = os.path.join(self.outdir, "timings.json")
+        self.t0 = time.time()
+
+    def result_fp(self, step: str) -> str:
+        return os.path.join(self.outdir, f"{step}_result.json")
+
+    def load_result(self, step: str) -> dict | None:
+        fp = self.result_fp(step)
+        if self.resume and os.path.exists(fp):
+            with open(fp) as f:
+                return json.load(f)
+        return None
+
+    def run_step(self, step: str, fn, *args, **kwargs):
+        """D3/D5: skip instantly if this step's result already exists (resume); else run
+        it, write `<step>_result.json`, and rewrite timings.json (self-contained, D9)."""
+        cached = self.load_result(step)
+        if cached is not None:
+            STEP_RESULTS[step] = cached
+            print(f"  [{step}] already done ({cached.get('seconds', 0):.1f}s) -- resumed",
+                  flush=True)
+            self._write_timings()
+            return cached
+
+        log(step)
+        t = time.time()
+        try:
+            result = fn(*args, **kwargs)
+        except DemoInterrupted:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a failed step is reported, not swallowed
+            result = {"step": step, "status": "failed", "seconds": round(time.time() - t, 3),
+                      "error": str(exc)}
+            STEP_RESULTS[step] = result
+            self._write_timings()
+            raise
+        result.setdefault("step", step)
+        result.setdefault("status", "ok")
+        result["seconds"] = round(time.time() - t, 3)
+        result.setdefault("error", None)
+        with open(self.result_fp(step), "w") as f:
+            json.dump(result, f, indent=2, default=str)
+        STEP_RESULTS[step] = result
+        print(f"  [{step}] took {result['seconds']:.1f}s", flush=True)
+        self._write_timings()
+        return result
+
+    def _write_timings(self):
+        completed = [STEP_RESULTS[s] for s in STEP_LABELS if s in STEP_RESULTS]
+        payload = {
+            "total_seconds": round(time.time() - self.t0, 1),
+            "run_id": self.run_id,
+            "driver": _driver_location(),
+            "steps": completed,
+        }
+        with open(self.timings_fp, "w") as f:
+            json.dump(payload, f, indent=2, default=str)
+
+
+# --- step 0: preflight (D4) ---------------------------------------------------------
+
+def _make_ml_client():
+    from azure.ai.ml import MLClient
+    from azure.identity import DefaultAzureCredential
+
+    return MLClient(
+        DefaultAzureCredential(),
+        os.environ["AZ_SUBSCRIPTION_ID"], os.environ["AZ_RG"], os.environ["AZ_ML_WORKSPACE"],
+    )
+
+
+@contextlib.contextmanager
+def _blob_creds(root: str):
+    """D5 REVISED: stage the CDSE creds JSON on blob for exactly one run, remove it even
+    if the run raises (mirrors runbook 37's `blob_creds` helper). Only used when
+    `AZ_VAULT_URL`/`AZ_CDSE_SECRET_NAME` are not both set."""
+    url = f"{root.rstrip('/')}/_secrets/cdse_credentials.json"
+    with open(os.environ["AZ_LOCAL_CREDS_JSON"]) as f:
+        payload = f.read()
+    with fs.open(url, "w") as f:
+        f.write(payload)
+    try:
+        yield url
+    finally:
+        with contextlib.suppress(Exception):
+            fs.rm(url)
+
+
+def _cdse_creds_kwargs() -> dict:
+    """Exactly one of Key Vault or a staged blob JSON (D5 REVISED) -- resolved once here,
+    reused by every download call this demo run makes."""
+    if os.environ.get("AZ_VAULT_URL") and os.environ.get("AZ_CDSE_SECRET_NAME"):
+        return {"vault_url": os.environ["AZ_VAULT_URL"], "secret_name": os.environ["AZ_CDSE_SECRET_NAME"]}
+    if os.environ.get("AZ_LOCAL_CREDS_JSON"):
+        return {}  # caller enters _blob_creds() and adds creds_url= itself
+    fail("neither AZ_VAULT_URL+AZ_CDSE_SECRET_NAME nor AZ_LOCAL_CREDS_JSON is set (D5 REVISED: "
+         "exactly one CDSE creds source is required).")
+
+
+def _measure_clock_skew(root: str) -> float:
+    """D11: write a scratch blob, read back its `last_modified`, compare to the driver's
+    own clock -- this session measured ~8s of laptop-vs-Azure skew, a third of a warm
+    admission. Recorded, not fatal (D4)."""
+    probe_url = f"{root.rstrip('/')}/.fsd_clock_skew_probe"
+    before = pd.Timestamp.now(tz="UTC")
+    with fs.open(probe_url, "w") as f:
+        f.write("skew-probe")
+    info = fs.ls(probe_url)
+    with contextlib.suppress(Exception):
+        fs.rm(probe_url)
+    # Fall back to "now" if the backend's ls doesn't expose mtime cheaply -- skew is then
+    # reported as ~0, which is conservative (undercounts, never overcounts, the bound).
+    remote_mtime = before
+    if info and isinstance(info[0], dict) and info[0].get("last_modified"):
+        remote_mtime = pd.Timestamp(info[0]["last_modified"])
+    return (remote_mtime - before).total_seconds()
+
+
+def step_preflight(ml_client, root: str) -> dict:
+    errs: list[str] = []
+    warnings: list[str] = []
+
+    try:
+        ml_client.compute.get(os.environ["AZ_CLUSTER"])
+    except Exception as exc:  # noqa: BLE001
+        errs.append(f"credential/cluster resolution failed (az login? managed identity?): {exc}")
+
+    try:
+        probe = f"{root.rstrip('/')}/.fsd_preflight_probe"
+        with fs.open(probe, "w") as f:
+            f.write("preflight")
+        with fs.open(probe, "r") as f:
+            f.read()
+        fs.rm(probe)
+    except Exception as exc:  # noqa: BLE001
+        errs.append(f"blob read+write failed at {root!r} -- storage firewall denying this "
+                    f"host? (see E2E_AUSTRIA_AML.md §8): {exc}")
+
+    try:
+        compute = ml_client.compute.get(os.environ["AZ_CLUSTER"])
+        state = getattr(compute, "provisioning_state", None)
+        if state not in (None, "Succeeded"):
+            errs.append(f"cluster {os.environ['AZ_CLUSTER']!r} not ready: provisioning_state={state!r}")
+    except Exception as exc:  # noqa: BLE001
+        errs.append(f"cluster {os.environ['AZ_CLUSTER']!r} not found/unreachable: {exc}")
+
+    for env_var, name in (("AZ_ENV_NAME", "build"), ("AZ_INFER_ENV_NAME", "inference")):
+        try:
+            ml_client.environments.get(name=os.environ[env_var],
+                                       version=os.environ[f"{env_var}_VERSION"])
+        except Exception as exc:  # noqa: BLE001
+            errs.append(f"{name} Environment {os.environ.get(env_var)!r} does not resolve -- "
+                        f"build it first (D4 is verify-only): {exc}")
+
+    for name, fp in [("ROI", ROI_FP), ("train", TRAIN_FP)]:
+        if not os.path.exists(fp):
+            errs.append(f"{name} file not found: {fp}")
+
+    n_tiles = None
+    if not errs:
+        tiles = cdse.query_catalog(ROI_FP, START, END, max_cloudcover=MAX_CLOUDCOVER)
+        n_tiles = len(tiles)
+        if n_tiles > MAX_TILES:
+            errs.append(f"{n_tiles} discovered tiles exceed max_tiles={MAX_TILES}.")
+
+    clock_skew_seconds = None
+    if not any("blob read+write" in e for e in errs):
+        clock_skew_seconds = _measure_clock_skew(root)
+        if abs(clock_skew_seconds) > 5:
+            warnings.append(f"clock skew {clock_skew_seconds:.1f}s -- job_admission figures "
+                            "carry this bound (D11).")
+
+    if errs:
+        fail("preflight failed:\n  - " + "\n  - ".join(errs))
+
+    return {"n_discovered_tiles": n_tiles, "clock_skew_seconds": clock_skew_seconds,
+            "warnings": warnings}
+
+
+# --- step 1: tiling (D1: duplicated on both sides, load-bearing, do not "fix") ------
+
+def step_tiling(outdir: str) -> dict:
+    grids = grid.roi_to_s2_grids(ROI_FP, grid_size_km=5, scale_fact=1.1)
+    grids_fp = os.path.join(outdir, "inference_s2_grids.geojson")
+    grids.to_file(grids_fp, driver="GeoJSON")
+    ok(f"{len(grids)} grid cells -> {grids_fp}")
+    return {"n_cells": len(grids), "grids_fp": grids_fp}
+
+
+# --- dispatch telemetry discovery (D2/D9) -------------------------------------------
+#
+# `_aml_submit_and_wait` writes `<run_root>/_timing.json` under a run_id it generates
+# itself (`run_aml`/`run_aml_download`/`run_aml_flatten`/`run_aml_inference` all default
+# `run_id=None` -> a fresh timestamp) -- the demo script never learns that id from the
+# `fsd.download`/`create_training_data`/`run_inference` return values (they don't carry
+# it, ADR 0021). So each dispatching step snapshots which `_timing.json` files exist
+# under `root/runs/` before its call and diffs after, embedding what's new into its own
+# `_result.json` -- which is how `timings.json` stays self-contained (D9) without this
+# script hardcoding any run_id plumbing.
+
+def _list_run_ids(root: str) -> set:
+    """`fs.glob` returns the filesystem's OWN path form, not `root`'s scheme (adlfs
+    gives `container/path/…`, no `abfss://` -- the trap `api._output_key` exists for).
+    So this extracts just the `run_id` (the tail component before `_timing.json`) and
+    lets the caller rebuild a real url from `root`, rather than ever comparing or
+    re-opening a glob hit directly."""
+    ids = set()
+    for p in fs.glob(f"{root.rstrip('/')}/runs/*/_timing.json"):
+        parts = str(p).rstrip("/").replace("\\", "/").split("/")
+        if len(parts) >= 3 and parts[-3] == "runs":
+            ids.add(parts[-2])
+    return ids
+
+
+def _new_dispatch_timings(root: str, before: set) -> list:
+    new_ids = sorted(_list_run_ids(root) - before)
+    out = []
+    for run_id in new_ids:
+        with fs.open(f"{root.rstrip('/')}/runs/{run_id}/_timing.json", "r") as f:
+            out.append(json.load(f))
+    return out
+
+
+# --- step 2: download (D13 scope, D14 archive-trust assertions) --------------------
+
+def _assert_archive_trustworthy(catalog_fp: str, dst_folderpath: str) -> dict:
+    """D14: fold trust assertions into the download step (not a new step, D1 survives).
+    Seconds of listing/tag reads -- the expensive cross-source pixel comparison stays in
+    `runbooks/37-verify-archive.md`."""
+    catalog = TileCatalog(catalog_fp)
+    rows = catalog.read()
+    if catalog.declaration is None:
+        fail("D14: catalog carries no stamped SourceDeclaration.")
+
+    present = {p.rstrip("/").replace("\\", "/").split("/")[-1] for p in fs.glob(f"{dst_folderpath}/**/*.tif")}
+    declared_names = set()
+    for files in rows["files"]:
+        declared_names |= {f.strip() for f in str(files).split(",") if f.strip()}
+    missing = declared_names - present
+    if missing:
+        fail(f"D14: {len(missing)} declared file(s) not found on blob, e.g. {sorted(missing)[:3]}.")
+    undeclared = present - declared_names
+    # not fatal (a catalog can be a strict subset of what's on blob, e.g. a partial re-run's
+    # leftovers) but worth surfacing.
+
+    sample = rows.sample(min(10, len(rows)), random_state=7)
+    for _, row in sample.iterrows():
+        if row.get("nodata") != config.NODATA:
+            fail(f"D14: row {row['id']!r} nodata={row.get('nodata')!r} != config.NODATA "
+                f"({config.NODATA}) -- un-harmonized radiometry.")
+        for fn in str(row["files"]).split(","):
+            fp = os.path.join(row["local_folderpath"], fn.strip())
+            if fs.size(fp) <= 0:
+                fail(f"D14: zero-byte asset {fp!r}.")
+
+    return {"n_catalog_rows": len(rows), "n_undeclared_objects": len(undeclared)}
+
+
+def step_download(ml_client, root: str) -> dict:
+    dst_folderpath = f"{root.rstrip('/')}/imagery"
+    catalog_fp = f"{dst_folderpath}/catalog.parquet"
+    roi_url = f"{root.rstrip('/')}/_inputs/AT_ROI.geojson"
+    with open(ROI_FP, "rb") as src, fs.open(roi_url, "wb") as dst:
+        dst.write(src.read())
+
+    runner_kwargs = {"cluster": os.environ["AZ_CLUSTER"],
+                     "environment": f"{os.environ['AZ_ENV_NAME']}:{os.environ['AZ_ENV_VERSION']}",
+                     "root": root, "identity_client_id": os.environ["AZ_UAMI_CLIENT_ID"],
+                     "ml_client": ml_client, "poll_interval_seconds": 10}
+
+    before = _list_run_ids(root)
+    creds_kwargs = _cdse_creds_kwargs()
+    if creds_kwargs:
+        fsd.download(roi_url, START, END, BANDS, dst_folderpath,
+                     source="cdse", max_tiles=MAX_TILES, max_cloudcover=MAX_CLOUDCOVER,
+                     runner="aml", runner_kwargs={**runner_kwargs, **creds_kwargs})
+    else:
+        with _blob_creds(root) as creds_url:
+            fsd.download(roi_url, START, END, BANDS, dst_folderpath,
+                         source="cdse", max_tiles=MAX_TILES, max_cloudcover=MAX_CLOUDCOVER,
+                         runner="aml", runner_kwargs={**runner_kwargs, "creds_url": creds_url})
+    dispatch_timings = _new_dispatch_timings(root, before)
+
+    granules = len(TileCatalog(catalog_fp).read())
+    if granules < 1:
+        fail("no granules downloaded.")
+    trust = _assert_archive_trustworthy(catalog_fp, dst_folderpath)
+    ok(f"{granules} granules in catalog; D14 archive-trust assertions passed")
+    return {"catalog_fp": catalog_fp, "n_granules": granules, "dispatch_timings": dispatch_timings,
+            **trust}
+
+
+# --- step 3: training data (D1: ONE call, dispatches build fan-out + flatten reduce) --
+
+def step_training_data(ml_client, root: str, catalog_fp: str, adapter, local_export_fp: str) -> dict:
+    train_url = f"{root.rstrip('/')}/_inputs/AT_2018_TRAIN.geojson"
+    with open(TRAIN_FP, "rb") as src, fs.open(train_url, "wb") as dst:
+        dst.write(src.read())
+
+    runner_kwargs = {"cluster": os.environ["AZ_CLUSTER"],
+                     "environment": f"{os.environ['AZ_ENV_NAME']}:{os.environ['AZ_ENV_VERSION']}",
+                     "root": root, "identity_client_id": os.environ["AZ_UAMI_CLIENT_ID"],
+                     "ml_client": ml_client, "poll_interval_seconds": 10}
+
+    before = _list_run_ids(root)
+    td = fsd.create_training_data(
+        label_polygons=train_url, catalog_filepath=catalog_fp,
+        startdate=START, enddate=END, mosaic_days=MOSAIC_DAYS, bands=BANDS,
+        id_col=ID_COL, label_col=LABEL_COL, scl_mask_classes=SCL_MASK,
+        export_folderpath=local_export_fp, adapter=adapter,
+        runner="aml", runner_kwargs=runner_kwargs,
+    )
+    # D1: this ONE call dispatches TWO runs internally (the build fan-out + the flatten
+    # reduce) -- both appear as new run_ids here (ADR 0021: that is why telemetry is a
+    # file, not a return value).
+    dispatch_timings = _new_dispatch_timings(root, before)
+
+    d = td.load()
+    feats, T = d["features"], fsd.compute_n_timestamps(START, END, MOSAIC_DAYS)
+    if feats.shape[1] != T:
+        fail(f"features T={feats.shape[1]} != expected T={T}")
+    ok(f"features {feats.shape}, T={T}, {len(set(d['feature_labels']))} classes")
+    return {
+        "export_folderpath": td.export_folderpath, "run_folderpath": td.run_folderpath,
+        "n_pixels": td.n_pixels, "n_timestamps": td.n_timestamps,
+        "bands": td.bands, "feature_bands": td.feature_bands,
+        "n_classes": len(set(d["feature_labels"])), "dispatch_timings": dispatch_timings,
+    }
+
+
+# --- step 4: train + bundle (driver-side, identical to local: no runner involved) ---
+
+def step_train(d, adapter, outdir: str) -> dict:
+    import joblib
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.preprocessing import LabelEncoder
+
+    X = d["features"].reshape(len(d["features"]), -1)
+    y_raw = d["feature_labels"]
+    import numpy as np
+    keep = ~np.isnan(X).any(axis=1)
+    X, y_raw = X[keep], np.asarray(y_raw)[keep]
+    le = LabelEncoder()
+    y = le.fit_transform(y_raw)
+    clf = RandomForestClassifier(n_estimators=200, n_jobs=-1, random_state=42).fit(X, y)
+    model_fp = os.path.join(outdir, "rf.joblib")
+    joblib.dump((clf, le), model_fp)
+
+    adapter.artifacts = {"model": model_fp}
+    bundle_dir = bundle.save(adapter, {"model": model_fp}, os.path.join(outdir, "bundle"))
+    ok(f"trained on {len(X)} samples, {len(le.classes_)} classes -> {bundle_dir}")
+    return {"bundle_dir": bundle_dir, "classes": list(le.classes_)}
+
+
+# --- step 5: run_inference (D8: one call, merge=True) -------------------------------
+
+def step_inference(ml_client, root: str, bundle_dir: str, catalog_fp: str, outdir: str) -> dict:
+    runner_kwargs = {"cluster": os.environ["AZ_CLUSTER"],
+                     "environment": f"{os.environ['AZ_INFER_ENV_NAME']}:{os.environ['AZ_INFER_ENV_VERSION']}",
+                     "root": root, "identity_client_id": os.environ["AZ_UAMI_CLIENT_ID"],
+                     "ml_client": ml_client, "poll_interval_seconds": 10}
+
+    roi_url = f"{root.rstrip('/')}/_inputs/AT_ROI.geojson"  # staged already in step 2
+
+    before = _list_run_ids(root)
+    result = fsd.run_inference(
+        model=bundle_dir, output_folderpath=f"{root.rstrip('/')}/model_outputs",
+        roi=roi_url, catalog_filepath=catalog_fp,
+        startdate=START, enddate=END, mosaic_days=MOSAIC_DAYS, bands=BANDS,
+        scl_mask_classes=SCL_MASK, merge="reproject",
+        storage="azure", runner="aml", runner_kwargs=runner_kwargs, overwrite=False,
+    )
+    dispatch_timings = _new_dispatch_timings(root, before)
+
+    n = len(result.output_filepaths)
+    if n < 1:
+        fail("no per-cell outputs produced")
+    # Land the small display artifacts (merged map + STAC) locally for step 6's plot;
+    # the bulk COGs stay on blob (Land-local, CONTEXT.md -- never the raw imagery).
+    local_merged = None
+    if result.merged_filepath:
+        local_merged = os.path.join(outdir, "crop_map_merged.tif")
+        fs.transfer(result.merged_filepath, local_merged)
+    ok(f"{n} per-cell COGs + STAC + merged map")
+    return {"n_outputs": n, "merged_filepath": result.merged_filepath,
+            "local_merged_filepath": local_merged,
+            "stac_catalog_filepath": result.stac_catalog_filepath,
+            "dispatch_timings": dispatch_timings}
+
+
+# --- step 6: plots (D12: only the data figures; timing figures live in the plotter) --
+
+def step_plots(d, local_merged_fp, classes) -> dict:
+    import numpy as np
+
+    n_figs = 0
+    try:
+        import matplotlib.pyplot as plt
+
+        feats, labels = d["features"], np.asarray(d["feature_labels"])
+        ts = d["metadata"]["timestamps"]
+        fb = d["metadata"]["feature_bands"]
+        ndvi = feats[:, :, fb.index("NDVI")]
+        fig, ax = plt.subplots(figsize=(11, 6))
+        for lab in sorted(set(labels)):
+            med = np.nanmedian(ndvi[labels == lab], axis=0)
+            ax.plot(ts, med, marker="o", markersize=3, linewidth=1.2, label=lab)
+        ax.set_title("Per-class median NDVI over the season (AML training features)")
+        ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=7)
+        fig.autofmt_xdate()
+        os.makedirs(FIGDIR, exist_ok=True)
+        fig.savefig(os.path.join(FIGDIR, "ndvi_timeseries_aml.png"), dpi=140, bbox_inches="tight")
+        plt.close(fig)
+        n_figs += 1
+
+        if local_merged_fp and os.path.exists(local_merged_fp):
+            import matplotlib.patches as mpatches
+            import rasterio
+            from matplotlib.colors import BoundaryNorm, ListedColormap
+
+            with rasterio.open(local_merged_fp) as src:
+                arr = src.read(1)
+            arr = np.ma.masked_equal(arr, 255)
+            values = list(range(len(classes)))
+            cmap = ListedColormap(plt.cm.tab20(np.linspace(0, 1, max(len(values), 1))))
+            norm = BoundaryNorm(np.array(values + [values[-1] + 1]) - 0.5, cmap.N)
+            fig, ax = plt.subplots(figsize=(10, 9))
+            ax.imshow(arr, cmap=cmap, norm=norm)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.set_title("Model output -- crop class map (AML, merged over ROI)")
+            handles = [mpatches.Patch(color=cmap(i), label=classes[i]) for i in values]
+            ax.legend(handles=handles, bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=7)
+            os.makedirs(FIGDIR, exist_ok=True)
+            fig.savefig(os.path.join(FIGDIR, "crop_map_aml.png"), dpi=140, bbox_inches="tight")
+            plt.close(fig)
+            n_figs += 1
+    except Exception as exc:  # noqa: BLE001 - plots are nice-to-have, never fail the demo run
+        print(f"  ! plotting failed (non-fatal): {exc}", flush=True)
+    return {"n_figures": n_figs}
+
+
+# --- step 7: report -------------------------------------------------------------------
+
+def step_report(demo: Demo) -> dict:
+    """D9: the script emits data, not the report -- this step just confirms
+    `timings.json` is self-contained and prints where it is."""
+    with open(demo.timings_fp) as f:
+        payload = json.load(f)
+    print(f"  timings.json -> {demo.timings_fp}")
+    print(f"  send this ONE file back (D9): {json.dumps({k: v for k, v in payload.items() if k != 'steps'}, indent=2)}")
+    return {"timings_fp": demo.timings_fp, "n_steps_recorded": len(payload["steps"])}
+
+
+# --- D6: cost guard ------------------------------------------------------------------
+
+def _dry_run_estimate():
+    tiles = cdse.query_catalog(ROI_FP, START, END, max_cloudcover=MAX_CLOUDCOVER)
+    grids = grid.roi_to_s2_grids(ROI_FP, grid_size_km=5, scale_fact=1.1)
+    fields = gpd.read_file(TRAIN_FP)
+    estimated_gb = len(tiles) * config.APPROX_GB_PER_TILE
+    print(json.dumps({
+        "n_tiles": len(tiles), "n_cells": len(grids), "n_fields": len(fields),
+        "estimated_gb": round(estimated_gb, 1),
+        "note": "wall-clock estimate needs a calibrated cost_model from a prior run's "
+                "timings.json -- none available pre-run (honest, not invented).",
+    }, indent=2))
+
+
+def _print_delete_command(prev_run_id: str):
+    print(f"  ! previous run {prev_run_id!r} left data on blob. To reclaim it (fsd's own "
+          f"recursive delete is broken, TODO #50 -- the OPERATOR runs this, never this "
+          f"script):\n"
+          f"      az storage fs directory delete -f \"$AZ_FS\" --account-name \"$AZ_ACCOUNT\" "
+          f"-n demo_runs/{prev_run_id} --auth-mode login -y")
+
+
+def _last_run_marker_fp() -> str:
+    return os.path.join(_LOCAL_OUTDIR_BASE, ".last_run_id")
+
+
+def _allocate_run_id() -> str:
+    return pd.Timestamp.now(tz="UTC").strftime("%Y%m%dT%H%M%SZ")
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    run_group = ap.add_mutually_exclusive_group(required=True)
+    run_group.add_argument("--run-id", help="resume this demo run (completed steps skip, D5).")
+    run_group.add_argument("--fresh", action="store_true",
+                           help="allocate a NEW run-stamped prefix (D5: deletes nothing).")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="print counts + GB estimate, zero side effects (D6), then exit.")
+    ap.add_argument("--confirm-spend", action="store_true",
+                    help="required to actually dispatch anything (D6).")
+    args = ap.parse_args(argv)
+
+    if args.dry_run:
+        _dry_run_estimate()
+        return
+
+    if not args.confirm_spend:
+        print("refusing to start without --confirm-spend (D6). Run --dry-run first.",
+              file=sys.stderr)
+        raise SystemExit(1)
+
+    os.makedirs(_LOCAL_OUTDIR_BASE, exist_ok=True)
+    if args.fresh:
+        marker = _last_run_marker_fp()
+        if os.path.exists(marker):
+            with open(marker) as f:
+                prev = f.read().strip()
+            if prev:
+                _print_delete_command(prev)
+        run_id, resume = _allocate_run_id(), False
+        with open(marker, "w") as f:
+            f.write(run_id)
+    else:
+        run_id, resume = args.run_id, True
+
+    demo = Demo(run_id, resume)
+    root = f"{os.environ['AZ_ROOT'].rstrip('/')}/demo_runs/{run_id}"
+    _install_signal_handlers()
+
+    print(f"run_id={run_id} root={root} outdir={demo.outdir}", flush=True)
+
+    ml_client = _make_ml_client()
+
+    try:
+        demo.run_step("0_preflight", step_preflight, ml_client, root)
+
+        demo.run_step("1_tiling", step_tiling, demo.outdir)
+
+        dl = demo.run_step("2_download", step_download, ml_client, root)
+
+        adapter = DemoRF()
+        adapter.n_timestamps = fsd.compute_n_timestamps(START, END, MOSAIC_DAYS)
+        local_export_fp = os.path.join(demo.outdir, "training_data")
+        td_result = demo.run_step("3_training_data", step_training_data, ml_client, root,
+                                  dl["catalog_fp"], adapter, local_export_fp)
+        td = TrainingData(
+            export_folderpath=td_result["export_folderpath"],
+            run_folderpath=td_result["run_folderpath"], n_pixels=td_result["n_pixels"],
+            n_timestamps=td_result["n_timestamps"], bands=td_result["bands"],
+            feature_bands=td_result["feature_bands"],
+        )
+        d = td.load()
+
+        train_result = demo.run_step("4_train_bundle", step_train, d, adapter, demo.outdir)
+
+        infer_result = demo.run_step("5_run_inference", step_inference, ml_client, root,
+                                     train_result["bundle_dir"], dl["catalog_fp"], demo.outdir)
+
+        demo.run_step("6_plots", step_plots, d, infer_result["local_merged_filepath"],
+                     train_result["classes"])
+
+        demo.run_step("7_report", step_report, demo)
+
+        log(f"DONE -- outputs under {demo.outdir}; send back timings.json (D9)")
+    except DemoInterrupted:
+        print(f"\ninterrupted -- {len(STEP_RESULTS)} step(s) recorded in timings.json. "
+              f"Resume with --run-id {run_id}", file=sys.stderr)
+        raise SystemExit(130)
+    except PreflightFailure as exc:
+        print(f"\npreflight/D14 failure: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()
