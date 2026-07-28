@@ -721,8 +721,59 @@ def _merge_outputs(filepaths, dst, nodata, *, reproject_to_dominant: bool = Fals
     cell already matches the target** (no resampling); reprojected only for cells changing zone.
     Cross-UTM-zone-safe; the per-cell COGs stay authoritative.
     """
+    import tempfile
+    import uuid as _uuid
+
+    import rasterio
+
+    from fsd.raster import rio_env
+
+    # The outputs may live on `abfss://`, which GDAL has no driver for, so every READ goes through
+    # the VSI seam (CLAUDE.md: raster pixel reads use rasterio/GDAL VSI). Bare `rasterio.open(fp)`
+    # here is why merging blob-hosted outputs failed -- the 5th instance of the repo's
+    # "GDAL assumed to handle abfss://" class (after cdse `_roi_gdf`, `task.py`, spec-39 gdf
+    # staging, and grids.geojson `9422a1a`).
+    #
+    # `rio_env(filepaths)` + `rasterio.open(to_vsi(fp))`, NOT `rio_open` per file: `rio_open` owns
+    # a `rasterio.Env` per handle, and merge holds every input open at once. rasterio's env stack
+    # is LIFO, so closing 300 of them in creation order tears down the root env first and the next
+    # close raises `EnvError: No GDAL environment exists` (run-book 38 Phase 4, 2026-07-28). One env
+    # for the whole merge is both correct and cheaper -- one token fetch, not N. It is a null
+    # context for local paths, so local merges are unchanged.
+    with rio_env(filepaths):
+        mosaic, out_transform, profile = _merge_mosaic(
+            filepaths, nodata, reproject_to_dominant=reproject_to_dominant, merge_crs=merge_crs,
+        )
+
+    # D5 (spec 38, ADR 0001): the raw scratch tif must be LOCAL regardless of `dst` -- a
+    # remote `dst` (e.g. abfss://.../merged.tif) would otherwise get "merged.tif.raw.tif"
+    # appended onto the same remote URL, which rasterio (local/VSI-write only) cannot
+    # open. `to_cog` itself already knows how to publish a local raw file to a remote
+    # `dst` (its own remote-dst branch); this only needs to give it a local source.
+    if fs.is_local(dst):
+        raw = f"{dst}.raw.tif"
+    else:
+        raw = os.path.join(tempfile.gettempdir(), f"fsd-merge-{_uuid.uuid4().hex}.raw.tif")
+    try:
+        with rasterio.open(raw, "w", **profile) as d:
+            d.write(mosaic)
+        _to_cog(raw, dst)
+    finally:
+        if os.path.exists(raw):
+            os.remove(raw)
+    return dst
+
+
+def _merge_mosaic(filepaths, nodata, *, reproject_to_dominant: bool, merge_crs):
+    """The mosaic itself. Must run inside a `rio_env(filepaths)` -- every `rasterio.open` below
+    is on a VSI-translated path whose credentials live in that env."""
+    import tempfile
+    import uuid as _uuid
+
     import rasterio
     from rasterio.merge import merge as rio_merge
+
+    from fsd.storage.azure import to_vsi
 
     if reproject_to_dominant:
         from rasterio.crs import CRS as _RioCRS
@@ -731,7 +782,7 @@ def _merge_outputs(filepaths, dst, nodata, *, reproject_to_dominant: bool = Fals
 
         area_by_crs: dict[str, float] = {}
         for fp in filepaths:
-            with rasterio.open(fp) as s:
+            with rasterio.open(to_vsi(fp)) as s:
                 key = s.crs.to_string()
                 # extent area in the cell's own (metric UTM) CRS — comparable across UTM zones
                 area_by_crs[key] = area_by_crs.get(key, 0.0) + (
@@ -747,7 +798,7 @@ def _merge_outputs(filepaths, dst, nodata, *, reproject_to_dominant: bool = Fals
         datasets, tmps = [], []
         try:
             for fp in filepaths:
-                src = rasterio.open(fp)
+                src = rasterio.open(to_vsi(fp))
                 if src.crs.to_string() == target:
                     datasets.append(src)
                     continue
@@ -756,7 +807,11 @@ def _merge_outputs(filepaths, dst, nodata, *, reproject_to_dominant: bool = Fals
                 prof = src.profile.copy()
                 prof.update(driver="GTiff", crs=target, transform=transform,
                             width=w, height=h, nodata=nodata)
-                tmp = f"{fp}.reproj.tif"
+                # Local scratch, never `f"{fp}.reproj.tif"`: a remote `fp` would put the
+                # temp on the remote URL, and rasterio cannot open a remote path for WRITE
+                # (D5 / ADR-0001 -- the same lesson the `raw` file below already applies).
+                tmp = os.path.join(tempfile.gettempdir(),
+                                   f"fsd-reproj-{_uuid.uuid4().hex}.tif")
                 tmps.append(tmp)
                 with rasterio.open(tmp, "w", **prof) as d:
                     rio_reproject(
@@ -767,7 +822,7 @@ def _merge_outputs(filepaths, dst, nodata, *, reproject_to_dominant: bool = Fals
                         resampling=Resampling.nearest,  # categorical-safe
                     )
                 src.close()
-                datasets.append(rasterio.open(tmp))
+                datasets.append(rasterio.open(tmp))  # local scratch -- bare open is right
             mosaic, out_transform = rio_merge(datasets, nodata=nodata)
             profile = datasets[0].profile.copy()
             profile.update(driver="GTiff", height=mosaic.shape[1], width=mosaic.shape[2],
@@ -779,7 +834,7 @@ def _merge_outputs(filepaths, dst, nodata, *, reproject_to_dominant: bool = Fals
                 if os.path.exists(t):
                     os.remove(t)
     else:
-        srcs = [rasterio.open(fp) for fp in filepaths]
+        srcs = [rasterio.open(to_vsi(fp)) for fp in filepaths]
         try:
             crs_set = {s.crs.to_string() for s in srcs}
             if len(crs_set) > 1:
@@ -796,26 +851,7 @@ def _merge_outputs(filepaths, dst, nodata, *, reproject_to_dominant: bool = Fals
             for s in srcs:
                 s.close()
 
-    # D5 (spec 38, ADR 0001): the raw scratch tif must be LOCAL regardless of `dst` -- a
-    # remote `dst` (e.g. abfss://.../merged.tif) would otherwise get "merged.tif.raw.tif"
-    # appended onto the same remote URL, which rasterio (local/VSI-write only) cannot
-    # open. `to_cog` itself already knows how to publish a local raw file to a remote
-    # `dst` (its own remote-dst branch); this only needs to give it a local source.
-    import tempfile
-    import uuid as _uuid
-
-    if fs.is_local(dst):
-        raw = f"{dst}.raw.tif"
-    else:
-        raw = os.path.join(tempfile.gettempdir(), f"fsd-merge-{_uuid.uuid4().hex}.raw.tif")
-    try:
-        with rasterio.open(raw, "w", **profile) as d:
-            d.write(mosaic)
-        _to_cog(raw, dst)
-    finally:
-        if os.path.exists(raw):
-            os.remove(raw)
-    return dst
+    return mosaic, out_transform, profile
 
 
 def _finalize_outputs(output_filepaths, output_folderpath, spec, merge, collection_id, dt,

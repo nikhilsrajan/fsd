@@ -219,6 +219,76 @@ def test_rio_open_local_path_is_plain_passthrough(monkeypatch):
     assert calls == [("/local/a.tif", "r", {})]
 
 
+def test_rio_open_per_handle_env_breaks_when_many_are_held_open(monkeypatch):
+    """WHY `rio_env` exists (run-book 38 Phase 4, 2026-07-28). `rio_open` enters a
+    `rasterio.Env` per handle. rasterio's env stack is LIFO and thread-local: the FIRST
+    `Env.__enter__` records no parent, and its `__exit__` clears the stack. So holding N
+    handles and closing them in creation order tears the root down first and the next close
+    raises `EnvError: No GDAL environment exists`. Merging 300 blob COGs hit exactly this.
+    This test pins the trap so nobody 'simplifies' `rio_env` back into a loop of `rio_open`.
+    """
+    import rasterio.errors
+
+    from fsd import raster
+
+    stack = []                       # stand-in for rasterio's thread-local env stack
+
+    class _StackEnv:
+        def __init__(self, **kw):
+            self._root = False
+
+        def __enter__(self):
+            self._root = not stack
+            stack.append(self)
+            return self
+
+        def __exit__(self, *a):
+            if not stack:
+                raise rasterio.errors.EnvError("No GDAL environment exists")
+            stack.pop()
+            if self._root:
+                stack.clear()
+            return False
+
+    class _FakeDataset:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(raster.rasterio, "open", lambda *a, **k: _FakeDataset())
+    monkeypatch.setattr(raster.rasterio, "Env", _StackEnv)
+    monkeypatch.setattr(raster, "storage_token", lambda: "tok")
+
+    urls = [f"abfss://data@acct.dfs.core.windows.net/p/{i}.tif" for i in range(3)]
+    handles = [raster.rio_open(u) for u in urls]
+    handles[0].close()                                  # root env goes first...
+    with pytest.raises(rasterio.errors.EnvError, match="No GDAL environment exists"):
+        handles[1].close()                              # ...and the next close blows up
+
+    # `rio_env` is the fix: ONE env for all of them, so N datasets cost one enter/exit.
+    stack.clear()
+    with raster.rio_env(urls):
+        assert len(stack) == 1
+    assert stack == []
+
+
+def test_rio_env_is_a_null_context_for_local_paths():
+    from fsd import raster
+
+    with raster.rio_env(["/local/a.tif", "/local/b.tif"]):
+        pass            # no token fetch, no Env -- the zero-behaviour-change hinge
+
+
+def test_rio_env_refuses_datasets_on_two_storage_accounts(monkeypatch):
+    from fsd import raster
+
+    monkeypatch.setattr(raster, "storage_token", lambda: "tok")
+    with pytest.raises(ValueError, match="multiple storage accounts"):
+        raster.rio_env([
+            "abfss://data@acctA.dfs.core.windows.net/p/x.tif",
+            "abfss://data@acctB.dfs.core.windows.net/p/y.tif",
+        ])
+
+
 def test_rio_open_remote_path_translates_and_uses_env(monkeypatch):
     from fsd import raster
 

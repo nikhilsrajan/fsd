@@ -4,12 +4,16 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-28 (🎉 runbook 38 Phase 3 GREEN — the demo pipeline is COMPLETE end to end)_
 
-## 🎉 THE DEMO PIPELINE IS COMPLETE — download → build → flatten → train+bundle → inference, all GREEN on the real cluster.
+## 🎉 THE DEMO PIPELINE IS COMPLETE — download → build → flatten → train+bundle → inference → **merged crop map**, all GREEN on the real cluster.
 **Runbook 38 Phase 3 PASSED 2026-07-28**, first attempt with the corrected ROI: `AT_ROI.geojson` →
 **300 grid cells**, 16 shards, `pass: true`, `sum_shard_units == n_cells_out == 300`, `n_failed == 0`,
 `n_skipped == 0`, **`bundle_loads == n_shards_reported == 16`** (D7 load-once-per-node proven on a
 real fan-out). 300 `output.tif` COGs + a STAC catalog on blob under `…/fsd-p4-inference/phase3_out`.
 **wall 2066.9 s** = slowest shard **982.7 s** + driver overhead **1084.3 s**.
+**Phase 4 (the viewable map) PASSED too**: `merge=True` (strict single-CRS, no resampling), all 300
+cells consumed, `merged.tif` = **14.1 MB** on blob (6867x6828 px, 3.3:1 COG compression), wall
+**1082.1 s**. ✅ **VISUALLY VALIDATED in QGIS (user, 2026-07-28)** — the merged map looks right;
+seams are clean. That is the real completion criterion, not `merged_bytes > 0` (CLAUDE.md).
 
 ### ⭐ NEXT STEP — pick one (nothing is blocking)
 1. **Commit + push** — the D-GRID-1 fixes, the TODO #57 revert, the preflight guard and all the doc
@@ -18,8 +22,22 @@ real fan-out). 300 `output.tif` COGs + a STAC catalog on blob under `…/fsd-p4-
    driver overhead**, and it is undecomposed. Instrument that breakdown before tuning anything.
 3. **TODO #55 — the docs refactor**, which was explicitly sequenced *after* a timed e2e demo. That
    demo now exists; Phase 3's numbers are its first input.
-4. **A viewable map:** Phase 3 ran `merge=False` → 300 separate COGs. `merge="reproject"` would
-   produce one Austria-wide crop map (lossy/for-viewing, per spec 21 SO-5).
+4. ✅ **DONE — the viewable map** (`runbooks/38-inference-on-aml.md` Phase 4, GREEN 2026-07-28).
+   Kept below because both bugs it found are worth remembering. Phase 3
+   left 300 separate COGs; Phase 4 re-runs the same call with `merge=True` (all 300 cells are
+   EPSG:32633, so a strict single-CRS merge is **data-faithful, no resampling** — `"reproject"` is
+   only for genuinely cross-UTM ROIs). D6 resume skips every cell, so it costs one cluster spin-up
+   plus a ~100 MB driver-side merge. **Writing it surfaced a real bug, now fixed:** `_merge_outputs`
+   read with bare `rasterio.open` (GDAL has no `abfss://` driver) and wrote its reprojection scratch
+   next to a *remote* source — the **5th** instance of the repo's "GDAL assumed to handle abfss://"
+   class (after cdse `_roi_gdf`, `task.py`, spec-39 gdf staging, grids.geojson `9422a1a`). Reads now
+   go through the VSI seam and scratch is local. **A SECOND remote-only bug surfaced on the first
+   Phase 4 run:** `rio_open` owns a `rasterio.Env` per handle, and merge holds all 300 open at once
+   — rasterio's env stack is LIFO, so closing them in creation order tore down the root env and the
+   next close raised `EnvError: No GDAL environment exists`. Fixed by adding **`fsd.raster.rio_env`**
+   (ONE env for N datasets; one token fetch, not 300), with the trap pinned in `test_azure_seam.py`.
+   **Both merge bugs were remote-only and invisible to a fully green local suite** — `merge` had
+   simply never run against blob.
 
 ### 📌 What Phase 3's numbers say (first real fan-out datum)
 The **sharding is fine — the overhead is the target.** 300 cells / 16 shards ≈ 18.75 cells/shard at

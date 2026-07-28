@@ -176,6 +176,55 @@ def test_merge_reproject_area_dominant_beats_count(tmp_path):
         assert s.crs.to_epsg() == 32637                        # area wins over cell count
 
 
+def test_merge_uses_one_env_for_all_inputs_not_one_per_file(tmp_path, monkeypatch):
+    """Two bugs in one pin, both found on real blob data (run-book 38 Phase 4, 2026-07-28).
+
+    1. Reads must be VSI-translated (`to_vsi`) -- the outputs may live on `abfss://`, which GDAL
+       has no driver for. Bare `rasterio.open(fp)` was the 5th instance of that class here.
+    2. But NOT via `rio_open` per file: it owns a `rasterio.Env` per handle, and merge holds
+       every input open at once. rasterio's env stack is LIFO, so closing N of them in creation
+       order tears down the root env first and the next close raises
+       `EnvError: No GDAL environment exists`. ONE `rio_env` must cover the whole merge.
+    """
+    import fsd.raster as _raster
+    import fsd.storage.azure as _az
+
+    a, b = tmp_path / "a.tif", tmp_path / "b.tif"
+    _write_cog(a, 32636, 500000, 1300000, 1)
+    _write_cog(b, 32636, 500080, 1300000, 1)
+
+    envs, translated, opens = [], [], []
+    real_env, real_vsi, real_open = _raster.rio_env, _az.to_vsi, _raster.rio_open
+    monkeypatch.setattr(_raster, "rio_env",
+                        lambda paths: (envs.append(list(paths)), real_env(paths))[1])
+    monkeypatch.setattr(_az, "to_vsi", lambda p: (translated.append(str(p)), real_vsi(p))[1])
+    monkeypatch.setattr(_raster, "rio_open",
+                        lambda *a_, **k: (opens.append(a_[0]), real_open(*a_, **k))[1])
+
+    for reproject in (False, True):
+        envs.clear()
+        translated.clear()
+        opens.clear()
+        _merge_outputs([str(a), str(b)], str(tmp_path / f"m{reproject}.tif"), nodata=255,
+                       reproject_to_dominant=reproject)
+        assert len(envs) == 1, f"expected ONE env for the whole merge, got {len(envs)}"
+        assert set(envs[0]) == {str(a), str(b)}, "the env must cover every input"
+        assert {str(a), str(b)} <= set(translated), "a source was opened without to_vsi"
+        assert opens == [], "rio_open owns an Env per handle -- unusable for an N-way merge"
+
+
+def test_merge_reproject_scratch_stays_local(tmp_path):
+    """The reprojection temp must go to local scratch, never `f"{fp}.reproj.tif"` next to the
+    source -- a remote source would put it on the remote URL, which rasterio cannot open for
+    WRITE (D5 / ADR-0001). Pinned by asserting nothing is left beside the sources."""
+    a, b = tmp_path / "a.tif", tmp_path / "b.tif"
+    _write_cog(a, 32636, 500000, 1300000, 1)
+    _write_cog(b, 32637, 400000, 1300000, 2)          # forces a reprojection
+    _merge_outputs([str(a), str(b)], str(tmp_path / "m.tif"), nodata=255,
+                   reproject_to_dominant=True)
+    assert not list(tmp_path.glob("*.reproj.tif"))
+
+
 def test_merge_reproject_merge_crs_override(tmp_path):
     """spec 23 D7: merge_crs forces the target CRS regardless of area/count."""
     a, b = tmp_path / "a.tif", tmp_path / "b.tif"

@@ -1,4 +1,4 @@
-# Run-book: 38 Phases 0–3 — inference at scale on Azure ML
+# Run-book: 38 Phases 0–4 — inference at scale on Azure ML
 
 > Spec-24 run-book for **spec 38 §6** (P4). **You** run this; paste back each phase's printed
 > `_result.json`. Builds on spec 36's cluster/identity (already proven, `runbooks/36-aml-runner.md`)
@@ -25,7 +25,9 @@ adapter actually imports inside it (Phase 0); a small single-MGRS-tile ROI tiles
 and every cell's `output.tif` lands on blob, one of them byte-identical to a local
 `run_inference(roi=…)` of the matching cell (Phase 1); resume + the D13 duplicate guard both work
 (Phase 2); and a real multi-cell ROI fans out across N nodes with bundle-loads == n_nodes, not
-n_cells (Phase 3 — the D7 claim, the deliverable that demonstrates Mode C end to end).
+n_cells (Phase 3 — the D7 claim, the deliverable that demonstrates Mode C end to end); and the 300
+per-cell COGs merge into one **viewable** crop map (Phase 4 — the human-facing artefact; Phase 3's
+output is 300 separate files).
 
 ## Prerequisites
 - VPN connected, `az login` done, correct subscription selected — the driver does blob I/O in every
@@ -542,16 +544,155 @@ PY
   per-node traceback (job names are in the raised `RuntimeError`'s shard list, or
   `_status/*.json`'s `aml_job_status` for a job with no status file at all).
 
+## Phase 4 — the viewable crop map (`merge`)
+> ✅ **GREEN on the real cluster, 2026-07-28** (second attempt — the first exposed a real bug, below).
+> `merge=True` (strict single-CRS, **no resampling**), `n_cells_in: 300`, `merged.tif` = **14,122,184
+> bytes** on blob, **wall 1082.1 s**. Extent 6867 x 6828 px (46.9 MB raw uint8) -> **3.3:1** COG
+> compression, as expected for a 9-class categorical map. **Visually validated in QGIS by the
+> operator the same day — map reads correctly, no seams.**
+>
+> 📌 **Free measurement:** Phase 4 does essentially no compute (setup skipped — `input.csv` already
+> existed; all 300 cells skipped; 16 no-op jobs), so its **1082.1 s wall IS the fixed overhead** —
+> and it lands within **0.2 %** of Phase 3's independently-computed `driver_overhead_seconds`
+> (1084.3 s). Suggests the overhead is **fixed cost** (cluster spin-up + dispatch + collect + STAC),
+> not work-scaled. Suggestive, not proven — Phase 4 traded setup's ~24 s for the merge's blob reads.
+> First decomposition datum for TODO #59.
+>
+> 🐛 **First attempt failed — `EnvError: No GDAL environment exists`.** `_merge_outputs` had been
+> fixed to read through `rio_open` (the VSI seam), but `rio_open` owns a `rasterio.Env` **per
+> handle** and merge holds all 300 open at once; rasterio's env stack is LIFO, so closing them in
+> creation order tore down the root env first and the next close blew up. Fixed by adding
+> `fsd.raster.rio_env(paths)` — ONE env for the whole merge (also one token fetch, not 300) — with
+> the trap pinned in `tests/test_azure_seam.py`. **Both merge bugs were remote-only**, invisible to
+> a fully green local suite: `merge` had never run against blob before this phase.
+
+
+> **What this is for.** Phase 3 ran `merge=False`, so the deliverable is **300 separate COGs** —
+> correct and authoritative, but not something you can open and look at. This phase merges them into
+> one `merged.tif` covering the whole ROI. Cheap: the outputs are single-band `uint8`, ~0.33 MB/cell,
+> **~100 MB total** (not the 5.48 GB of datacubes).
+>
+> **Why re-running `run_inference` is the right way to do it.** There is no standalone merge verb;
+> `merge` is a parameter of the same call. Re-running it with everything identical except `merge=`
+> costs no rebuild: D6 resume sees all 300 `output.tif` already on blob and every cell skips (Phase 2
+> proved that path). You pay one cluster spin-up for 16 no-op jobs, then the driver collects,
+> re-writes STAC, and merges.
+>
+> ⚠️ **Use `merge=True`, NOT `"reproject"`, for `AT_ROI`.** All **300 cells are EPSG:32633**
+> (verified 2026-07-28), so a strict single-CRS merge is **data-faithful — no resampling at all**.
+> `merge="reproject"` exists for genuinely cross-UTM ROIs and resamples nearest-neighbour
+> (categorical-safe but lossy); on single-zone data it is merely redundant. If `merge=True` raises
+> `cannot merge outputs across multiple CRS`, your ROI is **not** single-zone — switch to
+> `merge="reproject"` and say so in the report.
+>
+> ⚠️ **This is the FIRST run of `merge` against blob.** Phase 3 merged nothing and the local demo
+> merged local files, so the path is newly fixed and unproven on the cluster: `_merge_outputs` used
+> bare `rasterio.open` (GDAL has no `abfss://` driver) and wrote its reprojection scratch next to a
+> remote source. Both fixed 2026-07-28 — reads go through the `rio_open` VSI seam, scratch is local.
+> **This phase is the first real exercise of that fix**; if it throws a driver/format error on an
+> `abfss://` path, that is the news — paste the traceback.
+
+```bash
+cat > "$OUT38/phase4.py" <<'PYEOF'
+import json, os, time
+import fsd
+from fsd.storage import fs
+
+RUN_ID = "phase4-merge"
+common_kwargs = dict(
+    cluster=os.environ["AZ_CLUSTER"],
+    environment=f"{os.environ['AZ_INFER_ENV_NAME']}:{os.environ['AZ_INFER_ENV_VERSION']}",
+    root=os.environ["AZ_ROOT"], identity_client_id=os.environ["AZ_UAMI_CLIENT_ID"],
+    subscription_id=os.environ["AZ_SUBSCRIPTION_ID"], resource_group_name=os.environ["AZ_RG"],
+    workspace_name=os.environ["AZ_ML_WORKSPACE"], skip_smoke=True,
+    n_shards=int(os.environ["AZ_N_SHARDS"]), run_id=RUN_ID,
+)
+
+# AZ_MERGE_MODE=reproject only if merge=True refuses on multi-CRS (see the box above).
+mode = os.environ.get("AZ_MERGE_MODE", "strict")
+merge = True if mode == "strict" else mode
+
+# IDENTICAL to phase3 except `merge=`. The SAME output_folderpath is what makes D6 resume find the
+# 300 existing output.tif and skip every cell; a fresh folder would rebuild all 300.
+t0 = time.time()
+result = fsd.run_inference(
+    os.environ["AZ_BUNDLE_LOCAL"],
+    roi="../shapefiles/AT_ROI.geojson",
+    output_folderpath=f"{os.environ['AZ_ROOT']}/phase3_out",   # SAME as phase 3 -> resume
+    catalog_filepath=os.environ["AZ_CATALOG_URL"],
+    startdate="2018-04-01", enddate="2018-09-01", mosaic_days=20,
+    bands=["B04", "B08", "B8A", "SCL"],
+    runner="aml", runner_kwargs=common_kwargs, storage="azure",
+    cores=1,
+    merge=merge,
+)
+wall_seconds = time.time() - t0
+
+merged = result.merged_filepath
+merged_ok = bool(merged) and fs.exists(merged)
+out = {"phase": "phase4-merged-map",
+       "pass": merged_ok and fs.size(merged) > 0 and len(result.output_filepaths) == 300,
+       "merge_mode": str(merge),
+       "wall_seconds": round(wall_seconds, 1),
+       "n_cells_in": len(result.output_filepaths),
+       "merged_filepath": merged,
+       "merged_bytes": fs.size(merged) if merged_ok else 0,
+       "stac_catalog_filepath": result.stac_catalog_filepath}
+print("FSD_RESULT_BEGIN"); print(json.dumps(out, indent=2, default=str)); print("FSD_RESULT_END")
+with open(f"{os.environ['OUT38']}/phase4_result.json", "w") as f:
+    json.dump(out, f, indent=2, default=str)
+PYEOF
+.venv/bin/python "$OUT38/phase4.py"
+```
+
+- **Expect:** the `[run_inference] roi -> 300 grid cells` preflight line again, a fast setup (the
+  per-cell control files already exist), 16 jobs that complete almost immediately (**every cell
+  skips** — D6), then a driver-side merge. The merge reads ~100 MB from blob over your VPN, so allow
+  a few minutes on top of the cluster spin-up.
+- **PASS if:** `pass: true` — `merged_filepath` exists on blob, `merged_bytes > 0`, and
+  `n_cells_in == 300` (the merge consumed every cell, not a subset).
+- **Then LOOK at it.** Visual validation is the point of this phase and the repo's standing rule for
+  raster work (CLAUDE.md — LLMs are unreliable on GeoTIFFs; QGIS is the check):
+
+  ```bash
+  .venv/bin/python - <<'PYEOF'
+  import os
+  from fsd.storage import fs
+  dst = os.environ["OUT38"] + "/merged.tif"
+  fs.get(os.environ["AZ_ROOT"] + "/phase3_out/merged.tif", dst)
+  print("landed:", os.path.getsize(dst), "bytes ->", dst)
+  PYEOF
+  ```
+
+  Open it in QGIS. Expect a **contiguous Waldviertel crop map**, 9 classes, `nodata=255` outside the
+  ROI. **Check the cell seams:** `scale_fact=1.1` gives 10 % overlap per side precisely so they do
+  not show. Visible seams or a checkerboard mean the merge order or nodata handling is wrong — a
+  pipeline bug, not a model one. Blocky class patches *within* a field are expected (the demo RF is
+  per-pixel at ~29 % accuracy, ADR-0018) and are not a pipeline defect.
+- **If it fails:**
+  - `cannot merge outputs across multiple CRS …` → the ROI spans UTM zones after all. Re-run with
+    `AZ_MERGE_MODE=reproject` and record it in the result — that path is **lossy**, so say so.
+  - a GDAL driver/format error on an `abfss://` path → the VSI-seam fix did not cover this call
+    path. Paste the traceback. **Do not** work around it by hand-downloading the 300 COGs; that
+    hides the bug the phase exists to catch.
+  - `n_cells_in < 300` → resume did not see every output. Check you used the **same**
+    `output_folderpath` as Phase 3 (`…/phase3_out`), not a fresh one.
+
 ## Success criteria (`_result.json`)
 Each phase writes `$OUT38/phase<N>_result.json` (also printed between `FSD_RESULT_BEGIN`/`_END`
 markers). The run passes when every phase's `pass` is true. **Paste these files back** (not logs).
+
+**Phase 4 is the only one whose PASS is not sufficient** — `merged_bytes > 0` proves a file landed,
+not that it *looks* right. The phase is not done until you have opened `merged.tif` in QGIS and
+checked the seams (CLAUDE.md: raster ops get eyeballed, not just unit-tested).
 
 ## Stop / observe
 - `az ml job list -w "$AZ_ML_WORKSPACE" -g "$AZ_RG" --query "[?contains(name,'infer')]"` to watch
   jobs land; `az ml job stream -n <name> ...` for live logs on one.
 - Abort a phase script with Ctrl-C — the AML jobs it already submitted keep running (cancel them in
   the studio/`az ml job cancel` if you want to actually stop spend); re-running the phase script is
-  safe (D6/D12 resume) except Phase 2/3's fresh `run_id`s, which start a new run.
+  safe (D6/D12 resume) except Phase 2/3/4's fresh `run_id`s, which start a new run. **Phase 4 is
+  idempotent and cheap to repeat** — every cell skips, so it only re-does the merge.
 - **To force a truly cold run, point at a NEW `output_folderpath` — do not `fs.rm` the old prefix.**
   `fs.rm(prefix, recursive=True)` on `abfss://` deletes the files and *then* raises
   `DirectoryIsNotEmpty` (TODO #50) — it reads as "nothing happened" while the data is gone. Re-running

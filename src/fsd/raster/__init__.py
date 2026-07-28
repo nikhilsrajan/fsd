@@ -10,11 +10,47 @@ a partial write.
 
 from __future__ import annotations
 
+import contextlib
+
 import rasterio
 
 from fsd.storage.azure import account_from_url, storage_token, to_vsi
 
-__all__ = ["rio_open"]
+__all__ = ["rio_open", "rio_env"]
+
+
+def rio_env(paths):
+    """ONE `rasterio.Env` covering MANY remote datasets — use this when several must be open
+    at the same time (e.g. `rasterio.merge` over N COGs).
+
+    **Why this exists (found by run-book 38 Phase 4, 2026-07-28).** `rio_open` enters a
+    `rasterio.Env` *per dataset* and exits it on `close()`. rasterio's env stack is LIFO and
+    thread-local: the first `Env.__enter__` records `_has_parent_env=False`, and *its* `__exit__`
+    sets `local._env = None`. So holding N `rio_open` handles and closing them in creation order
+    tears down the root env first, and the next `close()` raises
+    `EnvError: No GDAL environment exists`. With 300 merge inputs that is a hard failure.
+    `rio_open` is for ONE scoped dataset (`with rio_open(p) as src:`); this is for N.
+
+    Returns a null context for all-local `paths` — same zero-behaviour-change hinge as `rio_open`.
+    Open the datasets with `rasterio.open(to_vsi(fp))` *inside* the `with`, and keep every pixel
+    read inside it too: the env carries the credentials.
+    """
+    if isinstance(paths, str):
+        paths = [paths]
+    remote = [p for p in paths if to_vsi(p) != p]
+    if not remote:
+        return contextlib.nullcontext()
+
+    accounts = {account_from_url(p) for p in remote} - {None}
+    if len(accounts) > 1:
+        raise ValueError(
+            f"rio_env: cannot cover datasets on multiple storage accounts in one env: "
+            f"{sorted(accounts)}. Open them under separate envs."
+        )
+    env_kwargs = {"AZURE_STORAGE_ACCESS_TOKEN": storage_token()}
+    if accounts:
+        env_kwargs["AZURE_STORAGE_ACCOUNT"] = accounts.pop()
+    return rasterio.Env(**env_kwargs)
 
 
 def rio_open(path: str, mode: str = "r", **kwargs):
@@ -25,6 +61,10 @@ def rio_open(path: str, mode: str = "r", **kwargs):
     stay local everywhere (MPC-to-blob would be a byte-copy via `fs.transfer`, never a GDAL
     write; CDSE-to-blob is out of P1 scope) — silently attempting one would half-work and fail
     late.
+
+    ⚠️ **One dataset at a time.** This owns a `rasterio.Env` per handle, so N of them held open
+    and closed in creation order breaks the LIFO env stack. To hold several open at once, use
+    `rio_env(paths)` + `rasterio.open(to_vsi(fp))`.
     """
     vsi = to_vsi(path)
     if vsi == path:
