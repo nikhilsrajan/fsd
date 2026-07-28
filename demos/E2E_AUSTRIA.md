@@ -265,6 +265,10 @@ download:
 
 **Two steps dominate (~90%): download (45%) and inference (44%).** Everything else is noise.
 
+> **The same pipeline on the cluster:** [`E2E_AUSTRIA_AML.md`](E2E_AUSTRIA_AML.md) is this table's
+> AML counterpart — the identical ROI and 300 grid cells run on Azure ML, the one genuinely
+> apples-to-apples comparison (inference), and what the cluster's fixed overhead costs.
+
 - **Download** is transfer-bound, not convert-bound — the jp2→COG conversion runs in a separate
   process pool that fully overlaps the transfers (§Appendix A), so the step wall tracks the network,
   not the CPU. At 16.7 MB/s aggregate the 44.6 GB took ~45 min.

@@ -16,13 +16,63 @@ cells consumed, `merged.tif` = **14.1 MB** on blob (6867x6828 px, 3.3:1 COG comp
 seams are clean. That is the real completion criterion, not `merged_bytes > 0` (CLAUDE.md).
 
 ### ⭐ NEXT STEP — two sessions, in this order (user, 2026-07-28)
-**SESSION A — the local-vs-AML timing report.** Produce the AML counterpart to
-`demos/E2E_AUSTRIA.md` §8: a step-by-step `step / seconds / share` table comparing the local e2e run
-against the cluster. **It cannot be written from what exists today** — see the measured-wall-clocks
-table below: run-books **36** (900-cube build) and **37** (archive download) emit **no wall clock at
-all**, so 2 of ~7 rows are missing outright. First job is therefore a small instrumentation patch
-(make 36/37 emit `wall_seconds` the way 38/39 already do), then a re-run of those two phases, then
-the report. **Do not fabricate the missing rows.** What IS already comparable, and is the report's
+**SESSION A — the local-vs-AML timing report. 📝 DRAFTED 2026-07-28 → `demos/E2E_AUSTRIA_AML.md`,
+waiting on two run-books.** Every measured figure is in it; the **two unmeasured driver walls**
+(run-book 36 P3 build, 37 P3 download) are marked "not measured" and close via
+**`runbooks/41-recover-aml-job-timings.md`** (free, read-only, self-calibrating against 4 known
+walls; also measures the archive's bytes on blob, which the AML download row needs for a MB/s) and
+then **`runbooks/42-timed-cold-reruns.md`** (paid — two cold cluster replays into fresh prefixes;
+the user chose to spend for real `wall_seconds`, 2026-07-28). **Findings, none of which cost a cluster run — run-book 41 Steps 1 + 1b are GREEN:**
+(0) **Run-book 41 (free recovery) is COMPLETE — Steps 1, 1b, 2, 3 all run.** Everything recoverable
+without spending has been recovered; only `runbooks/42-timed-cold-reruns.md` (two real
+`wall_seconds`) remains.
+(1) **🎯 TODO #61 — the overhead is the DRIVER'S POST-RUN COLLECT, and it is now measured exactly.**
+AML stamps `StartTimeUtc`/`EndTimeUtc` on every job, and the driver stamps its own last action by
+writing `_result.json`, so `post = result_mtime − last_job_end` is a **direct** measurement and the
+wall closes: **rb38 P3 = 249 pre + 1089 job span + 729 post = 2066.9**; **rb38 P4 = 66 + 44 + 972 =
+1082.1**. So **35 % of the inference run and 90 % of the merge run was the driver collecting results
+over blob**. Step 3 then split both windows from the blobs' own `last_modified`:
+**PRE** = `setup()` 22 s + **bundle stage 13 s** + dispatch 8 s + **201 s of AML
+submit→first-execution** (TODO #48's cold start, pinned; and the "627 s bundle upload" suspect is
+dead by direct measurement). **POST** = **collect 616 s (reads only, 2.05 s/cell)** + **STAC writes
+161 s (0.53 s/item)** + merge 193 s + 2 s — summing to 972 s exactly. It scales with **output
+units**, which is why rb36/rb37 (collect = 16 `_status` reads) pay **19 s** and **26 s** while
+moving far more data. **Fix (a) — one listing instead of 300 `fs.exists` — is a few lines, targets
+the 616 s, and comes before any cluster knob.**
+(2) **Both missing walls now have tight measured LOWER BOUNDS: rb36 P3 ≥ 343 s, rb37 P3 ≥ 354 s**
+(job span + the 19/26 s to the driver's own result write). Run-book 42's cold replays are therefore
+**~6-minute cluster runs, not ~20 min** — much cheaper than feared.
+(3) **Node cold start pinned (TODO #48): ~100–135 s on a cold node, ~14 s warm**; node stagger is
+**22–48 s once the cluster is scaled out**, vs 203 s in the one run that had to grow 1→8.
+(3b) **The archive is 418.0 GB** (3456 tif, 121 MB/asset; per band B04 96.9 / B08 99.3 / B03 96.4 /
+B02 95.1 / B8A 29.0 / **SCL 1.21** GB — run-book 41 Step 2, the first time its bytes were ever
+counted, since the MPC path reports `bytes_downloaded: 0`). Two consequences: the **AML download
+ran at 171.7 MB/s per node, ≤1.18 GB/s aggregate, vs the laptop's 16.7 MB/s — ~10× per worker and
+~72× on the wall**, the exact inverse of the inference result (3.7× SLOWER per worker, 1.30× on the
+wall). **The cloud wins where the bottleneck is proximity to the data and loses where it is compute
+per unit** (`demos/E2E_AUSTRIA_AML.md` §6.4). And the 80× byte spread across bands **confirms TODO
+#60's stratification mechanism in bytes**.
+⚠️ **Two intermediate readings this session got WRONG and corrected:** "overhead is roughly
+per-node" (no — stagger is a *scale-up* cost) and "most of it is the 13 MB bundle upload over VPN"
+(no — the whole pre-dispatch window is 249 s, which cannot contain a 627 s upload). TODO #59 now
+points at #61.
+(4) **TODO #60 — `shard_units`' round-robin band-stratifies a
+download**: 8 shards, 120–121 assets each, 0 skipped, and per-shard seconds of
+109.9/113.7/62.4/**6.8**/107.7/97.0/56.3/**7.1** — when `n_shards % len(bands) == 0` every shard
+gets exactly one band (the 6.8 s ones were all SCL), wasting ~38 % of allocated node-time.
+Report structure + sources: see the doc. **⚠️ The "instrumentation patch" this bullet used to call for does not exist —
+corrected 2026-07-28.** Run-books 36 and 37 **already emit `wall_seconds`** (`36:295`, `37:399`; 37
+also emits `slowest_shard_seconds` + `driver_overhead_seconds`). What is stale is the *stored
+results*, which predate that instrumentation. And they are **not empty**: both
+`tests/outputs/p2_aml_runner/phase3_result.json` and `tests/outputs/p2_download_aml/phase3_result.json`
+carry **per-shard `seconds` for all 16 shards** (36: slowest **213.8** s, Σ 2851.8 s over 900 units;
+37: slowest **192.1** s, Σ 2434.7 s over 3456 assets). The **only** missing quantity is the
+**driver wall** for those two phases — so exactly 2 cells of the table, not 2 rows.
+**Re-running Phase 3 of either measures the wrong thing** (both are resumable and their outputs
+already exist on blob → you would time the skip path). Free recovery first:
+`runbooks/41-recover-aml-job-timings.md` reads AML's own job history for a job-level span, and
+self-calibrates against four runs whose driver wall *is* known. **Do not fabricate the missing
+cells** — "not measured" is a valid entry. What IS already comparable, and is the report's
 headline: local and AML both ran **`AT_ROI` → 300 cells**, so inference is apples-to-apples —
 **local 2683.5 s (T=10, `INFER_CORES=2`, 8-core laptop, local COGs) vs AML 2066.9 s (T=8, `cores=1`,
 16 shards, blob COGs)**. Converted to single-threaded cell-seconds that is **17.9 s/cell local vs
@@ -63,13 +113,22 @@ phase was re-run (`aggregate="median_per_id"`) and only the JSON was updated (fi
 | run-book | phase | `wall_seconds` | what it covers |
 |---|---|---|---|
 | 39 | 1 | **405.7** | flatten reduce: 900 blob cubes → one single-node AML job → `(172781,8,3)` landed locally |
-| 40 | 1 | **179.4** | features driver-side (ADR-0020) → `(900,8,2)` NDVI+SAVI, one row per field |
+| 40 | 1 | **179.4** | features driver-side (ADR-0020) → `(900,8,2)` NDVI+SAVI, one row per field. *Features only* — 40's Phase 2 (train) and Phase 3 (bundle) are untimed |
 | 38 | 3 | **2066.9** | 300-cell inference fan-out (= 982.7 slowest shard + 1084.3 driver overhead) |
 | 38 | 4 | **1082.1** | merge only — no compute; effectively a direct read of the fixed overhead |
 
-**Not timed at all** (their `_result.json` carries no wall clock): run-book **36** (the 900-cube
-build) and run-book **37** (the archive download). Those two gaps are what block a local-vs-AML
-step-by-step report — see the ⭐ NEXT STEP above.
+**Per-shard seconds, no driver wall** (stored before 36/37 grew their `wall_seconds` line — the
+run-books emit it today, `36:295` / `37:399`):
+
+| run-book | phase | slowest shard | Σ shard seconds | units | source |
+|---|---|---|---|---|---|
+| 36 | 3 | **213.8** s | 2851.8 s over 16 shards | 900 field cubes | `tests/outputs/p2_aml_runner/phase3_result.json` |
+| 37 | 3 | **192.1** s | 2434.7 s over 16 shards | 3456 assets (576 granules) | `tests/outputs/p2_download_aml/phase3_result.json` |
+
+**Two driver walls that ARE measured on the download path** (run-book 37 Phase 2, same 964 MPC
+assets, two shard counts — the only measured fan-out-width sweep fsd has):
+`seconds_n_shards_1` = **699.6**, `seconds_n_shards_n` = **493.9** at `n_shards=8`, speedup
+**1.42×** (`tests/outputs/p2_download_aml/phase2_result.json`). 8× the nodes bought 1.42× the wall.
 
 ### 📌 What Phase 3's numbers say (first real fan-out datum)
 The **sharding is fine — the overhead is the target.** 300 cells / 16 shards ≈ 18.75 cells/shard at
@@ -81,7 +140,10 @@ useful work was only 982.7 s of 2066.9 s. The 1084 s of driver overhead (preflig
 It also settles the training-vs-inference asymmetry empirically: inference does ~52 s of real work
 per unit, so the 16-way fan-out clearly pays; **training's units are ~200 px (median 14×15, 13 KB)**
 — milliseconds each — so that same ~1084 s of overhead would dwarf the entire 900-unit workload.
-Cube sizes measured 2026-07-28: inference **597×554 px / 21.2 MB per cube, 5.48 GB total**; training
+Cube sizes measured 2026-07-28: inference **597×554 px / 21.2 MB per cube, 5.48 GB total**
+(⚠️ **the AML run's 300 cubes on blob total 4.13 GB** over 600 `.npy` — run-book 41 Step 3. Unreconciled;
+likeliest cause is that 5.48 GB was measured over the **local T=10** run vs the cluster's T=8, but that is
+a guess. Per-unit pixel dims, and so the 781× ratio, are unaffected); training
 **14×15 px / 13 KB per cube, 0.02 GB total** (781× more pixels per unit, 260× overall).
 
 ### 🔴 HISTORY — what broke Phase 3 twice before this (TODO #58 / spec 21 D-GRID-1)
@@ -255,7 +317,10 @@ future run wants fewer cells: a compact contiguous ROI or a larger `grid_size_km
   ceiling; better accuracy = a modelling exercise (more bands/features, `min_samples_leaf`/`max_depth`),
   permanently user-side (ADR-0018). Does NOT block the pipeline demo.
 - **Operational learnings (so they aren't re-chased):** (1) the **627 s bundle-stage was NOT an
-  IMDS/credential hang** — it was a 1.1 GB upload at ~1.9 MB/s over a slow VPN; I over-diagnosed a
+  IMDS/credential hang** — it was a 1.1 GB upload at ~1.9 MB/s over a slow VPN
+  (⚠️ **this doc contradicts itself on the size** — the preflight paragraph above says "627 s for
+  13 MB". 1.1 GB at 1.9 MB/s is the self-consistent pair; the "13 MB" is unsourced. Neither changes
+  the TODO #61 conclusion, which turns only on the 627 s not fitting in a 249 s window); I over-diagnosed a
   DefaultAzureCredential/IMDS hang off a misleading `System.Net.Http` error (which was really the
   missing-env `az` quirk). `AZURE_TOKEN_CREDENTIALS=dev` was **deliberately held out** of the runbook —
   no evidence it was needed. (2) **OUT40/OUT38** are distinct scratch vars per runbook (running 40→38

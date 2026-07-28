@@ -650,3 +650,43 @@ The worktree's own editable `fsd` still wins on `sys.path`: a `.pth`-installed e
 is only processed in a real *site* directory, not in a `PYTHONPATH` entry — so imports resolve
 to the worktree's `src/fsd`, while `adlfs`/`s2sphere`/etc. come from the repo venv. Sanity-check
 with `python -c "import fsd; print(fsd.__file__)"` before trusting the run.
+
+---
+
+## Harvest every timing that was ever measured (`_result.json` sweep)
+
+The one reliable way to answer "what do we actually have a number for?" — the run-books' stored
+results carry timings at inconsistent depths (`wall_seconds` at the top for run-books 38–40,
+per-shard `seconds` nested under `result.shards`/`result.reports` for 36–37). Written 2026-07-28
+while sourcing `demos/E2E_AUSTRIA_AML.md`; it is what found the per-shard seconds everyone thought
+were missing, and the band-stratified shard imbalance (TODO #60).
+
+```bash
+cd fsd && python3 - <<'PY'
+import glob, json
+
+def walk(d, pre=""):
+    out = {}
+    if isinstance(d, dict):
+        for k, v in d.items():
+            if isinstance(v, (dict, list)):
+                out.update(walk(v, pre + k + "."))
+            elif any(t in k.lower() for t in
+                     ("second", "wall", "time", "elapsed", "duration", "speedup")):
+                out[pre + k] = v
+    elif isinstance(d, list):
+        for i, v in enumerate(d):
+            out.update(walk(v, pre + str(i) + "."))
+    return out
+
+for f in sorted(glob.glob("tests/outputs/**/*result*.json", recursive=True)):
+    t = walk(json.load(open(f)))
+    if t:
+        print(f"\n### {f}")
+        for k, v in t.items():
+            print(f"   {k} = {v}")
+PY
+```
+
+**Read the per-shard seconds, not just the max.** Equal `n_units` with unequal `seconds` is a
+partitioner problem, not noise — that is exactly how TODO #60 surfaced.
