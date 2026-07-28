@@ -52,6 +52,22 @@ VM, resumability, an archive-trust gate, a cost guard.
 The script uses the **same eight step labels** as `demos/e2e_austria.py` and the same `timed_step`
 accumulator. `timings.json` keeps the local schema and adds the cluster detail (D10).
 
+> **AMENDMENT A2 (2026-07-28, user's call).** The mirror is **step labels and harness**, not every
+> argument. Two steps now deliberately differ from the local demo, both to match the run-books:
+> `2_download` sources from MPC (D13 A1), and `3_training_data` passes
+> **`aggregate="median_per_id"`** (run-books 39/40).
+>
+> `median_per_id` is *"the modelling unit, not just a size trick"* (`runbooks/40-train-and-bundle.md`):
+> one `np.nanmedian` row per labelled field rather than one per pixel. The labels are field-level, so
+> training per-pixel leaks a field's own pixels across the split — the difference between the
+> discredited **0.696** and the honest field-wise **~0.29** already recorded in `PROGRESS.md`. It also
+> cuts the flatten reduce and the driver-side fit from ~172k rows to ~900.
+>
+> The local demo still passes `aggregate=None`, so step 3's *inputs* are no longer identical across
+> the two sides. Step **labels** and the `timings.json` shape are unchanged, so the wall-clock
+> comparison D1 exists for still holds — but a step-3 row now compares a field-median reduce against
+> a per-pixel one, and the report must say so. Fixing the local demo to match is deferred (§9).
+
 *Why:* the comparison is only honest if both sides are cut the same way.
 
 Two correspondences confirmed by reading the code, both of which must be **preserved, not
@@ -189,9 +205,34 @@ at ~49 rows; drop it if not.
 
 **Look at every figure before calling it done** — the validator checks color, not layout.
 
-### D13 — The demo run downloads exactly what the local demo downloads
-`2_download` uses the local demo's scope verbatim: **2018-04-01…09-30, bands `B04 B08 B8A SCL`,
-`max_cloudcover=70`, `max_tiles=207`** (`demos/e2e_austria.py:64-70`). ~80 GB, not the 418 GB
+### D13 — The demo run downloads the local demo's scope, **from MPC**
+
+> **AMENDMENT A1 (2026-07-28, user's call, after implementation review).** The source is **MPC**,
+> not CDSE. The window, bands and cloud filter are unchanged. Reasons, in order of weight:
+>
+> 1. **D13 as originally written contradicted D11.** D11 sizes a demo run at *"~49 samples (16
+>    download + 16 build + 1 flatten + 16 inference)"*, but **CDSE dispatches exactly one job**
+>    (spec 37 D1 — `_aml_submit_and_wait`: *"one CDSE job or N MPC shard jobs"*). With CDSE the
+>    download leg contributes **1** admission sample and measures **no scale-out at all** — the
+>    headline metric this spec exists to produce. MPC fans out to the cluster's `max_instances`.
+> 2. **Continuity with the runbooks.** Every cluster run since P1 sourced from MPC
+>    (run-book 37 Phase 3; the 418 GB archive is *"576 MPC granules"*). Keeping the source fixed
+>    means `2_download` is comparable to that series — which is the series the report is about.
+> 3. **Operational risk.** CDSE needs the credential-staging dance (`_blob_creds`, a secret on
+>    blob for the run) and `run_aml_download`'s own preflight warns about the **30-day quota**
+>    throttling to 1 MB/s partway through — a bad failure mode 60 GB into an unattended run. MPC
+>    is anonymous and copies inside West Europe.
+>
+> **What A1 gives up, knowingly:** `2_download` is no longer a like-for-like row against the local
+> demo's 207 CDSE granules — the one thing the original D13 was for. §7 already said this demo run
+> is not comparable to the existing *cluster* numbers; now the download row is not comparable to
+> the *local* ones either. That is the accepted price of measuring download scale-out at all.
+> `max_tiles` moves 207 → **250** as a guardrail (not a prediction): MPC queries a different
+> catalogue and de-duplicates reprocessed acquisitions (spec 33), so its count for the same window
+> will differ. `--dry-run` reports the real number before any spend.
+
+`2_download` uses the local demo's scope: **2018-04-01…09-30, bands `B04 B08 B8A SCL`,
+`max_cloudcover=70`** (`demos/e2e_austria.py:64-70`), from MPC. ~80 GB, not the 418 GB
 full-year six-band archive run-book 37 built.
 
 *Why:* five times cheaper and faster, and — more importantly — it makes `2_download` a **like-for-

@@ -396,11 +396,10 @@ export AZ_ENV_VERSION='<version>'
 export AZ_INFER_ENV_NAME='fsd-infer-env'         # carries the DemoRF adapter package
 export AZ_INFER_ENV_VERSION='<version>'
 
-# CDSE creds -- exactly one of the two (D5 REVISED):
-export AZ_VAULT_URL='<rise Key Vault url>'       # e.g. kv<proj>.vault.azure.net
-export AZ_CDSE_SECRET_NAME='<cdse creds secret name>'
-# ...or, if you don't have Key Vault write access:
-export AZ_LOCAL_CREDS_JSON='<path to your local cdse_credentials.json>'  # staged to blob for one run
+# No CDSE credentials. `2_download` sources from MPC (spec 40 D13 amendment A1, matching
+# run-book 37 Phase 3 and every cluster run since P1): MPC is anonymous, and
+# `run_aml_download` REFUSES creds for an MPC run rather than staging a secret on blob
+# for something that never reads it (TODO #49).
 ```
 
 ### 8.3 Run it

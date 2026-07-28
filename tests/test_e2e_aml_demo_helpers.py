@@ -127,12 +127,34 @@ def test_expected_offset_derives_the_esa_offset_from_the_baseline_in_the_id(gran
 
 # --- D14 archive-trust assertions, end to end ---------------------------------------
 
+def _write_tif(fp, *, scale, offset, nodata):
+    """A 2x2 uint16 GeoTIFF carrying the spec-34 §1a radiometry tags. Real, because D14
+    now reads the COG's own header rather than trusting the catalog about itself."""
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_origin
+
+    with rasterio.open(
+        fp, "w", driver="GTiff", height=2, width=2, count=1, dtype="uint16",
+        crs="EPSG:32633", transform=from_origin(500000, 5300000, 10, 10), nodata=nodata,
+    ) as dst:
+        dst.write(np.ones((2, 2), dtype="uint16") * 1234, 1)
+        dst.scales = (scale,)
+        dst.offsets = (offset,)
+
+
 def _build_archive(tmp_path, *, granules=3, sidecar=True, offset=-1000, nodata=None,
-                   drop_asset=None, extra_object=False):
-    """A miniature imagery archive on disk + its catalog, laid out exactly as a CDSE
-    download leaves it: `<imagery>/<…>/<granule_id>/{B04.tif,SCL.tif,MTD_TL.xml}`, with
-    `files` holding bare basenames (identical on every row) -- the property that makes
-    a basename-keyed check vacuous."""
+                   drop_asset=None, extra_object=False, mpc_style_ids=False,
+                   cog_offset=None, cog_scale=None):
+    """A miniature imagery archive on disk + its catalog, laid out exactly as a download
+    leaves it: `<imagery>/<…>/<granule_id>/{B04.tif,SCL.tif,MTD_TL.xml}`, with `files`
+    holding bare basenames (identical on every row) -- the property that makes a
+    basename-keyed check vacuous.
+
+    `mpc_style_ids` drops the `_N####_` baseline field, as real MPC item ids do.
+    `cog_offset`/`cog_scale` override what the COG header declares, so the catalog and
+    the granule can be made to disagree.
+    """
     import shapely.geometry as sg
 
     from fsd import config
@@ -140,27 +162,42 @@ def _build_archive(tmp_path, *, granules=3, sidecar=True, offset=-1000, nodata=N
     from fsd.catalog.declaration import SourceDeclaration
 
     imagery = tmp_path / "imagery"
+    eff_nodata = config.NODATA if nodata is None else nodata
     rows = []
     for i in range(granules):
-        gid = f"S2B_MSIL2A_2018092{i}T100019_N0500_R122_T33UWQ_20230710T00134{i}"
+        gid = (f"S2B_MSIL2A_2018092{i}T100019_R122_T33UWQ_20230710T00134{i}"
+               if mpc_style_ids else
+               f"S2B_MSIL2A_2018092{i}T100019_N0500_R122_T33UWQ_20230710T00134{i}")
         folder = imagery / "Sentinel-2" / "MSI" / "L2A_N0500" / "2018" / "09" / f"2{i}" / gid
         folder.mkdir(parents=True)
         names = ["B04.tif", "SCL.tif"] + (["MTD_TL.xml"] if sidecar else [])
         for name in names:
             if drop_asset is not None and (i, name) == drop_asset:
                 continue  # declared in the catalog, absent on "blob"
-            (folder / name).write_bytes(b"x" * 128)
+            if name.endswith(".tif"):
+                reflectance = name.startswith("B")
+                _write_tif(
+                    folder / name,
+                    scale=(cog_scale if cog_scale is not None else config.S2_REFLECTANCE_SCALE)
+                    if reflectance else 1.0,
+                    offset=(cog_offset if cog_offset is not None
+                            else offset * config.S2_REFLECTANCE_SCALE) if reflectance else 0.0,
+                    nodata=eff_nodata,
+                )
+            else:
+                (folder / name).write_bytes(b"x" * 128)
         rows.append(dict(
             id=gid, satellite=config.SATELLITE_S2L2A,
             timestamp=f"2018-09-2{i}T10:00:19Z", s3url=f"s3://eodata/{gid}.SAFE",
             local_folderpath=str(folder), files=",".join(names), cloud_cover=1.0,
-            offset=offset, nodata=config.NODATA if nodata is None else nodata,
+            offset=offset, nodata=eff_nodata,
             geometry=sg.box(i, i, i + 1, i + 1),
         ))
     if extra_object:
         stray = imagery / "Sentinel-2" / "MSI" / "L2A_N0500" / "2018" / "09" / "99" / "leftover"
         stray.mkdir(parents=True)
-        (stray / "B04.tif").write_bytes(b"y" * 64)
+        _write_tif(stray / "B04.tif", scale=config.S2_REFLECTANCE_SCALE,
+                   offset=offset * config.S2_REFLECTANCE_SCALE, nodata=eff_nodata)
 
     catalog_fp = str(imagery / "catalog.parquet")
     TileCatalog(catalog_fp, declaration=SourceDeclaration(reference_band="B08")).append(rows)
@@ -204,8 +241,42 @@ def test_archive_trust_rejects_an_offset_its_own_baseline_contradicts(tmp_path):
 
 
 def test_archive_trust_rejects_a_declared_nodata_the_builder_would_not_honor(tmp_path):
-    catalog_fp, imagery = _build_archive(tmp_path, nodata=-9999)
+    catalog_fp, imagery = _build_archive(tmp_path, nodata=65535)  # valid uint16, wrong value
     with pytest.raises(demo.PreflightFailure, match="config.NODATA"):
+        demo._assert_archive_trustworthy(catalog_fp, imagery)
+
+
+def test_archive_trust_rejects_a_cog_whose_tags_contradict_the_catalog(tmp_path):
+    """The `c2bf1f1` black-tile class: the GDAL tag is in REFLECTANCE units to match
+    `scale=1/10000`, the catalog column is in DN. Stamping the DN offset (-1000) beside
+    a 1/10000 scale makes an `unscale=true` viewer compute `DN/10000 - 1000` -- pure
+    black. The old "GDAL tag agrees with STAC" test passed straight through it, because
+    both carried the same wrong value."""
+    catalog_fp, imagery = _build_archive(tmp_path, offset=-1000, cog_offset=-1000.0)
+    with pytest.raises(demo.PreflightFailure, match="stamps OFFSET"):
+        demo._assert_archive_trustworthy(catalog_fp, imagery)
+
+
+def test_archive_trust_still_checks_offset_on_mpc_ids_that_carry_no_baseline(tmp_path):
+    """Real MPC item ids drop the `_N####_` field, so `_expected_offset` returns None
+    for every row and the baseline cross-check contributes nothing. The COG-tag
+    comparison is what has to catch a wrong offset there -- and the result says plainly
+    that zero rows were baseline-checked rather than implying the offset was verified
+    twice."""
+    ok_fp, ok_imagery = _build_archive(tmp_path / "ok", mpc_style_ids=True)
+    trust = demo._assert_archive_trustworthy(ok_fp, ok_imagery)
+    assert trust["n_offset_baseline_crosschecked"] == 0
+    assert trust["n_sampled"] == 3
+
+    bad_fp, bad_imagery = _build_archive(
+        tmp_path / "bad", mpc_style_ids=True, offset=-1000, cog_offset=0.0)
+    with pytest.raises(demo.PreflightFailure, match="stamps OFFSET"):
+        demo._assert_archive_trustworthy(bad_fp, bad_imagery)
+
+
+def test_archive_trust_rejects_an_offset_outside_the_two_esa_values(tmp_path):
+    catalog_fp, imagery = _build_archive(tmp_path, mpc_style_ids=True, offset=-500)
+    with pytest.raises(demo.PreflightFailure, match="ESA defines"):
         demo._assert_archive_trustworthy(catalog_fp, imagery)
 
 

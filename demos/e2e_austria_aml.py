@@ -10,10 +10,20 @@ step here contains two runs. `1_tiling` duplicates work `run_inference` re-tiles
 internally in its own preflight -- symmetric with the local demo, cheap, and load-bearing
 for the step-for-step comparison (do not "fix" it).
 
-The download step (`2_download`, D13) uses the local demo's EXACT scope --
-2018-04-01..09-30, bands B04/B08/B8A/SCL, max_cloudcover=70, max_tiles=207 -- five times
-cheaper than the existing 418 GB six-band archive, and for the first time a like-for-like
-row against the local run's 207 granules.
+The download step (`2_download`, D13 as AMENDED 2026-07-28) uses the local demo's window
+and bands -- 2018-04-01..09-30, B04/B08/B8A/SCL, max_cloudcover=70 -- but sources them
+from **MPC, like every cluster run since P1** (run-book 37 Phase 3), not from CDSE.
+
+The original D13 pinned CDSE to make `2_download` a like-for-like row against the local
+laptop run. That traded away more than it bought: **CDSE dispatches exactly ONE job**
+(spec 37 D1) so the download leg measured no scale-out at all -- contradicting D11's own
+"~49 samples (16 download + ...)" -- while also requiring the CDSE credential dance and
+risking the 30-day quota throttle partway through ~80 GB. MPC fans out across the
+cluster, is anonymous, and copies inside West Europe. The cost, accepted knowingly: this
+step is no longer comparable to the local run's 207 CDSE granules (§7 already said the
+demo is not comparable to the *cluster* numbers; now the download row is not comparable
+to the *local* ones either -- it is comparable to run-book 37, which is the series that
+matters).
 
 **Claude never runs this script** (CLAUDE.md): it is handed to the operator with the
 prerequisites in `demos/E2E_AUSTRIA_AML.md` §8 (VM inside the project's compute subnet,
@@ -26,7 +36,8 @@ Run as (see E2E_AUSTRIA_AML.md for the full env-var contract):
     export AZ_ROOT=abfss://<fs>@<account>.dfs.core.windows.net/<prefix>
     export AZ_ENV_NAME=fsd-aml-env AZ_ENV_VERSION=...
     export AZ_INFER_ENV_NAME=fsd-infer-env AZ_INFER_ENV_VERSION=...
-    export AZ_LOCAL_CREDS_JSON=/path/to/cdse_credentials.json   # or AZ_VAULT_URL/AZ_CDSE_SECRET_NAME
+    # no CDSE credentials: MPC is anonymous (D13 as amended), and `run_aml_download`
+    # refuses creds for an MPC run rather than staging a secret on blob for nothing.
     python demos/e2e_austria_aml.py --fresh --dry-run
     python demos/e2e_austria_aml.py --fresh --confirm-spend      # after az login, under tmux
     python demos/e2e_austria_aml.py --run-id <id> --confirm-spend   # resume a partial run
@@ -58,12 +69,12 @@ from fsd import config, grid  # noqa: E402
 from fsd.api import TrainingData  # noqa: E402
 from fsd.catalog.catalog import TileCatalog  # noqa: E402
 from fsd.model import bundle  # noqa: E402
-from fsd.sources import cdse  # noqa: E402
+from fsd.sources import mpc  # noqa: E402
 from fsd.storage import fs  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(_HERE))  # workspace root
 
-# --- D13: the local demo's exact download scope, reproduced verbatim ---------------
+# --- D13 (amended): the local demo's window/bands/cloudcover, sourced from MPC ------
 ROI_FP = os.path.join(ROOT, "shapefiles/AT_ROI.geojson")
 TRAIN_FP = os.path.join(ROOT, "shapefiles/AT_2018_TRAIN.geojson")
 ID_COL = "fid"
@@ -73,7 +84,12 @@ SCL_MASK = [0, 1, 3, 7, 8, 9, 10]
 MOSAIC_DAYS = 20
 START = datetime.datetime(2018, 4, 1)
 END = datetime.datetime(2018, 9, 30)
-MAX_TILES = 207
+# The guardrail (D4: "the ROI x window is bigger than intended"), NOT a prediction.
+# 207 is the local demo's CDSE granule count; MPC queries a different catalogue and
+# de-duplicates reprocessed acquisitions (spec 33), so its count for the same
+# window/cloudcover will not be identical. `--dry-run` reports MPC's real number before
+# any spend -- raise this if the dry run is legitimately higher.
+MAX_TILES = 250
 MAX_CLOUDCOVER = 70
 
 STEP_LABELS = [
@@ -217,34 +233,6 @@ def _make_ml_client():
     )
 
 
-@contextlib.contextmanager
-def _blob_creds(root: str):
-    """D5 REVISED: stage the CDSE creds JSON on blob for exactly one run, remove it even
-    if the run raises (mirrors runbook 37's `blob_creds` helper). Only used when
-    `AZ_VAULT_URL`/`AZ_CDSE_SECRET_NAME` are not both set."""
-    url = f"{root.rstrip('/')}/_secrets/cdse_credentials.json"
-    with open(os.environ["AZ_LOCAL_CREDS_JSON"]) as f:
-        payload = f.read()
-    with fs.open(url, "w") as f:
-        f.write(payload)
-    try:
-        yield url
-    finally:
-        with contextlib.suppress(Exception):
-            fs.rm(url)
-
-
-def _cdse_creds_kwargs() -> dict:
-    """Exactly one of Key Vault or a staged blob JSON (D5 REVISED) -- resolved once here,
-    reused by every download call this demo run makes."""
-    if os.environ.get("AZ_VAULT_URL") and os.environ.get("AZ_CDSE_SECRET_NAME"):
-        return {"vault_url": os.environ["AZ_VAULT_URL"], "secret_name": os.environ["AZ_CDSE_SECRET_NAME"]}
-    if os.environ.get("AZ_LOCAL_CREDS_JSON"):
-        return {}  # caller enters _blob_creds() and adds creds_url= itself
-    fail("neither AZ_VAULT_URL+AZ_CDSE_SECRET_NAME nor AZ_LOCAL_CREDS_JSON is set (D5 REVISED: "
-         "exactly one CDSE creds source is required).")
-
-
 def _measure_clock_skew(root: str) -> dict:
     """D11: write a scratch blob, read back the stamp STORAGE put on it, compare to the
     driver's own clock -- this session measured ~8s of laptop-vs-Azure skew, a third of
@@ -343,7 +331,7 @@ def step_preflight(ml_client, root: str) -> dict:
 
     n_tiles = None
     if not errs:
-        tiles = cdse.query_catalog(ROI_FP, START, END, max_cloudcover=MAX_CLOUDCOVER)
+        tiles = mpc.query_catalog(ROI_FP, START, END, max_cloudcover=MAX_CLOUDCOVER)
         n_tiles = len(tiles)
         if n_tiles > MAX_TILES:
             errs.append(f"{n_tiles} discovered tiles exceed max_tiles={MAX_TILES}.")
@@ -437,17 +425,60 @@ def _expected_offset(granule_id: str) -> int | None:
     (`…_N0500_…` -> 05.00 -> -1000; -1000 for baseline >= 04.00, else 0 -- ESA, via
     `fsd.sources._s2_radiometry`), or `None` if the id carries no baseline token.
 
-    Deliberately an INDEPENDENT re-derivation rather than a call into the source module
-    that wrote the column: D14 exists to catch a catalog that disagrees with its own
-    granules, and that is the *invisible* failure mode -- the pipeline goes green and
-    every reflectance is ~1000 DN high (the exact defect the workspace's old Ethiopia
-    archive carries). Asserting a value against the function that produced it would
-    catch nothing.
+    `None` is the common case on MPC, whose item ids drop the `N####` field entirely
+    (`S2B_MSIL2A_20220219T100019_R122_T33UWP_20220225T100522` -- verified against
+    `tests/outputs/mpc_baseline/catalog.parquet`). That is exactly why this is only ONE
+    of D14's two offset checks: on its own it would be a silent no-op for every MPC
+    granule. `_assert_cog_tags_match_catalog` is the source-agnostic one.
     """
     m = _BASELINE_RE.search(str(granule_id))
     if not m:
         return None
     return -1000 if (int(m.group(1)), int(m.group(2))) >= (4, 0) else 0
+
+
+def _assert_cog_tags_match_catalog(row) -> None:
+    """D14's "`scale`/`offset`/`nodata` correct on a sample": compare the catalog row
+    against the **COG's own stamped GDAL tags** — two independent records of one fact,
+    written by different code paths (`catalog.append` vs `raster.cog.stamp_gdal_tags`).
+
+    This is the check that works for BOTH sources, since it reads the granule rather
+    than parsing its name. It also pins the precise bug that already shipped once
+    (`c2bf1f1`, the black-tile fix): the tag is in **reflectance units** to match
+    `scale=1/10000`, because a viewer's `unscale=true` computes `DN*scale + offset`,
+    while the catalog column stays in **DN**. Stamping the DN offset (-1000) next to a
+    1/10000 scale made titiler render `DN/10000 - 1000` — pure black — and no test
+    caught it, because the two records agreed on the same wrong value.
+
+    A header read (no pixels decoded), one band per sampled granule.
+    """
+    from fsd.raster import rio_open
+    from fsd.raster.images import _is_reflectance
+
+    band_file = next(
+        (f.strip() for f in str(row["files"]).split(",")
+         if f.strip().endswith(".tif") and _is_reflectance(os.path.splitext(f.strip())[0])),
+        None,
+    )
+    if band_file is None:
+        return  # no reflectance band in this row (e.g. an SCL-only download)
+
+    fp = f"{str(row['local_folderpath']).rstrip('/')}/{band_file}"
+    with rio_open(fp) as src:
+        tag_scale, tag_offset, tag_nodata = src.scales[0], src.offsets[0], src.nodata
+
+    want_offset = float(row["offset"]) * config.S2_REFLECTANCE_SCALE
+    if abs(tag_offset - want_offset) > 1e-9:
+        fail(f"D14: {fp!r} stamps OFFSET={tag_offset!r}, but the catalog declares "
+             f"offset={row['offset']!r} DN (= {want_offset} in reflectance units). The COG "
+             "and the catalog disagree about radiometry -- one of them is serving/building "
+             "wrong pixels (this is the c2bf1f1 black-tile class of bug).")
+    if abs(tag_scale - config.S2_REFLECTANCE_SCALE) > 1e-12:
+        fail(f"D14: {fp!r} stamps SCALE={tag_scale!r}, expected "
+             f"{config.S2_REFLECTANCE_SCALE} -- an unscale=true viewer would misrender it.")
+    if tag_nodata != row["nodata"]:
+        fail(f"D14: {fp!r} declares nodata={tag_nodata!r} but the catalog says "
+             f"{row['nodata']!r}.")
 
 
 def _assert_archive_trustworthy(catalog_fp: str, dst_folderpath: str) -> dict:
@@ -488,25 +519,39 @@ def _assert_archive_trustworthy(catalog_fp: str, dst_folderpath: str) -> dict:
     # leftovers) but worth surfacing.
 
     sample = rows.sample(min(10, len(rows)), random_state=7)
+    n_baseline_checked = 0
     for _, row in sample.iterrows():
         if row.get("nodata") != config.NODATA:
             fail(f"D14: row {row['id']!r} declares nodata={row.get('nodata')!r}, not "
                  f"config.NODATA ({config.NODATA}) -- the builder treats {config.NODATA} "
                  "as nodata, so any other declared value silently mixes real pixels "
                  "with fill.")
+        if row.get("offset") not in (0, -1000):
+            fail(f"D14: row {row['id']!r} declares offset={row.get('offset')!r}; ESA defines "
+                 "only 0 (baseline < 04.00) and -1000 (>= 04.00).")
         expected_offset = _expected_offset(row["id"])
-        if expected_offset is not None and row.get("offset") != expected_offset:
-            fail(f"D14: row {row['id']!r} declares offset={row.get('offset')!r}, but its "
-                 f"processing baseline implies {expected_offset} -- un-harmonized "
-                 "radiometry: cubes built from this archive would be ~1000 DN off and "
-                 "nothing downstream would notice.")
+        if expected_offset is not None:
+            n_baseline_checked += 1
+            if row.get("offset") != expected_offset:
+                fail(f"D14: row {row['id']!r} declares offset={row.get('offset')!r}, but its "
+                     f"processing baseline implies {expected_offset} -- un-harmonized "
+                     "radiometry: cubes built from this archive would be ~1000 DN off and "
+                     "nothing downstream would notice.")
+        # Size first, THEN the header read: a truncated asset must be reported as
+        # zero-byte, not as rasterio's "not recognized as being in a supported file
+        # format" -- same defect, but only one of those messages names the fix.
         for fn in str(row["files"]).split(","):
             fp = f"{str(row['local_folderpath']).rstrip('/')}/{fn.strip()}"
             if fs.size(fp) <= 0:
                 fail(f"D14: zero-byte asset {fp!r}.")
+        _assert_cog_tags_match_catalog(row)
 
     return {"n_catalog_rows": len(rows), "n_declared_assets": len(declared),
-            "n_undeclared_objects": len(undeclared)}
+            "n_undeclared_objects": len(undeclared), "n_sampled": len(sample),
+            # Reported, not silent: 0 here means every sampled id lacked a baseline
+            # token (the normal MPC case), so the offset guarantee rests entirely on
+            # the COG-tag comparison. A reader can see which check did the work.
+            "n_offset_baseline_crosschecked": n_baseline_checked}
 
 
 def step_download(ml_client, root: str) -> dict:
@@ -522,16 +567,13 @@ def step_download(ml_client, root: str) -> dict:
                      "ml_client": ml_client, "poll_interval_seconds": 10}
 
     before = _list_run_ids(root)
-    creds_kwargs = _cdse_creds_kwargs()
-    if creds_kwargs:
-        fsd.download(roi_url, START, END, BANDS, dst_folderpath,
-                     source="cdse", max_tiles=MAX_TILES, max_cloudcover=MAX_CLOUDCOVER,
-                     runner="aml", runner_kwargs={**runner_kwargs, **creds_kwargs})
-    else:
-        with _blob_creds(root) as creds_url:
-            fsd.download(roi_url, START, END, BANDS, dst_folderpath,
-                         source="cdse", max_tiles=MAX_TILES, max_cloudcover=MAX_CLOUDCOVER,
-                         runner="aml", runner_kwargs={**runner_kwargs, "creds_url": creds_url})
+    # `n_shards` is deliberately NOT passed: `run_aml_download` defaults it to the
+    # cluster's own `max_instances`, which is what makes this a full-width fan-out and
+    # gives D11 its ~16 download admission samples. Pinning a number here would silently
+    # under-use a resized cluster.
+    fsd.download(roi_url, START, END, BANDS, dst_folderpath,
+                 source="mpc", max_tiles=MAX_TILES, max_cloudcover=MAX_CLOUDCOVER,
+                 runner="aml", runner_kwargs=runner_kwargs)
     dispatch_timings = _new_dispatch_timings(root, before)
 
     granules = len(TileCatalog(catalog_fp).read())
@@ -561,6 +603,13 @@ def step_training_data(ml_client, root: str, catalog_fp: str, adapter, local_exp
         startdate=START, enddate=END, mosaic_days=MOSAIC_DAYS, bands=BANDS,
         id_col=ID_COL, label_col=LABEL_COL, scl_mask_classes=SCL_MASK,
         export_folderpath=local_export_fp, adapter=adapter,
+        # `median_per_id` is the MODELLING UNIT, not a size trick (run-book 40): one
+        # `np.nanmedian` row per labelled field instead of every pixel inside it. The
+        # labels are field-level, so training per-pixel leaks a field's own pixels
+        # across the train/test split -- that is the difference between the discredited
+        # 0.696 and the honest field-wise ~0.29. Matches run-books 39/40; the local demo
+        # does NOT do this yet, so step 3 is where the step-for-step mirror (D1) breaks.
+        aggregate="median_per_id",
         runner="aml", runner_kwargs=runner_kwargs,
     )
     # D1: this ONE call dispatches TWO runs internally (the build fan-out + the flatten
@@ -710,15 +759,25 @@ def step_report(demo: Demo) -> dict:
 # --- D6: cost guard ------------------------------------------------------------------
 
 def _dry_run_estimate():
-    tiles = cdse.query_catalog(ROI_FP, START, END, max_cloudcover=MAX_CLOUDCOVER)
+    tiles = mpc.query_catalog(ROI_FP, START, END, max_cloudcover=MAX_CLOUDCOVER)
     grids = grid.roi_to_s2_grids(ROI_FP, grid_size_km=5, scale_fact=1.1)
     fields = gpd.read_file(TRAIN_FP)
-    estimated_gb = len(tiles) * config.APPROX_GB_PER_TILE
+    # Two figures, because one would be misleading. `APPROX_GB_PER_TILE` is a whole-tile
+    # guard (all bands) -- ~3.4x high for this run's four. The expected value comes from
+    # the local demo's own measurement of the SAME window and bands: 44.61 GB / 207
+    # granules (E2E_AUSTRIA_AML.md §1). MPC's granule count will differ from CDSE's, so
+    # this scales that per-granule rate by whatever MPC actually discovers.
+    gb_per_granule_4band = 44.61 / 207
     print(json.dumps({
         "n_tiles": len(tiles), "n_cells": len(grids), "n_fields": len(fields),
-        "estimated_gb": round(estimated_gb, 1),
-        "note": "wall-clock estimate needs a calibrated cost_model from a prior run's "
-                "timings.json -- none available pre-run (honest, not invented).",
+        "max_tiles_guardrail": MAX_TILES,
+        "estimated_gb": round(len(tiles) * gb_per_granule_4band, 1),
+        "estimated_gb_upper_bound": round(len(tiles) * config.APPROX_GB_PER_TILE, 1),
+        "note": "estimated_gb scales the local demo's measured 4-band rate "
+                "(44.61 GB / 207 granules, same window+bands) by MPC's discovered count; "
+                "the upper bound uses config.APPROX_GB_PER_TILE, which counts ALL bands. "
+                "No wall-clock estimate: that needs a calibrated cost_model from a prior "
+                "run's timings.json, and none exists yet (honest, not invented).",
     }, indent=2))
 
 
