@@ -1,58 +1,119 @@
-# Handoff — implement the adlfs concurrent-write seam retry (TODO #57), then finish runbook 38 Phase 3
+# Handoff — run runbook 38 Phase 3 with the CORRECTED ROI (operator run + triage)
 
-Fresh-session baton. **This is a pointer, not the source of truth** — the durable, detailed state is
-already in the repo. Read those first; don't re-derive what they hold.
+Fresh-session baton. **This is a pointer, not the source of truth** — the durable state is in the
+repo. Read those first; don't re-derive what they hold.
+
+**Status change vs. the previous baton (2026-07-28):** that baton said "TODO #57 landed, just re-run
+Phase 3". **It was wrong about the bug.** Phase 3's real blocker was duplicate S2 cell ids caused by
+passing a *label set* as `roi=` (TODO #58 / spec 21 **D-GRID-1**) — now fixed at source, with the
+runbook's ROI corrected to `AT_ROI.geojson`. No code work pending; the remaining step is the **user**
+running Phase 3 and pasting back `phase3_result.json`.
 
 ## Read these (in order), then start
-1. `fsd/PROGRESS.md` — **top block** ("⭐ NEXT STEP" → "🔴 THE NEXT TASK") = the canonical plan +
-   the **fully-designed fix** (constants, functions, call-site, tests, verify steps) + git state.
-2. `fsd/TODO.md` #57 — the one-paragraph problem statement (root cause + fix shape).
-3. `fsd/LIMITATIONS.md` — the two new rows (adlfs concurrent-write race; roi-mode convex-hull tiling).
-4. `fsd/CLAUDE.md` — working contract (spec-first, Claude never runs pipeline/networked scripts →
-   operator runbooks with `_result.json`; model/effort split; commit/push only when asked).
+1. `fsd/PROGRESS.md` — **top block** = canonical status + the "READ THIS BEFORE RE-RUNNING" box.
+2. `fsd/specs/21-roi-inference-verb.md` **D-GRID-1** — the amended contract: an ROI is one *region*;
+   one cell = one row = one work unit; ids unique. This is what the failure taught.
+3. `fsd/runbooks/38-inference-on-aml.md` — **Phase 3** is the thing to run (ROI box at its head).
+   Phases 0–2 are GREEN and idempotent; re-run them only if the shell/env was lost.
+4. `fsd/TODO.md` **#58** (the real bug) and **#57** (retracted root cause) + `fsd/LIMITATIONS.md`.
+5. `fsd/CLAUDE.md` — working contract (Claude never runs pipeline/networked scripts → the **user** runs
+   the runbook and pastes `_result.json`; Claude diffs it against the success criteria and never reads
+   live logs; commit/push only when asked).
 
 ## The task (one sentence)
-Add a **backend-agnostic retry** for adlfs's transient `InvalidBlockList` to the storage seam
-(`src/fsd/storage/fs.py`) so `create_datacube.setup()`'s concurrent per-cell blob writes survive at
-scale, then the user re-runs `runbooks/38-inference-on-aml.md` **Phase 3** (the 1167-cell fan-out that
-died at shape 0/1167).
+User runs runbook 38 **Phase 3** with the corrected ROI (`AT_ROI.geojson` → ~300 cells) and pastes
+`$OUT38/phase3_result.json`; Claude checks it against the runbook's PASS criteria and triages
+anything that isn't green.
 
-## Why this is the blocker (one paragraph)
-Runbook 38 is **GREEN through Phase 2** on the real cluster (env smoke, Phase 0 D3/D4, Phase 1 → 9
-cells, Phase 2 resume + D13 guard). **Phase 3 died in driver-side `create_datacube.setup()`**:
-16-thread concurrent `geometry.geojson`/`catalog.parquet` writes through the one shared adlfs client
-race on Azure's `commit_block_list` → `InvalidBlockList`. Transient (a re-write works), no retry today.
-`config.SETUP_MAX_CONCURRENT` is import-bound so it can't be lowered at runtime. Same class as the
-`9422a1a` grids.geojson seam fix (GDAL/seam mismatch), one layer down (seam not resilient under real
-concurrency + a flaky link).
+## 🔴 Phase 3 has NEVER RUN — read this before anything else
+Its two 2026-07-28 attempts died on the same bug, and it was **not** the adlfs race TODO #57
+describes. **`AT_2018_TRAIN.geojson` — a label set of 900 field polygons — was passed as `roi=`.**
+`roi_to_s2_grids` then clipped with `gpd.overlay(grids, roi_gdf)`, which emits one row per
+*(cell × polygon)* pair → **1167 rows for 172 distinct cells**, one repeated 43×. `id` is the
+work-unit key (`export_folderpath` derives from it), so up to 16 threads wrote the **same** blob →
+`InvalidBlockList`. Fixed at source: union clip + unique-id assertion (`grid.py`), duplicate-id guard
+in `setup()`, runbook ROI corrected, spec 21 amended (**D-GRID-1**), TODO #58.
 
-## Locked / decided — do NOT re-litigate
-- **User chose (2026-07-28) "keep 1167 + fix adlfs"** — do NOT shrink the ROI; make the seam resilient.
-  (Fewer-cells options are noted for the future, not for now.)
-- The fix is **driver-side** → it unblocks Phase 3 with **no AML image rebuild** (rebuilding the
-  inference Environment is optional hygiene so nodes get the retry too).
-- `fs.py` must stay **backend-agnostic** — match the transient error by **message substring**, never
-  import azure (azure is an optional backend).
+**Consequences for this run:** expect **~300 cells**, not 1167 — and each is a **full ~49 km² cube**
+(vs the 0.016 km² fragments the old numbers came from), so it is far more pixels per task than any
+previous run. **Size the fan-out before committing to it.** Every PASS criterion quoting 1167 is void.
 
-## Model / effort
-The fix is **fully designed in PROGRESS.md** → a **Sonnet@medium** session can implement it test-first
-against that design (it's mechanical: retry helper + 2 seam fns + wrap 2 writers + 1 call-site swap +
-retry unit tests). Switch back to **Opus@high** for review before merge (the repo's
-Sonnet-implements / Opus-reviews gate). No spec needed — it's a bug fix against a recorded design, not
-new behavior; but keep the tests **non-vacuous** (assert the retry actually retries; assert
-non-transient re-raises).
+## The TODO #57 retry was REVERTED — there is no write-retry any more
+It was built for a hypothesised transient adlfs race that has never been demonstrated (runbook 36
+wrote 900 distinct blobs, same 16-way concurrency, same VPN, same account, 71 s, zero errors). It
+could not have fixed Phase 3: a retry cannot resolve a deterministic same-blob collision, and 16
+threads x 6 attempts buried the real error under a minutes-long `[storage] transient write error`
+storm that read as an infinite loop. **Reverted in full** — a failed blob write now raises on the
+first attempt, which is what makes the real cause legible. `fs.write_bytes`/`write_text` survive as
+plain seam helpers. **If you see `InvalidBlockList` again, suspect TWO WRITERS ON ONE BLOB first.**
+
+## Duplicate ids now fail in PREFLIGHT, before any spend
+`run_inference` tiles the ROI *inside* preflight — before `fs.makedirs(output_folderpath)` and before
+`_ensure_bundle` — and rejects duplicate cell ids or an ROI that tiles to 0 cells. So a bad ROI costs
+seconds, not a bundle upload (627 s for 13 MB over VPN) + N blob writes + an AML dispatch. Preflight
+also **prints the cell count before spending**: `[run_inference] roi -> N grid cells`. **Read that
+line — N is the cluster workload and the bill.**
 
 ## Definition of done
-`pytest -q` green (baseline **436 passed / 2 skipped**) + `ruff check src/ tests/` clean; TODO #57 +
-the LIMITATIONS row flipped to fixed; then the **user** re-runs runbook 38 Phase 3 and pastes
-`phase3_result.json` (expect `sum_shard_units == n_cells_out == 1167`, `n_failed == 0`, `bundle_loads
-== n_shards` with `cores=1`). That closes the last leg of the demo pipeline.
+`phase3_result.json` with `pass: true` — i.e. `sum_shard_units == n_cells_out == <the cell count
+`[setup]` printed>` (~300 for `AT_ROI`; the old 1167 is void), `n_failed == 0`,
+`n_skipped == 0` on a cold run, and the D7 claim `bundle_loads == n_shards_reported` (with `cores=1`,
+one bundle load per node). `driver_overhead_seconds` / `slowest_shard_seconds` feed TODO #55's timed-demo
+report. Then: flush PROGRESS.md, flip the runbook 38 Phase 3 header to GREEN, and the demo pipeline
+(download → build → flatten → train+bundle → inference) is end-to-end complete.
+
+## Triage table — if Phase 3 does not go green
+| What you see | What it means | Next step |
+|---|---|---|
+| Dies at shape ~0 in **seconds**, `AuthorizationFailure` / `AADSTS…` / `ContainerNotFound` | A **permanent** error, surfacing immediately as it should. Usually **VPN down** (blob network rules) or a stale `az login`. | Fix creds/VPN, re-run. Do **not** reintroduce a retry to paper over it. |
+| `InvalidBlockList` anywhere | **Two writers, one blob** — that is what the error literally reports, and what both 2026-07-28 failures were. There is no retry any more, so it raises immediately with the colliding path in the message. | Check the shapes/grids file for duplicate ids: `gpd.read_file(p)["id"].duplicated().any()`. Preflight should have caught it — if it didn't, that is a bug in the guard, not a reason to retry. |
+| Setup completes, jobs fail **node-side** | Not this fix's territory (the fix is driver-side). | `az ml job stream -n <name>` for one shard's traceback; job names are in the raised `RuntimeError`'s shard list or `_status/*.json`. |
+| Long silent pause before any AML output | **Not a hang** — driver-side `setup()` writing every cell's control files. The tell: the `azure.ai.ml` "experimental class" warnings have not printed yet (imported lazily at dispatch). A throttled `[setup] N/<total> … eta` line should be ticking. | Wait. |
+
+## Locked / decided — do NOT re-litigate
+> ⚠️ **Only the user's own calls belong in this box.** Inherited "facts" do not — see the retraction
+> below. Nothing goes here unless you can name where it was verified.
+
+- **ROI is `AT_ROI.geojson`** (1 polygon, 10,682 km² → **~300 cells**). ❌ **RETRACTED:** the previous
+  baton locked "ROI must be `AT_2018_TRAIN.geojson`" and "keep 1167 cells". Both were wrong.
+  `AT_2018_TRAIN` is a **label set** (900 field polygons) that was mistakenly wired into the `roi=`
+  slot; the "1167 cells" figure was 1167 *(cell × field)* fragments over 172 real cells, not a cell
+  count. The original warning it grew from was only about *imagery overlap* (don't use the
+  Ethiopia-translated file) and got over-generalised into the wrong file class. See spec 21 D-GRID-1.
+- **Still true:** do **NOT** use `austria_eurocrops_sampled_ethiopia_translated.geojson` (Austria
+  fields translated to 36°E Ethiopia): zero overlap with the Austria archive → every cell builds an
+  empty cube. This is the mistake runbook 36 Phase 3 hit.
+- **No AML image rebuild needed** — the fixes are driver-side, so the local venv carries them.
+- `fs.py` stays **backend-agnostic** — never import azure to classify an error.
+
+## Model / effort
+This is an **operator run + result triage**, not implementation. **Opus@high** to diff
+`phase3_result.json` against the PASS criteria and debug anything that isn't green. Drop to
+Sonnet@medium only if triage turns into mechanical code work against a written design.
 
 ## Git state at handoff
-`main` **4 commits ahead of `origin/main` (`e7d8ba6`), UNPUSHED** (+ this handoff flush commit).
-`4050b3b` · `511c300` · `9422a1a` (grids seam fix) · `265bec4` (median + OUT40/OUT38 + rb38 Phase 1).
-**Nothing else pending; tree clean.** Push only when asked, RECIPES.md identifier sweep first.
+`main` = `3db3dd9`, in sync with `origin/main` (the TODO #57 retry, pushed 2026-07-28). **The
+D-GRID-1 work — `grid.py`, `api.py`, `create_datacube.py`, specs/21, the doc corrections, +6 tests — is
+UNCOMMITTED on top of it**, along with the TODO #57 revert and the preflight guard (`pytest -q` 443
+passed / 2 skipped, `ruff` clean). The
+`worktree-todo57-adlfs-retry` worktree + branch are pruned; `spike/rslearn` untouched.
+
+## Working agreement adopted 2026-07-28 (after this bug)
+Before proposing a fix, state three things **separately**, so the wrong one can be corrected cheaply:
+**(1) Observed** — what the log/measurement literally says; **(2) Inferred** — the mechanism claimed
+to produce it; **(3) Assumed** — what is taken on faith from docs/handoffs, *with its source*, flagged
+as unverified. This bug cost two failed cloud runs because an inherited assumption ("ROI must be
+`AT_2018_TRAIN`") was presented as established fact inside a do-not-re-litigate box. **Run the cheap
+local check before the expensive cloud run** — 1167-vs-172 was three lines of geopandas.
+
+## Gotcha that cost time last session — don't repeat it
+A per-spec worktree `.venv` built with a bare `pip install -e ".[dev]"` is **not** equivalent to the
+repo `.venv`: it silently skips `tests/test_azure_seam.py` (25 tests — the module that covers
+`fsd.storage`!) and `tests/test_grid.py` (4), and resolves a newer ruff whose larger default rule set
+invites narrowing `--select` and hiding real findings. Full recipe for testing worktree **code** against
+the repo's **deps** is in `RECIPES.md` ("Verify a worktree's code against the repo's FULL dependency
+set"). Baseline on `main` today: **441 passed / 2 skipped**, `ruff check src/ tests/` clean.
 
 ## Suggested `/handoff` goal
-"Implement the adlfs InvalidBlockList seam retry (TODO #57, designed in PROGRESS.md) test-first, then
-the user re-runs runbook 38 Phase 3 (1167-cell fan-out). Sonnet@medium implement → Opus@high review."
+"Run runbook 38 Phase 3 with the corrected ROI (AT_ROI, ~300 cells; spec 21 D-GRID-1) and triage `phase3_result.json`
+against the PASS criteria. Opus@high."

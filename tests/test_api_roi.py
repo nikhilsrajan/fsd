@@ -84,6 +84,54 @@ def test_roi_preflight_missing_bands(tmp_path):
         )
 
 
+# --- spec 21 D-GRID-1: duplicate cell ids die in preflight, before any spend ---
+
+
+def test_roi_preflight_refuses_duplicate_cell_ids(tmp_path, monkeypatch):
+    """`id` is the work-unit key, so duplicates put N tasks on one export folder --
+    concurrent same-blob writes (`InvalidBlockList`) on blob, a silent overwrite locally.
+    `roi_to_s2_grids` prevents them at source; this pins the preflight seatbelt AND that
+    it fires before the expensive steps (blob makedirs, the bundle upload, setup's N
+    writes, AML dispatch). Tiling is stubbed so the test needs no [grid] extra."""
+    import fsd.api as api
+    import fsd.grid as _grid_mod
+
+    dupes = gpd.GeoDataFrame(
+        {"id": ["cell_a", "cell_a", "cell_b"]},
+        geometry=[box(0, 0, 1, 1), box(1, 1, 2, 2), box(2, 2, 3, 3)], crs="EPSG:4326",
+    )
+    monkeypatch.setattr(_grid_mod, "roi_to_s2_grids", lambda *a, **kw: dupes)
+
+    spent = []
+    monkeypatch.setattr(api.fs, "makedirs", lambda *a, **kw: spent.append("makedirs"))
+    monkeypatch.setattr(api, "_ensure_bundle", lambda *a, **kw: spent.append("bundle"))
+
+    with pytest.raises(fsd.PreflightError, match="only 2 distinct cell ids"):
+        fsd.run_inference(
+            _Tiny(), output_folderpath=str(tmp_path), roi=ROI, catalog_filepath="c.parquet",
+            startdate=datetime.datetime(2018, 6, 1), enddate=datetime.datetime(2018, 7, 11),
+            mosaic_days=20, bands=["B04", "B08"],
+        )
+    assert spent == []  # nothing was created or uploaded
+
+
+def test_roi_preflight_refuses_an_roi_that_tiles_to_nothing(tmp_path, monkeypatch):
+    import fsd.api as api
+    import fsd.grid as _grid_mod
+
+    empty = gpd.GeoDataFrame({"id": []}, geometry=[], crs="EPSG:4326")
+    monkeypatch.setattr(_grid_mod, "roi_to_s2_grids", lambda *a, **kw: empty)
+    monkeypatch.setattr(api, "_ensure_bundle",
+                        lambda *a, **kw: pytest.fail("bundle staged despite a bad roi"))
+
+    with pytest.raises(fsd.PreflightError, match="0 grid cells"):
+        fsd.run_inference(
+            _Tiny(), output_folderpath=str(tmp_path), roi=ROI, catalog_filepath="c.parquet",
+            startdate=datetime.datetime(2018, 6, 1), enddate=datetime.datetime(2018, 7, 11),
+            mosaic_days=20, bands=["B04", "B08"],
+        )
+
+
 # --- merge modes -------------------------------------------------------------
 
 def _write_cog(path, epsg, x0, y0, val, size=8, res=10, nodata=255):

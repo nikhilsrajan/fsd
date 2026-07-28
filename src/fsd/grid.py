@@ -63,8 +63,14 @@ def roi_to_s2_grids(roi, *, grid_size_km: float = 5, scale_fact: float = 1.1,
 
     Steps (per the ROADMAP §4 recipe): S2-`polyfill` the ROI's **convex hull** at the level for
     `grid_size_km` (5 km → res 11), keep cells that **intersect** the ROI, **scale** each by
-    `scale_fact` (1.1 → 10 % overlap per side), then `gpd.overlay(grids, roi)` **clip** so grids
-    stay inside the ROI (`clip=False` keeps the scaled, unclipped cells).
+    `scale_fact` (1.1 → 10 % overlap per side), then **clip** to the ROI so grids stay inside it
+    (`clip=False` keeps the scaled, unclipped cells).
+
+    **An ROI is one region, not a list of shapes.** A multi-row `roi` is `unary_union`-ed into a
+    single (multi)polygon *first*, and every step — hull, intersect, clip — works against that
+    union. So the output is **one row per S2 cell, ids unique**, whether you pass 1 polygon or
+    900 (spec 21 D-GRID-1). If you want one datacube per *shape*, that is not this function:
+    pass your shapefile straight to `workflows.create_datacube` with your own `id_col`.
 
     `roi` is a GeoDataFrame, a file path, or a geojson mapping. Returns a GeoDataFrame with
     columns `id` (the S2 cell id) + `geometry`, in EPSG:4326 — feed it straight to
@@ -96,5 +102,33 @@ def roi_to_s2_grids(roi, *, grid_size_km: float = 5, scale_fact: float = 1.1,
     grids = gpd.GeoDataFrame(df, geometry="geometry", crs="EPSG:4326")
 
     if clip:
-        grids = gpd.overlay(grids, roi_gdf[["geometry"]], how="intersection")
+        # Clip to the ROI's UNION (`shape`), never to its individual rows. This is the
+        # invariant the rest of this function already assumes -- the polyfill and the
+        # `intersects` filter above both go through `shape`.
+        #
+        # `gpd.overlay(grids, roi_gdf, how="intersection")` emits one row per
+        # (cell x roi-polygon) PAIR, so a multi-polygon ROI silently multiplies rows and
+        # REPEATS each cell's id. `id` is the work-unit key downstream -- one cell = one
+        # datacube = one task, and `create_datacube.setup(id_col="id")` derives
+        # `export_folderpath` from it -- so repeated ids mean N tasks writing the SAME
+        # folder concurrently. On blob that is a guaranteed `InvalidBlockList` block-commit
+        # collision, and the surviving `geometry.geojson` is whichever fragment committed
+        # last. Measured 2026-07-28 on a 900-field ROI: 1167 rows for 172 cells, one cell
+        # repeated 43x, each row ~0.016 km2 of a 49.6 km2 cell (spec 21 D-GRID-1).
+        grids["geometry"] = grids.geometry.intersection(shape)
+        # A cell that only *touches* the ROI can intersect to a line/point; drop those
+        # (and any empties) so every returned row is a real polygonal work unit.
+        grids = grids[
+            ~grids.geometry.is_empty
+            & grids.geometry.notna()
+            & grids.geom_type.isin(("Polygon", "MultiPolygon"))
+        ].reset_index(drop=True)
+
+    if grids["id"].duplicated().any():  # pragma: no cover - structurally impossible now
+        dupes = grids["id"].value_counts()
+        raise AssertionError(
+            f"roi_to_s2_grids produced duplicate cell ids "
+            f"({int((dupes > 1).sum())} of {grids['id'].nunique()} repeated, worst "
+            f"{dupes.iloc[0]}x) -- one cell must be exactly one row (spec 21 D-GRID-1)."
+        )
     return grids

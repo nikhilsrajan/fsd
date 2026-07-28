@@ -81,6 +81,39 @@ def _two_shapes(path):
     gdf.to_file(str(path), driver="GeoJSON")
 
 
+def _duplicate_id_shapes(path):
+    """Two DIFFERENT geometries carrying the SAME id -- the shape `gpd.overlay` used to
+    produce from a multi-polygon ROI (spec 21 D-GRID-1)."""
+    g1 = gpd.GeoSeries([box(500005, 4999965, 500035, 4999995)], crs=CRS).to_crs("EPSG:4326")
+    g2 = gpd.GeoSeries([box(500010, 4999970, 500030, 4999990)], crs=CRS).to_crs("EPSG:4326")
+    gpd.GeoDataFrame({"id": ["same", "same"], "label": [0, 1],
+                      "geometry": [g1.iloc[0], g2.iloc[0]]},
+                     crs="EPSG:4326").to_file(str(path), driver="GeoJSON")
+
+
+def test_setup_refuses_duplicate_ids(tmp_path):
+    """`export_folderpath` is derived from the id, so two shapes sharing one id are two
+    work-units writing the same files concurrently -- on blob that collides on the
+    block-blob commit (`InvalidBlockList`, the 2026-07-28 Phase 3 failure), locally it
+    silently overwrites. setup() must refuse instead of racing, for EVERY caller (the
+    grid.py fix stops the roi path from producing them in the first place)."""
+    cat = tmp_path / "catalog.parquet"
+    shapes = tmp_path / "dupes.geojson"
+    _make_catalog(cat, tmp_path)
+    _duplicate_id_shapes(shapes)
+
+    with pytest.raises(ValueError, match="duplicate 'id' values"):
+        create_datacube.setup(
+            catalog_filepath=str(cat), timestamp_col="timestamp",
+            shapefilepath=str(shapes), id_col="id", run_folderpath=str(tmp_path / "run"),
+            startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
+            bands=["B04", "B08", "SCL"], scl_mask_classes=[8, 9], mosaic_days=20,
+            csv_filepath=str(tmp_path / "input.csv"), label_col="label",
+        )
+    # refused BEFORE any work-unit folder was written
+    assert not (tmp_path / "run").exists()
+
+
 def test_setup_reads_catalog_once_regardless_of_shape_count(tmp_path, monkeypatch):
     """setup() must read the catalog file ONCE, not once per shape.
 

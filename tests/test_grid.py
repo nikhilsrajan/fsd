@@ -57,3 +57,61 @@ def test_deterministic_count():
     b = grid.roi_to_s2_grids(roi)
     assert len(a) == len(b)
     assert sorted(a["id"]) == sorted(b["id"])
+
+
+# --- spec 21 D-GRID-1: an ROI is one region, so ids are unique ----------------
+
+
+def _scattered_roi(n=40):
+    """A multi-polygon ROI: n small squares scattered inside one 5 km cell's footprint --
+    the shape of a field collection (e.g. AT_2018_TRAIN's 900 EuroCrops fields)."""
+    step = 0.004
+    boxes = [
+        shapely.geometry.box(36.10 + (i % 8) * step, 11.40 + (i // 8) * step,
+                             36.10 + (i % 8) * step + step / 2,
+                             11.40 + (i // 8) * step + step / 2)
+        for i in range(n)
+    ]
+    return gpd.GeoDataFrame(geometry=boxes, crs="EPSG:4326")
+
+
+def test_multipolygon_roi_yields_one_row_per_cell_with_unique_ids():
+    """The 2026-07-28 bug: clipping with `gpd.overlay(grids, roi_gdf)` emitted one row per
+    (cell x roi-polygon) PAIR, so a 900-field ROI produced 1167 rows for 172 cells -- and
+    `id` is the work-unit key, so N rows sharing an id meant N tasks writing the same
+    export folder concurrently (`InvalidBlockList` on blob). Clipping to the ROI's UNION
+    keeps it one row per cell however many polygons come in."""
+    roi = _scattered_roi(40)
+    grids = grid.roi_to_s2_grids(roi, grid_size_km=5, scale_fact=1.1)
+
+    assert len(grids) > 0
+    assert not grids["id"].duplicated().any()
+    assert len(grids) == grids["id"].nunique()
+    # and the cell count is a property of the REGION, not of how many polygons describe it
+    assert len(grids) <= len(grid.roi_to_s2_grids(roi, grid_size_km=5, scale_fact=1.1,
+                                                 clip=False))
+
+
+def test_multipolygon_roi_clips_to_the_union_not_the_bounding_shape():
+    """Clipping to the union must still *clip* -- the returned cells stay inside the ROI
+    (this is what distinguishes it from `clip=False`), and cover the same area the ROI's
+    polygons do within those cells."""
+    roi = _scattered_roi(40)
+    union = roi.geometry.union_all()
+    grids = grid.roi_to_s2_grids(roi, grid_size_km=5, scale_fact=1.1)
+
+    assert grids.geometry.apply(lambda g: union.buffer(1e-9).contains(g)).all()
+    # nothing dropped: the clipped cells together cover the whole ROI
+    assert grids.geometry.union_all().area == pytest.approx(union.area, rel=1e-6)
+
+
+def test_single_polygon_roi_is_unchanged_by_the_union_clip():
+    """Regression guard for the fix itself: a single-polygon ROI (the case runbook 38
+    Phase 1 ran GREEN on) must tile exactly as before."""
+    roi = _roi()
+    grids = grid.roi_to_s2_grids(roi, grid_size_km=5, scale_fact=1.1)
+    roi_geom = roi.geometry.iloc[0]
+
+    assert not grids["id"].duplicated().any()
+    assert grids.geometry.apply(lambda g: roi_geom.buffer(1e-9).contains(g)).all()
+    assert grids.geometry.union_all().area == pytest.approx(roi_geom.area, rel=1e-6)

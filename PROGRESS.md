@@ -2,16 +2,72 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-28 (TODO #57 implemented)_
+_Last updated: 2026-07-28 (🎉 runbook 38 Phase 3 GREEN — the demo pipeline is COMPLETE end to end)_
 
-## ⭐ NEXT STEP — user re-runs `runbooks/38-inference-on-aml.md` **Phase 3** now that the adlfs seam retry (TODO #57) has landed.
-The demo pipeline is **download → build → flatten → [train + bundle] → inference**. Runbook 40
-(train+bundle) is GREEN; runbook 38 (inference) is **GREEN through Phase 2** on the real cluster.
-**Phase 3's blocker (a storage-seam concurrency bug, NOT a data/design problem) is FIXED** (below),
-**implemented Sonnet@medium + reviewed Opus@high** — `pytest -q` **441 passed / 2 skipped** (= the
-436/2 baseline + 5 new tests), `ruff check src/ tests/` clean. Baton:
-`runbooks/HANDOFF-inference-phase3.md`. Awaiting: user re-runs Phase 3, pastes `phase3_result.json`
-(expect `sum_shard_units == n_cells_out == 1167`, `n_failed == 0`).
+## 🎉 THE DEMO PIPELINE IS COMPLETE — download → build → flatten → train+bundle → inference, all GREEN on the real cluster.
+**Runbook 38 Phase 3 PASSED 2026-07-28**, first attempt with the corrected ROI: `AT_ROI.geojson` →
+**300 grid cells**, 16 shards, `pass: true`, `sum_shard_units == n_cells_out == 300`, `n_failed == 0`,
+`n_skipped == 0`, **`bundle_loads == n_shards_reported == 16`** (D7 load-once-per-node proven on a
+real fan-out). 300 `output.tif` COGs + a STAC catalog on blob under `…/fsd-p4-inference/phase3_out`.
+**wall 2066.9 s** = slowest shard **982.7 s** + driver overhead **1084.3 s**.
+
+### ⭐ NEXT STEP — pick one (nothing is blocking)
+1. **Commit + push** — the D-GRID-1 fixes, the TODO #57 revert, the preflight guard and all the doc
+   corrections are **uncommitted** on top of `3db3dd9`. Identifier sweep first (RECIPES.md).
+2. **TODO #59 — cluster sizing** (the user's stated interest): **52.5 % of Phase 3's wall clock was
+   driver overhead**, and it is undecomposed. Instrument that breakdown before tuning anything.
+3. **TODO #55 — the docs refactor**, which was explicitly sequenced *after* a timed e2e demo. That
+   demo now exists; Phase 3's numbers are its first input.
+4. **A viewable map:** Phase 3 ran `merge=False` → 300 separate COGs. `merge="reproject"` would
+   produce one Austria-wide crop map (lossy/for-viewing, per spec 21 SO-5).
+
+### 📌 What Phase 3's numbers say (first real fan-out datum)
+The **sharding is fine — the overhead is the target.** 300 cells / 16 shards ≈ 18.75 cells/shard at
+~52 s/cell → 975 s predicted vs 982.7 s observed slowest shard: **balanced, no straggler.** But
+useful work was only 982.7 s of 2066.9 s. The 1084 s of driver overhead (preflight+tiling, setup
+~24 s, bundle stage, dispatch, cluster start 40–380 s cold, then the post-run collect of 300
+`output.tif` existence checks + STAC build over blob) has **never been decomposed** — that is TODO
+#59's first job, and TODO #55's timed-demo report wants the same breakdown.
+It also settles the training-vs-inference asymmetry empirically: inference does ~52 s of real work
+per unit, so the 16-way fan-out clearly pays; **training's units are ~200 px (median 14×15, 13 KB)**
+— milliseconds each — so that same ~1084 s of overhead would dwarf the entire 900-unit workload.
+Cube sizes measured 2026-07-28: inference **597×554 px / 21.2 MB per cube, 5.48 GB total**; training
+**14×15 px / 13 KB per cube, 0.02 GB total** (781× more pixels per unit, 260× overall).
+
+### 🔴 HISTORY — what broke Phase 3 twice before this (TODO #58 / spec 21 D-GRID-1)
+**Runbook 38 Phase 3 passed the wrong FILE as `roi=`:** `AT_2018_TRAIN.geojson` is a **label set**
+(900 EuroCrops *field* polygons, 25.4 km²), not a region. `roi=` takes a **region**:
+`AT_ROI.geojson` (1 polygon, 10,682 km²). A label file is the input to the *training* path
+(`create_training_data(shapefilepath=…, id_col="fid")`), where one polygon = one cube.
+**And `roi_to_s2_grids` didn't defend its own invariant:** it clipped with
+`gpd.overlay(grids, roi_gdf)`, which emits one row per *(cell × polygon)* pair → **1167 rows for
+172 distinct cells**, one repeated **43×**, each row a ~0.016 km² fragment of a 49.6 km² cell.
+`id` is the work-unit key, so 16 threads wrote the **same** `geometry.geojson` → `InvalidBlockList`.
+**Both fixed:** clip against the union + assert unique ids (`grid.py`), `setup()` refuses duplicate
+ids (any caller), runbook 38 → `AT_ROI`, spec 21 amended (**D-GRID-1**).
+**⚠️ The "1167 cells" in every earlier doc was never a cell count** — the real figure was 172 cells,
+and the corrected ROI gives 300.
+
+**TODO #57 is RETRACTED *and* REVERTED (user's call).** The adlfs "transient concurrent-write race"
+was never demonstrated: runbook 36 wrote **900 distinct blobs** at the same 16-way concurrency, same
+VPN, same account, in **71 s with zero errors**. The retry fixed nothing, could never fix a
+deterministic same-blob collision, and actively **buried** the real error — 16 threads × 6 attempts
+made a fast legible failure into a minutes-long `[storage] transient write error` storm that read as
+an infinite loop. `_write_with_retry` + its 4 tests are **gone**; `fs.write_bytes`/`write_text`
+survive as plain seam helpers. **`InvalidBlockList` under concurrency now means "two writers, one
+blob" first, not "flaky link".**
+
+**Duplicate ids now die in PREFLIGHT, before any spend.** Tiling moved *inside* `run_inference`'s
+preflight — ahead of `fs.makedirs` and `_ensure_bundle` — so a bad ROI fails in seconds instead of
+after a blob folder + a bundle upload (627 s for 13 MB over VPN) + setup's N writes + AML dispatch.
+It also **prints the cell count before spending** (`[run_inference] roi -> N grid cells`), since N is
+the workload and the bill. Three layers: `roi_to_s2_grids` asserts at source → preflight rejects
+before spend → `setup()` refuses for every caller.
+
+`pytest -q` **443 passed / 2 skipped**, `ruff check src/ tests/` clean.
+**git:** `main` = `3db3dd9` in sync with `origin/main`; the D-GRID-1 fixes, the TODO #57 revert, the
+preflight guard and these doc corrections are **UNCOMMITTED** on top of it. `runbooks/HANDOFF-inference-phase3.md`
+is now **spent** (its task is done) — keep it only as the record of how the bug was found.
 
 **⚠️ Worktree-venv gotcha (diagnosed 2026-07-28 — supersedes the earlier "git-worktree
 config-auto-discovery" explanation in the spec-39 aside, which was WRONG):** a worktree `.venv` built
@@ -200,7 +256,7 @@ remains deferred YAGNI — the re-run is cheap.
 README + reconcile-38; (2) this PROGRESS flush marking runbook 40 GREEN (docs only). Run the
 RECIPES.md identifier sweep before pushing (new runbook/README use placeholders only — sweep clean).
 
-## ⭐ SPEC 39 (create_training_data e2e on AML: flatten→land-local) **DONE — IMPLEMENTED + MERGED + OPUS-REVIEWED + VALIDATED ON THE REAL CLUSTER** (runbook 39 Phases 0–2 GREEN 2026-07-27; the Timestamp-staging bug found there is fixed + pushed, `1781331`). (impl Sonnet@medium, 2026-07-24; merge commit `9e20623`, `--no-ff` over impl commit `684e0de`; worktree `spec39-implement` pruned, branch deleted). **→ NEXT: run `runbooks/39-training-data-on-aml.md` Phases 0-2 on the real cluster** (the only thing unproven — every unit test is mocked at the AML-client boundary, spec 39 §7's "no test requires Azure"). All 8 spec §7 tests landed in `tests/test_training_data_aml.py` (14 test functions after non-vacuousness splits); full suite on `main` post-merge: 430 passed/3 skipped, `ruff` clean. Docs updated: `CHANGES.md`, `LIMITATIONS.md`, `TODO.md` #56, `RECIPES.md`, `ROADMAP.md` P3, `CONTEXT.md` ("reduce job", "land-local"). **`main` is 3 commits ahead of `origin/main`, UNPUSHED** (push only when the user asks). (Aside, not spec-39's: the impl worktree's `ruff` auto-discovery resolved a much broader ruleset than `main`'s real config — a git-worktree-specific quirk, `.git` file vs directory — worked around with `--select E4,E7,E9,F,I`; `main`'s own `ruff check` is unaffected and was used for the final verification above.)
+## ⭐ SPEC 39 (create_training_data e2e on AML: flatten→land-local) **DONE — IMPLEMENTED + MERGED + OPUS-REVIEWED + VALIDATED ON THE REAL CLUSTER** (runbook 39 Phases 0–2 GREEN 2026-07-27; the Timestamp-staging bug found there is fixed + pushed, `1781331`). (impl Sonnet@medium, 2026-07-24; merge commit `9e20623`, `--no-ff` over impl commit `684e0de`; worktree `spec39-implement` pruned, branch deleted). **→ NEXT: run `runbooks/39-training-data-on-aml.md` Phases 0-2 on the real cluster** (the only thing unproven — every unit test is mocked at the AML-client boundary, spec 39 §7's "no test requires Azure"). All 8 spec §7 tests landed in `tests/test_training_data_aml.py` (14 test functions after non-vacuousness splits); full suite on `main` post-merge: 430 passed/3 skipped, `ruff` clean. Docs updated: `CHANGES.md`, `LIMITATIONS.md`, `TODO.md` #56, `RECIPES.md`, `ROADMAP.md` P3, `CONTEXT.md` ("reduce job", "land-local"). **`main` is 3 commits ahead of `origin/main`, UNPUSHED** (push only when the user asks). (Aside, not spec-39's: the impl worktree's `ruff` resolved a much broader ruleset than `main`'s real config — worked around with `--select E4,E7,E9,F,I`; `main`'s own `ruff check` is unaffected and was used for the final verification above. **❌ CORRECTED 2026-07-28: the "git-worktree quirk, `.git` file vs directory" diagnosis recorded here was WRONG** — `pyproject.toml` is read correctly in a worktree. The real cause is a **ruff version difference** between the worktree venv and the repo venv; the fix is to run the *repo* venv's ruff, never to narrow `--select` (which hides real findings). See the top block + `RECIPES.md` "Verify a worktree's code against the repo's FULL dependency set".)
 
 ### ⚠️ Real-cluster run (runbook 39, 2026-07-27) found bugs the mocked review missed — Phase 1 GREEN, Phase 2 fixed & pending re-run
 - **Env gap (runbook defect, not code):** the general-purpose AML Environment bakes the fsd wheel in at build time, and spec 39 **adds a new node-side module `fsd.workflows.flatten`** — so the spec-36/37 image failed with `No module named fsd.workflows.flatten`. Runbook 39 wrongly said "no rebuild needed (ADR-0020)"; ADR-0020 only excuses a *model-specific* image, not new fsd code. **Fixed runbook 39 Prerequisites** (rebuild from current `main` + extend the smoke to `import fsd.workflows.flatten`). Same latent trap noted for runbook 38's inference image.

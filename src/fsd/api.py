@@ -1090,18 +1090,54 @@ def _run_inference_roi(
         errs.append(f"could not read roi: {exc}.")
     if roi_gdf is not None and len(roi_gdf) == 0:
         errs.append("roi is empty.")
+
+    # 1) Tile the ROI -> S2 grid cells, INSIDE preflight (spec 21 D-GRID-1). Tiling is
+    #    local, CPU-only work, so doing it here rather than after `_ensure_bundle` means a
+    #    bad ROI costs seconds instead of: a blob `makedirs`, a bundle upload (measured 627 s
+    #    for 13 MB over VPN), setup's N per-cell blob writes, and an AML dispatch.
+    #    What it catches: an ROI that tiles to nothing, and DUPLICATE CELL IDS -- `id` is the
+    #    work-unit key (`setup` derives `export_folderpath` from it), so duplicates put N
+    #    tasks on one folder, which on blob is a concurrent same-blob write (`InvalidBlockList`,
+    #    the 2026-07-28 Phase 3 failure) and locally a silent overwrite. `roi_to_s2_grids` now
+    #    prevents them at source; this is the seatbelt, and it fires before any spend.
+    grids = None
+    if not errs:
+        try:
+            grids = _grid.roi_to_s2_grids(
+                roi_gdf if roi_gdf is not None else roi,
+                grid_size_km=grid_size_km, scale_fact=scale_fact,
+            )
+        except ImportError:
+            raise  # the [grid] extra is missing -- spec 19's own message is the clear one
+        except Exception as exc:  # noqa: BLE001 - surfaced as a preflight error
+            errs.append(f"could not tile roi into grid cells: {exc}.")
+    if grids is not None:
+        if len(grids) == 0:
+            errs.append(
+                f"roi tiled into 0 grid cells at grid_size_km={grid_size_km} -- the roi is "
+                f"smaller than one cell, or its geometry is degenerate."
+            )
+        elif grids["id"].duplicated().any():
+            counts = grids["id"].value_counts()
+            repeated = counts[counts > 1]
+            errs.append(
+                f"roi tiled into {len(grids)} rows but only {grids['id'].nunique()} distinct "
+                f"cell ids ({len(repeated)} repeated, worst {int(counts.iloc[0])}x). One cell "
+                f"must be one work-unit; duplicates would make several tasks write the same "
+                f"output folder concurrently. Is `roi=` a REGION? Passing a per-feature file "
+                f"(a label/field set) tiles per (cell x feature) pair -- see spec 21 D-GRID-1."
+            )
     _raise_preflight(errs)
+
+    # Cell count IS the cluster workload and the cost -- say it before spending anything.
+    print(f"[run_inference] roi -> {len(grids)} grid cells at grid_size_km={grid_size_km} "
+          f"(one build+infer task each)", flush=True)
 
     fs.makedirs(output_folderpath)
 
     # model must be a bundle (it crosses a subprocess); auto-save a live adapter.
     bundle_path = _ensure_bundle(model, output_folderpath, why="roi mode")
 
-    # 1) tile the ROI -> S2 grid cells (needs the [grid] extra; clean error if absent)
-    grids = _grid.roi_to_s2_grids(
-        roi_gdf if roi_gdf is not None else roi,
-        grid_size_km=grid_size_km, scale_fact=scale_fact,
-    )
     grids_filepath = os.path.join(output_folderpath, "grids.geojson")
     # GDAL/pyogrio has no abfss:// write driver, so a blob output_folderpath makes
     # grids.to_file(grids_filepath) fail ("Failed to create GeoJSON datasource"). Stage via the

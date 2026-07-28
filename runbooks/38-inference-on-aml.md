@@ -49,11 +49,14 @@ n_cells (Phase 3 — the D7 claim, the deliverable that demonstrates Mode C end 
   `runbooks/37-verify-archive.md`) — inference never calls CDSE/MPC (SO-6), so imagery must already
   be there.
 - Test ROIs: `s2grid=476da24` (single-tile, verified 100% inside T33UWP — Phase 1/2) and
-  **`AT_2018_TRAIN.geojson`** (900 labelled fields, verified 100% inside `AT_ROI` = inside the
-  archive footprint — Phase 3). **Do NOT use `austria_eurocrops_sampled_ethiopia_translated.geojson`
-  for Phase 3** — it is the Austria fields *translated to Ethiopia* (36°E), so it has **zero overlap
-  with the Austria archive** and every cell would build an empty cube (the exact mistake that wasted
-  a run in `runbooks/36-aml-runner.md` Phase 3 — see the box there).
+  **`AT_ROI.geojson`** (1 polygon, 10,682 km² = the Austria archive footprint → **300 cells** —
+  Phase 3). ⚠️ **`roi=` takes a REGION, not a label set.** `AT_2018_TRAIN.geojson` is 900 *field*
+  polygons and belongs to the **training** path (`create_training_data(shapefilepath=…,
+  id_col="fid")`), where one polygon = one cube; passing it as `roi=` tiles per (cell × field) pair
+  and killed Phase 3 twice on 2026-07-28 (spec 21 **D-GRID-1**; preflight now refuses it).
+  **Do NOT use `austria_eurocrops_sampled_ethiopia_translated.geojson`** — Austria fields
+  *translated to Ethiopia* (36°E), **zero overlap** with the Austria archive, so every cell would
+  build an empty cube (the mistake that wasted a run in `runbooks/36-aml-runner.md` Phase 3).
 
 ## Setup — paste your concrete values (from `AZURE_INFRA_PRIVATE.md`, uncommitted)
 ```bash
@@ -410,24 +413,55 @@ PY
   Phase 3 (a partially-failed Phase 3 re-run is exactly when this bites for real).
 
 ## Phase 3 — the real fan-out
-> 🔴 **BLOCKED until TODO #57 lands (adlfs `InvalidBlockList` seam retry).** First real attempt
-> (2026-07-28) died in driver-side `create_datacube.setup()` at shape 0/1167 with
+> ✅ **GREEN on the real cluster, 2026-07-28** (first attempt with the corrected ROI). `AT_ROI.geojson`
+> → **300 grid cells**, 16 shards, **`pass: true`**: `sum_shard_units == n_cells_out == 300`,
+> `n_failed == 0`, `n_skipped == 0`, `bundle_loads == n_shards_reported == 16` (D7 load-once-per-node
+> proven on a real fan-out). **wall 2066.9 s** = slowest shard **982.7 s** + driver overhead
+> **1084.3 s**. 300 `output.tif` COGs + STAC on blob. **This completed the demo pipeline end to end**
+> (download → build → flatten → train+bundle → inference).
+>
+> **Balanced fan-out, but 52.5 % of wall was overhead:** 300 cells / 16 shards ≈ 18.75 cells/shard →
+> ~52 s/cell; 300 × 52 / 16 = 975 s vs the 982.7 s slowest shard, so no straggler. The 1084 s of
+> driver overhead (preflight+tiling, setup, bundle stage, dispatch, cluster start, collect + STAC) is
+> **undecomposed** — TODO #55's timed report + TODO #59's sizing work want that breakdown.
+> ✅ **UNBLOCKED (2026-07-28) — TODO #57 has landed; this phase is ready to run.** The first real
+> attempt died in driver-side `create_datacube.setup()` at shape 0/1167 with
 > `ErrorCode:InvalidBlockList` — the seam's 16-thread concurrent blob writes race on adlfs's block
-> commit. Not a data error; needs the seam retry (PROGRESS.md "🔴 THE NEXT TASK" / TODO #57). Re-run
-> this phase once that fix is in the local venv (driver-side → no image rebuild needed).
+> commit. `fsd.storage.fs` now retries that race (5 attempts, exponential backoff). The fix is
+> **driver-side**, so your local venv carries it — **no AML image rebuild needed**.
 >
-> ⚠️ **`AT_2018_TRAIN.geojson` tiles into ~1167 grid CELLS, not 900 fields.** `run_inference(roi=…)`
-> tiles the ROI's **convex hull** into ~5 km cells (`grid_size_km=5`); the 900 fields are scattered
-> across ~4 MGRS tiles, so their hull is a large mostly-empty region → **1167 cells** (each = one
-> build+infer task → one `output.tif`). That's a heavy region-wide crop-map fan-out — **accepted**
-> (user, 2026-07-28: "keep 1167 + fix adlfs"). Watch the `[setup] … N shapes` line: **N is your
-> cluster workload.** For fewer cells later: a compact contiguous ROI or a larger `grid_size_km`.
+> ⚠️ **A permanent error now fails FAST (by design).** The retry matches only the Azure *storage
+> error codes*, never adlfs's catch-all `"Failed to upload block"` wrapper — so a credential/RBAC/VPN
+> problem dies at shape ~0/1167 within seconds instead of after 6 backed-off retries per file.
+> **Dying instantly at shape 0 is almost always VPN down or a stale `az login`, NOT the old race.**
+> The race, when it happens, prints `[storage] transient write error on … (attempt k/6)` and the run
+> **continues**. Triage table: `runbooks/HANDOFF-inference-phase3.md`.
 >
-> ⚠️ **ROI (the runbook-36 lesson):** use **`AT_2018_TRAIN.geojson`** — 900 labelled fields verified
-> 100% inside `AT_ROI` = inside the archive footprint. Do **NOT** use
-> `austria_eurocrops_sampled_ethiopia_translated.geojson` (Austria fields *translated to Ethiopia*,
-> 36°E) — it has **zero overlap** with the Austria archive, so all its cells would build empty cubes
-> and the whole run is wasted. This is the exact mistake `runbooks/36-aml-runner.md` Phase 3 hit.
+> 🔴 **CORRECTED 2026-07-28 — this phase used the WRONG FILE as `roi=`.** It passed
+> **`AT_2018_TRAIN.geojson`**, which is a **label set** (900 EuroCrops *field* polygons, 25.4 km²
+> total), not a region of interest. **`roi=` takes an ROI: `AT_ROI.geojson`** — 1 polygon,
+> **10,682 km²**, the Austria archive footprint. An ROI file and a label file are not
+> interchangeable: the label set is the input to the *training* path
+> (`create_training_data(shapefilepath=…, id_col="fid")`), where one polygon = one cube.
+>
+> **What the wrong file did** (spec 21 `D-GRID-1`): `roi_to_s2_grids` clipped with
+> `gpd.overlay(grids, roi_gdf)`, which emits one row per *(cell × polygon)* pair → **1167 rows for
+> only 172 distinct cells**, one cell repeated **43×**, each row a ~0.016 km² field fragment of a
+> 49.6 km² cell. Since `export_folderpath` is derived from the cell id, up to 16 threads wrote the
+> **same** `geometry.geojson` concurrently → Azure `InvalidBlockList`. The "1167 cells" figure in
+> earlier docs was never a cell count. Both faults are now fixed (union clip in `grid.py` + a
+> duplicate-id guard in `setup()`), so this can't recur — but **use the right file**.
+>
+> ✅ **Expect ~300 cells** from `AT_ROI.geojson` at `grid_size_km=5` (measured: 300 rows, 300 unique
+> ids, median 49.33 km²/cell). Watch the `[setup] … N shapes` line: **N is your cluster workload.**
+> Each cube now covers a **full ~49 km² cell**, not a field fragment — far more pixels per task than
+> any previous run, so size the fan-out before committing. Fewer cells: a larger `grid_size_km`.
+>
+> ⚠️ **Do NOT use `austria_eurocrops_sampled_ethiopia_translated.geojson`** (Austria fields
+> *translated to Ethiopia*, 36°E) — **zero overlap** with the Austria archive, so every cell builds
+> an empty cube and the whole run is wasted (the mistake `runbooks/36-aml-runner.md` Phase 3 hit).
+> ⚠️ **Before running, confirm `AT_ROI` ∩ the archive footprint** — it is the *whole* footprint, so
+> edge cells may have thinner coverage than the field-dense interior.
 ```bash
 cat > "$OUT38/phase3.py" <<'PY'
 import json, os, time
@@ -452,7 +486,7 @@ common_kwargs = dict(
 t0 = time.time()
 result = fsd.run_inference(
     os.environ["AZ_BUNDLE_LOCAL"],
-    roi="../shapefiles/AT_2018_TRAIN.geojson",   # inside the archive; see the box above
+    roi="../shapefiles/AT_ROI.geojson",   # an ROI (1 polygon), NOT the label set -- see the box above
     output_folderpath=f"{os.environ['AZ_ROOT']}/phase3_out",
     catalog_filepath=os.environ["AZ_CATALOG_URL"],
     startdate="2018-04-01", enddate="2018-09-01", mosaic_days=20,

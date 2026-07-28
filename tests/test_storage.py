@@ -7,7 +7,6 @@ the same code paths a remote backend uses, just with `file://`.
 
 import geopandas as gpd
 import numpy as np
-import pytest
 import shapely.geometry as sg
 
 from fsd.storage import fs
@@ -232,81 +231,11 @@ def test_size(tmp_path):
     assert fs.size(empty) == 0
 
 
-# --- TODO #57: adlfs concurrent-write (InvalidBlockList) retry ---------------
-
-# Verbatim shape of the real failure: adlfs wraps the storage HttpResponseError in
-# `RuntimeError(f"Failed to upload block: {e}!")`, and azure-storage-blob appends
-# "\nErrorCode:<code>" to that inner message. The retry must key off the ErrorCode,
-# NOT off adlfs's wrapper prefix (which every write failure wears -- see
-# test_..._reraises_a_wrapped_auth_error_immediately below).
-_ADLFS_INVALID_BLOCK_LIST = (
-    "Failed to upload block: The specified block list is invalid.\n"
-    "RequestId:00000000-0000-0000-0000-000000000000\n"
-    "ErrorCode:InvalidBlockList!"
-)
-# Same wrapper, permanent cause (observed 2026-07-28 when the tenant's Conditional
-# Access policy blocked token issuance).
-_ADLFS_AUTH_FAILURE = (
-    "Failed to upload block: ERROR: AADSTS53003: Access has been blocked by "
-    "Conditional Access policies. The access policy does not allow token issuance.!"
-)
-
-
-def test_write_with_retry_recovers_after_transient_failures(monkeypatch):
-    monkeypatch.setattr(fs, "_WRITE_BACKOFF_SECONDS", 0)
-    calls = []
-
-    def flaky():
-        calls.append(1)
-        if len(calls) < 3:
-            raise RuntimeError(_ADLFS_INVALID_BLOCK_LIST)
-
-    fs._write_with_retry(flaky, what="test")
-    assert len(calls) == 3  # failed twice, succeeded on the 3rd attempt
-
-
-def test_write_with_retry_reraises_non_transient_immediately(monkeypatch):
-    monkeypatch.setattr(fs, "_WRITE_BACKOFF_SECONDS", 0)
-    calls = []
-
-    def broken():
-        calls.append(1)
-        raise ValueError("not a storage error")
-
-    with pytest.raises(ValueError, match="not a storage error"):
-        fs._write_with_retry(broken, what="test")
-    assert len(calls) == 1  # no retry for a non-transient error
-
-
-def test_write_with_retry_reraises_a_wrapped_auth_error_immediately(monkeypatch):
-    """adlfs re-raises EVERY write failure as `RuntimeError("Failed to upload
-    block: ...")` from a catch-all `except Exception`, so that prefix must not be
-    a transient marker -- a blocked credential (or an RBAC denial, or a missing
-    container) is permanent and has to surface on the first try, not after 6
-    backed-off retries per file across a 1167-cell fan-out."""
-    monkeypatch.setattr(fs, "_WRITE_BACKOFF_SECONDS", 0)
-    calls = []
-
-    def unauthorized():
-        calls.append(1)
-        raise RuntimeError(_ADLFS_AUTH_FAILURE)
-
-    with pytest.raises(RuntimeError, match="AADSTS53003"):
-        fs._write_with_retry(unauthorized, what="test")
-    assert len(calls) == 1  # no retry -- permanent failure, fail fast
-
-
-def test_write_with_retry_reraises_transient_after_exhausting_retries(monkeypatch):
-    monkeypatch.setattr(fs, "_WRITE_BACKOFF_SECONDS", 0)
-    calls = []
-
-    def always_flaky():
-        calls.append(1)
-        raise RuntimeError(_ADLFS_INVALID_BLOCK_LIST)
-
-    with pytest.raises(RuntimeError, match="InvalidBlockList"):
-        fs._write_with_retry(always_flaky, what="test")
-    assert len(calls) == fs._WRITE_RETRIES + 1  # exhausted every attempt
+# --- write_text / write_bytes seam ------------------------------------------
+# (A `_write_with_retry` was added here 2026-07-28 for a misdiagnosed "transient
+#  adlfs race" and REVERTED the same day -- the real bug was duplicate work-unit
+#  ids making threads write one blob, spec 21 D-GRID-1 / TODO #58. Its four unit
+#  tests went with it; they pinned behaviour that no longer exists.)
 
 
 def test_write_text_round_trip_on_a_non_local_filesystem():

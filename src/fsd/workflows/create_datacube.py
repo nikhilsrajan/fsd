@@ -79,6 +79,25 @@ def setup(
     with fs.open(shapefilepath, "rb") as f:
         shapes_gdf = gpd.read_file(io.BytesIO(f.read()))
 
+    # `export_folderpath` is derived from `srow[id_col]`, so two shapes sharing an id are two
+    # work-units writing the SAME folder -- concurrently, once `max_concurrent > 1`. On blob
+    # that collides on the block-blob commit (`InvalidBlockList`) and the surviving
+    # geometry.geojson is whichever shape committed last; locally it silently overwrites.
+    # Either way the run is wrong, so refuse it here rather than race. (Found 2026-07-28: a
+    # multi-polygon ROI made `roi_to_s2_grids` repeat cell ids -- fixed at source in grid.py,
+    # but the guard belongs here too, for every caller.)
+    if shapes_gdf[id_col].duplicated().any():
+        counts = shapes_gdf[id_col].value_counts()
+        repeated = counts[counts > 1]
+        worst = ", ".join(f"{i}x{n}" for i, n in repeated.head(3).items())
+        raise ValueError(
+            f"shapes have duplicate '{id_col}' values: {len(repeated)} of "
+            f"{shapes_gdf[id_col].nunique()} ids repeated across {len(shapes_gdf)} shapes "
+            f"(worst: {worst}). Each id becomes one export folder, so duplicates make "
+            f"multiple work-units write the same files concurrently. Deduplicate the shapes "
+            f"(or pass an id column that is unique per shape) before calling setup()."
+        )
+
     # Read the catalog ONCE for the whole run, then filter it in memory per shape
     # (`filter_gdf`). `TileCatalog.filter` re-reads the file on every call, which on a
     # remote catalog made setup cost one full download per shape: 900 shapes over

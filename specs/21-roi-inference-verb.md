@@ -1,5 +1,10 @@
 # Spec 21 — Local ROI inference verb (`run_inference(roi=…)`, P0.75)
 
+> **AMENDED 2026-07-28 — see `D-GRID-1`:** an ROI is one *region* (multi-row input is unioned
+> before tiling), so `roi_to_s2_grids` returns **one row per S2 cell with unique ids**. The
+> original clip used `gpd.overlay` against the ROI's individual rows, which repeated cell ids for a
+> multi-polygon ROI and collapsed N work units onto one export folder. Found by runbook 38 Phase 3.
+>
 > **Status: SIGNED OFF + IMPLEMENTED + VERIFIED (2026-07-07).** SO-1..SO-6 approved (SO-6 accepted
 > as drafted; SO-5 redesigned to three merge modes). Landed: `run_inference(roi=…)` front-end +
 > `InferenceResult.grids_filepath` + three-mode `_merge_outputs` (`api.py`); the per-cell
@@ -93,6 +98,7 @@ arg. To keep ROI-mode kwargs clean and avoid a confusing positional, ROI-mode ar
 2. **Tile** — `grids = fsd.grid.roi_to_s2_grids(roi, grid_size_km, scale_fact)`; save
    `grids.geojson` under `output_folderpath` (→ `InferenceResult.grids_filepath`). Needs the
    `[grid]` extra; a clean error if absent (spec 19 already does this).
+   **One row per cell, ids unique — see D-GRID-1.**
 3. **Setup** — reuse `workflows.create_datacube.setup(shapefilepath=grids, id_col="id",
    label_col=None, …)`: per cell, write `geometry.geojson` + `catalog.parquet` slice + an
    `input.csv` row. Cells with **no intersecting tiles are skipped** (existing behaviour). This
@@ -118,6 +124,67 @@ arg. To keep ROI-mode kwargs clean and avoid a confusing positional, ROI-mode ar
    map. Now a user who asks for a merged map across a zone-straddling ROI (spec 19's real finding)
    gets one via `"reproject"`, while the default never reprojects silently (protects the single-CRS
    principle). The demo is refactored to call `merge="reproject"` instead of its own logic.
+
+## D-GRID-1 (AMENDMENT 2026-07-28) — an ROI is one *region*; cell ids are unique
+
+**Added after a real failure, not at design time.** The original spec said "tile the ROI" and left
+the multi-polygon case unstated. The implementation clipped with
+`gpd.overlay(grids, roi_gdf, how="intersection")`, which emits **one row per (cell × roi-polygon)
+pair** — so a multi-row `roi` silently multiplied rows and **repeated cell ids**.
+
+**The contract, now explicit:**
+1. **An ROI is one region.** A multi-row `roi` is `unary_union`-ed into a single (multi)polygon
+   **first**, and *every* step — convex-hull polyfill, `intersects` filter, **and the clip** —
+   works against that union. (The union was already computed and used for the first two steps;
+   only the clip departed from it. That inconsistency was the bug.)
+2. **One S2 cell = one row = one work unit = one datacube = one `output.tif`.** `id` (the S2 cell
+   id) is the **work-unit key**: `create_datacube.setup(id_col="id")` derives `export_folderpath`
+   from it. Ids MUST be unique in the returned frame; `roi_to_s2_grids` asserts this before
+   returning, and `setup()` independently refuses duplicate ids for **any** caller.
+3. **Per-*shape* datacubes are a different verb.** If you want one cube per polygon, pass your
+   shapefile straight to `workflows.create_datacube` with your own unique `id_col` — that is the
+   training path (`create_training_data`), not roi mode. **An ROI file and a label file are not
+   interchangeable inputs.**
+
+**Why it mattered (measured 2026-07-28, runbook 38 Phase 3).** `AT_2018_TRAIN.geojson` — a *label
+set* of 900 EuroCrops field polygons — was wired into the `roi=` slot. Result: **1167 rows for 172
+distinct cells**, one cell repeated **43×**, each row a ~0.016 km² field fragment of a 49.6 km²
+cell (0.98 % of it), with the ROI's own attributes dropped by `roi_gdf[["geometry"]]` so the
+fragments carried **no identity to distinguish them**. Downstream, `export_folderpath` collapsed
+1167 work units onto 172 folders, so up to 16 threads wrote the same `geometry.geojson`
+concurrently → Azure `InvalidBlockList` on the block-blob commit, and last-writer-wins geometry.
+Duplicate rows are *contiguous* out of `overlay`, so **100 %** of 16-wide dispatch windows
+contained a collision and **99 %** of work units belonged to a duplicated cell.
+
+**Two faults, both fixed:** the wrong *class* of file in the `roi=` slot (a runbook error — Phase 3
+now uses `AT_ROI.geojson`, 1 polygon, 10,682 km² → **300 unique cells**), and a tiling function that
+did not enforce its own invariant, so bad input produced silently-wrong output instead of an error.
+
+**Not a behaviour change for the validated path:** a single-polygon ROI clips identically
+(`overlay` against one row ≡ intersecting with that row), so runbook 38 Phase 1's 9 cells are
+unchanged. Regression tests: `tests/test_grid.py` (multi-polygon → unique ids; union-clip still
+clips; single-polygon unchanged) + `tests/test_workflows.py::test_setup_refuses_duplicate_ids`.
+
+**Tiling moves INTO preflight (amends step 2 of "The chain").** Tiling is local, CPU-only work, so
+it now runs *inside* the preflight block — **before** `fs.makedirs(output_folderpath)` and before
+`_ensure_bundle`. A bad ROI therefore costs seconds, not: a blob folder, a bundle upload (measured
+**627 s** for 13 MB over VPN), setup's N per-cell blob writes, and an AML dispatch. Preflight rejects
+**duplicate cell ids** and **an ROI that tiles to 0 cells**, and then **prints the cell count**
+(`[run_inference] roi -> N grid cells`) — N *is* the cluster workload and the bill, and nobody saw it
+coming this time. Three layers, deliberately: `roi_to_s2_grids` asserts uniqueness at source,
+preflight catches it before spend, `setup()` refuses it for every caller (including non-roi ones).
+Tests: `tests/test_api_roi.py` — the duplicate-id case asserts `spent == []` (nothing created or
+uploaded), the empty-tiling case fails the test outright if the bundle is staged.
+
+**The retry that wasn't the fix.** A `storage.fs._write_with_retry` was added the same day for the
+*hypothesised* transient adlfs race and **reverted** once this root cause was found: retrying cannot
+resolve a deterministic same-blob collision, and 16 threads × 6 attempts buried the real error under
+a minutes-long storm that read as an infinite loop. `InvalidBlockList` under concurrency should be
+read as **"two writers, one blob"** first. See TODO #57 (retracted) / #58.
+
+**Process note.** This spec's silence on multi-polygon ROIs is what let a wrong input through for
+three run-books. When a spec says "tile the ROI", the shape of `roi` is part of the contract —
+state it.
 
 ## Key design decision — inference in the runner seam, not a second pool [SO-3]
 
