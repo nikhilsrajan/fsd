@@ -209,6 +209,94 @@ def _run_snakemake(snakefile_rel, cores, conf, *, overwrite=False, dry_run=False
 _TERMINAL_JOB_STATUSES = {"Completed", "Failed", "Canceled"}
 
 
+def _now_iso() -> str:
+    """Driver-clock timestamp, ISO8601 UTC (spec 40 D2/D11)."""
+    return pd.Timestamp.now(tz="UTC").isoformat()
+
+
+def _seconds_between(start_iso: str | None, end_iso: str | None) -> float | None:
+    """`end - start` in seconds between two ISO8601 timestamps; `None` if either is
+    missing (e.g. a job whose `_status/<k>.json` never got written). Never floored at
+    0 (spec 40 D11): a negative result is the clock-skew bound being exceeded, not an
+    error to hide."""
+    if start_iso is None or end_iso is None:
+        return None
+    return (pd.Timestamp(end_iso) - pd.Timestamp(start_iso)).total_seconds()
+
+
+def _derive_timing(
+    *, run_id: str, t_start: str, t_last_submit: str, t_end: str,
+    submitted_at: dict, returned_at: dict, reports: dict, poll_interval_seconds: int,
+) -> dict:
+    """Pure function (spec 40 D2/D11, ADR 0021): per-job dispatch telemetry plus the
+    additive wall-clock split, from the driver's own `submitted_at`/`returned_at` stamps
+    and each job's in-job stamps (already read into `reports[k]` from `_status/<k>.json`).
+    Kept separate from `_aml_submit_and_wait` so it is unit-testable on hand-written
+    stamps (spec 40 §6) without a fake `ml_client`'s polling loop.
+
+    The wall-clock split is five contiguous, non-overlapping legs that telescope back to
+    `t_end - t_start` by construction:
+      driver_prep         t_start          -> t_last_submit   (submitting every job)
+      first_admission     t_last_submit    -> earliest process_start_at (a node's first work)
+      execution_window    earliest process_start_at -> latest ended_at (the fleet finishing)
+      teardown_detect     latest ended_at  -> latest returned_at (poll-quantized detection)
+      post_collect        latest returned_at -> t_end (aggregating `_status/*.json`)
+    """
+    jobs: dict = {}
+    process_starts: list[str] = []
+    ended_ats: list[str] = []
+    for k in submitted_at:
+        report = reports.get(k) or {}
+        process_start_at = report.get("process_start_at")
+        work_start_at = report.get("work_start_at")
+        work_end_at = report.get("work_end_at")
+        ended_at = report.get("ended_at")
+        work_seconds = report.get("seconds")
+        r_at = returned_at.get(k)
+
+        total_job = _seconds_between(submitted_at[k], r_at)
+        dispatch_overhead = (
+            total_job - work_seconds
+            if total_job is not None and work_seconds is not None else None
+        )
+        jobs[k] = {
+            "submitted_at": submitted_at[k],
+            "returned_at": r_at,
+            "process_start_at": process_start_at,
+            "work_start_at": work_start_at,
+            "work_end_at": work_end_at,
+            "ended_at": ended_at,
+            "work_seconds": work_seconds,
+            "job_admission_seconds": _seconds_between(submitted_at[k], process_start_at),
+            "import_seconds": _seconds_between(process_start_at, work_start_at),
+            "dispatch_overhead_seconds": dispatch_overhead,
+        }
+        if process_start_at is not None:
+            process_starts.append(process_start_at)
+        if ended_at is not None:
+            ended_ats.append(ended_at)
+
+    first_process_start = min(process_starts) if process_starts else None
+    last_ended_at = max(ended_ats) if ended_ats else None
+    last_returned_at = max(returned_at.values()) if returned_at else None
+
+    return {
+        "run_id": run_id,
+        "poll_interval_seconds": poll_interval_seconds,
+        "jobs": jobs,
+        "wall": {
+            "t_start": t_start,
+            "t_last_submit": t_last_submit,
+            "t_end": t_end,
+            "driver_prep_seconds": _seconds_between(t_start, t_last_submit),
+            "first_admission_seconds": _seconds_between(t_last_submit, first_process_start),
+            "execution_window_seconds": _seconds_between(first_process_start, last_ended_at),
+            "teardown_detect_seconds": _seconds_between(last_ended_at, last_returned_at),
+            "post_collect_seconds": _seconds_between(last_returned_at, t_end),
+        },
+    }
+
+
 def _import_aml_command():
     """Lazy handle to `azure.ai.ml.command` (D3 invariant 3: the sole azure-ai-ml
     import in `fsd/`, inside a function -- `import fsd` never needs the extra). Indirected
@@ -413,15 +501,33 @@ def _aml_submit_and_wait(
     raise on any failed/circuit-tripped job. Shared by `run_aml` (spec 36 -- one job
     per datacube shard) and `run_aml_download` (spec 37 -- one CDSE job or N MPC
     shard jobs, D1/D9); the only difference between the two callers is how `jobs`
-    gets built, not how submission/waiting/aggregation works."""
+    gets built, not how submission/waiting/aggregation works.
+
+    Also writes `<run_root>/_timing.json` (spec 40 D2, ADR 0021): per-job
+    `submitted_at` (as each `create_or_update` returns) and `returned_at` (the first
+    poll at which that job is observed terminal -- so `teardown_detect` carries up to
+    `poll_interval_seconds` of quantization error, spec 40 D11), plus the derived
+    per-job/per-run metrics (`_derive_timing`). Written **before** raising on failure,
+    so a crashed dispatch still leaves every completed step's telemetry on disk (D3).
+    Nothing new is returned -- no `timing` field, per ADR 0021."""
+    t_start = _now_iso()
     job_names: dict[int, str] = {}
+    submitted_at: dict[int, str] = {}
+    t_last_submit = t_start
     for k, job in jobs.items():
         submitted = ml_client.jobs.create_or_update(job)
+        t_last_submit = _now_iso()
+        submitted_at[k] = t_last_submit
         job_names[k] = submitted.name
 
     statuses: dict[int, str] = {}
+    returned_at: dict[int, str] = {}
     while True:
-        statuses = {k: ml_client.jobs.get(name).status for k, name in job_names.items()}
+        for k, name in job_names.items():
+            s = ml_client.jobs.get(name).status
+            statuses[k] = s
+            if s in _TERMINAL_JOB_STATUSES and k not in returned_at:
+                returned_at[k] = _now_iso()
         if all(s in _TERMINAL_JOB_STATUSES for s in statuses.values()):
             break
         time.sleep(poll_interval_seconds)
@@ -439,6 +545,15 @@ def _aml_submit_and_wait(
         else:
             reports[k] = {"unit": k, "aml_job_status": statuses[k]}
     failed = sorted(set(failed))
+
+    t_end = _now_iso()
+    timing = _derive_timing(
+        run_id=run_id, t_start=t_start, t_last_submit=t_last_submit, t_end=t_end,
+        submitted_at=submitted_at, returned_at=returned_at, reports=reports,
+        poll_interval_seconds=poll_interval_seconds,
+    )
+    with fs.open(f"{run_root}/_timing.json", "w") as f:
+        json.dump(timing, f, indent=2)
 
     if failed:
         raise RuntimeError(f"job(s)/shard(s) failed: {failed} (run_id={run_id!r})")

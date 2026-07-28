@@ -2,7 +2,127 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-28 (🎉 runbook 38 Phase 3 GREEN — the demo pipeline is COMPLETE end to end)_
+_Last updated: 2026-07-28 (spec 40 IMPLEMENTED + REVIEWED — 6 defects found and fixed, tests green)_
+
+## ⭐ SPEC 40 REVIEWED (Opus@high, 2026-07-28) — six defects found, all fixed
+
+Review of `worktree-spec40-impl` against spec 40 + ADR 0021. The suite was green *before* the
+review too (473/2) — **every defect below sat in `demos/e2e_austria_aml.py`, the one file spec 40
+§6 exempts from unit tests.** That exemption covers the *demo run*; it had been read as covering
+the script's helpers as well, and those helpers are what a real run bets 80 GB on. Now
+473 → **493 passed / 2 skipped**, `ruff check src/ tests/ demos/` clean.
+
+Two were **fatal to the very first cluster run**:
+
+1. **Preflight could never pass.** The Environment check read `os.environ[f"{env_var}_VERSION"]`
+   → `AZ_ENV_NAME_VERSION`/`AZ_INFER_ENV_NAME_VERSION`, but the documented contract (§8.2, and
+   `runner_kwargs` three functions later) is `AZ_ENV_VERSION`/`AZ_INFER_ENV_VERSION`. The
+   `KeyError` was swallowed by the surrounding `except Exception` and re-reported as *"Environment
+   does not resolve — build it first"*, so the script died at step 0 blaming the operator's ACR
+   build. Fixed by naming the pair explicitly, plus a separate "env var not set" branch (an unset
+   var and an unbuilt Environment need different fixes, D4).
+2. **D14 aborted on a well-formed archive — after the whole ~80 GB download had been paid for.**
+   `_assert_archive_trustworthy` globbed `**/*.tif` but compared against the catalog's `files`
+   column, which for CDSE declares `MTD_TL.xml` alongside the bands ⇒ permanent
+   `missing={'MTD_TL.xml'}`. The same comparison was also **vacuous**: `files` holds bare
+   basenames that repeat on every row (verified on the real 207-row catalog: 207 granules × 5
+   assets collapse to **5 unique names**), so it could not have detected a missing granule
+   either. Now keyed `<granule_id>/<filename>` (the `api._output_key` scheme-independence trick,
+   two components instead of three) and the globbed extensions are derived from the catalog
+   rather than hardcoded.
+
+Four more, silent rather than fatal:
+
+3. **Clock skew was always reported as `0.0`.** `_measure_clock_skew` did
+   `isinstance(fs.ls(...)[0], dict)`, but `fs.ls` is `-> list[str]` (it passes `detail=False`), so
+   the branch never fired and the fallback returned the driver's own timestamp. D11's headline
+   caveat — *"every admission figure carries that bound"* — was measuring nothing. There was no
+   route to a server-side mtime through `fsd.storage` at all, so this adds **`fs.modified(url)`**
+   (returns `None`, not a raise, on a backend without mtimes, so "unmeasured" can't be mistaken
+   for "zero"). The probe is now bracketed before/after the write and reports the midpoint plus
+   its own uncertainty, instead of charging the round-trip latency to skew.
+4. **`^C` skipped the clean-exit path.** Only SIGTERM was handled; SIGINT's default
+   `KeyboardInterrupt` is a `BaseException`, so it slipped past both `run_step`'s
+   `except Exception` and `main`'s `except DemoInterrupted` — a raw traceback and no resume hint,
+   on an unattended run, at the one moment the operator needs it.
+5. **`--fresh` could orphan 80 GB.** The `.last_run_id` marker was written at run-id *allocation*,
+   so a run that died in preflight (i.e. always, per defect 1) overwrote the id of the run that
+   actually held the data — unrecoverable, since fsd's recursive delete is broken (TODO #50). The
+   marker is now claimed immediately before `2_download`, the first step that puts bytes on blob.
+   The printed `az storage fs directory delete` was also wrong twice over: it targeted
+   `demo_runs/<id>` instead of `<AZ_ROOT's own prefix>/demo_runs/<id>`, and quoted `"$AZ_FS"`/
+   `"$AZ_ACCOUNT"`, neither of which §8.2 exports — both now resolved from `AZ_ROOT`.
+6. **D14's `offset` assertion was missing** (only `nodata` was checked). Added as an *independent*
+   re-derivation from the baseline token in the granule id (`_N0500_` ⇒ ≥ 04.00 ⇒ −1000), not a
+   call into the module that wrote the column — a catalog checked against the function that
+   produced it catches nothing. This is the archive-wide invisible failure the workspace's old
+   Ethiopia COGs carry: pipeline green, every reflectance ~1000 DN high. (`scale` has no catalog
+   column — it is a fixed per-band constant — so there is nothing per-granule to disagree with;
+   noted in the docstring rather than faked.)
+
+Also: preflight no longer diagnoses a wrong `AZ_CLUSTER` as a credential failure (it asked for a
+cluster twice and labelled the first attempt "credential/cluster resolution failed"); the
+admission strip plot uses `statistics.median` rather than `sorted(x)[n//2]`, which is the *upper*
+median at the expected even n=16; and `E2E_AUSTRIA_AML.md` §8.3 no longer claims the in-flight
+step's `_result.json` is written on interrupt (it isn't — only completed steps have one).
+
+**New tests: `tests/test_e2e_aml_demo_helpers.py` (20).** They cover the two things the hand-off
+flagged as never exercised — the dispatch-run discovery (`_list_run_ids`/`_new_dispatch_timings`,
+now run against a real `memory://` backend, since the scheme-less-glob trap only reproduces
+against a real filesystem) and the D14 assertions end-to-end on a miniature on-disk archive
+(missing asset, undeclared object, contradicted offset, wrong nodata, unstamped declaration,
+zero-byte asset). The well-formed-archive case is the direct regression pin for defect 2.
+
+**Open question for the user:** D12 names four validated hexes, but D11's split has **five** legs;
+the implementation used slot 5 (`#e87ba4`) of the same dataviz palette. Reasonable, and the
+figures were rendered and eyeballed — but the spec's own rule is "validated — do not substitute by
+eye", and the five-colour run of `validate_palette.js` is asserted in a docstring rather than
+recorded anywhere. Worth a re-run when the real `timings.json` lands.
+
+## SPEC 40 IMPLEMENTED (Sonnet@medium, 2026-07-28) — the cluster demo run as one script
+
+All six deliverables landed against the signed-off spec (`specs/40-e2e-aml-demo-script.md`,
+`docs/adr/0021`), in a worktree (`worktree-spec40-impl`), tests green (`pytest -q`: 473 passed / 2
+skipped, up from 451/2 at hand-off — 22 new tests), `ruff check src/ tests/ demos/` clean.
+
+1. **The four in-job stamps** (`process_start_at`/`work_start_at`/`work_end_at`/`ended_at`) in
+   `workflows/{shard,download,infer_shard,flatten}.py`'s `_status/<k>.json`. `process_start_at` is
+   captured as literally the first statement after `from __future__ import annotations` (stdlib
+   `datetime` only), before `pandas`/`fsd.*` load — the four files' entrypoint-level `# noqa: E402`
+   blocks are why.
+2. **Dispatch telemetry**: `workflows.runners._aml_submit_and_wait` now records `submitted_at`
+   per job and `returned_at` (first poll at which that job is observed terminal — poll-quantized,
+   D11), and writes `<run_root>/_timing.json` via a new pure function `_derive_timing` (per-job
+   `job_admission_seconds`/`import_seconds`/`dispatch_overhead_seconds` + the 5-leg additive wall
+   split). Written **before** raising on a failed job (D3). No return-value change (ADR 0021 held).
+3. **`demos/e2e_austria_aml.py`** — the 8-step cluster demo script, mirroring
+   `demos/e2e_austria.py`'s step labels exactly (D1). `--fresh`/`--run-id` (D5, resumable, never
+   deletes — prints the `az storage fs directory delete` command instead), `--dry-run`/
+   `--confirm-spend` (D6), `0_preflight` covers creds/blob-rw/cluster/both-Environments/ROI+label
+   files/`max_tiles`/clock skew (D4/D11), D14's archive-trust assertions folded into `2_download`,
+   D13's exact download scope (207 granules, 4 bands, Apr–Sep), D8's single `merge="reproject"`
+   call. **Not run by this session** (CLAUDE.md) — it goes to the operator per §8 of
+   `demos/E2E_AUSTRIA_AML.md` (new section, this session).
+4. **`demos/plot_aml_timings.py`** — renders off-box from `timings.json` alone: a job-admission
+   strip plot, a where-the-wall-went stacked bar (D11's split, the dataviz skill's validated
+   5-slot categorical order — blue/orange/aqua/yellow/magenta — direct labels gated on segment
+   width so small legs don't collide), and an optional per-job gantt (dropped above 80 rows).
+   Rendered against synthetic data and eyeballed (dataviz skill step 7) before shipping.
+5. **Operator notes** — `demos/E2E_AUSTRIA_AML.md` §8 "Reproduce it" (prerequisites, env-var
+   contract, the two commands, what to send back) + a `RECIPES.md` entry.
+6. **Tests** — `tests/test_workflows_status.py` (6, the stamp round-trip across all four
+   entrypoints + a failed-shard degenerate case), `tests/test_runners.py` (9: `_seconds_between`,
+   the additive invariant, negative-admission-not-floored, a status-file-missing degenerate case,
+   end-to-end `_aml_submit_and_wait` writing `_timing.json` incl. on failure),
+   `tests/test_plot_aml_timings.py` (7: both figures + the gantt, one-job and zero-spread runs,
+   the negative-leg clamp, the >80-row drop).
+
+**Not done here (explicitly out of scope, HANDOFF/spec §"NOT in scope"):** TODO #61 (b)/(c),
+TODO #59/#62, run-book 42 (superseded), rewriting `E2E_AUSTRIA_AML.md`'s existing numbers (that
+happens once the operator returns a real `timings.json`, per spec §7/§8.4).
+
+**Next:** operator runs `demos/e2e_austria_aml.py --fresh --dry-run` per §8, then the real run.
+Opus review recommended before merge (deliverables 1+2 touch every dispatch's entrypoint + seam).
 
 ## 🎉 THE DEMO PIPELINE IS COMPLETE — download → build → flatten → train+bundle → inference → **merged crop map**, all GREEN on the real cluster.
 **Runbook 38 Phase 3 PASSED 2026-07-28**, first attempt with the corrected ROI: `AT_ROI.geojson` →

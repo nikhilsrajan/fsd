@@ -690,3 +690,26 @@ PY
 
 **Read the per-shard seconds, not just the max.** Equal `n_units` with unequal `seconds` is a
 partitioner problem, not noise — that is exactly how TODO #60 surfaced.
+
+## Run the whole cluster demo as one script, then render its timing figures (spec 40, P2)
+
+Replaces hand-running run-books 36→37→39→40→38 for a fresh AML demo. See
+`demos/E2E_AUSTRIA_AML.md` §8 for the full env-var contract and VM prerequisites — this is just the
+two commands once that's set up.
+
+```bash
+# estimate first, zero side effects (D6); then the real run under tmux (D7)
+python demos/e2e_austria_aml.py --fresh --dry-run
+python demos/e2e_austria_aml.py --fresh --confirm-spend
+
+# a partial/failed run resumes with the SAME id it printed -- completed steps skip instantly (D5)
+python demos/e2e_austria_aml.py --run-id <id> --confirm-spend
+
+# figures render OFF-BOX from timings.json alone, no cluster/network needed (D12)
+python demos/plot_aml_timings.py tests/outputs/demo_e2e_aml/<run_id>/timings.json
+```
+
+`timings.json` is self-contained (D9): send back that one file and the plotter reproduces every
+figure anywhere. `_timing.json` (the per-run dispatch telemetry `workflows.runners._aml_submit_and_wait`
+writes beside `_status/`, ADR 0021) is embedded inside it — no separate forensics run-book needed
+going forward (that was run-book 41's whole job, now free).

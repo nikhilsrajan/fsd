@@ -353,3 +353,93 @@ which are fsd's own code.
 or `runbooks/42-timed-cold-reruns.md` (paid — a real `wall_seconds` from a cold replay). Whichever
 lands, it is recorded here **with its provenance**: a reconstructed span will be labelled as a lower
 bound, never as `wall_seconds`.
+
+## 8. Reproduce it
+
+Everything above §7 was assembled by hand from six separate run-books (spec 40's "why"). Going
+forward, one script replaces that: `demos/e2e_austria_aml.py` runs the same eight steps as
+`demos/e2e_austria.py`, on the cluster, unattended, and emits one self-contained `timings.json`
+(spec 40 D9) — no run-book paste-back required. **Claude does not run this script** (CLAUDE.md); it
+is handed to the operator.
+
+### 8.1 Prerequisites
+
+1. **A VM inside the project's compute subnet** (`snet<proj>-compute`) or another subnet carrying
+   the storage service endpoint. Project storage is deny-by-default firewalled
+   (`AZURE_INFRA.md` "Firewalled storage"): a VM outside those ranges gets **403 on every blob call
+   regardless of credentials**, because network rules and authorization are enforced independently
+   (Microsoft Learn, "Azure Storage firewall rules and network access"). This is the one prerequisite
+   that isn't obvious from the script failing — it looks like an auth bug and isn't.
+2. **`az login`** once over SSH; the CLI refreshes tokens silently, so a multi-hour unattended run is
+   fine. (Upgrade: a managed identity with Storage Blob Data Contributor + an AML submit role skips
+   the login entirely — an admin action, not a prerequisite.)
+3. Clone, `python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev,azure,aml]"`.
+4. **Both AML Environments already built** — the script's own preflight only verifies they resolve
+   (D4); building one is a 10–20 min ACR build that must not risk killing a 40-minute unattended run.
+   The general-purpose Environment (`AZ_ENV_NAME`, download + build + flatten, ADR-0020) and the
+   inference Environment (`AZ_INFER_ENV_NAME`, carries the adapter package) are two different images —
+   see `runbooks/36-aml-runner.md` / `runbooks/38-inference-on-aml.md` for how each was built.
+
+### 8.2 Environment variables
+
+```bash
+export AZ_SUBSCRIPTION_ID='<subscription id>'
+export AZ_RG='<resource group>'
+export AZ_ML_WORKSPACE='<aml workspace>'
+export AZ_CLUSTER='<the d16 cluster name>'
+export AZ_UAMI_CLIENT_ID="$(az identity show -g "$AZ_RG" -n '<compute identity name>' --query clientId -o tsv)"
+
+export AZ_ROOT="abfss://<filesystem>@<storage account>.dfs.core.windows.net/nsasiraj/fsd-p40-demo"
+
+export AZ_ENV_NAME='fsd-aml-env'                 # general-purpose: download + build + flatten
+export AZ_ENV_VERSION='<version>'
+export AZ_INFER_ENV_NAME='fsd-infer-env'         # carries the DemoRF adapter package
+export AZ_INFER_ENV_VERSION='<version>'
+
+# CDSE creds -- exactly one of the two (D5 REVISED):
+export AZ_VAULT_URL='<rise Key Vault url>'       # e.g. kv<proj>.vault.azure.net
+export AZ_CDSE_SECRET_NAME='<cdse creds secret name>'
+# ...or, if you don't have Key Vault write access:
+export AZ_LOCAL_CREDS_JSON='<path to your local cdse_credentials.json>'  # staged to blob for one run
+```
+
+### 8.3 Run it
+
+```bash
+# 1. Estimate first -- zero side effects (D6).
+python demos/e2e_austria_aml.py --fresh --dry-run
+
+# 2. The real run, under tmux/nohup so it survives a dropped SSH session (D7).
+tmux new -s fsd-demo
+python demos/e2e_austria_aml.py --fresh --confirm-spend
+# ^C / SIGTERM both exit cleanly, printing the resume line rather than a traceback
+# (D7). Every step that already FINISHED keeps its numbers (D3, each wrote its own
+# _result.json); the step that was in flight did not complete, so it has none, and
+# resuming re-runs it from the start on a fresh prefix (D5).
+
+# 3. If it stops partway (preflight failure, a failed dispatch, or an interrupt),
+#    resume with the SAME run id it printed at the start -- completed steps skip
+#    instantly, only the failed/remaining ones re-run (D5):
+python demos/e2e_austria_aml.py --run-id <the id it printed> --confirm-spend
+```
+
+`--fresh` never deletes anything (fsd's own recursive delete is broken, TODO #50): if a *previous*
+`--fresh` run left data on blob, this one prints the exact `az storage fs directory delete` command
+for the operator to run by hand.
+
+### 8.4 What to send back
+
+**One file:** `tests/outputs/demo_e2e_aml/<run_id>/timings.json` — it embeds every step's own
+`_result.json` (D9), including each dispatch's `_timing.json` (job admission, dispatch overhead, the
+D11 additive split). Render the timing figures anywhere, offline, no cluster needed:
+
+```bash
+python demos/plot_aml_timings.py tests/outputs/demo_e2e_aml/<run_id>/timings.json
+```
+
+writes `demos/figures/aml_job_admission.png`, `aml_where_the_wall_went.png`, and
+`aml_job_gantt.png` (dropped automatically above ~80 jobs — spec 40 D12).
+
+Once a real `timings.json` lands, this document is rewritten around it (§7's promise): the
+laptop-driver numbers in §3 move to a labelled appendix, and §1/§4 compare like-for-like runs on the
+same code, same download scope (D13), same driver-location bookkeeping (D10) — for the first time.

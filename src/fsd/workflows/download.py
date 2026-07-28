@@ -30,16 +30,21 @@ Run as:
 
 from __future__ import annotations
 
-import argparse
-import json
-import os
+import datetime as _dt
 
-import pandas as pd
+# spec 40 D2: stamped before any heavy import (see workflows/shard.py for the same pattern).
+_PROCESS_START_AT = _dt.datetime.now(_dt.timezone.utc).isoformat()
 
-from fsd import secrets
-from fsd.catalog.catalog import TileCatalog
-from fsd.sources import cdse, mpc
-from fsd.storage import fs
+import argparse  # noqa: E402
+import json  # noqa: E402
+import os  # noqa: E402
+
+import pandas as pd  # noqa: E402
+
+from fsd import secrets  # noqa: E402
+from fsd.catalog.catalog import TileCatalog  # noqa: E402
+from fsd.sources import cdse, mpc  # noqa: E402
+from fsd.storage import fs  # noqa: E402
 
 
 def _write_status(status_url: str, status: dict) -> None:
@@ -47,11 +52,15 @@ def _write_status(status_url: str, status: dict) -> None:
         json.dump(status, f, indent=2)
 
 
-def _status_from_download_result(dr, *, unit: str) -> dict:
+def _status_from_download_result(
+    dr, *, unit: str, process_start_at: str, work_start_at: str, work_end_at: str,
+) -> dict:
     """`DownloadResult` (cdse or mpc) -> the D9 status dict. Both dataclasses carry
     the same core fields; `circuit_tripped`/`bytes_downloaded` are CDSE-only, so
     they default off/0 for an MPC shard (which has no circuit breaker or its own
-    transfer-byte accounting)."""
+    transfer-byte accounting). `process_start_at`/`work_start_at`/`work_end_at` are the
+    spec 40 D2 in-job stamps; `ended_at` is added by the caller right before the
+    `_status` write."""
     circuit_tripped = bool(getattr(dr, "circuit_tripped", False))
     failed = dr.failed_count > 0 or circuit_tripped
     return {
@@ -61,6 +70,9 @@ def _status_from_download_result(dr, *, unit: str) -> dict:
         "n_skipped": dr.skipped_count,
         "n_failed": dr.failed_count,
         "bytes_downloaded": getattr(dr, "bytes_downloaded", 0),
+        "process_start_at": process_start_at,
+        "work_start_at": work_start_at,
+        "work_end_at": work_end_at,
         "seconds": round(dr.elapsed_s, 3),
         "circuit_tripped": circuit_tripped,
         "error": None if not failed else f"{dr.failed_count} asset(s) failed to download",
@@ -97,11 +109,17 @@ def run_roi(
     start = pd.Timestamp(startdate)
     end = pd.Timestamp(enddate)
 
+    work_start_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
     result = cdse.download(
         roi, start, end, bands, dst, catalog_obj, creds,
         max_tiles=max_tiles, max_cloudcover=max_cloudcover, cog=cog, progress=False,
     )
-    status = _status_from_download_result(result, unit="roi")
+    work_end_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    status = _status_from_download_result(
+        result, unit="roi", process_start_at=_PROCESS_START_AT,
+        work_start_at=work_start_at, work_end_at=work_end_at,
+    )
+    status["ended_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
     _write_status(status_url, status)
     return status
 
@@ -113,8 +131,14 @@ def run_shard(*, shard_url: str, dst: str, catalog: str, status_url: str) -> dic
         rows = pd.read_csv(f).to_dict("records")
 
     catalog_obj = TileCatalog(catalog)
+    work_start_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
     result = mpc.download_shard(rows, dst, catalog_obj)
-    status = _status_from_download_result(result, unit=os.path.basename(shard_url))
+    work_end_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    status = _status_from_download_result(
+        result, unit=os.path.basename(shard_url), process_start_at=_PROCESS_START_AT,
+        work_start_at=work_start_at, work_end_at=work_end_at,
+    )
+    status["ended_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
     _write_status(status_url, status)
     return status
 

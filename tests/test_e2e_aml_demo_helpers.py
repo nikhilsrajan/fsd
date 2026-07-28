@@ -1,0 +1,252 @@
+"""Tests for the pure helpers in `demos/e2e_austria_aml.py` (spec 40 deliverable 3).
+
+The demo run itself is not unit-testable by design (spec 40 §6) -- it needs a cluster.
+Its *helpers* are, and three of them are the ones a real run bets 80 GB on:
+
+- `_list_run_ids`/`_new_dispatch_timings`: how a step learns which run(s) its `fsd.*`
+  call dispatched under, since no verb returns a run id (ADR 0021). Exercised here
+  against a real fsspec backend (`memory://`), because the bug it has to survive --
+  `fs.glob` returning the filesystem's own scheme-less path form -- only shows up
+  against a backend, never against hand-written strings.
+- `_asset_key`: the D14 archive-trust comparison key. The catalog's `files` column
+  holds bare basenames that repeat on every row, so a key that isn't granule-scoped
+  makes the check silently vacuous.
+- `_expected_offset`: the independent re-derivation D14 needs to catch a catalog that
+  disagrees with its own granules.
+"""
+
+from __future__ import annotations
+
+import importlib
+import json
+import os
+import sys
+
+import pytest
+
+from fsd.storage import fs
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_DEMOS_DIR = os.path.join(os.path.dirname(_HERE), "demos")
+sys.path.insert(0, _DEMOS_DIR)
+demo = importlib.import_module("e2e_austria_aml")
+
+
+# --- dispatch-run discovery (D2/D9, ADR 0021) --------------------------------------
+
+def _write_timing(root: str, run_id: str, payload: dict | None = None) -> None:
+    with fs.open(f"{root}/runs/{run_id}/_timing.json", "w") as f:
+        json.dump(payload or {"run_id": run_id, "jobs": {}, "wall": {}}, f)
+
+
+def test_list_run_ids_extracts_ids_from_a_real_backends_glob_form():
+    """`fs.glob` returns the backend's OWN path form -- `memory://` strips the scheme
+    exactly as adlfs does. The helper must recover the run id from the tail, never by
+    string-comparing a glob hit to a url the caller built."""
+    root = "memory://disc_basic"
+    _write_timing(root, "20260728T120000Z")
+    _write_timing(root, "20260728T130000Z")
+    # a run that has not written telemetry yet must not be reported
+    with fs.open(f"{root}/runs/20260728T140000Z/_status/0.json", "w") as f:
+        json.dump({"unit": 0}, f)
+
+    assert demo._list_run_ids(root) == {"20260728T120000Z", "20260728T130000Z"}
+
+
+def test_list_run_ids_is_empty_when_nothing_has_dispatched():
+    assert demo._list_run_ids("memory://disc_empty") == set()
+
+
+def test_new_dispatch_timings_returns_only_runs_created_after_the_snapshot():
+    """The before/after diff each dispatching step wraps its `fsd.*` call in."""
+    root = "memory://disc_diff"
+    _write_timing(root, "run-old")
+    before = demo._list_run_ids(root)
+
+    _write_timing(root, "run-new", {"run_id": "run-new", "jobs": {"0": {}}, "wall": {}})
+    new = demo._new_dispatch_timings(root, before)
+
+    assert [t["run_id"] for t in new] == ["run-new"]
+
+
+def test_new_dispatch_timings_picks_up_both_runs_of_one_training_data_call():
+    """D1: `create_training_data(runner="aml")` dispatches TWO runs inside ONE call
+    (the cube-build fan-out and the flatten reduce) -- the exact case ADR 0021 cites
+    for why telemetry is a file rather than a return value. Both must come back, in a
+    stable order."""
+    root = "memory://disc_two"
+    before = demo._list_run_ids(root)
+    _write_timing(root, "20260728T100000Z-build")
+    _write_timing(root, "20260728T100500Z-flatten")
+
+    new = demo._new_dispatch_timings(root, before)
+
+    assert [t["run_id"] for t in new] == ["20260728T100000Z-build", "20260728T100500Z-flatten"]
+
+
+def test_new_dispatch_timings_is_empty_when_a_step_dispatched_nothing():
+    """A fully-resumed step (every output already on blob) dispatches no job, so it
+    embeds no telemetry -- and must not raise."""
+    root = "memory://disc_none"
+    _write_timing(root, "run-old")
+    assert demo._new_dispatch_timings(root, demo._list_run_ids(root)) == []
+
+
+# --- D14 archive-trust keys ---------------------------------------------------------
+
+def test_asset_key_is_granule_scoped_not_a_bare_basename():
+    """The catalog's `files` column is bare basenames, identical on every row
+    (`B04.tif,B08.tif,…`). Keying on the basename alone would collapse 207 granules
+    into 5 names and make D14's object check unable to detect a missing granule."""
+    a = demo._asset_key("fs/prefix/imagery/S2/2018/09/28/S2B_MSIL2A_a_N0500_T33UWQ_x/B04.tif")
+    b = demo._asset_key("fs/prefix/imagery/S2/2018/09/28/S2B_MSIL2A_b_N0500_T33UVP_y/B04.tif")
+    assert a != b
+    assert a == "S2B_MSIL2A_a_N0500_T33UWQ_x/B04.tif"
+
+
+def test_asset_key_matches_across_scheme_and_scheme_less_forms():
+    """A url the caller built (`abfss://…`) and the same object as `fs.glob` returned
+    it (no scheme) must produce the same key -- that is the whole point."""
+    built = "abfss://fs@acct.dfs.core.windows.net/prefix/imagery/x/GRANULE_N0500_id/SCL.tif"
+    globbed = "fs/prefix/imagery/x/GRANULE_N0500_id/SCL.tif"
+    assert demo._asset_key(built) == demo._asset_key(globbed) == "GRANULE_N0500_id/SCL.tif"
+
+
+@pytest.mark.parametrize("granule_id,expected", [
+    ("S2B_MSIL2A_20180928T100019_N0500_R122_T33UWQ_20230710T001349", -1000),  # >= 04.00
+    ("S2A_MSIL2A_20180101T100019_N0400_R122_T33UWQ_20220101T000000", -1000),  # exactly 04.00
+    ("S2A_MSIL2A_20180101T100019_N0212_R122_T33UWQ_20180101T000000", 0),      # < 04.00
+    ("something-without-a-baseline-token", None),
+])
+def test_expected_offset_derives_the_esa_offset_from_the_baseline_in_the_id(granule_id, expected):
+    """ESA: offset = -1000 for processing baseline >= 04.00, else 0. Derived from the
+    id independently of `sources/cdse`, which is what makes the assertion meaningful --
+    checking a value against the function that wrote it would catch nothing."""
+    assert demo._expected_offset(granule_id) == expected
+
+
+# --- D14 archive-trust assertions, end to end ---------------------------------------
+
+def _build_archive(tmp_path, *, granules=3, sidecar=True, offset=-1000, nodata=None,
+                   drop_asset=None, extra_object=False):
+    """A miniature imagery archive on disk + its catalog, laid out exactly as a CDSE
+    download leaves it: `<imagery>/<…>/<granule_id>/{B04.tif,SCL.tif,MTD_TL.xml}`, with
+    `files` holding bare basenames (identical on every row) -- the property that makes
+    a basename-keyed check vacuous."""
+    import shapely.geometry as sg
+
+    from fsd import config
+    from fsd.catalog.catalog import TileCatalog
+    from fsd.catalog.declaration import SourceDeclaration
+
+    imagery = tmp_path / "imagery"
+    rows = []
+    for i in range(granules):
+        gid = f"S2B_MSIL2A_2018092{i}T100019_N0500_R122_T33UWQ_20230710T00134{i}"
+        folder = imagery / "Sentinel-2" / "MSI" / "L2A_N0500" / "2018" / "09" / f"2{i}" / gid
+        folder.mkdir(parents=True)
+        names = ["B04.tif", "SCL.tif"] + (["MTD_TL.xml"] if sidecar else [])
+        for name in names:
+            if drop_asset is not None and (i, name) == drop_asset:
+                continue  # declared in the catalog, absent on "blob"
+            (folder / name).write_bytes(b"x" * 128)
+        rows.append(dict(
+            id=gid, satellite=config.SATELLITE_S2L2A,
+            timestamp=f"2018-09-2{i}T10:00:19Z", s3url=f"s3://eodata/{gid}.SAFE",
+            local_folderpath=str(folder), files=",".join(names), cloud_cover=1.0,
+            offset=offset, nodata=config.NODATA if nodata is None else nodata,
+            geometry=sg.box(i, i, i + 1, i + 1),
+        ))
+    if extra_object:
+        stray = imagery / "Sentinel-2" / "MSI" / "L2A_N0500" / "2018" / "09" / "99" / "leftover"
+        stray.mkdir(parents=True)
+        (stray / "B04.tif").write_bytes(b"y" * 64)
+
+    catalog_fp = str(imagery / "catalog.parquet")
+    TileCatalog(catalog_fp, declaration=SourceDeclaration(reference_band="B08")).append(rows)
+    return catalog_fp, str(imagery)
+
+
+def test_archive_trust_passes_on_a_well_formed_archive_including_the_xml_sidecar(tmp_path):
+    """The regression that matters most: CDSE declares `MTD_TL.xml` alongside the
+    bands, so a check that lists only `*.tif` reports the sidecar as missing and aborts
+    the demo run -- AFTER the whole ~80 GB download has been paid for."""
+    catalog_fp, imagery = _build_archive(tmp_path, sidecar=True)
+    trust = demo._assert_archive_trustworthy(catalog_fp, imagery)
+    assert trust["n_catalog_rows"] == 3
+    assert trust["n_declared_assets"] == 9        # 3 granules x (B04, SCL, MTD_TL)
+    assert trust["n_undeclared_objects"] == 0
+
+
+def test_archive_trust_detects_a_single_missing_asset(tmp_path):
+    """The check has to be granule-scoped to see this at all: every granule declares
+    the same 3 basenames, so a basename-keyed comparison still finds `B04.tif` present
+    (from the other two granules) and reports a complete archive."""
+    catalog_fp, imagery = _build_archive(tmp_path, drop_asset=(1, "B04.tif"))
+    with pytest.raises(demo.PreflightFailure, match="not found on blob"):
+        demo._assert_archive_trustworthy(catalog_fp, imagery)
+
+
+def test_archive_trust_surfaces_undeclared_objects_without_failing(tmp_path):
+    """A catalog may legitimately be a strict subset of what is on blob (a partial
+    re-run's leftovers), so this is counted and reported, not fatal."""
+    catalog_fp, imagery = _build_archive(tmp_path, extra_object=True)
+    assert demo._assert_archive_trustworthy(catalog_fp, imagery)["n_undeclared_objects"] == 1
+
+
+def test_archive_trust_rejects_an_offset_its_own_baseline_contradicts(tmp_path):
+    """The invisible failure D14 exists for: `N0500` implies -1000, so a row declaring
+    0 means every reflectance built from this archive is ~1000 DN high and the pipeline
+    still goes green."""
+    catalog_fp, imagery = _build_archive(tmp_path, offset=0)
+    with pytest.raises(demo.PreflightFailure, match="un-harmonized radiometry"):
+        demo._assert_archive_trustworthy(catalog_fp, imagery)
+
+
+def test_archive_trust_rejects_a_declared_nodata_the_builder_would_not_honor(tmp_path):
+    catalog_fp, imagery = _build_archive(tmp_path, nodata=-9999)
+    with pytest.raises(demo.PreflightFailure, match="config.NODATA"):
+        demo._assert_archive_trustworthy(catalog_fp, imagery)
+
+
+def test_archive_trust_requires_a_stamped_source_declaration(tmp_path):
+    from fsd.catalog.catalog import TileCatalog
+
+    catalog_fp, imagery = _build_archive(tmp_path)
+    rows = TileCatalog(catalog_fp).read()
+    unstamped = str(tmp_path / "imagery" / "unstamped.parquet")
+    TileCatalog(unstamped).append(rows.to_dict("records"))
+    with pytest.raises(demo.PreflightFailure, match="no stamped SourceDeclaration"):
+        demo._assert_archive_trustworthy(unstamped, imagery)
+
+
+def test_archive_trust_rejects_a_zero_byte_asset(tmp_path):
+    catalog_fp, imagery = _build_archive(tmp_path)
+    rows = demo.TileCatalog(catalog_fp).read()
+    zeroed = os.path.join(str(rows.iloc[0]["local_folderpath"]), "B04.tif")
+    with open(zeroed, "wb"):
+        pass
+    with pytest.raises(demo.PreflightFailure, match="zero-byte"):
+        demo._assert_archive_trustworthy(catalog_fp, imagery)
+
+
+# --- fs.modified (the clock-skew probe's only route to a server-side stamp) ---------
+
+def test_fs_modified_returns_the_backends_own_stamp():
+    """`ls`/`glob` return bare strings (`ls` passes `detail=False`), so `fs.modified`
+    is the only way spec 40 D11 can compare the driver's clock to storage's."""
+    url = "memory://skew/probe.txt"
+    fs.write_text(url, "skew-probe")
+    assert demo.pd.Timestamp(fs.modified(url)) is not None
+
+
+def test_fs_modified_returns_none_rather_than_raising_without_an_mtime(tmp_path, monkeypatch):
+    """A backend with no mtime must read as UNMEASURED, not as a confident zero skew --
+    a silently-zero skew would make every job_admission figure look better-bounded
+    than it is."""
+    class _NoMtime:
+        def modified(self, path):
+            raise NotImplementedError
+
+    monkeypatch.setattr(fs, "_fs_and_path", lambda url, opts=None: (_NoMtime(), "p"))
+    assert fs.modified("memory://whatever") is None
