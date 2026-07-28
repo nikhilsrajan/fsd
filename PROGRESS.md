@@ -15,13 +15,29 @@ cells consumed, `merged.tif` = **14.1 MB** on blob (6867x6828 px, 3.3:1 COG comp
 **1082.1 s**. ✅ **VISUALLY VALIDATED in QGIS (user, 2026-07-28)** — the merged map looks right;
 seams are clean. That is the real completion criterion, not `merged_bytes > 0` (CLAUDE.md).
 
-### ⭐ NEXT STEP — pick one (nothing is blocking)
-1. **Commit + push** — the D-GRID-1 fixes, the TODO #57 revert, the preflight guard and all the doc
-   corrections are **uncommitted** on top of `3db3dd9`. Identifier sweep first (RECIPES.md).
-2. **TODO #59 — cluster sizing** (the user's stated interest): **52.5 % of Phase 3's wall clock was
-   driver overhead**, and it is undecomposed. Instrument that breakdown before tuning anything.
-3. **TODO #55 — the docs refactor**, which was explicitly sequenced *after* a timed e2e demo. That
-   demo now exists; Phase 3's numbers are its first input.
+### ⭐ NEXT STEP — two sessions, in this order (user, 2026-07-28)
+**SESSION A — the local-vs-AML timing report.** Produce the AML counterpart to
+`demos/E2E_AUSTRIA.md` §8: a step-by-step `step / seconds / share` table comparing the local e2e run
+against the cluster. **It cannot be written from what exists today** — see the measured-wall-clocks
+table below: run-books **36** (900-cube build) and **37** (archive download) emit **no wall clock at
+all**, so 2 of ~7 rows are missing outright. First job is therefore a small instrumentation patch
+(make 36/37 emit `wall_seconds` the way 38/39 already do), then a re-run of those two phases, then
+the report. **Do not fabricate the missing rows.** What IS already comparable, and is the report's
+headline: local and AML both ran **`AT_ROI` → 300 cells**, so inference is apples-to-apples —
+**local 2683.5 s (T=10, `INFER_CORES=2`, 8-core laptop, local COGs) vs AML 2066.9 s (T=8, `cores=1`,
+16 shards, blob COGs)**. Converted to single-threaded cell-seconds that is **17.9 s/cell local vs
+52.4 s/cell on AML** (1.79 vs 6.55 s per cell per timestamp) — **the cloud is ~3.7x SLOWER per unit
+of work and only 1.30x faster on the wall**, because it throws 16 nodes at the problem and hands
+half of that back as fixed overhead. Confounded (hardware, blob-vs-disk reads, T, cores) — say so.
+Related: TODO #59 (parked) wants the same overhead decomposition.
+
+**SESSION B — TODO #55, the docs refactor.** Explicitly sequenced *after* a timed e2e demo; that
+demo now exists and Session A's report is its input. Scope per TODO #55: (1) a chronological "story
+since inception", (2) ~5 docs on the **C4 model**. **This is a spec of its own — discuss before
+starting**, and decide which registers fold in vs stay as the audit trail.
+
+**Parked meanwhile:** TODO #59 (cluster sizing — has two anchors now: Phase 3's 52.5 % overhead split
+and Phase 4's 1082.1 s ≈ pure fixed overhead).
 4. ✅ **DONE — the viewable map** (`runbooks/38-inference-on-aml.md` Phase 4, GREEN 2026-07-28).
    Kept below because both bugs it found are worth remembering. Phase 3
    left 300 separate COGs; Phase 4 re-runs the same call with `merge=True` (all 300 cells are
@@ -38,6 +54,22 @@ seams are clean. That is the real completion criterion, not `merged_bytes > 0` (
    (ONE env for N datasets; one token fetch, not 300), with the trap pinned in `test_azure_seam.py`.
    **Both merge bugs were remote-only and invisible to a fully green local suite** — `merge` had
    simply never run against blob.
+
+### 📌 Measured wall-clocks on the cluster (the ONLY authoritative source is each `_result.json`)
+Every figure below is from `tests/outputs/<run>/phase<N>_result.json`. **Quote those files, never a
+prose recollection** — a stale prose copy of runbook 40 Phase 1/2 survived here for a day because the
+phase was re-run (`aggregate="median_per_id"`) and only the JSON was updated (fixed 2026-07-28).
+
+| run-book | phase | `wall_seconds` | what it covers |
+|---|---|---|---|
+| 39 | 1 | **405.7** | flatten reduce: 900 blob cubes → one single-node AML job → `(172781,8,3)` landed locally |
+| 40 | 1 | **179.4** | features driver-side (ADR-0020) → `(900,8,2)` NDVI+SAVI, one row per field |
+| 38 | 3 | **2066.9** | 300-cell inference fan-out (= 982.7 slowest shard + 1084.3 driver overhead) |
+| 38 | 4 | **1082.1** | merge only — no compute; effectively a direct read of the fixed overhead |
+
+**Not timed at all** (their `_result.json` carries no wall clock): run-book **36** (the 900-cube
+build) and run-book **37** (the archive download). Those two gaps are what block a local-vs-AML
+step-by-step report — see the ⭐ NEXT STEP above.
 
 ### 📌 What Phase 3's numbers say (first real fan-out datum)
 The **sharding is fine — the overhead is the target.** 300 cells / 16 shards ≈ 18.75 cells/shard at
@@ -240,13 +272,22 @@ order (`36-phase0 → 37 → 37-verify → 36 → 39 → 40 → 38`) until the C
 
 ### ✅ Runbook 40 (train + bundle) — RUN GREEN, all 3 phases (2026-07-28)
 Option (a), KISS, **zero new fsd code** — orchestration of existing verbs.
-- **Phase 1** (`flatten_training_data(..., adapter=DemoRF(), runner="aml")`): PASS in **145.7 s** (aml
+- **Phase 1** (`flatten_training_data(..., adapter=DemoRF(), runner="aml")`): PASS in **179.4 s** (aml
   reduce only — `_land_local` skipped the already-landed raw arrays; `_apply_training_features` ran
-  **driver-side**, ADR-0020). `features (172781, 8, 2)` = **NDVI+SAVI**; `feature_ids`/`feature_labels`
-  both 172781; raw `data.npy` kept.
+  **driver-side**, ADR-0020). `features (900, 8, 2)` = **NDVI+SAVI**, one row per field;
+  `feature_ids`/`feature_labels` both 900; raw `data.npy` kept.
+  ⚠️ **Corrected 2026-07-28.** This line used to read *145.7 s / `features (172781, 8, 2)`* — the
+  numbers from the **first** run, before Phase 1 was re-run with **`aggregate="median_per_id"`** (the
+  switch that took `rf.joblib` from 1.1 GB to 13 MB — see Bundle facts below). The re-run is the run
+  of record: the demo bundle was built from it. Source of truth =
+  `tests/outputs/p40_train_and_bundle/phase1_result.json`.
 - **Phase 2** (train DemoRF@T=8, **user-side, ADR-0018** — RF + LabelEncoder → `rf.joblib`): PASS.
-  172781 px, `n_features=16` (=T·Bf=8·2, reshape contract intact), **9 classes**, train acc **0.863** /
-  test acc **0.696** (ordinary RF overfit; fine for the demo).
+  **900 field medians**, `n_features=16` (=T·Bf=8·2, reshape contract intact), **9 classes**, train acc
+  **1.0** / test acc **0.2933**.
+  ⚠️ **Corrected 2026-07-28** from *172781 px / train 0.863 / test 0.696* — same cause: those were the
+  pre-`median_per_id` per-pixel numbers, and the 0.696 is exactly the **leaked** score the "Accuracy is
+  now HONEST" note below already retracts (pixels of one field landed in both train and test). Source
+  of truth = `tests/outputs/p40_train_and_bundle/phase2_result.json`.
 - **Phase 3** (`bundle.save`): PASS + round-trip. `bundle.json` → `adapter: "adapters:DemoRF"`,
   `required_bands:[B04,B08]`, **`n_timestamps: 8`** (set on the instance before save — DemoRF pins 0),
   `uint8`/`255`, `artifacts:{model: rf.joblib}`; `bundle.load` resolved→instantiated→validated→`.load()`
