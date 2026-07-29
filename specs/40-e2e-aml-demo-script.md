@@ -63,10 +63,16 @@ accumulator. `timings.json` keeps the local schema and adds the cluster detail (
 > discredited **0.696** and the honest field-wise **~0.29** already recorded in `PROGRESS.md`. It also
 > cuts the flatten reduce and the driver-side fit from ~172k rows to ~900.
 >
-> The local demo still passes `aggregate=None`, so step 3's *inputs* are no longer identical across
-> the two sides. Step **labels** and the `timings.json` shape are unchanged, so the wall-clock
-> comparison D1 exists for still holds — but a step-3 row now compares a field-median reduce against
-> a per-pixel one, and the report must say so. Fixing the local demo to match is deferred (§9).
+> **`demos/e2e_austria.py` was changed to match** (same call, same reason), so D1's mirror still
+> holds for step 3: both sides now reduce to field medians before the adapter's transform. The
+> alternative — leaving the local demo per-pixel — would have made a step-3 row compare a
+> field-median reduce against a per-pixel one, which is not a comparison.
+>
+> ⚠️ **This invalidates the local demo's published step-3 and step-4 numbers.** Everything in
+> `E2E_AUSTRIA.md` and the 2026-07-13 `timings.json` was measured with `aggregate=None`: step 3's
+> flatten is now over ~900 rows rather than ~172k, step 4 trains on field medians, and any accuracy
+> figure quoted from that run is the leaky per-pixel one. **The local demo must be re-run before
+> local-vs-cluster means anything** — §9's open question is now a prerequisite, not a nicety.
 
 *Why:* the comparison is only honest if both sides are cut the same way.
 
@@ -317,12 +323,22 @@ and must not be lost, but it stops competing with the headline numbers.
 5. `--dry-run`, read the estimate, then run under `tmux` with `--confirm-spend`. Close the laptop.
 6. Send back **`timings.json`** (self-contained, D9).
 
-## 9. Open question
+## 9. ~~Open question~~ → RESOLVED as a prerequisite (A2, 2026-07-29)
 
-**Do we also re-run `demos/e2e_austria.py` locally on current code?** Without it the report compares
-a 2026-07-13 laptop run against a 2026-07-28+ cluster run across several fixes (D-GRID-1, `rio_env`,
-the merge fixes). *Recommendation: yes eventually, not blocking* — it needs the 74 GB local archive
-and ~100 min of laptop, and nothing here depends on it. State the version gap until then.
+**Do we also re-run `demos/e2e_austria.py` locally on current code?** Originally: *"yes eventually,
+not blocking"* — the report would otherwise compare a 2026-07-13 laptop run against a 2026-07-28+
+cluster run across several fixes (D-GRID-1, `rio_env`, the merge fixes), which was a version gap to
+state rather than a blocker.
+
+**A2 turned it into a blocker.** The local demo now passes `aggregate="median_per_id"` too, so its
+published step-3/step-4 numbers were measured by code that no longer exists: step 3 flattens ~900
+field medians rather than ~172k pixels, and step 4 trains on those. A local-vs-cluster table built
+from the old `timings.json` would not be a version gap — it would compare two different
+computations and label them the same. **Re-run the local demo before writing any comparison** (74 GB
+local archive, ~100 min of laptop).
+
+Note this cuts the other way on cost: step 3's local flatten and step 4's fit both get *cheaper*, so
+the re-run is not simply the old ~100 min repeated.
 
 ## 10. Best-practice alignment / sources
 

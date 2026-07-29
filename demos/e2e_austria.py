@@ -250,6 +250,14 @@ def step_training_data(fast, catalog_fp, adapter, clip_fp=None):
         export_folderpath=os.path.join(OUTDIR, "training_data"),
         run_folderpath=os.path.join(OUTDIR, "training_run"),
         adapter=adapter, cores=CORES,
+        # The MODELLING UNIT, not a size trick (run-book 40): one `np.nanmedian` row per
+        # labelled field instead of one per pixel. Labels are field-level, so training
+        # per-pixel leaks a field's own pixels across the train/test split -- that is the
+        # difference between a flattering ~0.70 and the honest field-wise ~0.29. It also
+        # keeps the bundle small, which matters because inference fetches it to every node.
+        # Training-only: inference still applies DemoRF's transform PER PIXEL, so the crop
+        # map stays per-pixel. Matches `e2e_austria_aml.py` (spec 40 D1 amendment A2).
+        aggregate="median_per_id",
     )
     d = td.load()
     n_cubes = len(pd.read_csv(os.path.join(OUTDIR, "training_run", "input.csv")))

@@ -8,6 +8,7 @@ against downloaded tiles is a manual runbook (tests/manual/flatten.md), not a un
 from __future__ import annotations
 
 import datetime
+import os
 
 import geopandas as gpd
 import numpy as np
@@ -122,6 +123,60 @@ def test_unknown_aggregate_rejected(tmp_path):
             id_col="fid", label_col="crop", export_folderpath=str(tmp_path / "e"),
             aggregate="nope",
         )
+
+
+def _flattened_arrays(tmp_path, *, n_bands=2):
+    """The flatten output `_apply_training_features` consumes: 6 pixels across 2 field
+    ids, `(pixels, T, B)`."""
+    export = tmp_path / "export"
+    export.mkdir()
+    ids = np.array(["fieldA", "fieldA", "fieldA", "fieldB", "fieldB", "fieldB"])
+    labels = np.array(["wheat", "wheat", "wheat", "maize", "maize", "maize"])
+    # fieldA's per-pixel values are 10/20/30 -> median 20; fieldB's are 100/200/300 -> 200.
+    base = np.array([10.0, 20.0, 30.0, 100.0, 200.0, 300.0])
+    data = np.repeat(base[:, None, None], 3, axis=1).repeat(n_bands, axis=2)  # (6, T=3, B)
+    np.save(export / "data.npy", data)
+    np.save(export / "ids.npy", ids)
+    np.save(export / "labels.npy", labels)
+    return str(export)
+
+
+def test_apply_training_features_reduces_to_one_row_per_id(tmp_path):
+    """The wiring both demo scripts depend on (spec 40 D1 amendment A2): `median_per_id`
+    collapses per-pixel rows to one `np.nanmedian` row per labelled field BEFORE the
+    feature transform, and `feature_ids`/`feature_labels` follow it. Without this, the
+    demos train per-pixel on field-level labels — a field's own pixels leak across the
+    train/test split, which is the whole reason the aggregate exists."""
+    export = _flattened_arrays(tmp_path)
+    metadata = {"bands": ["B04", "B08"]}
+
+    api._apply_training_features(export, metadata, adapter=None,
+                                 feature_sequence=[], aggregate="median_per_id")
+
+    feats = np.load(os.path.join(export, "features.npy"))
+    fids = np.load(os.path.join(export, "feature_ids.npy"))
+    flabels = np.load(os.path.join(export, "feature_labels.npy"))
+
+    assert feats.shape[0] == 2, "one row per field id, not per pixel"
+    assert list(fids) == ["fieldA", "fieldB"]
+    assert list(flabels) == ["wheat", "maize"]          # label by first occurrence
+    assert feats[0, 0, 0] == pytest.approx(20.0)        # median(10, 20, 30)
+    assert feats[1, 0, 0] == pytest.approx(200.0)       # median(100, 200, 300)
+
+    written = np.load(os.path.join(export, "metadata.pickle.npy"), allow_pickle=True).item()
+    assert written["aggregate"] == "median_per_id"      # recorded, so a reader knows the unit
+
+
+def test_apply_training_features_keeps_every_pixel_when_aggregate_is_none(tmp_path):
+    """The contrast that makes the test above meaningful: same input, no aggregate ->
+    6 per-pixel rows and no `aggregate` stamp."""
+    export = _flattened_arrays(tmp_path)
+    api._apply_training_features(export, {"bands": ["B04", "B08"]}, adapter=None,
+                                 feature_sequence=[], aggregate=None)
+
+    assert np.load(os.path.join(export, "features.npy")).shape[0] == 6
+    written = np.load(os.path.join(export, "metadata.pickle.npy"), allow_pickle=True).item()
+    assert written["aggregate"] is None
 
 
 # --- stubs -------------------------------------------------------------------

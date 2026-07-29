@@ -158,7 +158,7 @@ The 7 steps and what they produce (all heavy artifacts under `tests/outputs/demo
 | 0 preflight | validates creds + inputs |
 | 1 tiling | `inference_s2_grids.geojson` + `figures/s2_grids.png` |
 | 2 download | `imagery/catalog.parquet` + local COGs; the timing report (§8) |
-| 3 training data | `training_data/features.npy` (+ raw `data.npy`) |
+| 3 training data | `training_data/features.npy` — **one row per labelled field** (`aggregate="median_per_id"`) — (+ raw per-pixel `data.npy`) |
 | 4 train + bundle | `rf.joblib` + `bundle/` (`bundle.json` + artifact) |
 | 5 run_inference | `model_outputs/<cell>/output.tif` per cell + `stac/` + `merged.tif` |
 | 6 plots | `figures/ndvi_timeseries.png`, `figures/crop_map.png` |
@@ -262,6 +262,14 @@ download:
   SLOWER than 1 (per-stream 4.4). This is a property of the local uplink, not CDSE or fsd — it
   is expected to invert on a datacenter NIC; re-tune `max_concurrent_s3` per environment (TODO #24).
 ```
+
+> ⚠️ **`3_training_data` and `4_train_bundle` above are STALE (as of 2026-07-29).** This run
+> predates `aggregate="median_per_id"` (spec 40 D1 amendment A2): step 3 flattened **~172k
+> per-pixel rows**, where it now reduces to **≤900 field medians** before the adapter's transform,
+> and step 4 fit an RF on those pixels. Both numbers should drop; neither has been re-measured.
+> Any accuracy read off this run is the **per-pixel** one, which leaks a field's own pixels across
+> the split — the honest field-wise figure is far lower (~0.29). Download and inference are
+> unaffected. **Re-run the demo before quoting steps 3–4 or comparing them to the cluster.**
 
 **Two steps dominate (~90%): download (45%) and inference (44%).** Everything else is noise.
 

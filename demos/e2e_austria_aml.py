@@ -607,8 +607,8 @@ def step_training_data(ml_client, root: str, catalog_fp: str, adapter, local_exp
         # `np.nanmedian` row per labelled field instead of every pixel inside it. The
         # labels are field-level, so training per-pixel leaks a field's own pixels
         # across the train/test split -- that is the difference between the discredited
-        # 0.696 and the honest field-wise ~0.29. Matches run-books 39/40; the local demo
-        # does NOT do this yet, so step 3 is where the step-for-step mirror (D1) breaks.
+        # 0.696 and the honest field-wise ~0.29. Matches run-books 39/40 AND
+        # `e2e_austria.py`, so D1's step-for-step mirror holds here too.
         aggregate="median_per_id",
         runner="aml", runner_kwargs=runner_kwargs,
     )
