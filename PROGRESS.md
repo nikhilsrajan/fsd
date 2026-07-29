@@ -2,7 +2,101 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-28 (spec 40 IMPLEMENTED + REVIEWED — 6 defects found and fixed, tests green)_
+_Last updated: 2026-07-29 (⭐ THE CLUSTER DEMO RAN END TO END — P3 + P4 validated; next = TODO #55 docs refactor)_
+
+## ⭐ 2026-07-29 — THE DEMO RAN. P3 AND P4 ARE VALIDATED. → NEXT: TODO #55 (docs refactor)
+
+`demos/e2e_austria_aml.py` completed unattended on the `rise` AML cluster:
+**run `20260729T132222Z`, 1127.7 s (~18.8 min), 8/8 steps ok, 97 jobs, 213 MPC granules,
+300 grid cells → 300 output COGs + STAC + merged map.** `timings.json` +
+`timings.rederived.json` (see A3) are in `tests/outputs/demo_e2e_aml/20260729T132222Z/`
+(gitignored). All three D12 figures render.
+
+**The milestone is not the demo script — it is that ROADMAP's P3 and P4 both said
+"pending cluster validation" and this run IS that validation.** Mode B (laptop triggers
+cloud download→build→flatten, arrays come home) and Mode C (ROI inference fanned out over
+the cluster) are now proven end-to-end on real infrastructure, in one command.
+
+### What the run measured
+
+| | |
+|---|---|
+| **Job admission = 36 % of the whole run** | 403 s of 1128 s, almost all of it one cold start |
+| `2_download` | **286 s admission vs 84 s execution** — 71 % of the step is the cluster scaling 0→32 nodes |
+| warm dispatches | 26–55 s admission (build 32.3 s, flatten 29.0 s, inference 55.2 s) |
+| node utilisation | **5 %** (download, cold) · **42 %** (build) · **37 %** (inference) — TODO #60/#61 quantified |
+| **TODO #60 reproduces exactly** | 32 shards ÷ 4 bands, `32 % 4 == 0` ⇒ one band per shard ⇒ **16.4× imbalance** (2.0 s … 32.8 s) |
+| clock skew (VM) | **−0.88 s ± 0.03** vs ~8 s on the laptop — D10's driver-location record earning its keep |
+| inference vs local | 367.7 s vs 2683.5 s, but the local side is 2026-07-13 code — **not a clean comparison** (TODO #62) |
+
+### Spec 40 amendments (all recorded IN the spec, all user-decided)
+
+- **A1 — `2_download` sources from MPC, not CDSE.** D13 contradicted D11 in the same spec:
+  CDSE dispatches exactly ONE job (spec 37 D1), so the download leg measured no scale-out
+  at all. Also drops the credential dance and the 30-day quota risk. `max_tiles` 207 → 250
+  (MPC found 213).
+- **A2 — `aggregate="median_per_id"` on BOTH demos.** The modelling unit, not a size trick:
+  labels are field-level, so per-pixel training leaks a field's own pixels across the split.
+  `demos/e2e_austria.py` changed to match ⇒ **its published step-3/4 numbers are now stale**
+  and TODO #62's local re-run is a **prerequisite**, not a nicety (spec 40 §9).
+- **A3 — `first_admission` anchors on the FIRST submission.** The old anchor produced
+  `first_admission = −5.0` on a healthy dispatch: submitting 32 jobs takes ~40 s and the
+  early ones are admitted *during* it, so submission and admission overlap and cannot be
+  adjacent legs. It also destroyed D11's stated meaning for a negative (clock skew). New
+  `submission_span_seconds` reports the span *outside* the additive split. `CHANGES.md`
+  entry; **pre-2026-07-29 `timings.json` are not comparable on those two fields** (sums are).
+
+### Defects found by running it (none by review — all cost or nearly cost a run)
+
+1. **TODO #47 CLOSED** — `gpd.read_file(<abfss url>)` reports "No such file or directory"
+   for a file that exists (GDAL has no `abfss://` driver). Killed `3_training_data`. New
+   **`fs.read_geo`**, the one shared reader; all four sites use it. `run_inference`'s ROI
+   re-tiling would have hit two more sites two steps later.
+2. **A stale AML image silently voids the run.** The four D2 stamps are written by the `fsd`
+   *inside the image*; `fsd-aml-env:4` predated spec 40, so a complete 25-min run came back
+   with `job_admission_seconds: null` on all 97 jobs — correct science, void measurement.
+   Now gated after the FIRST dispatch (`_assert_dispatch_telemetry_complete`).
+3. **`[dev,azure,aml]` is not enough** — `mpc`/`grid`/`model-example` are also required;
+   died at `4_train_bundle` on `joblib`. Preflight now checks every driver-side import.
+4. **`total_seconds` was the last process's wall** — a resumed run reported 640.7 s for
+   1470.0 s of steps. Now the sum of the steps + `process_wall_seconds` + `resumed`.
+5. **Dispatch telemetry was ordered by run_id, which is not execution order** —
+   `create_training_data` mints its id before the build dispatches but uses it for the
+   flatten, so `3_training_data[0]` was the *reduce* and `[1]` the *fan-out*, backwards.
+   Now sorted on `wall.t_start`. This mislabelled every figure the plotter draws.
+6. **The gantt was silently dropped** — `max_rows=80` vs a real 97-job run, and both skip
+   causes printed "no data". Cap 120 + `gantt_skip_reason`.
+
+Also: preflight now prints per-check timings (`check_seconds`); `fs.modified` added (the
+clock-skew probe read `fs.ls`, which returns bare strings, so skew always read 0.0);
+RECIPES gained the **both-Environments rebuild** recipe (the node's fsd comes from the
+image — `git pull` on the driver changes nothing) with the `az` gotchas that cost a build.
+
+**Tests 451 → 520 / 2 skipped**, ruff clean. `main` == `origin/main`.
+
+### → NEXT: TODO #55 — the docs refactor (its gate is now met)
+
+#55's own sequencing rule was *"do this AFTER a timed e2e demo … with stepwise time
+accounting and a report"*. That gate is met. It also says **"this is a spec of its own when
+taken up … discuss before starting"** — so the next session is an **Opus@high
+interview + spec**, not implementation.
+
+**The corpus, measured 2026-07-29: 201 markdown files, 284,441 words** (specs 91.8k,
+runbooks 48.6k, `PROGRESS.md` **37.7k**, TODO 16.9k, CHANGES 13.0k, demos 12.6k). Target
+per #55: **(1)** one chronological "story since inception" — the forks taken and dropped and
+the measurements that decided them; **(2)** ≤~5 docs on the **C4 model** (c4model.com) as a
+newcomer's front door. The living registers stay as the audit trail.
+
+Open scoping questions #55 names explicitly: which registers fold in vs stay; the file
+count; and whether it lives in `fsd/docs/` or replaces the top-level READMEs.
+
+**Deferred, not forgotten:** TODO #62 (local re-run — now a prerequisite for ANY
+local-vs-cluster claim, A2), spec 40 §7 (rewrite `E2E_AUSTRIA_AML.md` around this run),
+TODO #59/#60/#61 (the overhead work — note admission at 403 s dwarfs #60's ~30 s, so the
+honest headline lever is cluster warm-up policy, not sharding), and the rslearn Plan B/C
+decision (`spike/rslearn`, still open).
+
+## SPEC 40 REVIEWED (Opus@high, 2026-07-28) — six defects found, all fixed
 
 ## ⭐ SPEC 40 REVIEWED (Opus@high, 2026-07-28) — six defects found, all fixed
 
