@@ -301,6 +301,83 @@ def test_archive_trust_rejects_a_zero_byte_asset(tmp_path):
         demo._assert_archive_trustworthy(catalog_fp, imagery)
 
 
+# --- D4: driver dependencies are a preflight failure, not a step-4 surprise ---------
+
+def test_missing_driver_deps_is_empty_when_everything_is_installed():
+    assert demo._missing_driver_deps() == []
+
+
+def test_missing_driver_deps_names_the_module_the_extra_and_one_install_line(monkeypatch):
+    """The 2026-07-29 failure: `ModuleNotFoundError: joblib` at `4_train_bundle`, three
+    steps and one ~80 GB download past the point a one-line pip install would have fixed
+    it. D4 says preflight is total and fails in seconds -- so it must name the module,
+    what needs it, and a single command that fixes every miss at once."""
+    import importlib.util
+
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec",
+                        lambda m, *a, **k: None if m in ("joblib", "sklearn", "s2") else real(m))
+
+    lines = demo._missing_driver_deps()
+
+    assert any("joblib" in ln and "model-example" in ln for ln in lines)
+    assert any("s2" in ln and "grid" in ln for ln in lines)
+    install = lines[-1]
+    # ONE line that fixes all three, with each missing extra folded in exactly once.
+    assert install.count("pip install") == 1
+    assert "grid" in install and "model-example" in install
+
+
+def test_every_driver_dep_names_a_real_extra_in_pyproject():
+    """The table is documentation people act on (E2E_AUSTRIA_AML.md §8.1 mirrors it), so
+    an extra that does not exist would send the next operator to a failing command."""
+    import re
+
+    pyproject = os.path.join(os.path.dirname(_HERE), "pyproject.toml")
+    with open(pyproject) as f:
+        text = f.read()
+    declared = set(re.findall(r"^([a-z0-9-]+) = \[", text, flags=re.MULTILINE))
+
+    for _module, extra, _why in demo._DRIVER_DEPS:
+        assert extra in declared, f"{extra!r} is not an extra in pyproject.toml"
+
+
+def test_preflight_deps_cover_what_the_steps_actually_import():
+    """Guards the drift this check exists to prevent: a step gains an import, nobody adds
+    it here, and preflight goes green right up to the crash. Scans the demo script's own
+    step functions for third-party imports and requires each to be declared."""
+    import ast
+
+    src = os.path.join(os.path.dirname(_HERE), "demos", "e2e_austria_aml.py")
+    with open(src) as f:
+        tree = ast.parse(f.read())
+
+    declared = {m.split(".")[0] for m, _, _ in demo._DRIVER_DEPS}
+    stdlib_or_local = {
+        "__future__", "os", "sys", "json", "time", "re", "signal", "datetime", "contextlib",
+        "argparse", "importlib", "ast", "statistics", "fsd", "adapters",
+        "numpy", "pandas", "geopandas", "shapely", "rasterio",  # fsd CORE deps
+    }
+
+    missed = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        else:
+            names = [node.module] if node.module and node.level == 0 else []
+        for name in names:
+            top = name.split(".")[0]
+            if top and top not in declared and top not in stdlib_or_local:
+                missed.add(top)
+
+    assert not missed, (
+        f"third-party import(s) {sorted(missed)} in demos/e2e_austria_aml.py are not in "
+        "_DRIVER_DEPS -- preflight would not catch them and the run would die mid-step"
+    )
+
+
 # --- fs.modified (the clock-skew probe's only route to a server-side stamp) ---------
 
 def test_fs_modified_returns_the_backends_own_stamp():

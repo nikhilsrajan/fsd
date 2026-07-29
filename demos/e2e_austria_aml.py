@@ -267,8 +267,53 @@ def _measure_clock_skew(root: str) -> dict:
     }
 
 
+# Every third-party module the DRIVER imports after preflight, and the extra that
+# supplies it. D4 says preflight is total and fails in seconds; a missing local import is
+# the cheapest possible failure and must never surface later. It did on 2026-07-29 --
+# `ModuleNotFoundError: joblib` at `4_train_bundle`, three steps and one ~80 GB download
+# past the point where a one-line `pip install` would have fixed it.
+#
+# `adlfs`/`azure.ai.ml` fail earlier still (module import and `_make_ml_client`), so they
+# never reach this check; they are listed anyway so the message stays complete if the
+# steps are ever reordered, and so this table is the single place that answers "what does
+# the driver actually need installed?".
+_DRIVER_DEPS = [
+    ("adlfs",              "azure",         "blob I/O through the storage seam"),
+    ("azure.identity",     "azure",         "DefaultAzureCredential"),
+    ("azure.ai.ml",        "aml",           "dispatching every AML job"),
+    ("planetary_computer", "mpc",           "MPC discovery (preflight + 2_download)"),
+    ("s2",                 "grid",          "1_tiling, and run_inference's ROI re-tiling"),
+    ("s2cell",             "grid",          "1_tiling, and run_inference's ROI re-tiling"),
+    ("sklearn",            "model-example", "4_train_bundle (RandomForest + LabelEncoder)"),
+    ("joblib",             "model-example", "4_train_bundle (model serialisation)"),
+    ("matplotlib",         "model-example", "6_plots"),
+]
+
+
+def _missing_driver_deps() -> list[str]:
+    """Which of `_DRIVER_DEPS` are absent, as D4-shaped error lines naming the exact fix."""
+    import importlib.util
+
+    missing = []
+    for module, extra, why in _DRIVER_DEPS:
+        try:
+            found = importlib.util.find_spec(module) is not None
+        except (ImportError, ValueError):
+            found = False
+        if not found:
+            missing.append((module, extra, why))
+    if not missing:
+        return []
+    extras = sorted({extra for _, extra, _ in missing})
+    return [f"missing driver dependency {module!r} -- needed for {why} "
+            f"(comes from the '{extra}' extra)" for module, extra, why in missing] + [
+        "fix all of the above at once:  pip install -e \".[" + ",".join(
+            sorted({"dev", "azure", "aml", *extras})) + "]\""
+    ]
+
+
 def step_preflight(ml_client, root: str) -> dict:
-    errs: list[str] = []
+    errs: list[str] = _missing_driver_deps()
     warnings: list[str] = []
 
     # D4 wants each failure to name its own exact fix, so "a credential resolves" is

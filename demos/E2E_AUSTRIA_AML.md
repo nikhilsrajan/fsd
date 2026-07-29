@@ -373,7 +373,28 @@ is handed to the operator.
 2. **`az login`** once over SSH; the CLI refreshes tokens silently, so a multi-hour unattended run is
    fine. (Upgrade: a managed identity with Storage Blob Data Contributor + an AML submit role skips
    the login entirely — an admin action, not a prerequisite.)
-3. Clone, `python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev,azure,aml]"`.
+3. **Clone and install — all six extras, not just `[dev,azure,aml]`:**
+
+   ```bash
+   python3.11 -m venv .venv
+   .venv/bin/pip install -e ".[dev,azure,aml,mpc,grid,model-example]"
+   ```
+
+   | extra | supplies | needed by |
+   |---|---|---|
+   | `azure` | `adlfs`, `azure-identity` | every blob read/write |
+   | `aml` | `azure-ai-ml` | dispatching every job |
+   | `mpc` | `planetary-computer` | MPC discovery (`0_preflight`, `2_download`) |
+   | `grid` | `s2`, `s2cell` | `1_tiling`, and `run_inference`'s ROI re-tiling |
+   | `model-example` | `scikit-learn`, `joblib`, `matplotlib` | `4_train_bundle`, `6_plots` |
+   | `dev` | `ruff`, `pytest` | not required to run; keep for the test suite |
+
+   fsd core stays deliberately lean, so **none of the modelling stack is a base dependency** —
+   `scikit-learn`/`joblib` live in `model-example` because fsd never trains a model (that is
+   permanently the user's side). Miss them and the run dies at `4_train_bundle`, *after* the
+   download and the training-data dispatch. `0_preflight` now checks all of these up front and
+   prints the exact `pip install` line, so a short install can only cost you seconds — but only
+   if you are on a build that has that check (2026-07-29 or later).
 4. **Both AML Environments already built** — the script's own preflight only verifies they resolve
    (D4); building one is a 10–20 min ACR build that must not risk killing a 40-minute unattended run.
    The general-purpose Environment (`AZ_ENV_NAME`, download + build + flatten, ADR-0020) and the

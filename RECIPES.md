@@ -698,6 +698,11 @@ Replaces hand-running run-books 36→37→39→40→38 for a fresh AML demo. See
 two commands once that's set up.
 
 ```bash
+# ALL SIX extras -- `[dev,azure,aml]` alone gets you to 4_train_bundle and then dies on
+# `ModuleNotFoundError: joblib`, after the download has been paid for (2026-07-29).
+# fsd core is deliberately lean: it never trains a model, so sklearn/joblib are an extra.
+pip install -e ".[dev,azure,aml,mpc,grid,model-example]"
+
 # estimate first, zero side effects (D6); then the real run under tmux (D7)
 python demos/e2e_austria_aml.py --fresh --dry-run
 python demos/e2e_austria_aml.py --fresh --confirm-spend
