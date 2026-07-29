@@ -30,3 +30,9 @@ home. The cited spec/date is the source of record.
 | [0018](0018-training-stays-user-side-modeladapter-contract.md) | Training stays user-side; fsd defines a ModelAdapter contract + portable bundle | spec 18 |
 | [0019](0019-download-pipeline-disk-aware-backpressure.md) | Download is one continuous pipeline with disk-aware `MAX_STAGED` backpressure; convert pool = processes | spec 25 |
 | [0020](0020-general-purpose-images-emit-raw-adapter-transform-at-endpoints.md) | General-purpose pipeline images emit raw; the adapter feature transform runs only at model-specific endpoints (driver-side training features + inference image) | spec 39 |
+| [0021](0021-dispatch-telemetry-is-a-file-not-a-return-value.md) | Dispatch telemetry is a durable file beside `_status/`, not a value returned to the caller | spec 40 |
+| [0022](0022-documents-are-point-in-time-or-continuously-true.md) | Every document is either point-in-time (never edited after the fact) or continuously-true (maintained and tested) | spec 41 D3 |
+| [0023](0023-three-value-status-header-process-state-in-the-index.md) | Point-in-time documents carry a three-value status header; process state lives in a regenerated index | spec 41 D4 |
+| [0024](0024-todo-migrates-to-issues-with-forced-number-alignment.md) | The TODO migrates to GitHub Issues with forced number alignment; the 448 existing references are never rewritten | spec 41 D8 |
+| [0025](0025-one-fact-one-home.md) | One fact, one home — each topic has exactly one owning document; everything else links | spec 41 D9 |
+| [0026](0026-demo-benchmark-example-tutorial-are-four-things.md) | demo ≠ benchmark ≠ example ≠ tutorial — the "demo" gap is three artifacts, not one document | spec 41 D10 |

@@ -2,7 +2,102 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-29 (⭐ THE CLUSTER DEMO RAN END TO END — P3 + P4 validated; next = TODO #55 docs refactor)_
+_Last updated: 2026-07-30 (✅ SPECS 41 + 42 SIGNED OFF — the docs refactor is designed; next = P1, status headers)_
+
+## ✅ 2026-07-30 — SPECS 41 + 42 SIGNED OFF (docs refactor designed, nothing implemented). → NEXT: P1
+
+TODO #55 is now **two signed-off specs plus five ADRs**, produced by an Opus@high
+`/grill-with-docs` interview (12 questions, 2026-07-29/30). **No implementation has started** —
+only markdown was written, the suite is untouched.
+
+- **`specs/41-docs-refactor.md`** — D0–D14, the target layout, phases P1–P5 + P7, acceptance
+  gates, per-source credit. **Signed off.**
+- **`specs/42-tutorial-fixture.md`** — the committed offline tutorial fixture, carved out because
+  it is data engineering. **Signed off, then amended A1 the same day** (see below).
+- **ADRs 0022–0026** + `CONTEXT.md`'s new "Documentation kinds" section. `docs/adr/README.md` also
+  gained the row for **0021, which had never been indexed**.
+- **Spec 43 (`docs/history.md`) is deliberately deferred** until P1/P2 have done its archaeology.
+
+### The reframe: TODO #55's C4 plan was replaced (D0)
+
+#55 asked for "≤~5 docs on the C4 model". **C4 is demoted to the section outline of one
+`ARCHITECTURE.md`** (Context/Container/Deployment as Mermaid), not a file count. Reasons: C4 models
+*a system you deploy*, fsd is a library + a pipeline; and C4's "container" means a runnable thing —
+its own docs open **"Not Docker!"** — so fsd's C4 containers are **driver / node / blob / catalog**,
+emphatically *not* the AML Docker Environments. **Diátaxis** (tutorial · how-to · reference ·
+explanation) replaced it as the organising frame, and **matklad's ARCHITECTURE.md** convention
+supplied the one-file codemap. The user's actual complaints were never architectural: *runbooks are
+unreadable, specs no one would read, the TODO is too hard to find what's missing.*
+
+### The diagnosis: three documents are each TWO documents fused (ADR 0022)
+
+Not neglect — a **missing category system**. A spec records what was decided *then*; nothing was
+ever supposed to keep it true. So: **every document is either point-in-time (never edited after the
+fact, statused) or continuously-true (maintained, and tested where possible)** — PEP 1's rule
+adopted wholesale (*"PEPs are no longer substantially modified after they have reached the
+Accepted, Final, Rejected or Superseded state"*). The fused three: `PROGRESS.md` (anchor + 38.7k-word
+log), `demos/E2E_AUSTRIA.md` (tutorial + benchmark report — which is *why* its §2 still says "CDSE
+now; MPC later"), `TODO.md` (open + closed + measurement essays).
+
+**That rule then forbids the obvious shortcuts:** we do **not** edit point-in-time docs to chase a
+later decision — which is why issue numbers are forced to align rather than rewriting 448
+references, and why **`demos/` is NOT renamed** to `benchmarks/` despite being misnamed.
+
+### What the grilling measured that changed a decision
+
+| Measurement | Consequence |
+|---|---|
+| **448 `TODO #NN` refs** across 30+ files; TODO numbered **1–62, zero gaps**; repo has never had an issue, PR **or discussion** (GitHub shares one counter across all three) | Create 62 issues **strictly in order, including the 29 closed ones** ⇒ #N == TODO #N, all 448 refs resolve free (ADR 0024) |
+| **21 of 42 specs already carry a status line** in ~12 formats; **≥3 are wrong** (spec 39 says DRAFT although it shipped; 25b/26 say "awaiting implementation") | We are *normalizing* a half-existing convention; existing labels **cannot be lifted** |
+| **`e2e_austria.py`: 12 of 531 lines touch `fsd`** (2.3%), and `step_download` **bypasses `fsd.download`** for `cdse.probe_throughput`/`download_resume` | `demos/` provably cannot serve as an example — the demo gap is **three artifacts** (ADR 0026) |
+| **~426 MB per granule** (B04 183.8 + B08 187.1 + B8A 51.0 + SCL 4.6); whole-granule reads ⇒ a 5 km ROI saves nothing (1 tile-month ≈ 3.4 GB) | **No real download is tutorial-sized** ⇒ committed fixture |
+| **fsd ships ZERO data** — `.gitignore` blocks `*.tif`/`*.geojson`/`*.parquet`, and `shapefiles/` is outside the repo | A "cannot fail" tutorial was impossible before spec 42 |
+| **No CI exists** (`.github/workflows` absent) | Doc tests land in **`pytest`** — stricter, since it runs every session. **Docs can fail the suite.** |
+| **~45 `AZ_*` variables**, incl. four spellings of one idea (`AZ_ARCHIVE`/`_ROOT`/`_PATH`/`_CATALOG`) | `env.example.sh` + `docs/reference/environment.md`; `AZURE_INFRA_PRIVATE.md` restructured to mirror it line for line |
+
+### ⚠️ The user's chosen tutorial ROI was checked and rejected
+
+`s2grid=476da24` sits near **Vienna** (16.03–16.12 E) while every labelled field is ~100 km **west**
+(14.6–15.5 E) — it contains **zero labels** and cannot exercise the training-data step. Replaced by
+**cell `4772924`**, chosen by measurement: most labelled fields of the 300 cells over `AT_ROI`
+(**43 fields, 7 crops**, collapsed to maize/hemp/other for trainability), and **all 24 of its
+granules are single-tile `T33UWP`** — so it also strictly dominates `476da24` as a test ROI.
+
+### Spec 42 amendment A1 (user, 2026-07-30) — the VM build removes the radiometry hazard
+
+The user wants the fixture built **on an Azure VM** to spare a mobile hotspot. That turned out to do
+much more than save bytes:
+
+| Source | Example id | Radiometry columns |
+|---|---|---|
+| local `demo_e2e` (CDSE-era) | `…_**N0500**_R122_T33UWP_…` | **none** |
+| blob archive (MPC-era, runbook 37) | `…_R122_T33UVP_…` — **no N-token** | **`offset`, `nodata`** |
+| `mpc_baseline` | `…_R122_T33UWP_…` | **`boa_add_offset`** |
+
+The blob archive is **MPC-sourced and self-declaring**, so the fixture inherits correct radiometry
+**by provenance** instead of re-deriving −1000 from a baseline token. Three consequences: the token
+re-derivation is not merely unnecessary but **impossible** (MPC ids carry no `_N####_`), so
+acceptance test 2 was rewritten; the declaration column name **differs across catalogs**
+(`offset` vs `boa_add_offset`) so it must be read through the declaration API, never hardcoded — a
+schema drift worth its own issue; and the granule count **may not be 24**, since MPC applies
+different cloud-cover filtering and dedup (spec 33), so `T` follows from the archive rather than
+being fixed at 9. A1 deliberately does **not** claim VM≡local is proven: that is the storage seam's
+promise (ADR 0003 / spec 31), not yet a measurement, so the local build is retained as the
+comparison fallback and a byte difference is a **seam finding**, not a fixture bug.
+
+### → NEXT: P1 (status headers), then P2 (issues)
+
+**P1** — three-value headers (`current` / `superseded-by-NN` / `historical`) + a `summary:` line on
+42 specs + 23 runbooks, and regenerate both indexes. Sonnet@medium against spec 41 D4. Process
+state (`implemented`) deliberately lives in the **regenerated index**, not the header. **Gate: the
+user picks 10 files to spot-check; more than one error ⇒ the batch is redone, not patched.**
+
+**P2** — the issue migration, gated on a manifest the user reads *before* any issue is created
+(issues cannot be cleanly deleted). Pre-flight all three counters or fall back to a mapping table.
+
+**Not yet written, needed before P6 can run:** `runbooks/43-build-tutorial-fixture.md` and the
+generator script. **Still deferred, unchanged:** spec 40 §7, TODO #62, TODO #59/#60/#61, the
+rslearn Plan B/C decision. The docs work is independent of all of them.
 
 ## ⭐ 2026-07-29 — THE DEMO RAN. P3 AND P4 ARE VALIDATED. → NEXT: TODO #55 (docs refactor)
 
@@ -95,8 +190,6 @@ local-vs-cluster claim, A2), spec 40 §7 (rewrite `E2E_AUSTRIA_AML.md` around th
 TODO #59/#60/#61 (the overhead work — note admission at 403 s dwarfs #60's ~30 s, so the
 honest headline lever is cluster warm-up policy, not sharding), and the rslearn Plan B/C
 decision (`spike/rslearn`, still open).
-
-## SPEC 40 REVIEWED (Opus@high, 2026-07-28) — six defects found, all fixed
 
 ## ⭐ SPEC 40 REVIEWED (Opus@high, 2026-07-28) — six defects found, all fixed
 

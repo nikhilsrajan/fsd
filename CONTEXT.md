@@ -65,6 +65,45 @@ one dispatches four: download, cube build, flatten reduce, inference) plus drive
 dispatches nothing.
 _Avoid_: run (reserved, below), pipeline run.
 
+## Documentation kinds (ADR 0026 — four things, never one)
+
+**Benchmark harness**:
+A script whose purpose is to **measure** the pipeline — stepwise timings, throughput probes, resume,
+structured logging. `demos/e2e_austria.py` and `demos/e2e_austria_aml.py` are these (531 and 1056 lines,
+of which 12 and comparably few touch `fsd`), as is everything under `benchmarks/`. A harness may
+deliberately **bypass the public API** to reach a measurement — `e2e_austria.py` calls
+`cdse.download_resume` directly rather than `fsd.download` — which is exactly why it cannot double as
+an example. Its write-up is a **benchmark report**: point-in-time, statused, keeping results and
+appendices.
+_Avoid_: demo (the directory is misnamed and stays so, ADR 0026), example, guide.
+
+**Example**:
+A minimal, readable, copy-paste script that composes fsd's verbs and nothing else — no timing, resume,
+signal handling or plotting. ~60–80 lines, lives in `examples/`. The artifact a reader **edits into
+their own pipeline**. Correctness is demonstrated by being short enough to read.
+_Avoid_: demo, benchmark, snippet.
+
+**Tutorial**:
+A **learning-oriented** document that narrates one example on **fixed** data the maintainers control,
+and **must not fail** — responsibility for the reader's success lies with the teacher (Diátaxis).
+`docs/tutorial.md`, driven by spec 42's committed offline fixture. Not for the reader's own region:
+guaranteed success is impossible on data we have not seen.
+_Avoid_: demo, guide, how-to (opposite reader), quickstart (implies the README's 60-second block).
+
+**How-to guide**:
+A **task-oriented** recipe for someone who already has a goal and some competence — "run at scale",
+"use your own region", "rebuild the AML images". Lives in `docs/howto/`. **Cannot promise safety**
+(Diátaxis): the user owns getting into and out of trouble, so a how-to states its prerequisites and how
+to diagnose failure. Cloud how-tos may legitimately begin "file a ticket with your platform admin".
+_Avoid_: tutorial (opposite reader), runbook (below), guide (ambiguous between the two).
+
+**Run-book**:
+A how-to **fused to acceptance criteria** — exact commands, expected outputs, PASS/FAIL, and a
+`_result.json` the user pastes back (spec 24). It exists because Claude does not run pipeline/networked
+scripts. This fusion is deliberate and makes run-books excellent *evidence* and poor *documentation*;
+distilling their reusable parts into `docs/howto/` is spec 41 P7.
+_Avoid_: how-to (a run-book additionally proves the step worked), tutorial.
+
 **Step**:
 One of the labelled parts a demo run is divided into and timed by — `0_preflight`, `1_tiling`,
 `2_download`, `3_training_data`, `4_train_bundle`, `5_run_inference`, `6_plots`, `7_report`. The same
