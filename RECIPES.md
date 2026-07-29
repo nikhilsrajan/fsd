@@ -736,11 +736,30 @@ Full context + failure modes: `runbooks/36-aml-runner.md` (general-purpose) and
 `runbooks/38-inference-on-aml.md` §"the inference Environment (D4)". This is the two builds in one
 place, for when you already know why.
 
+**Where to run it:** anywhere with a working `az` + `ml` extension and network access to the
+workspace — the image builds in **ACR, not locally**, so no Docker is needed on your machine.
+`build.path` only uploads the context. From a laptop this means **the VPN must be on**: the upload
+lands in the workspace's own storage account, which is deny-by-default firewalled like every other
+account in the project.
+
 ```bash
 cd /path/to/fsd
 git pull                      # FIRST -- the wheel is built from the working tree
 export OUT="${OUT:-$HOME/fsd-envs}" && mkdir -p "$OUT"
 # assumes AZ_RG / AZ_ML_WORKSPACE / AZ_ENV_NAME / AZ_INFER_ENV_NAME are exported
+
+# Guard: `export VAR="$(az ...)"` CANNOT fail -- export always returns 0, so a broken az
+# silently assigns its error text and every later command uses a garbage version. Seen live
+# 2026-07-29: `built fsd-aml-env:No module named 'rpds.rpds'`. Validate before continuing.
+_fsd_check_version() {   # $1 = name, $2 = captured value
+  case "$2" in
+    ''|*[!0-9]*) printf '\n!! FAILED: %s came back as %s -- not a version number.\n' \
+                        "$1" "${2:-<empty>}" >&2
+                 printf '   STOP. Do not run the next block; see "az CLI gotchas" below.\n\n' >&2
+                 return 1;;
+  esac
+  printf 'ok: %s=%s\n' "$1" "$2"
+}
 
 # --- 1. general-purpose image: download + datacube build + flatten -------------------
 rm -rf "$OUT/env_src" && mkdir -p "$OUT/env_src"
@@ -763,9 +782,10 @@ build:
   dockerfile_path: Dockerfile
 YML
 
-export AZ_ENV_VERSION="$(az ml environment create -f "$OUT/env.yml" \
+AZ_ENV_VERSION="$(az ml environment create -f "$OUT/env.yml" \
   -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query version -o tsv)"
-echo "built ${AZ_ENV_NAME}:${AZ_ENV_VERSION}"
+_fsd_check_version AZ_ENV_VERSION "$AZ_ENV_VERSION" && export AZ_ENV_VERSION \
+  && echo "built ${AZ_ENV_NAME}:${AZ_ENV_VERSION}"
 
 # --- 2. inference image: the same, PLUS the adapter + its runtime deps ---------------
 export AZ_ADAPTERS_SRC="${AZ_ADAPTERS_SRC:-demos/adapters.py}"
@@ -792,9 +812,10 @@ build:
   dockerfile_path: Dockerfile
 YML
 
-export AZ_INFER_ENV_VERSION="$(az ml environment create -f "$OUT/infer-environment.yml" \
+AZ_INFER_ENV_VERSION="$(az ml environment create -f "$OUT/infer-environment.yml" \
   -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query version -o tsv)"
-echo "built ${AZ_INFER_ENV_NAME}:${AZ_INFER_ENV_VERSION}"
+_fsd_check_version AZ_INFER_ENV_VERSION "$AZ_INFER_ENV_VERSION" && export AZ_INFER_ENV_VERSION \
+  && echo "built ${AZ_INFER_ENV_NAME}:${AZ_INFER_ENV_VERSION}"
 
 echo "export AZ_ENV_VERSION=$AZ_ENV_VERSION AZ_INFER_ENV_VERSION=$AZ_INFER_ENV_VERSION"
 ```
@@ -806,3 +827,28 @@ export both in every later shell.
 - **Lost a version?** `az ml environment list -n "$AZ_ENV_NAME" -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query "[].version" -o tsv | sort -V | tail -1`
 - **Verify:** `az ml environment show -n "$AZ_ENV_NAME" --version "$AZ_ENV_VERSION" -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query "[name, version]" -o tsv`. `--version` is **required** — without it the CLI fails with `Must provide either version or label`. Don't query `provisioning_state`: it is not in the environment schema, and `--query` on a missing field prints an empty line that reads like a failure.
 - **Each build is ~10–20 min of ACR time and occasionally flaky** — which is exactly why the demo script verifies Environments rather than building them (spec 40 D4): one bad build must not kill a 40-minute unattended run.
+
+### az CLI gotchas (both cost a build attempt on 2026-07-29)
+
+**1. `az ml` auto-upgrades itself and cannot, on an AML compute instance.** The `ml` extension
+there is installed **system-wide** at `/opt/az/extensions/ml`, owned by root, but you run as
+`azureuser`. Any `az ml …` command may decide to upgrade it, fail with
+`Permission denied: '/opt/az/extensions/ml/…'`, and leave it **half-deleted** — after which every
+`az ml` call dies with `FileExistsError: /opt/az/extensions/ml` or
+`No module named 'rpds.rpds'`. Fix without root by giving yourself a private extension dir:
+
+```bash
+export AZURE_EXTENSION_DIR="$HOME/.azure/cliextensions"     # put this in ~/.bashrc
+mkdir -p "$AZURE_EXTENSION_DIR"
+az extension add -n ml                                       # your own copy, no sudo
+az config set extension.use_dynamic_install=no               # never auto-install again
+az ml -h >/dev/null && echo "ml extension OK"
+```
+
+Or just **build from a laptop** with a working `az` — the image builds in ACR either way, so the
+only thing the build machine needs is the CLI and (off-network) the VPN.
+
+**2. `export VAR="$(az …)"` swallows the failure.** `export` always returns 0, so a broken CLI
+assigns its *error text* as the version and the run continues with garbage — the literal output was
+`built fsd-aml-env:No module named 'rpds.rpds'`. That is why the block above captures first,
+validates with `_fsd_check_version`, and only then exports.
