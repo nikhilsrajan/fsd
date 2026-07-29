@@ -320,9 +320,30 @@ def _missing_driver_deps() -> list[str]:
     ]
 
 
+@contextlib.contextmanager
+def _timed_check(name: str, into: dict):
+    """D7: preflight is a series of opaque network calls, and until now it printed nothing
+    until all of them finished -- so "why is preflight slow?" could only be answered by
+    re-running with a stopwatch. Prints each check as it starts and again with its
+    duration, and records the breakdown in the step's `_result.json` so a slow preflight
+    stays diagnosable from `timings.json` alone afterwards (D9).
+
+    The user's standing preference: a stage line is not progress. These are seconds-scale
+    checks, so a line each is the right granularity -- no ETA to invent."""
+    print(f"  ... {name}", flush=True)
+    t = time.time()
+    try:
+        yield
+    finally:
+        dt = time.time() - t
+        into[name] = round(dt, 2)
+        print(f"  {'!' if dt > 10 else '+'} {name}: {dt:.1f}s", flush=True)
+
+
 def step_preflight(ml_client, root: str) -> dict:
     errs: list[str] = _missing_driver_deps()
     warnings: list[str] = []
+    check_seconds: dict = {}
 
     # D4 wants each failure to name its own exact fix, so "a credential resolves" is
     # checked on its own -- NOT by whether some cluster call happens to work. Asking
@@ -332,24 +353,30 @@ def step_preflight(ml_client, root: str) -> dict:
     try:
         from azure.identity import DefaultAzureCredential
 
-        DefaultAzureCredential().get_token("https://management.azure.com/.default")
+        # Can be the slow one: DefaultAzureCredential walks a chain (env -> managed
+        # identity via IMDS -> az CLI -> ...), and an IMDS probe on a VM whose identity
+        # is not wired for this flow burns its retry budget before falling through.
+        with _timed_check("credential resolves", check_seconds):
+            DefaultAzureCredential().get_token("https://management.azure.com/.default")
     except Exception as exc:  # noqa: BLE001
         errs.append(f"no credential resolves on this host -- run `az login` over SSH, or give "
                     f"the VM a managed identity (E2E_AUSTRIA_AML.md §8.1 step 2): {exc}")
 
     try:
         probe = f"{root.rstrip('/')}/.fsd_preflight_probe"
-        with fs.open(probe, "w") as f:
-            f.write("preflight")
-        with fs.open(probe, "r") as f:
-            f.read()
-        fs.rm(probe)
+        with _timed_check("blob read+write", check_seconds):
+            with fs.open(probe, "w") as f:
+                f.write("preflight")
+            with fs.open(probe, "r") as f:
+                f.read()
+            fs.rm(probe)
     except Exception as exc:  # noqa: BLE001
         errs.append(f"blob read+write failed at {root!r} -- storage firewall denying this "
                     f"host? (see E2E_AUSTRIA_AML.md §8): {exc}")
 
     try:
-        compute = ml_client.compute.get(os.environ["AZ_CLUSTER"])
+        with _timed_check("cluster resolves", check_seconds):
+            compute = ml_client.compute.get(os.environ["AZ_CLUSTER"])
         state = getattr(compute, "provisioning_state", None)
         if state not in (None, "Succeeded"):
             errs.append(f"cluster {os.environ['AZ_CLUSTER']!r} not ready: provisioning_state={state!r}")
@@ -371,8 +398,9 @@ def step_preflight(ml_client, root: str) -> dict:
                         f"(E2E_AUSTRIA_AML.md §8.2).")
             continue
         try:
-            ml_client.environments.get(name=os.environ[name_var],
-                                       version=os.environ[version_var])
+            with _timed_check(f"{label} Environment resolves", check_seconds):
+                ml_client.environments.get(name=os.environ[name_var],
+                                           version=os.environ[version_var])
         except Exception as exc:  # noqa: BLE001
             errs.append(f"{label} Environment "
                         f"{os.environ[name_var]}:{os.environ[version_var]!r} does not resolve -- "
@@ -384,14 +412,19 @@ def step_preflight(ml_client, root: str) -> dict:
 
     n_tiles = None
     if not errs:
-        tiles = mpc.query_catalog(ROI_FP, START, END, max_cloudcover=MAX_CLOUDCOVER)
+        # Usually the dominant term: a paginated MPC STAC search over the whole ROI x
+        # 6-month window, whose items are signed as they stream in. Third-party latency,
+        # not ours -- but it is the number to look at when preflight feels slow.
+        with _timed_check("MPC discovery (paginated STAC search)", check_seconds):
+            tiles = mpc.query_catalog(ROI_FP, START, END, max_cloudcover=MAX_CLOUDCOVER)
         n_tiles = len(tiles)
         if n_tiles > MAX_TILES:
             errs.append(f"{n_tiles} discovered tiles exceed max_tiles={MAX_TILES}.")
 
     clock_skew = None
     if not any("blob read+write" in e for e in errs):
-        clock_skew = _measure_clock_skew(root)
+        with _timed_check("clock skew probe", check_seconds):
+            clock_skew = _measure_clock_skew(root)
         if clock_skew["seconds"] is None:
             warnings.append(clock_skew["note"])
         elif abs(clock_skew["seconds"]) > 5:
@@ -405,7 +438,8 @@ def step_preflight(ml_client, root: str) -> dict:
 
     return {"n_discovered_tiles": n_tiles,
             "clock_skew_seconds": None if clock_skew is None else clock_skew["seconds"],
-            "clock_skew": clock_skew, "warnings": warnings}
+            "clock_skew": clock_skew, "check_seconds": check_seconds,
+            "warnings": warnings}
 
 
 # --- step 1: tiling (D1: duplicated on both sides, load-bearing, do not "fix") ------
