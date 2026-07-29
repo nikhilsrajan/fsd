@@ -395,11 +395,20 @@ is handed to the operator.
    download and the training-data dispatch. `0_preflight` now checks all of these up front and
    prints the exact `pip install` line, so a short install can only cost you seconds — but only
    if you are on a build that has that check (2026-07-29 or later).
-4. **Both AML Environments already built** — the script's own preflight only verifies they resolve
-   (D4); building one is a 10–20 min ACR build that must not risk killing a 40-minute unattended run.
-   The general-purpose Environment (`AZ_ENV_NAME`, download + build + flatten, ADR-0020) and the
-   inference Environment (`AZ_INFER_ENV_NAME`, carries the adapter package) are two different images —
-   see `runbooks/36-aml-runner.md` / `runbooks/38-inference-on-aml.md` for how each was built.
+4. **Both AML Environments already built, from fsd ≥ spec 40 (2026-07-28).** The script's own
+   preflight only verifies they *resolve* (D4); building one is a 10–20 min ACR build that must not
+   risk killing a 40-minute unattended run. The general-purpose Environment (`AZ_ENV_NAME`,
+   download + build + flatten, ADR-0020) and the inference Environment (`AZ_INFER_ENV_NAME`,
+   carries the adapter package) are two different images — see `runbooks/36-aml-runner.md` /
+   `runbooks/38-inference-on-aml.md` for how each was built.
+
+   > ⚠️ **Reusing an image from run-books 36–39 is not enough — rebuild and bump the version.**
+   > The four in-job stamps `job_admission_seconds` (D11) is computed from are written by the
+   > `fsd` **inside the image**, not by your checkout. An older image runs fine and produces
+   > correct science; it just emits `job_admission_seconds: null` on every job, silently voiding
+   > the headline measurement. That cost a complete 25-minute run on 2026-07-29 — 97 jobs, four
+   > dispatches, no admission data. `2_download` now checks this on the first dispatch and stops
+   > before the other three spend another ~20 minutes.
 
 ### 8.2 Environment variables
 

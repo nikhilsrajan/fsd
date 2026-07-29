@@ -212,7 +212,15 @@ class Demo:
     def _write_timings(self):
         completed = [STEP_RESULTS[s] for s in STEP_LABELS if s in STEP_RESULTS]
         payload = {
-            "total_seconds": round(time.time() - self.t0, 1),
+            # The SUM OF THE STEPS, not this process's wall. A resumed demo run replays
+            # completed steps from disk in milliseconds, so the final process's wall is
+            # *smaller than the work it reports*: the 2026-07-29 run wrote
+            # total_seconds=640.7 over 1470.0 s of steps, which reads as a demo run twice
+            # as fast as it was. D9 hands ONE file to a reader who cannot know how many
+            # processes produced it, so the headline number must not depend on that.
+            "total_seconds": round(sum(s.get("seconds") or 0 for s in completed), 1),
+            "process_wall_seconds": round(time.time() - self.t0, 1),
+            "resumed": self.resume,
             "run_id": self.run_id,
             "driver": _driver_location(),
             "steps": completed,
@@ -433,6 +441,42 @@ def _list_run_ids(root: str) -> set:
         if len(parts) >= 3 and parts[-3] == "runs":
             ids.add(parts[-2])
     return ids
+
+
+def _assert_dispatch_telemetry_complete(dispatch_timings: list, *, step: str) -> None:
+    """The four in-job stamps (D2) are written by `fsd` **on the node**, i.e. by whatever
+    `fsd` is baked into the AML Environment image -- NOT by the driver's checkout. An
+    Environment built before spec 40 therefore produces a `_status/<k>.json` with the old
+    shape: `seconds` present, `process_start_at`/`work_start_at`/`work_end_at`/`ended_at`
+    absent. Everything still runs and every science output is correct, so nothing fails --
+    the run just silently yields `job_admission_seconds: null` for every job, which is
+    D11's headline metric and the entire reason this script exists.
+
+    That is exactly what happened on 2026-07-29: a complete, green, ~25-minute demo run
+    whose telemetry could not answer the one question it was built to answer, across 97
+    jobs and four dispatches.
+
+    Checked after the FIRST dispatch and fatal, because by then the answer is already
+    known and the remaining three dispatches would add ~20 minutes and cluster spend to a
+    measurement that is already void. Called from `main` *after* the step's `_result.json`
+    is on disk, so `--run-id` skips the download rather than repeating it.
+    """
+    jobs = [j for dt in dispatch_timings for j in dt.get("jobs", {}).values()]
+    if not jobs:
+        return
+    if any(j.get("process_start_at") is not None for j in jobs):
+        return
+    fail(
+        f"{step}: none of the {len(jobs)} dispatched job(s) reported the D2 in-job stamps "
+        "(process_start_at/work_start_at/work_end_at/ended_at), so job_admission_seconds "
+        "-- D11's headline metric -- would be null for this entire demo run.\n"
+        "      The stamps are written by the `fsd` INSIDE the AML Environment image, not "
+        "by this checkout, so the image predates spec 40.\n"
+        "      Fix: rebuild both Environments from current fsd (see "
+        "runbooks/36-aml-runner.md), bump AZ_ENV_VERSION / AZ_INFER_ENV_VERSION, then "
+        "resume with --run-id <the id printed at the start of this run> -- the download "
+        "is already on disk and skips."
+    )
 
 
 def _new_dispatch_timings(root: str, before: set) -> list:
@@ -925,6 +969,10 @@ def main(argv=None):
             f.write(run_id)
 
         dl = demo.run_step("2_download", step_download, ml_client, root)
+        # After the result is on disk (so a resume skips the download), before three more
+        # dispatches spend ~20 min producing telemetry that cannot answer D11.
+        _assert_dispatch_telemetry_complete(dl.get("dispatch_timings") or [],
+                                            step="2_download")
 
         adapter = DemoRF()
         adapter.n_timestamps = fsd.compute_n_timestamps(START, END, MOSAIC_DAYS)

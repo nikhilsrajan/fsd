@@ -301,6 +301,68 @@ def test_archive_trust_rejects_a_zero_byte_asset(tmp_path):
         demo._assert_archive_trustworthy(catalog_fp, imagery)
 
 
+# --- D2/D11: a stale AML image silently voids the headline metric -------------------
+
+def _dispatch(with_stamps: bool, n=3):
+    """One `_timing.json`-shaped block. Without the stamps is what an Environment built
+    before spec 40 actually produced on 2026-07-29: `work_seconds` present (it predates
+    this spec), all four in-job stamps null."""
+    jobs = {}
+    for k in range(n):
+        job = {"submitted_at": "2026-07-29T10:55:14+00:00",
+               "returned_at": "2026-07-29T11:00:20+00:00",
+               "work_seconds": 28.5, "job_admission_seconds": None,
+               "import_seconds": None, "dispatch_overhead_seconds": 276.9,
+               "process_start_at": None, "work_start_at": None,
+               "work_end_at": None, "ended_at": None}
+        if with_stamps:
+            job.update(process_start_at="2026-07-29T10:59:00+00:00",
+                       work_start_at="2026-07-29T10:59:10+00:00",
+                       work_end_at="2026-07-29T10:59:38+00:00",
+                       ended_at="2026-07-29T10:59:39+00:00",
+                       job_admission_seconds=225.2)
+        jobs[str(k)] = job
+    return {"run_id": "r", "jobs": jobs, "wall": {}}
+
+
+def test_dispatch_telemetry_gate_fails_on_an_image_that_predates_the_stamps():
+    """The 2026-07-29 run: green end to end, 97 jobs, four dispatches, and
+    `job_admission_seconds: null` on every one -- because the four stamps are written by
+    the `fsd` inside the AML image, not by the driver's checkout. Nothing failed, which
+    is precisely the problem."""
+    with pytest.raises(demo.PreflightFailure, match="in-job stamps"):
+        demo._assert_dispatch_telemetry_complete([_dispatch(with_stamps=False)],
+                                                 step="2_download")
+
+
+def test_dispatch_telemetry_gate_names_the_fix_not_just_the_symptom():
+    with pytest.raises(demo.PreflightFailure) as exc:
+        demo._assert_dispatch_telemetry_complete([_dispatch(with_stamps=False)],
+                                                 step="2_download")
+    msg = str(exc.value)
+    assert "rebuild" in msg.lower() and "AZ_ENV_VERSION" in msg
+    assert "--run-id" in msg          # and that resuming is cheap
+
+
+def test_dispatch_telemetry_gate_passes_on_a_current_image():
+    demo._assert_dispatch_telemetry_complete([_dispatch(with_stamps=True)], step="2_download")
+
+
+def test_dispatch_telemetry_gate_accepts_a_partially_stamped_dispatch():
+    """One job crashing before it could write `_status` (D3/D15) is a different failure --
+    it must not read as a stale image."""
+    mixed = _dispatch(with_stamps=True)
+    mixed["jobs"]["0"].update(process_start_at=None, job_admission_seconds=None)
+    demo._assert_dispatch_telemetry_complete([mixed], step="2_download")
+
+
+def test_dispatch_telemetry_gate_is_a_noop_when_nothing_was_dispatched():
+    """A fully-resumed step dispatches no job at all -- no telemetry is not stale telemetry."""
+    demo._assert_dispatch_telemetry_complete([], step="2_download")
+    demo._assert_dispatch_telemetry_complete([{"run_id": "r", "jobs": {}, "wall": {}}],
+                                             step="2_download")
+
+
 # --- D4: driver dependencies are a preflight failure, not a step-4 surprise ---------
 
 def test_missing_driver_deps_is_empty_when_everything_is_installed():
