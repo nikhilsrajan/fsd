@@ -225,3 +225,81 @@ def test_aml_submit_and_wait_writes_timing_json_even_when_a_job_fails():
     with fs.open(f"{run_root}/_timing.json", "r") as f:
         timing = json.load(f)
     assert timing["jobs"]["0"]["job_admission_seconds"] is not None
+
+
+# --- the first_admission anchor (revised 2026-07-29 against real data) --------------
+
+def _overlapping_submit_stamps():
+    """The shape run 20260729T132222Z actually produced: 32 jobs submitted over ~40 s,
+    the earliest node starting BEFORE the last submission went out. Two jobs is enough to
+    reproduce it -- submit at t=1 and t=40, first node executing at t=35."""
+    submitted_at = {0: _ts(1), 1: _ts(40)}
+    returned_at = {0: _ts(200), 1: _ts(200)}
+    reports = {
+        0: {"process_start_at": _ts(35), "work_start_at": _ts(36), "work_end_at": _ts(110),
+            "ended_at": _ts(111), "seconds": 74},
+        1: {"process_start_at": _ts(70), "work_start_at": _ts(71), "work_end_at": _ts(150),
+            "ended_at": _ts(151), "seconds": 79},
+    }
+    return submitted_at, returned_at, reports
+
+
+def test_first_admission_is_not_negative_merely_because_submitting_overlapped_it():
+    """Anchored on the LAST submission this leg read -5.0 s on a healthy run -- a node
+    started before the final job was submitted. Submission and admission overlap, so they
+    cannot be adjacent legs. Anchored on the FIRST submission it is the honest "time until
+    a node was executing": 35 - 1 = 34 s."""
+    submitted_at, returned_at, reports = _overlapping_submit_stamps()
+    timing = runners._derive_timing(
+        run_id="overlap", t_start=_ts(0), t_first_submit=_ts(1), t_last_submit=_ts(40),
+        t_end=_ts(210), submitted_at=submitted_at, returned_at=returned_at,
+        reports=reports, poll_interval_seconds=10,
+    )
+    wall = timing["wall"]
+    assert wall["first_admission_seconds"] == pytest.approx(34.0)
+    assert wall["driver_prep_seconds"] == pytest.approx(1.0)     # before ANY submit
+    assert wall["submission_span_seconds"] == pytest.approx(39.0)  # reported, not a leg
+
+
+def test_the_split_still_telescopes_with_the_new_anchor():
+    """Additivity is the property the whole forensic story rests on (D11); moving a
+    breakpoint must not cost it."""
+    submitted_at, returned_at, reports = _overlapping_submit_stamps()
+    t_start, t_end = _ts(0), _ts(210)
+    wall = runners._derive_timing(
+        run_id="overlap", t_start=t_start, t_first_submit=_ts(1), t_last_submit=_ts(40),
+        t_end=t_end, submitted_at=submitted_at, returned_at=returned_at,
+        reports=reports, poll_interval_seconds=10,
+    )["wall"]
+    total = sum(wall[k] for k in (
+        "driver_prep_seconds", "first_admission_seconds", "execution_window_seconds",
+        "teardown_detect_seconds", "post_collect_seconds",
+    ))
+    assert total == pytest.approx(runners._seconds_between(t_start, t_end), abs=1e-6)
+    # and submission_span is deliberately NOT part of it (it overlaps first_admission)
+    assert wall["submission_span_seconds"] > 0
+
+
+def test_first_admission_still_goes_negative_on_real_clock_skew():
+    """D11's actual purpose for a negative: the skew bound was exceeded. That signal was
+    being drowned out by the overlap artefact -- now a negative means only this."""
+    wall = runners._derive_timing(
+        run_id="skew", t_start=_ts(0), t_first_submit=_ts(10), t_last_submit=_ts(10),
+        t_end=_ts(100), submitted_at={0: _ts(10)}, returned_at={0: _ts(90)},
+        reports={0: {"process_start_at": _ts(2),   # node clock reads BEFORE the submit
+                     "work_start_at": _ts(3), "work_end_at": _ts(60),
+                     "ended_at": _ts(61), "seconds": 57}},
+        poll_interval_seconds=10,
+    )["wall"]
+    assert wall["first_admission_seconds"] == pytest.approx(-8.0)
+
+
+def test_t_first_submit_defaults_to_t_last_submit_for_an_old_caller():
+    submitted_at, returned_at, reports = _two_job_stamps()
+    wall = runners._derive_timing(
+        run_id="r1", t_start=_ts(0), t_last_submit=_ts(2), t_end=_ts(35),
+        submitted_at=submitted_at, returned_at=returned_at, reports=reports,
+        poll_interval_seconds=30,
+    )["wall"]
+    assert wall["driver_prep_seconds"] == pytest.approx(2.0)
+    assert wall["submission_span_seconds"] == pytest.approx(0.0)

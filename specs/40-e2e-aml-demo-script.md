@@ -174,6 +174,30 @@ work_seconds[k]`** — everything paid to run *k* that was not *k* running.
 Per run, an **additive** split summing to the run's wall: `driver_prep` + `first_admission` +
 `execution_window` + `teardown_detect` + `post_collect`.
 
+> **AMENDMENT A3 (2026-07-29) — `first_admission` is anchored on the FIRST submission.**
+> The spec named the five legs but not their breakpoints; the implementation chose
+> `driver_prep = t_start → last submission` and `first_admission = last submission → earliest
+> `process_start_at``. Run `20260729T132222Z` showed why that is wrong: it reported
+> `driver_prep=40.1, first_admission=**-5.0**` on a completely healthy dispatch.
+>
+> Submitting 32 jobs takes ~40 s and is **sequential**, while the jobs submitted first are being
+> admitted *during* it. Submission and admission overlap, so they cannot be adjacent legs — anchor
+> on the last submission and the leg goes negative whenever a node starts before the final job is
+> submitted, which is the normal case on a warm cluster.
+>
+> Worse, it destroyed a signal: D11 says a negative admission *"is the signal the [clock-skew]
+> bound was exceeded"*. With the overlap artefact also producing negatives, that meaning was gone.
+>
+> **Revised:** `driver_prep = t_start → first submission` (genuinely pre-dispatch driver work),
+> `first_admission = first submission → earliest process_start_at` (genuinely "how long until a
+> node was executing", with the submission loop correctly *inside* that wait). Still additive, and
+> a negative once again means only clock skew. The submission span is not lost — it is reported as
+> **`submission_span_seconds`, deliberately outside the additive split**, because it overlaps
+> `first_admission` rather than partitioning it.
+>
+> ⚠️ **`timings.json` files from before 2026-07-29 carry the old definition.** Their
+> `driver_prep`/`first_admission` are not comparable to later runs; their *sum* is.
+
 Two measurement hazards, handled rather than ignored:
 
 - **Cross-clock subtraction.** `submitted_at` is the driver's clock, `process_start_at` the node's;

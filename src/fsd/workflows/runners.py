@@ -225,7 +225,8 @@ def _seconds_between(start_iso: str | None, end_iso: str | None) -> float | None
 
 
 def _derive_timing(
-    *, run_id: str, t_start: str, t_last_submit: str, t_end: str,
+    *, run_id: str, t_start: str, t_first_submit: str | None = None,
+    t_last_submit: str, t_end: str,
     submitted_at: dict, returned_at: dict, reports: dict, poll_interval_seconds: int,
 ) -> dict:
     """Pure function (spec 40 D2/D11, ADR 0021): per-job dispatch telemetry plus the
@@ -236,12 +237,35 @@ def _derive_timing(
 
     The wall-clock split is five contiguous, non-overlapping legs that telescope back to
     `t_end - t_start` by construction:
-      driver_prep         t_start          -> t_last_submit   (submitting every job)
-      first_admission     t_last_submit    -> earliest process_start_at (a node's first work)
+      driver_prep         t_start          -> t_first_submit  (building jobs, before any submit)
+      first_admission     t_first_submit   -> earliest process_start_at (time to the first node)
       execution_window    earliest process_start_at -> latest ended_at (the fleet finishing)
       teardown_detect     latest ended_at  -> latest returned_at (poll-quantized detection)
       post_collect        latest returned_at -> t_end (aggregating `_status/*.json`)
+
+    **`first_admission` is measured from the FIRST submission, not the last** (revised
+    2026-07-29 against real data). Submitting N jobs is sequential and takes real time --
+    40 s for 32 jobs on `cluster-rise-d16` -- while admission of the *early* jobs happens
+    concurrently. Anchoring on `t_last_submit` therefore made the leg go negative whenever
+    a node started before the final job was submitted: run 20260729T132222Z reported
+    `driver_prep=40.1, first_admission=-5.0`. Both numbers were arithmetically fine and
+    telescoped correctly, but neither meant what its name said, and the negative masked
+    D11's actual purpose for a negative -- *"reported as negative, never floored at zero:
+    it is the signal the [clock-skew] bound was exceeded"*. Submission and admission
+    overlap; they are not sequential phases, so they cannot be adjacent legs.
+
+    Anchored on the first submission, `driver_prep` is genuinely pre-dispatch driver work,
+    `first_admission` is genuinely "how long until a node was executing" (the submission
+    loop is *part* of that wait, which is what a reader wants), and a negative once again
+    means only what D11 says it means. The submission span is not lost -- it is reported
+    as `submission_span_seconds`, deliberately **outside** the additive split, because it
+    overlaps `first_admission` rather than partitioning it.
+
+    `t_first_submit` defaults to `t_last_submit` so a caller that has only the old stamp
+    still gets the old (contiguous, additive) behaviour rather than an error.
     """
+    if t_first_submit is None:
+        t_first_submit = t_last_submit
     jobs: dict = {}
     process_starts: list[str] = []
     ended_ats: list[str] = []
@@ -286,13 +310,19 @@ def _derive_timing(
         "jobs": jobs,
         "wall": {
             "t_start": t_start,
+            "t_first_submit": t_first_submit,
             "t_last_submit": t_last_submit,
             "t_end": t_end,
-            "driver_prep_seconds": _seconds_between(t_start, t_last_submit),
-            "first_admission_seconds": _seconds_between(t_last_submit, first_process_start),
+            "driver_prep_seconds": _seconds_between(t_start, t_first_submit),
+            "first_admission_seconds": _seconds_between(t_first_submit, first_process_start),
             "execution_window_seconds": _seconds_between(first_process_start, last_ended_at),
             "teardown_detect_seconds": _seconds_between(last_ended_at, last_returned_at),
             "post_collect_seconds": _seconds_between(last_returned_at, t_end),
+            # NOT one of the five legs: submitting overlaps the admission of jobs already
+            # submitted, so it partitions nothing. Reported because it answers the obvious
+            # follow-up to a large first_admission -- "how much of that was us still
+            # submitting?" -- which is 40 s of it at 32 jobs.
+            "submission_span_seconds": _seconds_between(t_first_submit, t_last_submit),
         },
     }
 
@@ -513,10 +543,16 @@ def _aml_submit_and_wait(
     t_start = _now_iso()
     job_names: dict[int, str] = {}
     submitted_at: dict[int, str] = {}
+    # Both ends of the submission loop: it takes ~40 s for 32 jobs, and the early ones are
+    # already being admitted while the late ones are still going out, so `first_admission`
+    # anchors on the first (see `_derive_timing`).
+    t_first_submit = t_start
     t_last_submit = t_start
     for k, job in jobs.items():
         submitted = ml_client.jobs.create_or_update(job)
         t_last_submit = _now_iso()
+        if not submitted_at:
+            t_first_submit = t_last_submit
         submitted_at[k] = t_last_submit
         job_names[k] = submitted.name
 
@@ -548,7 +584,8 @@ def _aml_submit_and_wait(
 
     t_end = _now_iso()
     timing = _derive_timing(
-        run_id=run_id, t_start=t_start, t_last_submit=t_last_submit, t_end=t_end,
+        run_id=run_id, t_start=t_start, t_first_submit=t_first_submit,
+        t_last_submit=t_last_submit, t_end=t_end,
         submitted_at=submitted_at, returned_at=returned_at, reports=reports,
         poll_interval_seconds=poll_interval_seconds,
     )

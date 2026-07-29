@@ -4,6 +4,31 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## `_timing.json`'s `first_admission` leg is anchored on the FIRST submission (spec 40 A3, 2026-07-29)
+
+`<run_root>/_timing.json` (ADR 0021) is a schema other things read, so this records a change in
+what two existing fields *mean* — the keys are unchanged and nothing breaks on read.
+
+- **`driver_prep_seconds`** was `t_start → last submission` (i.e. it contained the whole submission
+  loop). It is now `t_start → first submission`: driver work done before any job went out.
+- **`first_admission_seconds`** was `last submission → earliest process_start_at`. It is now
+  `first submission → earliest process_start_at`.
+
+*Why:* submitting N jobs is sequential (~40 s for 32) and the early jobs are admitted **during**
+it, so the two overlap and could not be adjacent legs. Run `20260729T132222Z` reported
+`driver_prep=40.1, first_admission=-5.0` on a healthy dispatch — arithmetically additive, but
+neither number meant what its name said. It also destroyed a signal: D11 defines a negative
+admission as *the clock-skew bound being exceeded*, and the overlap artefact was producing
+negatives too.
+
+- **New `submission_span_seconds`** (first → last submission) and **`t_first_submit`**, both in
+  `wall`. `submission_span_seconds` is deliberately **not** one of the five additive legs — it
+  overlaps `first_admission` rather than partitioning it — but it answers the obvious follow-up to
+  a large `first_admission`.
+
+The split still telescopes to `t_end - t_start`. ⚠️ **`timings.json` from before 2026-07-29 carries
+the old definition:** those two fields are not comparable across the boundary, though their sum is.
+
 ## `create_training_data` becomes the download→build→flatten→land-local façade (spec 39, 2026-07-24)
 
 The flatten → single-array → land-local half of "training data on the cloud" (the build fan-out
