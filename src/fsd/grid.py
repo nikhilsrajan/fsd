@@ -17,6 +17,8 @@ import shapely.affinity
 import shapely.geometry
 from shapely.ops import unary_union
 
+from fsd.storage import fs
+
 __all__ = ["roi_to_s2_grids", "grid_size_to_res", "RES_TO_KM_RANGE"]
 
 # S2 cell edge-length range (km) per level — from s2geometry.io/resources/s2cell_statistics
@@ -45,7 +47,10 @@ def _as_gdf_4326(roi) -> gpd.GeoDataFrame:
     if isinstance(roi, gpd.GeoDataFrame):
         gdf = roi
     elif isinstance(roi, str):
-        gdf = gpd.read_file(roi)
+        # Storage seam, not gpd.read_file: GDAL has no abfss:// driver and reports a
+        # blob-hosted roi as "No such file or directory" (TODO #47). `run_inference`
+        # re-tiles in preflight, so a blob roi reaches here on every P4 ROI-mode run.
+        gdf = fs.read_geo(roi)
     else:  # a geojson dict / __geo_interface__ / shapely geometry
         geom = shapely.geometry.shape(roi["geometry"]) if isinstance(roi, dict) and "geometry" in roi \
             else shapely.geometry.shape(roi)

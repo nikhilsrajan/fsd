@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
-import io
 import json
 import os
 import shutil
@@ -214,15 +213,17 @@ class DownloadResult:
 def _roi_gdf(roi) -> gpd.GeoDataFrame:
     """Accept a GeoDataFrame or a path/url to one.
 
-    Reads through `fsd.storage` + `BytesIO` rather than handing the path to
-    `gpd.read_file` -- same fix `workflows/task.py` already carries (spec 36 D6a,
-    TODO #40), extended here because spec 37 dispatches downloads with the roi on
-    **blob**: pyogrio/GDAL does not understand `abfss://` and reports the very
-    misleading `No such file or directory` for a file that exists. fsspec does.
+    Reads through `fsd.storage` rather than handing the path to `gpd.read_file` --
+    same fix `workflows/task.py` already carries (spec 36 D6a, TODO #40), extended
+    here because spec 37 dispatches downloads with the roi on **blob**: pyogrio/GDAL
+    does not understand `abfss://` and reports the very misleading `No such file or
+    directory` for a file that exists. fsspec does.
+
+    Now delegates to `fs.read_geo`, the one shared reader (TODO #47) -- this function
+    was the prototype for it, and three more sites had the same bug.
     """
     if isinstance(roi, str):
-        with fs.open(roi, "rb") as f:
-            return gpd.read_file(io.BytesIO(f.read()))
+        return fs.read_geo(roi)
     return roi
 
 

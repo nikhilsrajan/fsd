@@ -247,3 +247,65 @@ def test_write_text_round_trip_on_a_non_local_filesystem():
     fs.write_text(p, '{"type": "FeatureCollection", "features": []}')
     with fs.open(p, "r") as f:
         assert f.read() == '{"type": "FeatureCollection", "features": []}'
+
+
+# --- read_geo: the ONE shared vector reader (TODO #47) -----------------------
+#
+# GDAL/pyogrio has no `abfss://` driver, so `gpd.read_file(<fsspec-only url>)` reports
+# `No such file or directory` for a file that demonstrably exists. `memory://` reproduces
+# that exactly -- it is an fsspec-only scheme GDAL knows nothing about -- which is why
+# these pin against a non-local backend rather than tmp_path. Hit live three times:
+# workflows/task.py (spec 36 D6a), sources/cdse._roi_gdf (run-book 37 Phase 1), and
+# create_training_data's label polygons (the spec-40 demo, 2026-07-29).
+
+def _geojson_on_memory_fs(n=2):
+    import uuid
+
+    gdf = gpd.GeoDataFrame(
+        {"fid": list(range(n)), "crop": ["wheat", "maize"][:n],
+         "geometry": [sg.box(i, 0, i + 1, 1) for i in range(n)]},
+        crs="EPSG:4326",
+    )
+    p = f"memory://{uuid.uuid4()}/polys.geojson"
+    fs.write_text(p, gdf.to_json())
+    return p, gdf
+
+
+def test_read_geo_reads_from_a_scheme_gdal_does_not_understand():
+    p, gdf = _geojson_on_memory_fs()
+    got = fs.read_geo(p)
+    assert len(got) == len(gdf)
+    assert list(got["fid"]) == [0, 1]
+
+
+def test_gpd_read_file_still_fails_on_that_url():
+    """The bug this reader exists for, pinned so nobody 'simplifies' read_geo back into
+    a bare gpd.read_file. If this ever starts passing, GDAL grew fsspec support and the
+    indirection could be revisited -- until then it is load-bearing."""
+    import pytest
+
+    p, _ = _geojson_on_memory_fs()
+    with pytest.raises(Exception):  # noqa: B017 - pyogrio/fiona raise different types
+        gpd.read_file(p)
+
+
+def test_read_geo_still_reads_a_plain_local_path(tmp_path):
+    """Callers must not need an is-it-remote branch."""
+    gdf = gpd.GeoDataFrame({"fid": [0], "geometry": [sg.box(0, 0, 1, 1)]}, crs="EPSG:4326")
+    fp = tmp_path / "local.geojson"
+    gdf.to_file(fp, driver="GeoJSON")
+    assert len(fs.read_geo(str(fp))) == 1
+
+
+def test_the_three_todo_47_sites_accept_a_non_local_url():
+    """`api._as_gdf` (create_training_data label polygons), `api`'s run_inference roi
+    preflight, and `grid._as_gdf_4326` (roi_to_s2_grids) all went through
+    `gpd.read_file` and broke identically on a blob-hosted input. One call each."""
+    from fsd import api, grid
+
+    p, _ = _geojson_on_memory_fs()
+
+    assert len(api._as_gdf(p)) == 2                      # site 1
+    assert len(grid._as_gdf_4326(p)) == 2                # site 3
+    # site 2 shares _as_gdf_4326 via roi_to_s2_grids -- the path run_inference re-tiles on
+    assert len(grid.roi_to_s2_grids(p, grid_size_km=5, scale_fact=1.1)) > 0

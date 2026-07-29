@@ -246,6 +246,27 @@ def load_npy(path: str, allow_pickle: bool = False, **storage_options: Any):
         return np.load(io.BytesIO(f.read()), allow_pickle=allow_pickle)
 
 
+def read_geo(path: str, **storage_options: Any):
+    """Read a vector file (GeoJSON/shapefile/…) -> GeoDataFrame, through the storage seam.
+
+    **Never hand a path straight to `gpd.read_file`.** GDAL/pyogrio has no `abfss://`
+    driver, so an fsspec-only scheme never reaches a reader and the failure is reported as
+    `DataSourceError: <abfss url>: No such file or directory` — for a file that
+    demonstrably exists. That message has now cost time on three separate cluster runs
+    (`workflows/task.py` spec 36 D6a/TODO #40, `sources/cdse._roi_gdf` run-book 37 Phase 1,
+    and `create_training_data`'s label polygons on the spec-40 demo). fsspec understands
+    the scheme; GDAL does not. This is the one shared reader TODO #47 asks for.
+
+    Local paths work unchanged — `fs.open` passes them through — so callers need no
+    is-it-remote branch.
+    """
+    import geopandas as gpd
+
+    fs, p = _fs_and_path(path, storage_options)
+    with fs.open(p, "rb") as f:
+        return gpd.read_file(io.BytesIO(f.read()))
+
+
 def _decode_pandas_attrs(footer_metadata: dict | None) -> dict:
     """`pyarrow` schema/file metadata -> the restored `.attrs` dict, or `{}` if
     there is no `PANDAS_ATTRS` footer key (spec 35 §2)."""

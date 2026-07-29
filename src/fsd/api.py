@@ -111,9 +111,12 @@ def _check_local_seams(runner: str, storage, *, storage_allowed: bool = True) ->
 
 
 def _as_gdf(label_polygons) -> gpd.GeoDataFrame:
+    """A GeoDataFrame, or a path/url to one. Read via the storage seam (`fs.read_geo`),
+    never `gpd.read_file(path)` — GDAL has no `abfss://` driver and reports a blob-hosted
+    file as "No such file or directory" (TODO #47)."""
     if isinstance(label_polygons, gpd.GeoDataFrame):
         return label_polygons
-    return gpd.read_file(label_polygons)
+    return fs.read_geo(label_polygons)
 
 
 def _check_window(startdate, enddate, mosaic_days, bands) -> list[str]:
@@ -1160,7 +1163,7 @@ def _run_inference_roi(
         if isinstance(roi, gpd.GeoDataFrame):
             roi_gdf = roi
         elif isinstance(roi, str):
-            roi_gdf = gpd.read_file(roi)
+            roi_gdf = fs.read_geo(roi)   # storage seam, not gpd.read_file (TODO #47)
     except Exception as exc:  # noqa: BLE001 - surfaced as a preflight error
         errs.append(f"could not read roi: {exc}.")
     if roi_gdf is not None and len(roi_gdf) == 0:
