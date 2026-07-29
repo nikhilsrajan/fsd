@@ -718,3 +718,91 @@ python demos/plot_aml_timings.py tests/outputs/demo_e2e_aml/<run_id>/timings.jso
 figure anywhere. `_timing.json` (the per-run dispatch telemetry `workflows.runners._aml_submit_and_wait`
 writes beside `_status/`, ADR 0021) is embedded inside it — no separate forensics run-book needed
 going forward (that was run-book 41's whole job, now free).
+
+## Rebuild BOTH AML Environments (after any fsd change that runs on a node)
+
+**The node's `fsd` comes from the image, not from your checkout.** `git pull` on the driver
+changes nothing about what executes on the cluster: the AML Environment bakes in a wheel, so any
+change under `src/fsd/workflows/`, `sources/`, `datacube/`, `raster/` or `model/` needs a rebuild
+before the cluster sees it. Skipping this is silent — the run stays green and produces correct
+science, it just behaves like the old code.
+
+**Worked example (2026-07-29):** spec 40's four in-job stamps were added, the driver was updated,
+the images were not. A complete 25-minute demo run came back with `job_admission_seconds: null` on
+all 97 jobs — D11's headline metric, gone, with nothing failing. `demos/e2e_austria_aml.py` now
+gates on this after the first dispatch, but the cheap fix is to rebuild first.
+
+Full context + failure modes: `runbooks/36-aml-runner.md` (general-purpose) and
+`runbooks/38-inference-on-aml.md` §"the inference Environment (D4)". This is the two builds in one
+place, for when you already know why.
+
+```bash
+cd /path/to/fsd
+git pull                      # FIRST -- the wheel is built from the working tree
+export OUT="${OUT:-$HOME/fsd-envs}" && mkdir -p "$OUT"
+# assumes AZ_RG / AZ_ML_WORKSPACE / AZ_ENV_NAME / AZ_INFER_ENV_NAME are exported
+
+# --- 1. general-purpose image: download + datacube build + flatten -------------------
+rm -rf "$OUT/env_src" && mkdir -p "$OUT/env_src"
+.venv/bin/pip wheel . --no-deps -w "$OUT/env_src" && ls "$OUT"/env_src/fsd-*.whl
+
+cat > "$OUT/env_src/Dockerfile" <<'DOCKER'
+FROM mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04:latest
+COPY fsd-*.whl /tmp/
+# [azure] -> adlfs + azure-identity + azure-keyvault-secrets;  [mpc] -> planetary-computer.
+# NOT [aml]: azure-ai-ml is driver-side only -- the node never submits jobs.
+RUN python -m pip install --no-cache-dir "$(ls /tmp/fsd-*.whl)[azure,mpc]" \
+ && python -m pip cache purge || true
+DOCKER
+
+cat > "$OUT/env.yml" <<YML
+\$schema: https://azuremlschemas.azureedge.net/latest/environment.schema.json
+name: ${AZ_ENV_NAME}
+build:
+  path: ./env_src
+  dockerfile_path: Dockerfile
+YML
+
+export AZ_ENV_VERSION="$(az ml environment create -f "$OUT/env.yml" \
+  -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query version -o tsv)"
+echo "built ${AZ_ENV_NAME}:${AZ_ENV_VERSION}"
+
+# --- 2. inference image: the same, PLUS the adapter + its runtime deps ---------------
+export AZ_ADAPTERS_SRC="${AZ_ADAPTERS_SRC:-demos/adapters.py}"
+rm -rf "$OUT/infer_env_src" && mkdir -p "$OUT/infer_env_src/adapter_src"
+.venv/bin/pip wheel . --no-deps -w "$OUT/infer_env_src" && ls "$OUT"/infer_env_src/fsd-*.whl
+cp -r "$AZ_ADAPTERS_SRC" "$OUT/infer_env_src/adapter_src/"
+
+cat > "$OUT/infer_env_src/Dockerfile" <<'DOCKER'
+FROM mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04:latest
+COPY fsd-*.whl /tmp/
+COPY adapter_src/ /opt/adapter/
+# scikit-learn + joblib are the adapter's runtime deps -- the two lines this adds over image 1.
+RUN python -m pip install --no-cache-dir "$(ls /tmp/fsd-*.whl)[azure,mpc]" scikit-learn joblib \
+ && python -m pip cache purge || true
+# Importable as `adapters` -- the SAME name bundle.json's `adapter` ref uses (`adapters:DemoRF`).
+ENV PYTHONPATH=/opt/adapter
+DOCKER
+
+cat > "$OUT/infer-environment.yml" <<YML
+\$schema: https://azuremlschemas.azureedge.net/latest/environment.schema.json
+name: ${AZ_INFER_ENV_NAME}
+build:
+  path: ./infer_env_src
+  dockerfile_path: Dockerfile
+YML
+
+export AZ_INFER_ENV_VERSION="$(az ml environment create -f "$OUT/infer-environment.yml" \
+  -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query version -o tsv)"
+echo "built ${AZ_INFER_ENV_NAME}:${AZ_INFER_ENV_VERSION}"
+
+echo "export AZ_ENV_VERSION=$AZ_ENV_VERSION AZ_INFER_ENV_VERSION=$AZ_INFER_ENV_VERSION"
+```
+
+**Version is omitted on purpose** — AML auto-increments, so a rebuild always lands on a NEW version
+and never mutates one a previous run referenced. Capture what it assigned (the last `echo`) and
+export both in every later shell.
+
+- **Lost a version?** `az ml environment list -n "$AZ_ENV_NAME" -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query "[].version" -o tsv | sort -V | tail -1`
+- **Verify:** `az ml environment show -n "$AZ_ENV_NAME" --version "$AZ_ENV_VERSION" -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query "[name, version]" -o tsv`. `--version` is **required** — without it the CLI fails with `Must provide either version or label`. Don't query `provisioning_state`: it is not in the environment schema, and `--query` on a missing field prints an empty line that reads like a failure.
+- **Each build is ~10–20 min of ACR time and occasionally flaky** — which is exactly why the demo script verifies Environments rather than building them (spec 40 D4): one bad build must not kill a 40-minute unattended run.
