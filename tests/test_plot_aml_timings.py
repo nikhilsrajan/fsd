@@ -124,3 +124,41 @@ def _matplotlib_agg_backend():
     touches pyplot (mirrors how CI runs `demos/e2e_austria.py`'s own plotting)."""
     import matplotlib
     matplotlib.use("Agg")
+
+
+# --- the gantt's two very different Nones (2026-07-29) -----------------------
+
+def _timings_with_n_jobs(n):
+    return {"run_id": "r", "steps": [{"step": "5_run_inference", "dispatch_timings": [
+        {"run_id": "x", "wall": _wall(),
+         "jobs": {str(i): _job(30.0 + i) for i in range(n)}}]}]}
+
+
+def test_gantt_renders_a_full_32_node_run():
+    """The real cluster (max 32 nodes) makes a demo run 97 jobs -- D12's implied ~49 came
+    from the spec's 16-per-run assumption, and the old max_rows=80 silently dropped the
+    figure on every real run."""
+    import os
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        out = os.path.join(d, "g.png")
+        assert plot_aml_timings.plot_job_gantt(_timings_with_n_jobs(97), out) == out
+        assert os.path.getsize(out) > 0
+
+
+def test_gantt_skip_reason_distinguishes_too_many_rows_from_no_data():
+    """`main` printed "skipped (no data)" for both, which sends a reader hunting for
+    missing telemetry when the real answer is a row cap."""
+    reason = plot_aml_timings.gantt_skip_reason(_timings_with_n_jobs(500))
+    assert "500" in reason and "max_rows" in reason
+
+    empty = {"run_id": "r", "steps": [{"step": "s", "dispatch_timings": [
+        {"run_id": "x", "wall": _wall(), "jobs": {
+            "0": {"job_admission_seconds": None, "work_seconds": None}}}]}]}
+    reason = plot_aml_timings.gantt_skip_reason(empty)
+    assert "in-job stamps" in reason and "predates spec 40" in reason
+
+
+def test_gantt_skip_reason_is_none_when_the_figure_renders():
+    assert plot_aml_timings.gantt_skip_reason(_timings_with_n_jobs(40)) is None

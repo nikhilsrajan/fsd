@@ -139,10 +139,18 @@ def plot_where_the_wall_went(timings: dict, out_fp: str) -> str | None:
     return out_fp
 
 
-def plot_job_gantt(timings: dict, out_fp: str, *, max_rows: int = 80) -> str | None:
+def plot_job_gantt(timings: dict, out_fp: str, *, max_rows: int = 120) -> str | None:
     """Figure 3 (optional, D12): one row per job, admission then work, two shades of one
     hue -- makes "38% of node-time idle" (TODO #60) visible. Ships only if it reads
-    cleanly (<= `max_rows`); returns `None` above that (drop it, per D12) or with no data."""
+    cleanly (<= `max_rows`); returns `None` above that (drop it, per D12) or with no data.
+
+    `max_rows` is 120, not D12's implied ~49. That figure came from the spec's assumption
+    of 16 jobs per run; the real cluster (`cluster-rise-d16`, max 32 nodes) fans out to 32,
+    so a full demo run is **97** jobs -- which the original 80 silently dropped. Row height
+    shrinks past 60 rows so the figure stays a sane aspect ratio instead of growing to two
+    metres of PNG. Use `gantt_skip_reason` to find out WHY it returned None: "too many
+    rows" and "no data" are very different answers and were previously indistinguishable.
+    """
     runs = _extract_runs(timings)
     rows = []
     for run in runs:
@@ -155,14 +163,17 @@ def plot_job_gantt(timings: dict, out_fp: str, *, max_rows: int = 80) -> str | N
     if not rows or len(rows) > max_rows:
         return None
 
-    fig, ax = _new_axes(len(rows), height_per_row=0.22)
+    # 0.22 in/row is right up to ~60 rows; past that it just makes a taller PNG, not a
+    # more readable one, so trade height for density.
+    per_row = 0.22 if len(rows) <= 60 else max(0.11, 0.22 * 60 / len(rows))
+    fig, ax = _new_axes(len(rows), height_per_row=per_row)
     admitted_color, work_color = "#86b6ef", PALETTE["blue"]
     for row, (label, admission, work) in enumerate(rows):
         admission = max(admission, 0.0)
         ax.barh(row, admission, color=admitted_color, height=0.6)          # queued/admitted
         ax.barh(row, work, left=admission, color=work_color, height=0.6)   # working
     ax.set_yticks(range(len(rows)))
-    ax.set_yticklabels([r[0] for r in rows], fontsize=6)
+    ax.set_yticklabels([r[0] for r in rows], fontsize=6 if len(rows) <= 60 else 4)
     ax.set_xlabel("seconds")
     ax.set_title("Per-job admission + work (spec 40 D12 Figure 3, optional)")
     ax.legend([_patch(admitted_color), _patch(work_color)], ["admission", "work"],
@@ -183,6 +194,25 @@ def _close(fig):
     import matplotlib.pyplot as plt
 
     plt.close(fig)
+
+
+def gantt_skip_reason(timings: dict, *, max_rows: int = 120) -> str | None:
+    """Why `plot_job_gantt` returned None, or None if it did not. `main` printed
+    "skipped (no data)" for BOTH causes, which sent a reader looking for missing telemetry
+    when the real answer was that a 97-job run exceeded an 80-row cap."""
+    rows = sum(
+        1
+        for run in _extract_runs(timings)
+        for j in run["jobs"].values()
+        if j.get("job_admission_seconds") is not None and j.get("work_seconds") is not None
+    )
+    if rows == 0:
+        return ("no job has both job_admission_seconds and work_seconds -- if every job is "
+                "missing the in-job stamps, the AML image predates spec 40 (see "
+                "E2E_AUSTRIA_AML.md §8.1)")
+    if rows > max_rows:
+        return f"{rows} jobs exceeds max_rows={max_rows}; it would not read cleanly (D12)"
+    return None
 
 
 def render_all(timings: dict, outdir: str) -> dict:
@@ -209,7 +239,12 @@ def main(argv=None):
 
     written = render_all(timings, args.outdir)
     for name, out_fp in written.items():
-        print(f"{'wrote' if out_fp else 'skipped (no data)'}: {name}")
+        if out_fp:
+            print(f"wrote: {name}")
+        elif name == "aml_job_gantt.png":
+            print(f"skipped: {name} -- {gantt_skip_reason(timings)}")
+        else:
+            print(f"skipped (no runs in timings.json): {name}")
 
 
 if __name__ == "__main__":
