@@ -514,11 +514,22 @@ def _assert_dispatch_telemetry_complete(dispatch_timings: list, *, step: str) ->
 
 
 def _new_dispatch_timings(root: str, before: set) -> list:
-    new_ids = sorted(_list_run_ids(root) - before)
+    """The `_timing.json` of every run that appeared during a step's call, **in execution
+    order**.
+
+    Ordered by `wall.t_start`, NOT by run_id. Run ids look like sortable timestamps and are
+    not: `create_training_data` mints its own right after preflight and hands it to the
+    **flatten reduce**, while the **build fan-out** mints one later, when it actually
+    dispatches -- so the flatten's id sorts FIRST despite running SECOND. Measured on
+    20260729T132222Z: flatten `20260729T132929Z` executed 13:32:58, build
+    `20260729T133005Z` executed 13:30:07. Sorted by id, `3_training_data[0]` was the
+    reduce and `[1]` the fan-out, which is backwards from how anyone reads an index.
+    """
     out = []
-    for run_id in new_ids:
+    for run_id in sorted(_list_run_ids(root) - before):
         with fs.open(f"{root.rstrip('/')}/runs/{run_id}/_timing.json", "r") as f:
             out.append(json.load(f))
+    out.sort(key=lambda d: (d.get("wall") or {}).get("t_start") or "")
     return out
 
 

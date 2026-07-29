@@ -84,6 +84,34 @@ def test_new_dispatch_timings_picks_up_both_runs_of_one_training_data_call():
     assert [t["run_id"] for t in new] == ["20260728T100000Z-build", "20260728T100500Z-flatten"]
 
 
+def test_new_dispatch_timings_orders_by_execution_not_by_run_id():
+    """Run ids look like sortable timestamps and are not. `create_training_data` mints its
+    own right after preflight and gives it to the flatten REDUCE, while the build FAN-OUT
+    mints one later when it dispatches -- so the flatten's id sorts first despite running
+    second. Real values from 20260729T132222Z: flatten id 132929Z executed 13:32:58, build
+    id 133005Z executed 13:30:07. Sorted by id, `3_training_data[0]` was the reduce."""
+    root = "memory://disc_order"
+    before = demo._list_run_ids(root)
+    _write_timing(root, "20260729T132929Z",      # flatten: earlier id, LATER execution
+                  {"run_id": "flatten", "jobs": {"0": {}},
+                   "wall": {"t_start": "2026-07-29T13:32:58+00:00"}})
+    _write_timing(root, "20260729T133005Z",      # build: later id, EARLIER execution
+                  {"run_id": "build", "jobs": {str(k): {} for k in range(32)},
+                   "wall": {"t_start": "2026-07-29T13:30:07+00:00"}})
+
+    new = demo._new_dispatch_timings(root, before)
+
+    assert [t["run_id"] for t in new] == ["build", "flatten"]
+    assert len(new[0]["jobs"]) == 32 and len(new[1]["jobs"]) == 1
+
+
+def test_new_dispatch_timings_tolerates_a_missing_t_start():
+    root = "memory://disc_no_tstart"
+    before = demo._list_run_ids(root)
+    _write_timing(root, "r1", {"run_id": "r1", "jobs": {}, "wall": {}})
+    assert [t["run_id"] for t in demo._new_dispatch_timings(root, before)] == ["r1"]
+
+
 def test_new_dispatch_timings_is_empty_when_a_step_dispatched_nothing():
     """A fully-resumed step (every output already on blob) dispatches no job, so it
     embeds no telemetry -- and must not raise."""
