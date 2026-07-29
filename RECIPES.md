@@ -827,6 +827,13 @@ export both in every later shell.
 - **Lost a version?** `az ml environment list -n "$AZ_ENV_NAME" -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query "[].version" -o tsv | sort -V | tail -1`
 - **Verify:** `az ml environment show -n "$AZ_ENV_NAME" --version "$AZ_ENV_VERSION" -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query "[name, version]" -o tsv`. `--version` is **required** — without it the CLI fails with `Must provide either version or label`. Don't query `provisioning_state`: it is not in the environment schema, and `--query` on a missing field prints an empty line that reads like a failure.
 - **Each build is ~10–20 min of ACR time and occasionally flaky** — which is exactly why the demo script verifies Environments rather than building them (spec 40 D4): one bad build must not kill a 40-minute unattended run.
+- ⚠️ **WAIT for the `prepare_image` build to finish before launching anything against the new version — nothing will stop you otherwise.** `az ml environment create` registers the *asset* immediately and returns; the image builds asynchronously. The v2 `Environment` object carries **no build state whatsoever** (`base_path, conda_file, creation_context, dump, id, validate, version` — verified 2026-07-29), so `ml_client.environments.get(name, version)` succeeds against a half-built image and **the demo's D4 preflight goes green regardless**. Submit early and the jobs do not fail — they sit in *Preparing* until ACR is done, and that wait lands between `submitted_at` and `process_start_at`, i.e. **inside `job_admission_seconds`**. A 15-minute build would silently become 15 minutes of "admission" in D11's headline metric. Watch it finish:
+  ```bash
+  # the image build appears as a job in the workspace; wait for Completed
+  az ml job list -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" \
+    --query "[?contains(name,'prepare_image')].{name:name,status:status}" -o table
+  ```
+  Or Studio → Environments → the new version → build log. Wait for **both** images.
 
 ### az CLI gotchas (both cost a build attempt on 2026-07-29)
 
