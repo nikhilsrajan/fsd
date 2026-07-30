@@ -53,6 +53,12 @@ The pipeline was proven **locally** first; these stay as reference and for local
 | `31-p1-datacube-on-blob.md` | build a datacube reading + writing the `rise` blob |
 | `36-runner-fork-probe.md` | Batch-vs-AML exploration: what does `rise` actually give us today? |
 
+## Track D — the docs refactor (spec 41)
+
+| run-book | what it is | status |
+|----------|-----------|--------|
+| `43-build-tutorial-fixture.md` | build spec 42's committed **tutorial micro-fixture**: derive ROI+labels on the laptop, clip pixels in-region on a VM, land ~20 MB and commit it | 🆕 not yet run; **needs the generator implemented first** |
+
 ## Not run-books
 - `TEMPLATE.md` — the spec-24 skeleton to copy for a new run-book.
 - `HANDOFF-*.md` — ephemeral session batons (handoff protocol); safe to delete once the step lands.
