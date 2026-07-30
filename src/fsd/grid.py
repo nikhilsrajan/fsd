@@ -111,15 +111,34 @@ def roi_to_s2_grids(roi, *, grid_size_km: float = 5, scale_fact: float = 1.1,
         # invariant the rest of this function already assumes -- the polyfill and the
         # `intersects` filter above both go through `shape`.
         #
-        # `gpd.overlay(grids, roi_gdf, how="intersection")` emits one row per
-        # (cell x roi-polygon) PAIR, so a multi-polygon ROI silently multiplies rows and
-        # REPEATS each cell's id. `id` is the work-unit key downstream -- one cell = one
-        # datacube = one task, and `create_datacube.setup(id_col="id")` derives
-        # `export_folderpath` from it -- so repeated ids mean N tasks writing the SAME
-        # folder concurrently. On blob that is a guaranteed `InvalidBlockList` block-commit
-        # collision, and the surviving `geometry.geojson` is whichever fragment committed
-        # last. Measured 2026-07-28 on a 900-field ROI: 1167 rows for 172 cells, one cell
-        # repeated 43x, each row ~0.016 km2 of a 49.6 km2 cell (spec 21 D-GRID-1).
+        # It is the UNION that matters here, not the choice of clip call. `gpd.overlay`
+        # against the raw, un-unioned `roi_gdf` emits one row per (cell x roi-polygon)
+        # PAIR, so a multi-polygon ROI silently multiplies rows and REPEATS each cell's
+        # id. `id` is the work-unit key downstream -- one cell = one datacube = one task,
+        # and `create_datacube.setup(id_col="id")` derives `export_folderpath` from it --
+        # so repeated ids mean N tasks writing the SAME folder concurrently. On blob that
+        # is a guaranteed `InvalidBlockList` block-commit collision, and the surviving
+        # `geometry.geojson` is whichever fragment committed last. Measured 2026-07-28 on
+        # a 900-field ROI: 1167 rows for 172 cells, one cell repeated 43x, each row
+        # ~0.016 km2 of a 49.6 km2 cell (spec 21 D-GRID-1).
+        #
+        # `overlay` is NOT inherently unusable -- `overlay(grids, <union as one row>)`
+        # gives the identical result with unique ids. It is simply not faster, which is
+        # the only reason one would switch. Measured 2026-07-31 (max symmetric difference
+        # 0.0 across all four; only the un-unioned form breaks id uniqueness):
+        #
+        #     clip method                    AT_ROI (1 poly)   900-poly ROI
+        #     intersection(union)  <- this        2.6 ms          80.5 ms
+        #     overlay(vs union)                   9.5 ms          92.6 ms
+        #     overlay(vs raw roi_gdf)             7.1 ms          25.2 ms  <- 1167 rows
+        #     overlay(raw) + dissolve("id")      12.7 ms          50.5 ms
+        #
+        # overlay's speed comes from its STRtree pruning per ROI polygon; the union
+        # collapses the right side to ONE geometry, so the index has one entry and prunes
+        # nothing. The efficiency and the duplicate-id bug had the same cause. `dissolve`
+        # recovers both, but is ~5x slower on the single-geometry ROI -- which is the
+        # documented shape of an ROI ("one region, not a list of shapes"), i.e. the hot
+        # path. So: keep the union, keep the plain intersection.
         grids["geometry"] = grids.geometry.intersection(shape)
         # A cell that only *touches* the ROI can intersect to a line/point; drop those
         # (and any empties) so every returned row is a real polygonal work unit.
