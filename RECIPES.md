@@ -870,3 +870,32 @@ only thing the build machine needs is the CLI and (off-network) the VPN.
 assigns its *error text* as the version and the run continues with garbage — the literal output was
 `built fsd-aml-env:No module named 'rpds.rpds'`. That is why the block above captures first,
 validates with `_fsd_check_version`, and only then exports.
+
+## Verify a document split moved every entry, verbatim and in order
+
+Written for the spec 41 D12 `PROGRESS.md` → `docs/progress-archive.md` split, but it applies to any
+"move the history into another file" refactor. Counting entries is **not** enough — the split was
+scripted, so a dropped or reordered entry is silent, and byte-comparison is what actually proves it.
+
+Run from the `fsd/` checkout, with `<split-commit>` the commit that did the move:
+
+```bash
+OLD=<split-commit>^:PROGRESS.md ; NEW=docs/progress-archive.md ; T=$(mktemp -d)
+git show "$OLD" | grep -n '^## ' > "$T/old" ; grep -n '^## ' "$NEW" > "$T/new"
+# 1) same entries, same order (headings only, line numbers stripped)
+diff <(cut -d: -f2- "$T/old") <(cut -d: -f2- "$T/new") && echo "HEADINGS IDENTICAL AND IN ORDER"
+# 2) verbatim: compare both bodies from their FIRST entry heading onward
+git show "$OLD" | tail -n +"$(head -1 "$T/old" | cut -d: -f1)" > "$T/oldbody"
+tail -n +"$(head -1 "$T/new" | cut -d: -f1)" "$NEW" > "$T/newbody"
+diff "$T/oldbody" "$T/newbody" && echo "BODIES BYTE-IDENTICAL"
+```
+
+- **Step 2 is the one that matters.** Step 1 passed on the real split while step 2 found the single
+  line that *had* legitimately changed: the move **scrubbed a concrete cluster identifier** (the
+  sweep above). Expect exactly the scrubs you intended and nothing else — and note the destination's
+  own preamble in step 2's diff, which is new text, not a moved entry.
+- Scrubbing is **the one edit a point-in-time document may receive** (D3). If step 2 shows anything
+  else, the move was lossy.
+- Then reconcile the **count** across every place it was written: the P5 review found the same fact
+  recorded three ways (the PROGRESS entry said 60 entries / 100 lines, the commit message said
+  61 / 94, and the truth was 61 / 93). `grep -c '^## '` and `wc -l` settle it.
