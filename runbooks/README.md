@@ -71,6 +71,7 @@ The pipeline was proven **locally** first; these stay as reference and for local
 | run-book | what it is | ran? |
 |----------|-----------|--------|
 | `43-build-tutorial-fixture.md` | build spec 42's committed **tutorial micro-fixture**: derive ROI+labels on the laptop, clip pixels in-region on a VM, land ~20 MB and commit it | 🆕 not yet run; **needs the generator implemented first** |
+| `44-todo-to-issues.md` | migrate `TODO.md`'s 62 rows to **number-aligned** GitHub issues (`#N == TODO #N`, spec 41 D8) — the manifest is reviewed and signed off; a misnumber is permanent, so this one is strictly sequential and halts on the first mismatch | 🆕 not yet run |
 
 ## Not run-books
 - `TEMPLATE.md` — the spec-24 skeleton to copy for a new run-book; carries the D4 header pattern as
