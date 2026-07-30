@@ -1,3 +1,8 @@
+---
+status: historical
+summary: Ephemeral session baton for writing the train-and-bundle run-book (run-book 40); it has been written.
+---
+
 # Handoff — write the train→bundle runbook (the missing link into runbook 38)
 
 **For:** the next session (Opus@high for the runbook design/sign-off; a Sonnet session may draft the

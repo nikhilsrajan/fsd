@@ -1,3 +1,8 @@
+---
+status: current
+summary: Tier-2 serving validation: local pgSTAC + titiler-pgstac "mini-MPC" stack; done and validated end to end.
+---
+
 # Spec 30 — Serving contract Tier 2: local pgSTAC + titiler-pgstac "mini-MPC" (+ stac-geoparquet export)
 
 > **Status: DONE / VALIDATED (2026-07-15) — Deliverable B verified (pytest + real-catalog smoke run);

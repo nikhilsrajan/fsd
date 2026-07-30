@@ -1,3 +1,8 @@
+---
+status: current
+summary: Bugfix: datacube builder was dropping tiles when several covered one shape; signed off and implemented, verified on real data.
+---
+
 # Spec 20 — bugfix: datacube builder drops tiles when several cover one shape
 
 > **Status: SIGNED OFF + IMPLEMENTED (2026-07-07).** SO-1..SO-4 approved as drafted. Fixed

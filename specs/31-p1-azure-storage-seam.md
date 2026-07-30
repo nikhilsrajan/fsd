@@ -1,3 +1,8 @@
+---
+status: current
+summary: P1 Azure storage seam: `storage=` becomes a meaningful compute seam; signed off, pivoted, and implemented.
+---
+
 # Spec 31 — P1 Azure storage seam (adlfs + `/vsiadls/`, config-not-code)
 
 > **Status: SIGNED OFF + PIVOTED (2026-07-17) — ready for a Sonnet@medium implementation of the

@@ -1,3 +1,8 @@
+---
+status: current
+summary: Top-level architecture spec: what fsd is and its module map; still the description of the pipeline's shape.
+---
+
 # fsd — Overview & Architecture Spec
 
 > `fsd` is a clean-room rewrite that combines only the necessary parts of the

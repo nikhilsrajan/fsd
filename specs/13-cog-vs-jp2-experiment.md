@@ -1,3 +1,8 @@
+---
+status: current
+summary: Part 3: COG-vs-JP2 tile-splitting experiment; signed off and implemented.
+---
+
 # Spec 13 — COG vs JP2 storage/time experiment
 
 > **Status: signed off + implemented (2026-07-04).** `benchmarks/prep_cog_dataset.py`

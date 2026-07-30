@@ -1,3 +1,8 @@
+---
+status: current
+summary: Safe CDSE download (resume + --dry-run/--stop-file seams) on a tiny Austria slice; ran green locally.
+---
+
 # Run-book: spec 26 — safe download confirm-run (tiny 1-MGRS-tile Austria slice)
 
 > Spec 24 template. A run-book is what Claude hands the user instead of running a

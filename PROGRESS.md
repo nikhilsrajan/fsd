@@ -4,6 +4,45 @@ Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
 _Last updated: 2026-07-30 (✅ SPECS 41 + 42 SIGNED OFF — the docs refactor is designed; next = P1, status headers)_
 
+## ✅ 2026-07-30 — P1 DONE: D4 status headers on 79 files + regenerated indexes + test_docs.py. → NEXT: P2 (issues)
+
+**Every point-in-time doc got a `status`/`summary` D4 header (ADR 0023):** 46 `specs/*.md`, 22
+`runbooks/*.md` (43 already had one from the prior session), 3 `HANDOFF-*.md` (`historical`),
+`runbooks/TEMPLATE.md` (header baked into the skeleton, not itself statused), 3 `demos/*.md`, and
+8 `benchmarks/*.md`. Every status was **re-derived from evidence** (`CHANGES.md`, ADRs, test files),
+not lifted from the ~12 existing ad-hoc status-line formats — confirming the three known-wrong ones
+(specs 39/40 said DRAFT, 25b/26 said "awaiting implementation"; all four are actually implemented
+and now `current`). 6 benchmarks reports referencing the deleted `satellite_benchmark/` archive are
+`historical`; spec 27 (Leaflet dashboard) and run-book 42 (superseded cold-reruns) are the other two
+non-`current` cases.
+
+**`specs/README.md` and `runbooks/README.md` regenerated** with the implementation-status column
+D4 deliberately excludes (evidence: an ADR, a test file, or "not implemented"). `runbooks/README.md`
+keeps its Track A–D structure and Conventions block, adding a small timing-recovery mini-table for
+41/42 and a `status: historical` note for the HANDOFF files.
+
+**`tests/test_docs.py` written (spec 41 D6 assertion 4 only):** every `specs/`+`runbooks/` file
+parses as a valid D4 header, every `superseded_by` names a file that exists. Hand-rolled parser, no
+new dependency (`pyyaml` is only a transitive dep in `.venv`, not declared in `pyproject.toml`).
+74 new parametrized tests, all green.
+
+**Spec 41 amendment A1 added** (user confirmed before writing): its "42 specs" file count was wrong
+throughout — measured **46** specs (44 pre-existing + 41/42 same-session) — recorded as a dated
+amendment in §1, per ADR 0022 (specs are never silently edited). `runbooks/` count of 23 was
+already correct.
+
+**Gate (D13):** `pytest -q` → **594 passed / 72 skipped** (up from 520/2 baseline — the +74 are the
+new doc tests); `ruff check src/ tests/ demos/` clean. Per D13, **the user now picks 10 files from
+the 79 to spot-check; more than one wrong means the batch is redone, not patched.**
+
+**Not committed yet** — all changes are in the working tree on `main` (this session worked directly
+in the shared checkout, not a worktree, since the job started there); commit/push is the user's call.
+
+**Still deferred, unchanged:** P2 (issues migration), P3 (`docs/findings/`), P4 (env reference), P5
+(README/ARCHITECTURE/PROGRESS split), P6/spec 42 (the fixture build — its 3 scripts still
+unwritten), P7 (tutorial + how-tos), spec 43, spec 40 §7, TODO #62, TODO #59/#60/#61, the rslearn
+Plan B/C decision.
+
 ## ✅ 2026-07-30 — SPECS 41 + 42 SIGNED OFF (docs refactor designed, nothing implemented). → NEXT: P1
 
 TODO #55 is now **two signed-off specs plus five ADRs**, produced by an Opus@high

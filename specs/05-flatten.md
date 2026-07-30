@@ -1,3 +1,8 @@
+---
+status: current
+summary: Flatten datacubes into stacked training arrays; still the contract `flatten` implements.
+---
+
 # Spec 05 — Flatten datacubes → training arrays
 
 Folds in: `datacube/datacube_flatten_2d.py`.

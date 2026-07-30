@@ -1,3 +1,8 @@
+---
+status: current
+summary: Recover missing AML wall-clock timings for free from the workspace's own job history; free and read-only.
+---
+
 # Run-book: 41 — recover the missing AML wall clocks from the workspace's job history
 
 > Spec-24 run-book. **You** run it; paste back `_result.json`. Claude never runs it (CLAUDE.md).

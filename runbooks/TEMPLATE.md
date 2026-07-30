@@ -1,3 +1,8 @@
+---
+status: current | superseded-by-NN | historical
+summary: <one sentence -- what a reader needs to decide whether to open this file>
+---
+
 # Run-book: <name>
 
 > Spec 24 template. A run-book is what Claude hands the user instead of running a

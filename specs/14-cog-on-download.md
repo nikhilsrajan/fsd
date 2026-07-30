@@ -1,3 +1,8 @@
+---
+status: current
+summary: First production `src/fsd/` change: converting downloaded JP2 to COG; signed off and implemented.
+---
+
 # Spec 14 — COG-on-download (CDSE ingest)
 
 > **Status: signed off + implemented (2026-07-04).** First **production** `src/fsd/` change out

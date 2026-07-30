@@ -1,3 +1,8 @@
+---
+status: current
+summary: "Hello Azure" probe: az + adlfs blob round-trip + /vsiadls/ raster read; the first RBAC/seam probe, ran and gated spec 31.
+---
+
 # Run-book: 31 — P1 Azure access probe ("hello Azure")
 
 > Spec-24 run-book. **You** run this; paste back the single `_result.json`. It is the gate

@@ -1,3 +1,8 @@
+---
+status: current
+summary: Cross-baseline render proof (the -0.1-offset black-tile branch); ran, still the only coverage of that fix.
+---
+
 # Run-book 34b — cross-baseline render proof (spec 34 §1e), self-contained
 
 **You run this; Claude never runs Docker/networked scripts (spec 24).** Paste back

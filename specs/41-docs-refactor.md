@@ -1,3 +1,8 @@
+---
+status: current
+summary: This docs refactor itself: point-in-time vs continuously-true classes, the status header, the TODO-to-Issues migration, one-fact-one-home, and the demo/benchmark/example/tutorial split.
+---
+
 # Spec 41 — the docs refactor: make the corpus navigable and give fsd a front door
 
 **Status: ✅ SIGNED OFF (2026-07-30, user) — grilled 2026-07-29/30 (Opus@high, `/grill-with-docs`).**
@@ -18,6 +23,18 @@ not started.
 ---
 
 ## 1. The problem, measured
+
+> **AMENDMENT A1 (2026-07-30, user confirmed) — the file counts below are wrong.** This spec says
+> "42 specs" throughout (here, D4, D14) and derives "21 of 42 specs already carry a status line"
+> from it. **Measured during P1 implementation:** `specs/*.md` is **46 files** (44 pre-existing +
+> the two written the same session as this spec, 41 and 42 themselves), not 42; `runbooks/*.md` is
+> 28 files total of which **23 are actual run-books** — that 23 was already correct. So every "42
+> specs" below should read **44** (the count at the time this spec was written) / **46** (the count
+> once 41+42 exist), and the derived claim should read **"21 of 44 specs already carry a status
+> line."** Per ADR 0022, this is recorded as an amendment rather than silently correcting the prose
+> above and below — a signed-off spec is point-in-time. P1 (spec 41 D14) stamped all 46 specs + 23
+> run-books + `demos`/`benchmarks` reports against the corrected count; see the regenerated
+> `specs/README.md` / `runbooks/README.md`.
 
 The corpus is **201 markdown files / 284,441 words** (2026-07-29) — roughly a 950-page book:
 

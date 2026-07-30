@@ -1,3 +1,8 @@
+---
+status: current
+summary: Download the S2 archive to blob at scale (CDSE one-job + MPC fan-out); ran, Phases 0-3 green.
+---
+
 # Run-book: 37 Phases 0–3 — download on Azure ML, end to end
 
 > Spec-24 run-book for **spec 37 §6**. **You** run this; paste back each phase's printed JSON.

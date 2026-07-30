@@ -1,3 +1,8 @@
+---
+status: current
+summary: Companion walkthrough of how the model bundle (`bundle.json` + adapter string) saves/loads/infers; explains spec 18's design, unimplemented-vs-explainer status unchanged.
+---
+
 # Spec 18 — companion: how the model **bundle** works (SO-6, explained)
 
 > Companion to `specs/18-model-adapter.md`. This explains **[SO-6]** by example: what

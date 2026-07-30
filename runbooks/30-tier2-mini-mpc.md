@@ -1,3 +1,8 @@
+---
+status: current
+summary: Tier-2 serving: outputs load into stock pgSTAC + titiler-pgstac; ran green.
+---
+
 # Run-book: spec 30 — Tier-2 mini-MPC (pgSTAC + stac-fastapi-pgstac + titiler-pgstac)
 
 > Spec 24 template. A run-book is what Claude hands the user instead of running a

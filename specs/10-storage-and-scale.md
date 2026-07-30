@@ -1,3 +1,8 @@
+---
+status: current
+summary: The storage seam (fsspec) and scale-out principle that all later Azure work builds on.
+---
+
 # Spec 10 — Storage seam & scale-out (Azure-ready, cloud-agnostic)
 
 New module + cross-cutting design. This spec exists so the **real end goal** —

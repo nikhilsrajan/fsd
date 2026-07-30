@@ -1,3 +1,8 @@
+---
+status: current
+summary: Research notes backing spec 33's MPC reprocessing-dedup design; still the cited source for that spec's "Best-practice alignment" section.
+---
+
 # Research: Sentinel-2 L2A STAC reprocessing / duplicate-item de-duplication
 
 Supporting research for a spec on de-duplicating Sentinel-2 L2A STAC items when a source

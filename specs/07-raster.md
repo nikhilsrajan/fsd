@@ -1,3 +1,8 @@
+---
+status: current
+summary: Rasterio-level raster primitives (file-based and in-memory `(data, profile)`) the datacube builder depends on.
+---
+
 # Spec 07 — Raster image utilities (`raster/images.py`)
 
 Folds in: `rsutils/modify_images.py` + the raster helpers in `rsutils/utils.py`.

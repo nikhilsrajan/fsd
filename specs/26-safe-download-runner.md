@@ -1,3 +1,8 @@
+---
+status: current
+summary: Safe download runner CLI + should_stop seam; implemented 2026-07-11 despite the header still reading "awaiting implementation".
+---
+
 # Spec 26 — safe download runner (`--dry-run`/`--stop-file`/progress) + measured confirm-run
 
 > **Status: SIGNED OFF (2026-07-11) — awaiting implementation.** Opus@high (interview → spec).

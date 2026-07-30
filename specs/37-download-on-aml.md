@@ -1,3 +1,8 @@
+---
+status: current
+summary: Download at scale on AML (CDSE one-job + MPC fan-out to blob); signed off, implemented, reviewed, merged.
+---
+
 # Spec 37 — download on Azure ML (P2): dispatch the existing download-to-blob onto the cluster
 
 > **Status: ✅ SIGNED OFF (user, 2026-07-22) → IMPLEMENTED + REVIEWED + MERGED to `main` (`6b845fc`,

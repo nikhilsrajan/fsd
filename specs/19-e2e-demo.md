@@ -1,3 +1,9 @@
+---
+status: superseded-by-23
+superseded_by: 23
+summary: End-to-end demo (Ethiopia) + ROI-to-S2-grid tiling; its demo script and flow were superseded by spec 23's Austria e2e (real download + ROI-mode run_inference).
+---
+
 # Spec 19 — end-to-end demo (demo_01 + demo_02 + demo_03) + ROI→S2-grid tiling
 
 > **Superseded in part by spec 23 (2026-07-10):** `demos/e2e_ethiopia.py` → `demos/e2e_austria.py`,

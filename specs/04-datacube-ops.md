@@ -1,3 +1,8 @@
+---
+status: current
+summary: Pure array-transform op convention for datacubes, still the pattern in use.
+---
+
 # Spec 04 — Datacube ops
 
 Folds in: `core/datacube_ops.py` (L2A-relevant subset only).

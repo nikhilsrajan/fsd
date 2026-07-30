@@ -1,3 +1,8 @@
+---
+status: historical
+summary: Full-year Ethiopia multi-CRS datacube benchmark against the satellite_benchmark/ archive, which no longer exists (deleted 2026-07-17, CLAUDE.md).
+---
+
 # Datacube benchmark — 1 year, Ethiopia multi-CRS ROI
 
 Heavy test of `fsd.datacube.builder.build_datacube` on a **full year (2018)** of real,

@@ -1,3 +1,8 @@
+---
+status: current
+summary: The full Austria end-to-end local showcase run; ran green locally.
+---
+
 # Run-book: full Austria end-to-end (the go-to-doc showcase run)
 
 > Spec 24 run-book. Claude never runs the long/networked e2e — you run it, paste back the summary

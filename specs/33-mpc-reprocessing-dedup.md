@@ -1,3 +1,8 @@
+---
+status: current
+summary: De-duplicating reprocessed Sentinel-2 acquisitions from MPC discovery; signed off and implemented (validated live in runbook 33).
+---
+
 # Spec 33 — MPC reprocessing de-duplication (TODO #34)
 
 > **Status: ✅ SIGNED OFF (2026-07-16).** Interview → grill → cross-validate → spec, written per

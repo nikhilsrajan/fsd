@@ -1,3 +1,8 @@
+---
+status: current
+summary: Train adapters:DemoRF @ T=8 and bundle it, driver-side; not yet run at the time of this stamping.
+---
+
 # Run-book: 40 Phases 1–3 — features → train `adapters:DemoRF` @ T=8 → bundle
 
 > Spec-24 run-book. **You** run this; paste back each phase's printed `_result.json`. This is the

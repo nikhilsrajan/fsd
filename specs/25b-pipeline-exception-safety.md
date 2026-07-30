@@ -1,3 +1,8 @@
+---
+status: current
+summary: Exception-safe download callbacks (no silent hang); implemented 2026-07-11 despite the header still reading "awaiting implementation".
+---
+
 # Spec 25b — download pipeline: exception-safe callbacks (no silent hang)
 
 > **Status: SIGNED OFF (2026-07-11) — awaiting implementation.** Opus@high (review→spec).

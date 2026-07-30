@@ -1,3 +1,8 @@
+---
+status: current
+summary: Batch-vs-AML exploration probe: what rise actually gives us today; ran and gated spec 36's runner choice.
+---
+
 # Run-book: 36 — runner fork probe (Batch vs AML: what does `rise` actually give us *today*?)
 
 > Spec-24 run-book. **You** run this; paste back the single `_result.json`. It is the gate before

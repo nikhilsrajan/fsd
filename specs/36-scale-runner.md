@@ -1,3 +1,8 @@
+---
+status: current
+summary: Azure ML (AML) as the scale runner seam for datacube-build fan-out; signed off, implemented, reviewed.
+---
+
 # Spec 36 — the scale runner (P2): dispatch the existing unit of work onto Azure ML
 
 > **Status: ✅ SIGNED OFF (user, 2026-07-21); IMPLEMENTED (Sonnet@medium, 2026-07-22); REVIEWED +

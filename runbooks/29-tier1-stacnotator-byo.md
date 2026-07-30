@@ -1,3 +1,8 @@
+---
+status: current
+summary: Tier-1 serving: a pre-styled XYZ URL consumed by STACNotator BYO-XYZ; ran green.
+---
+
 # Run-book: spec 29 — Tier-1 pre-styled XYZ, validated via STACNotator Bring-Your-Own-XYZ
 
 > Spec 24 template. A run-book is what Claude hands the user instead of running a

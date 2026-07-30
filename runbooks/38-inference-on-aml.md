@@ -1,3 +1,8 @@
+---
+status: current
+summary: run_inference(runner="aml") at scale over the cluster; implemented and reviewed, a full cluster validation run is still pending.
+---
+
 # Run-book: 38 Phases 0–4 — inference at scale on Azure ML
 
 > Spec-24 run-book for **spec 38 §6** (P4). **You** run this; paste back each phase's printed

@@ -1,3 +1,8 @@
+---
+status: current
+summary: The same pipeline timed on Azure ML, laptop-vs-cluster side by side; every number traces to a _result.json (spec 40 A3).
+---
+
 # The same demo on the cluster — AML timings, and what they cost
 
 The counterpart to [`E2E_AUSTRIA.md`](E2E_AUSTRIA.md) §8. That section times the whole pipeline on

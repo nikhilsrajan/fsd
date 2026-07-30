@@ -1,3 +1,8 @@
+---
+status: current
+summary: Datacube builder engine + S2-L2A implementation responsibility and seam.
+---
+
 # Spec 03 — Datacube builder (general engine + S2-L2A impl)
 
 Folds in: `datacube/create_datacube_inmemory_single.py` (the working, in-memory

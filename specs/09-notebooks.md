@@ -1,3 +1,8 @@
+---
+status: current
+summary: Packaging (src-layout, pyproject) and notebook-testability goals; still describes the package layout.
+---
+
 # Spec 09 — Notebooks, packaging & tooling
 
 Folds in: `fetch_satdata/pyproject.toml`, the three demo notebooks.

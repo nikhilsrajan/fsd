@@ -1,3 +1,8 @@
+---
+status: current
+summary: RBAC gate: proves an AML job can auth to blob as the compute identity; proven.
+---
+
 # Run-book: 36 Phase 0 — identity smoke on the AML cluster
 
 > Spec-24 run-book for **spec 36 §6 Phase 0**. **You** run this; paste back the printed JSON.

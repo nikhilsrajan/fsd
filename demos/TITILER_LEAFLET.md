@@ -1,3 +1,8 @@
+---
+status: current
+summary: COG/XYZ/titiler/STAC/MPC serving explainer; still accurate as a concepts primer, though its original "build a Leaflet dashboard" framing was superseded by spec 27 (historical) in favor of STACNotator.
+---
+
 # Serving the inference outputs in a web map — titiler + Leaflet (explainer)
 
 > **Note (2026-07-14): this is now a CONCEPTS PRIMER, not the plan.** The original plan (build a local

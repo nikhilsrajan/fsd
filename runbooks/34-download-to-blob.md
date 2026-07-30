@@ -1,3 +1,8 @@
+---
+status: current
+summary: Download-to-blob (CDSE + MPC), cloud-VM-first, predecessor of the AML download path; ran.
+---
+
 # Run-book 34 — download-to-blob (CDSE + MPC), cloud-VM-first
 
 **You run this; Claude never runs networked/long scripts (spec 24).** Paste back

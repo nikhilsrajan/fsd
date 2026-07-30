@@ -1,3 +1,8 @@
+---
+status: current
+summary: Proves the landed AML-downloaded archive is trustworthy (radiometry, catalog completeness, byte-identical); ran green.
+---
+
 # Run-book: 37 verify-archive — is `$AZ_ROOT/archive` trustworthy?
 
 > Spec-24 run-book. **You** run this; paste back each step's `_result.json`. Claude diffs them

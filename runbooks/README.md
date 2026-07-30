@@ -1,17 +1,23 @@
 # Run-books — index & execution order
 
 > **Why this file:** run-book *numbers* track the spec that motivated them, **not** the order you
-> run them in — so the demo pipeline reads out of order (you run 37 → 36 → 39 → 40 → 38). This README
-> is the map until the planned C4-model docs refactor (TODO #55) replaces it. A run-book is what
-> Claude hands you instead of running a pipeline/networked script itself (spec 24): you run the
-> commands, paste back each step's `_result.json`, Claude diffs it. Template: `TEMPLATE.md`.
+> run them in — so the demo pipeline reads out of order (you run 37 → 36 → 39 → 40 → 38). This
+> README is the **regenerated index** that replaces the ad-hoc status column (spec 41 D4/D14; this
+> *is* the replacement TODO #55 pointed at). A run-book is what Claude hands you instead of running
+> a pipeline/networked script itself (spec 24): you run the commands, paste back each step's
+> `_result.json`, Claude diffs it. Template: `TEMPLATE.md`.
+>
+> Every run-book below also carries its own D4 status header (`current` / `superseded-by-NN` /
+> `historical`, ADR 0023) — that answers *"can I trust this as a description of fsd today?"*. This
+> table adds what the header deliberately excludes: **where it sits in the pipeline, and whether it
+> has actually been run.**
 
 ## ⭐ The demo pipeline (Azure ML scale-out) — run in THIS order
 
 The north-star demo is **download → build → flatten → train+bundle → inference**, all on Azure ML.
 The run-books that realise it, in dependency order (not numeric order):
 
-| # | run-book | what it does | consumes | status |
+| # | run-book | what it does | consumes | ran? |
 |---|----------|--------------|----------|--------|
 | 0a | `36-phase0-identity-smoke.md` | RBAC gate: can an AML job auth to blob as the compute identity? | — | ✅ proven |
 | 0b | **Build the general-purpose AML Environment** (step inside `36-aml-runner.md` setup) | bakes the fsd wheel into the image every node uses for download/build/flatten | current `main` | ✅ (rebuild after any `src/fsd/` change — see 39 prereqs) |
@@ -28,11 +34,18 @@ the `mpc/` prefix from runbook 34); 36 Phase 3 writes `runs/<id>/input.csv` (39 
 stages it, `AZ_BUNDLE_LOCAL`). 38 builds a **second, inference-specific** Environment (its own setup
 section) that `COPY`s `demos/adapters.py` so `adapters:DemoRF` resolves on a node.
 
+**Timing recovery (supports spec 40's e2e report, not part of the run order above):**
+
+| run-book | what it is | ran? |
+|----------|-----------|--------|
+| `41-recover-aml-job-timings.md` | free, read-only recovery of missing AML wall-clocks from the workspace's own job history | ✅ ran, recovered 36/37 P3 lower bounds |
+| `42-timed-cold-reruns.md` | would have bought two timed cold re-runs at the cost of two cluster allocations + a 418 GB duplicate archive | ⛔ superseded by 41 — not run, per the user's call |
+
 ## Track B — local pipeline & serving (foundational; mostly done before the AML move)
 
 The pipeline was proven **locally** first; these stay as reference and for local re-validation.
 
-| run-book | what it proves | status |
+| run-book | what it proves | ran? |
 |----------|----------------|--------|
 | `26-download-confirm-run.md` | safe CDSE download (resume + `--dry-run`/`--stop-file` seams), tiny Austria slice | ✅ local |
 | `27-austria-full-e2e.md` | the full Austria end-to-end local showcase run | ✅ local |
@@ -46,22 +59,25 @@ The pipeline was proven **locally** first; these stay as reference and for local
 
 ## Track C — Azure P1 access probes & exploratory (one-offs)
 
-| run-book | what it is |
-|----------|-----------|
-| `31-p1-access-probe.md` | "hello Azure": `az` + adlfs blob round-trip + `/vsiadls/` raster read (the first RBAC/seam probe) |
-| `31-p1-upload-slice.md` | upload a real S2 slice to the `rise` blob + repoint the catalog |
-| `31-p1-datacube-on-blob.md` | build a datacube reading + writing the `rise` blob |
-| `36-runner-fork-probe.md` | Batch-vs-AML exploration: what does `rise` actually give us today? |
+| run-book | what it is | ran? |
+|----------|-----------|--------|
+| `31-p1-access-probe.md` | "hello Azure": `az` + adlfs blob round-trip + `/vsiadls/` raster read (the first RBAC/seam probe) | ✅ gated spec 31 |
+| `31-p1-upload-slice.md` | upload a real S2 slice to the `rise` blob + repoint the catalog | ✅ gated spec 31 |
+| `31-p1-datacube-on-blob.md` | build a datacube reading + writing the `rise` blob | ✅ gated spec 31 |
+| `36-runner-fork-probe.md` | Batch-vs-AML exploration: what does `rise` actually give us today? | ✅ gated spec 36 |
 
 ## Track D — the docs refactor (spec 41)
 
-| run-book | what it is | status |
+| run-book | what it is | ran? |
 |----------|-----------|--------|
 | `43-build-tutorial-fixture.md` | build spec 42's committed **tutorial micro-fixture**: derive ROI+labels on the laptop, clip pixels in-region on a VM, land ~20 MB and commit it | 🆕 not yet run; **needs the generator implemented first** |
 
 ## Not run-books
-- `TEMPLATE.md` — the spec-24 skeleton to copy for a new run-book.
-- `HANDOFF-*.md` — ephemeral session batons (handoff protocol); safe to delete once the step lands.
+- `TEMPLATE.md` — the spec-24 skeleton to copy for a new run-book; carries the D4 header pattern as
+  a placeholder for whatever run-book is written from it, so every future run-book inherits the
+  format from the start.
+- `HANDOFF-*.md` — ephemeral session batons (handoff protocol); `status: historical` — safe to
+  delete once the step they targeted has landed (all three have).
 - `scripts/` — helper scripts some run-books invoke.
 
 ## Conventions (all run-books)
@@ -73,3 +89,6 @@ The pipeline was proven **locally** first; these stay as reference and for local
 - **VPN + `az login`** are required wherever the driver or a node touches blob.
 - Re-running is self-healing (idempotent skips); **never** `fs.rm(prefix, recursive=True)` on
   `abfss://` (TODO #50 — it deletes then raises, reading as "nothing happened").
+- Every run-book's own D4 header (spec 41) is the per-file trust signal; this table's **"ran?"**
+  column is the process-state signal the header deliberately excludes. To regenerate this table:
+  re-derive each row from the run-book's own text and `PROGRESS.md` — do not hand-patch a stale row.

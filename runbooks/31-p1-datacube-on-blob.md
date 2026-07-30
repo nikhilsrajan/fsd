@@ -1,3 +1,8 @@
+---
+status: current
+summary: Build a datacube reading and writing the rise blob; ran and gated spec 31.
+---
+
 # Run-book 31b — build a Sentinel-2 datacube reading + writing the `rise` blob
 
 **You run this; Claude never runs pipeline/networked/long scripts (spec 24).** Paste back

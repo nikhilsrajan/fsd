@@ -1,3 +1,8 @@
+---
+status: current
+summary: Regenerate the demo STAC with the true slanted cell footprint instead of the bbox; ran green.
+---
+
 # Run-book: spec 28 — regenerate the demo STAC with the true cell geometry
 
 > Spec 24 template. A run-book is what Claude hands the user instead of running a

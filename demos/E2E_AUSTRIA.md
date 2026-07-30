@@ -1,3 +1,8 @@
+---
+status: current
+summary: The local end-to-end Austria walkthrough with real timings; a tutorial and a benchmark report fused into one doc (spec 41 D10) pending extraction into docs/tutorial.md.
+---
+
 # Running fsd locally — the end-to-end guide (Austria)
 
 **This is the go-to doc for running fsd on your own machine.** It walks the whole local pipeline on

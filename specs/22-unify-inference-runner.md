@@ -1,3 +1,8 @@
+---
+status: current
+summary: Retires `engine.run_local`'s in-process `mp.Pool`, unifying inference fan-out onto the runner seam; signed off and implemented.
+---
+
 # Spec 22 — Unify inference on the runner seam (retire `engine.run_local`'s `mp.Pool`) + idempotent outputs
 
 > **Status: SIGNED OFF (2026-07-07).** SO-1..SO-5 approved as drafted. After P0.75 (spec 21), `engine.run_local`'s

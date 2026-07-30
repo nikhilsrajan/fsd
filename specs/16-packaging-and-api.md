@@ -1,3 +1,8 @@
+---
+status: current
+summary: Public `fsd` verb API (download/create_training_data/run_inference/deploy) surface; signed off, implemented, verified.
+---
+
 # Spec 16 — Packaging + high-level API surface (P0)
 
 > **Status: SIGNED OFF + IMPLEMENTED + VERIFIED (2026-07-06).** SO-1..SO-6 approved as drafted

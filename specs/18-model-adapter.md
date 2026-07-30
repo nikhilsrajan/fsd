@@ -1,3 +1,8 @@
+---
+status: current
+summary: ModelAdapter contract, bundle format, and local train/deploy design; contract unchanged, only the cores>1 inference detail was later superseded by spec 22 (noted inline).
+---
+
 # Spec 18 — ModelAdapter contract + local train/deploy (P0.5)
 
 > **Superseded in part:** the engine's `cores>1` inference used a `multiprocessing.Pool` here;

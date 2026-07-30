@@ -1,3 +1,8 @@
+---
+status: historical
+summary: Ephemeral session baton for running run-book 38 Phase 3 with the corrected ROI; the step it targeted has landed.
+---
+
 # Handoff — run runbook 38 Phase 3 with the CORRECTED ROI (operator run + triage)
 
 Fresh-session baton. **This is a pointer, not the source of truth** — the durable state is in the

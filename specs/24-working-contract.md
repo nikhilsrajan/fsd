@@ -1,3 +1,8 @@
+---
+status: current
+summary: The working contract: Claude never runs pipeline/networked scripts, hands the user run-books instead; signed off and implemented, still the operative rule in CLAUDE.md.
+---
+
 # Spec 24 — working contract: I don't run scripts; you run run-books
 
 **Status:** SIGNED OFF + IMPLEMENTED (C1 pytest-ok, C2 `runbooks/`, C3 ok, C4 25→26, C5 ok).

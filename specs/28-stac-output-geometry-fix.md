@@ -1,3 +1,8 @@
+---
+status: current
+summary: STAC inference-output geometry uses the true S2-cell polygon instead of the raster bbox; done, reviewed, merged.
+---
+
 # Spec 28 — STAC inference-output geometry: use the true S2-cell polygon, not the raster bbox
 
 > **Status: DONE (2026-07-14) — reviewed (Opus@high), merged to `main` (`620441e`, not pushed), regen

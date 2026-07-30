@@ -1,3 +1,8 @@
+---
+status: historical
+summary: Proposed a local Leaflet/MosaicJSON dashboard for verifying inference output; explicitly superseded during sign-off in favor of standard STAC+COGs served to STACNotator (no dashboard is ever built) — see TODO #26-#29.
+---
+
 # Spec 27 — titiler + Leaflet: verify the inference STAC catalog + COGs in a web map
 
 > **⛔ STATUS: SUPERSEDED (2026-07-14) — DO NOT IMPLEMENT.** This spec proposed building a *local

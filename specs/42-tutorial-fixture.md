@@ -1,3 +1,8 @@
+---
+status: current
+summary: The committed offline tutorial micro-fixture (real COGs clipped to one grid cell); signed off, amended same day for an in-region VM build.
+---
+
 # Spec 42 — the tutorial micro-fixture: a committed, offline, real-pixel dataset
 
 **Status: ✅ SIGNED OFF (2026-07-30, user) — amended A1 the same day, see §8.** Carved out of

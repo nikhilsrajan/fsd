@@ -1,3 +1,8 @@
+---
+status: current
+summary: File-based GeoParquet tile catalog design; still the format in use.
+---
+
 # Spec 02 — Tile catalog (file-based)
 
 Folds in: catalog-writing parts of `core/sentinel2_via_s3.py` and the

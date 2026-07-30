@@ -1,3 +1,8 @@
+---
+status: current
+summary: Ingest stores raw DN and declares radiometry as metadata rather than baking normalized pixels; done and validated.
+---
+
 # Spec 34 — Ingest / normalization contract (`stage → normalize → put`, per source)
 
 > **Status: ✅ DONE / VALIDATED (2026-07-21).** Signed off 2026-07-20 (Opus@high, post-`grilling`),

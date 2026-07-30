@@ -1,3 +1,8 @@
+---
+status: current
+summary: Flatten the 900 cubes into land-local training arrays via create_training_data; ran, P0-1 green, a P2 re-run is pending.
+---
+
 # Run-book: 39 Phases 0–2 — training data on Azure ML: flatten → land-local, then full e2e
 
 > Spec-24 run-book for **spec 39 §6**. **You** run this; paste back each phase's printed JSON.

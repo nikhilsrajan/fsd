@@ -1,3 +1,8 @@
+---
+status: current
+summary: Download/JP2-to-COG redesign: pipeline transfer over a convert process pool; implemented and reviewed.
+---
+
 # Spec 25 — download / jp2→COG redesign: pipeline transfer over a convert **process pool**
 
 > **Status: IMPLEMENTED (`76b2cd9`) + REVIEWED (Phase 1, 2026-07-11).** Opus@high (spec). C1–C6 resolved

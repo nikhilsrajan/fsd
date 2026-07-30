@@ -1,3 +1,8 @@
+---
+status: historical
+summary: Ephemeral session baton for implementing spec 40 (demos/e2e_austria_aml.py); the implementation landed.
+---
+
 # Handoff — implement spec 40 (`demos/e2e_austria_aml.py`)
 
 **Ephemeral baton.** Durable state is in the repo; this is a pointer plus the traps that are not

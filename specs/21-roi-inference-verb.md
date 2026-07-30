@@ -1,3 +1,8 @@
+---
+status: current
+summary: Local ROI inference verb `run_inference(roi=...)`; signed off, implemented, verified, later amended for multi-polygon ROI grid-id uniqueness.
+---
+
 # Spec 21 — Local ROI inference verb (`run_inference(roi=…)`, P0.75)
 
 > **AMENDED 2026-07-28 — see `D-GRID-1`:** an ROI is one *region* (multi-row input is unioned

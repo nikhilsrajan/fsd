@@ -1,3 +1,8 @@
+---
+status: current
+summary: Tier-1 serving validation: a pre-styled XYZ endpoint for the crop map, consumed by STACNotator; done, reviewed, validated.
+---
+
 # Spec 29 — Tier-1 serving validation: a pre-styled XYZ for the crop map, consumed by STACNotator
 
 > **Status: DONE (2026-07-14) — reviewed (Opus@high), merged to `main` (`620441e`, not pushed),

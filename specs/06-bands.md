@@ -1,3 +1,8 @@
+---
+status: current
+summary: 5-D band-math transform convention over `(samples, timestamps, height, width, bands)`.
+---
+
 # Spec 06 — Band math (`bands/modify.py`)
 
 Folds in: `rsutils/modify_bands.py`.

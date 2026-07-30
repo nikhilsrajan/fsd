@@ -1,3 +1,8 @@
+---
+status: current
+summary: Reprocessing-dedup fires on the real duplicate acquisition against live MPC; ran green locally.
+---
+
 # Run-book: spec 33 — MPC reprocessing dedup, proven on live MPC data
 
 > Spec 24 template. A run-book is what Claude hands the user instead of running a
