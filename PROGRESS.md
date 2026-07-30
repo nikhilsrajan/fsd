@@ -95,9 +95,25 @@ user picks 10 files to spot-check; more than one error ⇒ the batch is redone, 
 **P2** — the issue migration, gated on a manifest the user reads *before* any issue is created
 (issues cannot be cleanly deleted). Pre-flight all three counters or fall back to a mapping table.
 
-**Not yet written, needed before P6 can run:** `runbooks/43-build-tutorial-fixture.md` and the
-generator script. **Still deferred, unchanged:** spec 40 §7, TODO #62, TODO #59/#60/#61, the
-rslearn Plan B/C decision. The docs work is independent of all of them.
+**✅ `runbooks/43-build-tutorial-fixture.md` is written** (commit `8437175`). It splits across two
+machines by what each can reach: **step 0 on the laptop** derives `roi.geojson` + `fields.geojson`
+because `shapefiles/` lives at the **workspace root, outside the repo** — a `git clone` on a VM
+cannot supply `AT_ROI`, and cell `4772924` is only reproducible as `roi_to_s2_grids(AT_ROI, 5)`
+(the trap that bit run-book 34); **steps 1–5 on a VM in the `rise` VNet** clip pixels against the
+blob MPC archive per A1; **steps 6–7 on the laptop** verify with **VPN and wifi off**, then commit.
+Only ~20 MB crosses the wire. It carries the **first spec-41 D4 status header** in the repo, so P1
+has a reference format. **One elaboration on spec 42 D4, flagged not smuggled:** the split needs
+**two** scripts, so step 0 specifies `derive_roi_and_labels.py` beside `build_fixture.py`; the CLI
+contract is fixed in the run-book and marked **normative** so script and run-book cannot drift.
+
+**Still to implement before run-book 43 is runnable:** `tests/data/tutorial/derive_roi_and_labels.py`,
+`tests/data/tutorial/build_fixture.py`, and `tests/test_tutorial_fixture.py` (spec 42 §3–4).
+
+**Commits this session (both pushed except the last):** `b1d9781` specs 41+42 + ADRs 0022–0026
+(**pushed**), `8437175` run-book 43 (**local only — not pushed**).
+
+**Still deferred, unchanged:** spec 40 §7, TODO #62, TODO #59/#60/#61, the rslearn Plan B/C
+decision. The docs work is independent of all of them.
 
 ## ⭐ 2026-07-29 — THE DEMO RAN. P3 AND P4 ARE VALIDATED. → NEXT: TODO #55 (docs refactor)
 
