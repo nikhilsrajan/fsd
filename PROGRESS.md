@@ -136,8 +136,12 @@ their sources. **The assertion 2 scope call was right** — excluding point-in-t
 from D3, and the counter-argument (a rotted run-book link wastes an operator's time) is better
 served by superseding the run-book than by editing it.
 
-**Gate after the fixes:** `pytest -q` **648 passed / 84 skipped** in a worktree (647 baseline + the
-new test), `ruff check src/ tests/ demos/` clean.
+**Gate after the fixes:** `pytest -q` **650 passed / 86 skipped** on `main` (649 baseline + the new
+test; 648/84 in a worktree, same +1), `ruff check src/ tests/ demos/` clean.
+
+**PUSHED — `origin/main` is at `1274d67`** (2026-07-30, `8da99fc..1274d67`, 5 commits). The
+identifier sweep was run on the changed files before the push: 32 concrete values checked, only the
+documented known-clean false positives hit.
 
 ### ⚠️ Still open — two P1 findings, inherited
 
