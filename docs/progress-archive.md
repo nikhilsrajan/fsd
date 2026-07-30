@@ -59,8 +59,10 @@ demos/` clean, identifier sweep clean apart from documented false positives.
 
 > **Moved, not deleted** (spec 41 D12, 2026-07-30). `PROGRESS.md` was 3,691 lines of resume
 > anchor **and** historical log fused into one document — read at the start of every session,
-> so the cost was paid every time. The anchor stayed in `PROGRESS.md`; every entry before the
-> current one is below, **verbatim and in the same order**.
+> so the cost was paid every time. The anchor stayed in `PROGRESS.md`; all **61** entries before the
+> current one are below, **verbatim and in the same order** — with exactly one deliberate exception:
+> the move **scrubbed a concrete cluster identifier** out of one line (the pre-push sweep caught it;
+> it is described there now, not spelled). No other byte was changed.
 >
 > **One file on purpose** (user, 2026-07-29): it is a log, nobody browses it, and splitting it
 > by month would invent a boundary that means nothing. It is **point-in-time** (D3) — entries

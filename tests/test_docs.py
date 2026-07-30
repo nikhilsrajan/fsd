@@ -12,6 +12,8 @@ Assertions 2 and 3 (link resolution, README verb existence) belong to P5.
 
 from __future__ import annotations
 
+import ast
+import inspect
 import re
 from pathlib import Path
 
@@ -200,3 +202,50 @@ def test_readme_verbs_exist():
     assert called, "README quickstart calls no fsd verbs — did the example disappear?"
     missing = sorted(v for v in called if v not in fsd.__all__)
     assert not missing, f"README calls fsd.<verb> that is not in fsd.__all__: {missing}"
+
+
+def _readme_fsd_calls():
+    """Every `fsd.<verb>(...)` call in the README's python blocks, as (verb, npos, kwnames).
+
+    Calls that splat (`*args`/`**kwargs`) are skipped — arity is unknowable statically.
+    """
+    text = (REPO_ROOT / "README.md").read_text()
+    for block in re.findall(r"```python\n(.*?)```", text, re.S):
+        for node in ast.walk(ast.parse(block)):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            if not (isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name)
+                    and fn.value.id == "fsd"):
+                continue
+            if any(isinstance(a, ast.Starred) for a in node.args) or \
+                    any(k.arg is None for k in node.keywords):
+                continue
+            yield fn.attr, len(node.args), [k.arg for k in node.keywords]
+
+
+def test_readme_calls_bind_to_real_signatures():
+    """The README's example calls must actually bind — assertion 3 with teeth.
+
+    Verb *existence* (above) does not prove the call is callable: the P5 review found
+    `fsd.download(...)` missing its required `max_tiles` and `fsd.run_inference(...)`
+    passing a `model_bundle=` keyword that does not exist. Both raise TypeError on the
+    first line a newcomer copies. This binds each call's real arity and keyword names
+    against the live signature, without executing anything.
+    """
+    import fsd
+
+    calls = list(_readme_fsd_calls())
+    assert calls, "README's python blocks contain no fsd.<verb>(...) calls to check."
+    sentinel = object()
+    failures = []
+    for verb, npos, kwnames in calls:
+        fn = getattr(fsd, verb, None)
+        if fn is None:
+            failures.append(f"fsd.{verb} does not exist")
+            continue
+        try:
+            inspect.signature(fn).bind(*[sentinel] * npos, **dict.fromkeys(kwnames, sentinel))
+        except TypeError as exc:
+            failures.append(f"fsd.{verb}(...): {exc}")
+    assert not failures, "README example call(s) would raise TypeError:\n  " + "\n  ".join(failures)

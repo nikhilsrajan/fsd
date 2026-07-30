@@ -35,7 +35,8 @@ catalog = fsd.download(
     bands=["B04", "B08", "B8A", "SCL"],
     dst_folderpath="data/s2l2a",
     creds=CdseCredentials.from_env(),
-)
+    max_tiles=20,   # required cost guardrail: refuse the run if the ROI matches more
+)                   # than this many MGRS granules. Preflight checks it before any spend.
 
 # 2. Labelled polygons + that catalog -> flattened training arrays.
 training = fsd.create_training_data(
@@ -55,11 +56,14 @@ arrays = training.load()   # {"data", "ids", "labels", "coords", "metadata"}
 
 # 3. Your trained model, bundled as a ModelAdapter, run over a region -> COGs + STAC.
 result = fsd.run_inference(
-    roi="my_roi.geojson",
-    model_bundle="my_bundle/",
+    "my_bundle/",                    # the bundle is the first positional argument
+    output_folderpath="data/predictions",
+    roi="my_roi.geojson",            # ROI mode needs all five of the next arguments
+    catalog_filepath=catalog,
     startdate=datetime.datetime(2018, 1, 1),
     enddate=datetime.datetime(2019, 1, 1),
-    output_folderpath="data/predictions",
+    mosaic_days=20,
+    bands=["B04", "B08", "B8A", "SCL"],
     merge=True,
 )
 ```
@@ -75,6 +79,7 @@ registry lands in P6.
 
 | you want | read |
 |---|---|
+| a readable script to copy | [`examples/`](examples/) — `eurocrops_rf.py`, a complete `ModelAdapter` |
 | how the code is laid out, and what must stay true | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | where fsd is heading | [`ROADMAP.md`](ROADMAP.md) |
 | what a term means | [`CONTEXT.md`](CONTEXT.md) |

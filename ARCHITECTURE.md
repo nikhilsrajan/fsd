@@ -70,7 +70,7 @@ per-output-unit collect loop running on the operator's laptop over VPN was **35 
 | `fsd/catalog/` | `catalog.py` = `TileCatalog`, the GeoParquet query format. `stac.py` = an **additive export view**. `declaration.py` carries radiometry through. |
 | `fsd/datacube/` | `builder.py` merges granules into one cube per geometry; `ops.py` array transforms; `flatten.py` the reduce into training arrays. |
 | `fsd/bands/` | band math on the 5-D contract. |
-| `fsd/raster/` | rasterio primitives: `cog.py` (COG conversion, remote-dst branch), `images.py`. **The one place GDAL/VSI opens paths directly.** |
+| `fsd/raster/` | rasterio primitives: `cog.py` (COG conversion, remote-dst branch), `images.py`. **The home of the GDAL/VSI exception to invariant 1** — the mosaic path in `api.py` and the COG writer in `model/engine.py` also open rasters directly, and are the only other places that may. |
 | `fsd/grid.py` | `roi_to_s2_grids` — an ROI becomes S2 grid cells, one cell = one work unit. |
 | `fsd/model/` | `adapter.py` the `ModelAdapter` contract, `bundle.py` packaging, `engine.py` inference, `features.py`. |
 | `fsd/workflows/` | `task.py` / `infer_task.py` / `shard.py` = the CLI units-of-work. `runners.py` = the runner seam (local Snakemake, AML). |
@@ -87,8 +87,16 @@ economics; see [`docs/findings/workload-regimes.md`](docs/findings/workload-regi
 
 Important invariants are **an absence of something** — that is what makes them checkable:
 
-1. **No module opens a path outside `fsd.storage`.** The documented exception is raster pixel reads,
-   which go through rasterio/GDAL VSI. This is what makes local ≡ `abfss://` a config change.
+1. **No module reaches a *remote* path outside `fsd.storage`.** This is what makes local ≡
+   `abfss://` a config change. Two documented exceptions, both narrow:
+   - **raster pixel reads**, which go through rasterio/GDAL VSI (`raster/`, plus the mosaic path in
+     `api.py`);
+   - **node-local scratch and CLI-local files** — bare `open()` on a path that is always on the
+     local disk (a staged bundle, a `_result.json`, a Snakemake sentinel, a scratch GeoTIFF).
+     `api.py`'s scratch opens carry an inline comment saying so.
+
+   The line to hold is therefore: **a bare open is only ever legal on a path that cannot be
+   remote.** Anything that could be a URL goes through `fsd.storage`.
 2. **No direct `boto3`.** S3 transport is `s3fs` with any `endpoint_url`; a tile download is
    `storage.transfer(src, dst)`.
 3. **The unit-of-work never knows how it was scheduled.** `workflows/task.py` reads its inputs and
@@ -157,5 +165,7 @@ in this repo — it is public MIT. The variables are named and verifiable in
 - **Open work is GitHub Issues**, not a file. Issue numbers #1–#62 are aligned with the historical
   `TODO #NN` references.
 - **Never commit a concrete Azure identifier.** Run `RECIPES.md`'s sweep after any session that
-  writes prose about a real run — it has caught three leaks that way.
+  writes prose about a real run — it has caught **four** leaks that way, the most recent being a
+  write-up that spelled the identifier out while explaining that it had been scrubbed. Describe the
+  identifier, never spell it.
 
