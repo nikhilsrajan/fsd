@@ -23,10 +23,15 @@ _SUPERSEDED_RE = re.compile(r"^superseded-by-(.+)$")
 # status), and non-run-book support files.
 _EXCLUDE_BASENAMES = {"README.md", "TEMPLATE.md"}
 
+# Every directory spec 41 D3 classifies as point-in-time. `specs/` and `runbooks/`
+# are D6 assertion 4's literal wording; the other three were stamped in P1/P3 and
+# are covered here too, so their headers cannot rot untested.
+_D4_DIRS = ("specs", "runbooks", "demos", "benchmarks", "docs/findings")
+
 
 def _d4_targets() -> list[Path]:
     paths = []
-    for d in ("specs", "runbooks"):
+    for d in _D4_DIRS:
         for p in sorted((REPO_ROOT / d).glob("*.md")):
             if p.name in _EXCLUDE_BASENAMES:
                 continue

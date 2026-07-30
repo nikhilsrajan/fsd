@@ -174,6 +174,11 @@ bound how hard the number should be leaned on.
 
 ### 6.1 The overhead, fully decomposed — and it is not the cluster
 
+> **Extracted 2026-07-30 (spec 41 D14 P3):** this analysis now also stands on its own as
+> [`docs/findings/cloud-overhead.md`](../docs/findings/cloud-overhead.md), which is the citable
+> home and carries what has been fixed since. The text below is unchanged — this document is
+> point-in-time and is not edited to chase later work.
+
 `PROGRESS.md` and TODO #59 read run-book 38 Phase 4 (16 no-op jobs, 1082.1 s ≈ Phase 3's computed
 1084.3 s, within 0.2 %) as one *fixed* cost, mostly cluster spin-up. **That reading is wrong, and
 the run's own records say so.** Every AML job carries `StartTimeUtc`/`EndTimeUtc`, and the driver
@@ -275,6 +280,10 @@ dispatch, and it is the reason run-book 38 needs *one* call with `merge=True` ra
 followed by Phase 4.
 
 ### 6.2 Training and inference are opposite regimes
+
+> **Extracted 2026-07-30 (spec 41 D14 P3):** also stands on its own as
+> [`docs/findings/workload-regimes.md`](../docs/findings/workload-regimes.md), which reconciles
+> the 5.48 GB / 4.13 GB discrepancy noted below.
 
 Measured 2026-07-28 over the same two runs:
 
