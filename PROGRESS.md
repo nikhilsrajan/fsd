@@ -4,7 +4,7 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-07-30 (P6 step 1 **reviewed + merged** — 8 findings, 2 blocking, all fixed; spec 42 amendment **A2 signed off**; `main` not yet pushed)_
+_Last updated: 2026-07-30 (P6 step 1 **reviewed + merged + pushed** — 8 findings, 2 blocking, all fixed; spec 42 amendment **A2 signed off**)_
 
 ## Where things stand
 
@@ -41,8 +41,8 @@ all fixed — see the entry below); the rest is in the archive. P6/P7 remain.
 
 **Next up:** the user runs `runbooks/43-build-tutorial-fixture.md` on an Azure ML compute instance
 inside the `rise` VNet (Steps 1-6), pastes back the `_result_step*.json` files, and commits the real
-fixture (Step 7). (`main` has the reviewed generators but is **unpushed** — the VM clones from
-GitHub at run-book Step 1c, so **push `main` before starting the run-book**.) That lands spec 42, closing spec 41 **P6** and unblocking **P7**
+fixture (Step 7). `main` is pushed, so the VM's `git clone` at run-book Step 1c will have the
+reviewed generators. That lands spec 42, closing spec 41 **P6** and unblocking **P7**
 (`docs/tutorial.md` + `docs/howto/*`).
 
 ---
@@ -114,9 +114,12 @@ equality is kept as a secondary check, now documented as insufficient on its own
 demos/` clean. Pre-push identifier sweep run over the staged tree: 32 concrete values, 7 hits, all
 7 the documented known-clean false positives, **none in the changed files**.
 
-**Merged.** A2 was signed off the same day; `worktree-p6-build-fixture` went into `main` with
-`--no-ff` and the worktree + branch were pruned (standing practice). **`main` is ahead of
-`origin/main` and not pushed** — push is an outward action and still needs the go-ahead.
+**Merged and PUSHED — `origin/main` is at `2bdc4c6`** (2026-07-30, `a9a356b..2bdc4c6`, 3 commits).
+A2 was signed off the same day; `worktree-p6-build-fixture` went into `main` with `--no-ff` and the
+worktree + branch were pruned (standing practice). Post-merge gate on `main`: **676 passed / 89
+skipped** (the +2/+2 vs the worktree's 674/87 is the documented gitignored-benchmark-report delta),
+ruff clean. The push matters operationally, not just hygienically: **run-book 43 Step 1c clones from
+GitHub**, so the VM could not have seen these generators otherwise.
 
 ---
 
