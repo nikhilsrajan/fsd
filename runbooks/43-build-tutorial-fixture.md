@@ -145,9 +145,14 @@ waste the run if assumed. Check them before clipping a single pixel.
 python tests/data/tutorial/build_fixture.py \
     --archive-root "$AZ_ARCHIVE_ROOT/archive" \
     --roi   tests/data/tutorial/roi.geojson \
+    --bands B04 B08 SCL \
     --check-only \
     --result tests/outputs/p6_tutorial_fixture/_result_step2.json
 ```
+
+**Pass `--bands` here.** It is optional to the CLI, but without it the "all three bands present"
+PASS condition below cannot be evaluated and `_result.json` records it as `unchecked` rather than
+silently satisfied.
 
 - **Expect** something like:
   ```
@@ -155,10 +160,17 @@ python tests/data/tutorial/build_fixture.py \
   single MGRS tile           : T33UWP    (24/24)
   bands present              : B04, B08, SCL
   radiometry declared        : 24/24 rows non-null   (column: 'offset')
+  offset value(s)            : [-1000]  sources={'declared': 24}
   date span                  : 2018-04-06 .. 2018-09-28
   ```
 - **PASS if:** all four of — a single MGRS tile, all three bands present, **every** row carries a
-  non-null radiometry declaration, and the date span covers Apr–Sep 2018.
+  non-null radiometry declaration, and the date span is non-empty and covers Apr–Sep 2018. All four
+  are now gated in `_result.json`'s `pass` (they used to be printed but not gated).
+- **Check `offset_sources` says `declared`, not `derived`** (spec 42 A2). `declared` means the value
+  was **copied from the source catalog's own column** — A1's "copied, not invented" evidence. This is
+  the only place that fact is observable: run-book Step 6 runs offline and cannot see the source at
+  all. `derived` means the generator fell back to D1's id-token rule, which on the MPC path should
+  never happen — if you see it, **stop and tell Claude.**
 - **The granule count is NOT a pass criterion.** MPC applies different cloud-cover filtering and
   reprocessing dedup (spec 33), so it may not give 24. **Whatever it gives is the fixture's timestamp
   count**, and `T` in step 6 follows from it — do not expect 9 mosaic intervals in advance.
@@ -193,6 +205,9 @@ python tests/data/tutorial/build_fixture.py \
 - **PASS if:** projected total **< 30 MB** and the granule/band counts match step 2.
 - **If projected > 30 MB:** do **not** raise the cap. Spec 42 D2's documented fallback is **drop to
   12 timestamps before dropping bands** (`--max-timestamps 12`). Report the number to Claude first.
+  The kept timestamps are spread **evenly across the date span** (endpoints included), not the first
+  12 — taking the first 12 of 24 would leave Apr–Jun only and destroy the seasonal series D2 calls
+  the point of the fixture.
 
 ---
 
@@ -212,8 +227,13 @@ python tests/data/tutorial/build_fixture.py \
 - **Expect:** a live progress line per granule with ETA, then a summary: granules written, per-band
   bytes, total bytes, the derived radiometry value, and the source granule ids recorded in
   `tests/data/tutorial/README.md`.
-- **PASS if:** `status: ok`, every granule × band written, total under the cap, and
-  `tests/data/tutorial/` now contains `catalog.parquet`, `NOTICE`, `README.md` and the COGs.
+- **PASS if:** `status: ok`, every granule × band written, total under the cap,
+  **`all_offsets_declared: true`** (spec 42 A2 — the "copied from the source, not invented" gate;
+  `offset_sources` must read `{"declared": N}` with no `derived`), and `tests/data/tutorial/` now
+  contains `catalog.parquet`, `NOTICE`, `README.md` and the COGs.
+- **`README.md` must not contain the archive url.** The generator redacts `--archive-root`'s value
+  from the recorded invocation because this file is committed to a **public MIT repo**. Confirm:
+  `grep -c 'abfss://' tests/data/tutorial/README.md` → **0**. If it is not 0, stop — do not commit.
 - **`NOTICE` must read exactly** `Contains modified Copernicus Sentinel data 2018` — the
   **modified** form, because clipping *is* modification under the EC legal notice (spec 42 D5). If
   it says the plain `Copernicus Sentinel data 2018`, that is a defect, not a nitpick.
@@ -268,10 +288,14 @@ python -m pytest tests/test_tutorial_fixture.py -q
 
 - **Expect:** the three automated criteria of spec 42 §4 pass —
   **(1) structural** (every granule × band opens as a valid COG; one catalog row per granule with
-  non-empty geometry); **(2) radiometric** (every row's declaration round-trips **and equals the
-  source catalog's value** — copied, not invented); **(3) pipeline** (`create_training_data` → 43
-  ids, 3 classes; train; `run_inference` → one `output.tif` + STAC item; cube values in a plausible
-  post-offset reflectance range).
+  non-empty geometry); **(2) radiometric** (every row's declaration round-trips, is one of the two
+  physically meaningful values `0`/`-1000`, and is uniform across the fixture); **(3) pipeline**
+  (`create_training_data` → 43 ids, 3 classes; train; `run_inference` → one `output.tif` + STAC
+  item; cube values in a plausible post-offset reflectance range).
+- **"Equals the source catalog's value" is NOT checked here** — it cannot be, with the network off
+  (spec 42 A2). That gate is Step 2/Step 4's `offset_sources: {"declared": N}`. Criterion 3's
+  reflectance range is the offline check that would still catch a ~1000 DN error however the offset
+  arrived.
 - **PASS if:** all pass **with no network**. A test that needs the network has smuggled in a
   dependency the tutorial cannot rely on.
 - **Criterion 3's `T` comes from step 2's actual granule count** — do not assert 9 if the archive
@@ -283,14 +307,18 @@ python -m pytest tests/test_tutorial_fixture.py -q
 
 ```bash
 # .gitignore blanket-ignores *.tif/*.geojson/*.parquet -- spec 42 D6 pokes ONE narrow hole.
-git check-ignore -v tests/data/tutorial/catalog.parquet    # expect: no output (not ignored)
+# NOTE: use check-ignore WITHOUT -v. With -v, git also prints paths that merely
+# match a NEGATION pattern, so a correctly-working negation prints
+# ".gitignore:37:!tests/data/tutorial/** ..." and exits 0 -- which reads as a
+# failure but is the pass. Without -v: no output and exit 1 == not ignored.
+git check-ignore tests/data/tutorial/catalog.parquet; echo "exit=$?   # want exit=1"
 git add .gitignore tests/data/tutorial tests/test_tutorial_fixture.py
 git status --porcelain
 ```
 
-- **PASS if:** `git check-ignore` prints **nothing** (the negation works) and `git status` shows the
-  fixture files as added — **and nothing else**. If `tests/outputs/**` or a `.npy` appears, stop: the
-  negation is too broad.
+- **PASS if:** `git check-ignore` prints **nothing and exits 1** (the negation works) and
+  `git status` shows the fixture files as added — **and nothing else**. If `tests/outputs/**` or a
+  `.npy` appears, stop: the negation is too broad.
 - Then commit. **Do not push without asking** (working contract).
 
 ---
@@ -301,12 +329,17 @@ Each step writes `tests/outputs/p6_tutorial_fixture/_result_step<N>.json`:
 
 ```json
 { "step": "step4_build", "status": "ok", "pass": true,
-  "metrics": { "granules": 24, "bands": 3, "total_bytes": 19300000,
-               "radiometry_offset": -1000, "declaration_column": "offset",
+  "metrics": { "granules": 24, "bands": ["B04","B08","SCL"], "total_bytes": 19300000,
+               "offsets": [-1000], "declaration_column": "offset",
+               "offset_sources": { "declared": 24 }, "all_offsets_declared": true,
                "mgrs_tiles": ["T33UWP"], "date_span": ["2018-04-06","2018-09-28"] },
-  "expected": { "single_tile": true, "max_bytes": 31457280, "declaration_non_null": true },
+  "expected": { "under_cap": true },
   "error": null }
 ```
+
+`offset_sources` / `all_offsets_declared` are spec 42 **A2**'s gate: they are the only evidence that
+the radiometry was **copied from the source** rather than invented by the generator, and they exist
+only here because Step 6's suite runs with the network off.
 
 The run passes when every step's `pass` is true. **Paste these files back, not the logs.**
 

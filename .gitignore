@@ -28,6 +28,15 @@ tests/outputs/
 *.tif
 *.tiff
 
+# Tutorial micro-fixture (spec 42 D6) — deliberately committed; see
+# tests/data/tutorial/NOTICE. Un-excludes the directory tree itself first
+# (a parent-directory exclusion above, "data/", can't be re-included by a
+# file-level negation alone), then the whole subtree.
+!tests/data/
+!tests/data/tutorial/
+!tests/data/tutorial/**
+tests/data/tutorial/__pycache__/
+
 # Secrets
 *credentials*.json
 .env

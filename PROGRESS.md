@@ -4,7 +4,7 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-07-30 (✅ P5 DONE **and reviewed** — the Opus review found 8 things, all fixed; spec 41's floor is complete)_
+_Last updated: 2026-07-30 (P6 step 1 **reviewed** — 8 findings, 2 blocking, all fixed; spec 42 amendment **A2 is proposed and needs sign-off** before this merges)_
 
 ## Where things stand
 
@@ -39,13 +39,138 @@ all fixed — see the entry below); the rest is in the archive. P6/P7 remain.
 | open work | `gh issue list` |
 | what happened before | [`docs/progress-archive.md`](docs/progress-archive.md) |
 
-**Next up:** spec 41 **P6** — build spec 42's committed tutorial micro-fixture (`runbooks/43`),
-which unblocks **P7** (`docs/tutorial.md` + `docs/howto/*`). P6 is the risky one: it needs an
-in-region Azure VM.
+**Next up:** sign off **spec 42 amendment A2** (§8 — moves A1's source-equality check off the
+offline suite and onto the generator's `_result.json`), then merge `worktree-p6-build-fixture` into
+`main`. After that the user runs `runbooks/43-build-tutorial-fixture.md` on an Azure ML compute
+instance inside the `rise` VNet (Steps 1-6), pastes back the `_result_step*.json` files, and commits
+the real fixture (Step 7). That lands spec 42, closing spec 41 **P6** and unblocking **P7**
+(`docs/tutorial.md` + `docs/howto/*`).
 
 ---
 
 ## Most recent entry
+
+## 2026-07-30 — P6 step 1 REVIEWED: 8 findings, 2 blocking, all fixed → NEXT: sign off spec 42 **A2**, then merge + run run-book 43
+
+The Opus review of the P6 step-1 branch (`worktree-p6-build-fixture`, base `main` @ `a9a356b`),
+against **spec 42** D1-D6/§3/§8 A1 and **run-book 43**'s normative CLI blocks. Same posture as the
+P5 review: the authoring session declared it green (665/87, ruff clean — **verified true**), and the
+review still found **8 defects**.
+
+### The two blocking ones
+
+| # | defect |
+|---|---|
+| **F1** | **An infrastructure identifier would have been committed to a public repo.** `build_fixture.py` wrote `Generator invocation: {' '.join(sys.argv)}` into the fixture's `README.md` — a file spec 42 D6 *deliberately commits*. Run-book 43 Step 4 is invoked `--archive-root "$AZ_ARCHIVE_ROOT/archive"`, which the shell expands, so the concrete `abfss://…` url would have been published. The same function's closing lines asserted the opposite ("intentionally not recorded here (public MIT repo)"). **Fifth leak of this class**; the first that would have been *generated* rather than typed. |
+| **F2** | **Step 4 truncated its own inputs.** Run-book 43 Step 4 passes `--roi tests/data/tutorial/roi.geojson --fields …/fields.geojson --out tests/data/tutorial` — inputs *inside* the output dir — and the generator re-serialized both back over them. `to_file` truncates first, so a crash mid-write destroys Step 0's output, which **cannot be regenerated on the VM** (Step 0 needs `shapefiles/` from the workspace root). An interrupted run would have cost a laptop round-trip on the hotspot A1 exists to avoid. |
+
+### The handoff's flagged judgment call: the answer is "not faithful"
+
+The prior session flagged, rather than silently decided, whether its offline substitute for A1's
+revised acceptance test 2 was faithful. **It was not — and neither would any other offline test be.**
+A1 asks the test to assert the offset was *"copied from the source, not invented"*; §4 puts that test
+in `tests/test_tutorial_fixture.py`; run-book 43 Step 6 runs that suite **with the network
+disconnected**. The one assertion A1 wants is the one that file can never make. The substitute's
+only live check was `assert int(row["offset"]) == -1000` — which a generator that hardcoded `-1000`
+also passes, i.e. exactly the failure mode A1 set out to exclude (and on the MPC path no granule id
+carries a `_N####_` token, so the id-agreement branch never fires at all).
+
+**Resolution — spec 42 amendment A2 (⏳ PROPOSED, needs sign-off).** The source-equality gate moves
+to where the source is reachable: the generator records per granule whether the offset was
+`declared` (copied from the source catalog's column) or `derived` (D1's id-token fallback) and emits
+`offset_sources` + `all_offsets_declared` in `_result.json`; run-book 43 Steps 2 and 4 gate on it.
+The offline suite keeps only what is sound from the artifact alone (round-trip, value ∈ {0, −1000},
+uniform across the fixture) — plus acceptance test 3's post-offset reflectance range, which A1
+itself calls the check that catches a ~1000 DN error *however the offset arrived*.
+
+### The other five
+
+- **F4** — the generator computed `offset_source` per granule and then dropped it, keeping it only in
+  a progress line. The run-book says paste the `_result.json`, not the logs (spec 24), so nothing
+  gated on it. Now in the result JSON; this is also A2's mechanism.
+- **F5** — `--check-only`'s `pass` omitted **2 of run-book Step 2's 4 stated PASS conditions** (all
+  bands present, date span). It printed them and gated on the other two. `--bands` is now accepted by
+  `--check-only` and gated; omitted, it records `unchecked` rather than silently satisfied.
+- **F6** — Step 0's `_result.json` hardcoded `"pass": true`, with `expected: {"n_classes": 3}`
+  written but never compared. If `EC_hcat_n`'s real values are not literally `maize`/`hemp`, every
+  field collapses to `other` — one class, untrainable — and Step 0 would still have read PASS.
+- **F7** — run-book Step 7's gitignore check was wrong in a way that inverts its verdict. Verified
+  live: with the D6 negation working, `git check-ignore **-v**` *prints* the matching negation line
+  and exits 0. The run-book said "expect: no output / PASS if prints nothing", so a **correct**
+  negation reads as FAIL. Fixed to the un-`-v` form (`exit=1` == not ignored).
+- **F8** — `--max-timestamps N` took the **first** N chronologically, so D2's own documented fallback
+  (`--max-timestamps 12`) would have yielded Apr–Jun only, destroying the seasonal series D2 calls
+  the point of keeping all 24. Now spread evenly across the span, endpoints kept.
+
+### Negative controls, because one guard was vacuous
+
+Both blocking fixes were negative-controlled. F1's held immediately. **F2's first test did not** —
+it asserted byte-equality of the inputs, which *passed* even with the re-serialization restored,
+because a GeoJSON round-trip is often byte-identical. The real property is that the generator must
+not write to a path it read from **at all** (the hazard is truncation-on-crash, not divergence), so
+the assertion moved to `st_mtime_ns`. That version fails correctly when the bug is restored. Content
+equality is kept as a secondary check, now documented as insufficient on its own.
+
+**Gate:** `pytest -q` **674 passed / 87 skipped** (665 baseline + 9 new), `ruff check src/ tests/
+demos/` clean. Pre-push identifier sweep run over the staged tree: 32 concrete values, 7 hits, all
+7 the documented known-clean false positives, **none in the changed files**.
+
+**Not merged yet** — A2 is a change to a signed-off acceptance criterion, so it waits on the user's
+sign-off (working contract: spec sign-off before implementing against it). Everything else is done
+and green on the branch.
+
+---
+
+## 2026-07-30 — P6 step 1: run-book 43's two generator scripts, written and offline-tested → NEXT: the user runs run-book 43 on an Azure VM
+
+Run-book 43's Prerequisites block named a chicken-and-egg gap: it needs
+`tests/data/tutorial/build_fixture.py` to exist, and said in as many words that the run-book
+itself does not create it. The task was framed as one script; it is actually **two** (the run-book
+splits across two machines, spec 42 §8 A1) — `derive_roi_and_labels.py` (Step 0, laptop, needs
+`shapefiles/` which lives outside this repo) and `build_fixture.py` (Steps 2-4, Azure VM, needs the
+blob archive). Both now exist, both ruff-clean, neither run for real (per CLAUDE.md — Claude never
+runs networked/long scripts; that's the user's job on the VM).
+
+| file | what it does |
+|---|---|
+| `tests/data/tutorial/derive_roi_and_labels.py` | ROI/labels: derives grid cell 4772924 via `roi_to_s2_grids`, clips+collapses `AT_2018_TRAIN`'s labels to the spec 42 D3 3-class scheme (`maize`/`hemp`/`other`), writes `roi.geojson` + `fields.geojson` |
+| `tests/data/tutorial/build_fixture.py` | select → clip (via `raster.cog.to_cog`, ADR 0014) → catalog (radiometry read from the source's own declaration column, never hardcoded — A1; D1's id-token re-derivation kept as the offline fallback) → NOTICE/README → `_result.json`. `--check-only`/`--dry-run`/build modes match run-book 43 Steps 2/3/4's CLI exactly. Per-file idempotent/resumable; `--max-timestamps` fallback before the 30 MB cap. |
+
+**Verified offline** (the hard constraint: neither script can be run for real without VM/blob
+access) against synthetic mini-archives, mirroring `test_datacube_builder.py`'s `_write_tile`/
+`_make_catalog` shape: `tests/test_build_fixture.py` (12 tests — selection, MGRS-tile parsing,
+radiometry column fallback (`offset` → `boa_add_offset` → id-token derivation → refuse), dry-run
+zero-writes, idempotent re-run, geometry recomputed from the clip not the source, `--max-timestamps`
+fallback) and `tests/test_derive_roi_and_labels.py` (5 tests — cell selection, label collapse,
+wrong-cell-id failure, missing-column failure, CLI/`_result.json` shape). A one-off (uncommitted)
+smoke script additionally ran the FULL downstream pipeline — `build_fixture` → `create_training_data`
+→ train a trivial classifier → `run_inference` → COG + STAC — against a synthetic fixture, to catch
+wiring bugs in the acceptance-test-3 code path before the real fixture exists; it passed end to end.
+
+**`tests/test_tutorial_fixture.py`** (judgment call, handoff recommended it): spec 42 §4 acceptance
+tests 1-3, whole-module-skipped until `tests/data/tutorial/catalog.parquet` exists (it doesn't yet —
+that's the VM's job). One deliberate deviation from §8 A1's revised acceptance test 2: A1 wants the
+fixture's offset compared against the *source* catalog, but run-book 43 Step 6 runs this suite with
+the network disconnected, so the source is unreachable by design. Test 2 instead checks the
+strongest fact derivable from the shipped artifact alone (declaration round-trips + agrees with the
+granule id's own baseline token where derivable) — documented as an offline substitute in the test's
+docstring, not a silent reinterpretation.
+
+**`.gitignore`** gained spec 42 D6's negation — three lines, not the one line D6 sketched:
+`data/` (line 21) excludes the whole directory tree, and git cannot re-include a file whose parent
+directory is excluded by a plain file-negation alone, so the un-exclusion has to walk back down the
+tree (`!tests/data/` → `!tests/data/tutorial/` → `!tests/data/tutorial/**`), plus a re-ignore for
+`tests/data/tutorial/__pycache__/` (the blanket `*.pyc` rule is un-ignored by the same negation).
+Verified with `git check-ignore`/`git status` before relying on it.
+
+**Gate:** `pytest -q` **665 passed / 87 skipped** in this worktree (648/84 fresh-worktree baseline +
+17 new passing + 3 new skipped, per PROGRESS's own documented baseline-difference note), `ruff check
+src/ tests/ demos/` clean.
+
+**Not done / explicitly out of scope this session:** running run-book 43 itself (needs the VM —
+confirm the user has AML compute access before assuming the fixture is imminent); `docs/tutorial.md`
+(P7, gated on the real fixture); the two open P1 `test_docs.py` findings (still open, still cheap,
+still not touched — see below).
 
 ## ✅ 2026-07-30 — P5 DONE: README + ARCHITECTURE + the PROGRESS split. Spec 41's floor is complete. → NEXT: P6 (the tutorial fixture)
 

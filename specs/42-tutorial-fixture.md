@@ -9,10 +9,12 @@ summary: The committed offline tutorial micro-fixture (real COGs clipped to one 
 **spec 41 (D11, phase P6)** because this is data engineering with its own acceptance criteria and its
 own failure modes, not documentation.
 
-> **⚠️ Read §8 (amendment A1) before §2 D1.** A1 moves the build **in-region onto an Azure VM,
+> **⚠️ Read §8 (amendments A1, A2) before §2 D1.** A1 moves the build **in-region onto an Azure VM,
 > sourcing the blob MPC archive instead of the local CDSE archive** — which supersedes D1's
 > radiometry mechanism and revises acceptance test 2. D1 is kept intact below because its reasoning
-> is the fallback path.
+> is the fallback path. **A2 (⏳ proposed)** then moves A1's *source-equality* half of acceptance
+> test 2 **out of the offline test suite and into the generator's `_result.json`**, because the
+> suite runs with the network off and therefore cannot reach the source at all.
 
 > **What this delivers:** `fsd/tests/data/tutorial/` — a ~15–25 MB committed dataset that drives
 > the **entire local pipeline** (datacube → training data → train → inference → COG/STAC/crop map)
@@ -179,7 +181,9 @@ the 520-test suite; 4 is the spec-41 D13 cold-start gate and is the user's.
    has one row per granule with non-empty geometry; row count == granule count.
 2. **Radiometric (independent)** — `boa_add_offset == −1000` for every row, re-derived in the test
    *from the granule id's baseline token*, not read from the column the generator wrote. This is
-   the assertion that makes D1 safe.
+   the assertion that makes D1 safe. **Revised by A1, then split by A2 (§8)** — on the MPC path the
+   ids carry no baseline token, and the source-equality check A1 substituted cannot run in a
+   network-disconnected suite, so it now lives in the generator's `_result.json`.
 3. **Pipeline** — a full offline run over the fixture succeeds and is **deterministic**:
    `create_training_data` → 43 ids, 3 classes, expected `(pixels, timestamps, bands)` shape with
    `T == 9` at `mosaic_days=20`; train a trivial classifier; `run_inference` → one `output.tif` +
@@ -304,7 +308,7 @@ from the laptop, and all three would waste the run if assumed:
 - cube values from acceptance test 3 fall in a **plausible post-offset reflectance range**, which is
   the check that would catch the ~1000 DN error regardless of how the offset arrived.
 
-**Consequences and residual risk.** The radiometry hazard drops from "the whole risk of this spec"
+**Consequences and residual risk (A1).** The radiometry hazard drops from "the whole risk of this spec"
 (§5 row 1) to an ordinary provenance check, and TODO #30/#10 becomes irrelevant to the fixture —
 though it stays open for the local archive. In exchange, the build acquires the cloud
 prerequisites of spec 41 D2 (VPN, `az login`, an in-region VM), so it can no longer be done offline
@@ -312,3 +316,56 @@ on the preferred path. And **"equivalent to running locally" is a claim, not yet
 the VM and local builds produce different bytes for the same cell, that is a **storage-seam finding**
 worth an issue in its own right, not a fixture problem to paper over. The fallback in (5) exists
 precisely so that comparison remains possible.
+
+---
+
+### A2 — the source-equality gate moves off the offline test suite and onto the generator (⏳ PROPOSED, awaiting sign-off — Opus review of the P6 step-1 implementation, 2026-07-30)
+
+**Trigger.** The P6 step-1 review asked whether the implementation's offline substitute for A1's
+revised acceptance test 2 was faithful to A1's intent. **It is not**, and neither would any other
+offline test be — the constraint is structural, not an implementation shortcut.
+
+**The contradiction A1 left in place.** A1 revised acceptance test 2 to assert *"the declaration was
+**copied from the source, not invented** — assert equality against the source catalog row, so a
+generator bug cannot manufacture a plausible-looking offset."* But **§4 places tests 1–3 in
+`tests/test_tutorial_fixture.py`**, and **run-book 43 Step 6 runs that suite with the network
+disconnected** — that is the point of the fixture. The source catalog lives on blob. So the one
+assertion A1 asks for is the one assertion that file can never make.
+
+**Why no offline substitute closes the gap.** Everything shipped in `tests/data/tutorial/` was
+written by the generator. Any "source value" it also shipped would be written by the same code path
+as the catalog value, so equality between them is circular and a buggy generator passes. The
+implementation's first attempt showed the failure mode concretely: an unconditional
+`assert int(row["offset"]) == -1000`, which a generator that simply hardcoded `-1000` also passes —
+and on the A1/MPC path (no `_N####_` token in the ids) it was the *only* live assertion in the test.
+
+**Decision.**
+
+1. **Acceptance test 2 splits by where the source is reachable.** The **source-equality half moves to
+   the generator**, which holds the source row in memory: `build_fixture.py` records, per granule,
+   whether the offset was `declared` (copied from the source catalog's own column, A1's primary path)
+   or `derived` (D1's id-token fallback), and emits `offset_sources` + `all_offsets_declared` in its
+   `_result.json`. **Run-book 43 Steps 2 and 4 gate on it** and the operator pastes it back — the
+   spec-24 contract, where `_result.json` is the evidence and the logs are not.
+2. **The offline half keeps only what is sound from the artifact alone:** the declaration
+   round-trips through the declaration API (ADR 0013); where a granule id carries a baseline token it
+   agrees with the independently-derived value (D1's technique, live only on the local-CDSE fallback);
+   the offset is one of the two physically meaningful values (`0` / `-1000`) and is uniform across the
+   fixture. **The decisive check is unchanged and stays offline** — acceptance test 3's post-offset
+   reflectance range, which A1 itself calls *"the check that would catch the ~1000 DN error regardless
+   of how the offset arrived."*
+3. **`--check-only` (Step 2) reports the offset values and their sources before anything is clipped**,
+   so an unstamped or wrongly-stamped archive is caught at the read-only step rather than after a
+   build.
+
+**What this does and does not weaken.** The fixture is still gated on "copied, not invented" — by a
+check that runs where that fact is observable, instead of by a test that could only pretend to. What
+is genuinely lost is *re-verifiability from a fresh clone*: a reader who distrusts the committed
+fixture cannot re-establish provenance offline, only re-run run-book 43. That is inherent to
+committing a derived artifact and is the same trust boundary `NOTICE`/`README.md` already sit on.
+
+**Also corrected while here** (defects against A1/§3, not new decisions): the generator wrote its
+verbatim `sys.argv` — including the expanded `--archive-root abfss://…` — into the fixture's
+committed `README.md` in a **public MIT repo**; and run-book 43 Step 4's own invocation made the
+generator's inputs (`roi.geojson`/`fields.geojson`) its outputs, so a mid-write crash destroyed Step
+0's output, which cannot be regenerated on the VM.
