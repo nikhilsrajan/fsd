@@ -1,52 +1,43 @@
 # fsd
 
-A small, clean toolkit to **fetch satellite tiles and build datacubes** for geospatial ML.
-Clean-room rewrite combining only the necessary parts of the legacy `fetch_satdata`,
-`rsutils`, and `cdseutils` repos.
+**Fetch satellite imagery, build datacubes, and run your own model over them — on your laptop or
+across a cloud cluster, with the same code.**
 
-**v1 scope:** Sentinel-2 **L2A** from **CDSE** → per-geometry **datacubes** → flattened
-**training arrays**. It is **cloud-agnostic by design** (all I/O through an `fsspec` seam) so
-the same code runs locally today and scales on the cloud later — see
-[`ROADMAP.md`](ROADMAP.md) for the north-star and phased plan.
+Sentinel-2 L2A from **CDSE** or the **Microsoft Planetary Computer** → per-geometry **datacubes** →
+flattened **training arrays** → **inference** → COGs + STAC. All I/O goes through an `fsspec` seam,
+so local and `abfss://` are a config change rather than a rewrite, and scaling out is a `runner=`
+argument.
+
+**fsd does not train your model.** It hands you training arrays, takes back a bundled adapter, and
+runs it at scale. That line is deliberate and permanent.
 
 ## Install
 
 ```bash
 pip install "git+ssh://git@github.com/nikhilsrajan/fsd.git"
-# extras: [notebooks] (matplotlib/sklearn/joblib), [azure] (adlfs), [dev] (ruff/pytest)
-pip install "fsd[notebooks] @ git+ssh://git@github.com/nikhilsrajan/fsd.git"
+# extras: [notebooks] matplotlib/sklearn/joblib · [azure] adlfs · [dev] ruff/pytest
 ```
 
-Requires Python ≥ 3.11. For development, clone and `pip install -e ".[dev]"`.
+Python ≥ 3.11. For development: clone, then `pip install -e ".[dev]"`.
 
-## Quickstart (high-level API)
-
-The verbs are what you call; the modules under `fsd.*` are internals.
+## 60 seconds
 
 ```python
 import datetime
 import fsd
 from fsd.sources.cdse import CdseCredentials
 
-creds = CdseCredentials.from_env()  # or from a secrets JSON
-
-# 1. Download S2 L2A tiles for an ROI + date range -> a tile catalog.
+# 1. Imagery for an ROI and a window -> a GeoParquet tile catalog.
 catalog = fsd.download(
     roi="my_roi.geojson",
     startdate=datetime.datetime(2018, 1, 1),
     enddate=datetime.datetime(2019, 1, 1),
     bands=["B04", "B08", "B8A", "SCL"],
     dst_folderpath="data/s2l2a",
-    creds=creds,
-    max_tiles=600,
+    creds=CdseCredentials.from_env(),
 )
-# Or drive it from the shell (safe runner: --dry-run preview, --stop-file clean stop,
-# progress + ETA, spec-24 _result.json) — see RECIPES.md:
-#   python -m fsd.sources.download_cli --roi my_roi.geojson --start 2018-01-01 --end 2019-01-01 \
-#       --bands B04 B08 B8A SCL --dst data/s2l2a --catalog data/s2l2a/catalog.parquet \
-#       --max-tiles 600 --dry-run
 
-# 2. Known-label polygons + catalog -> flattened training arrays. (No "flatten" needed.)
+# 2. Labelled polygons + that catalog -> flattened training arrays.
 training = fsd.create_training_data(
     label_polygons="my_labeled_fields.geojson",
     catalog_filepath=catalog,
@@ -57,19 +48,54 @@ training = fsd.create_training_data(
     id_col="fid",
     label_col="crop_type",
     export_folderpath="data/training",
-    cores=8,
 )
 
-arrays = training.load()        # {"data","ids","labels","coords","metadata"}
-# arrays["data"] is (pixels, timestamps, bands) — feed it to your own model (sklearn/torch/…).
+arrays = training.load()   # {"data", "ids", "labels", "coords", "metadata"}
+# arrays["data"] is (samples, timestamps, bands) -- train whatever you like on it.
+
+# 3. Your trained model, bundled as a ModelAdapter, run over a region -> COGs + STAC.
+result = fsd.run_inference(
+    roi="my_roi.geojson",
+    model_bundle="my_bundle/",
+    startdate=datetime.datetime(2018, 1, 1),
+    enddate=datetime.datetime(2019, 1, 1),
+    output_folderpath="data/predictions",
+    merge=True,
+)
 ```
 
-Training and inference-at-scale are on the roadmap: `fsd.run_inference(...)` and
-`fsd.deploy(...)` exist as stubs today (P4 / P6). `runner=` and `storage=` parameters are
-seams — local-only now, Azure Batch / blob later, by config not code.
+**The same calls run on a cluster** — add `runner="aml"` and point `storage=` at blob. No pipeline
+code changes; that is the whole design. A 300-cell ROI over Austria ran that way in 18.8 minutes
+across 32 nodes.
 
-## Documents
-- [`ROADMAP.md`](ROADMAP.md) — north-star, phased releases, the model contract.
-- [`specs/`](specs/) — compartmentalized design specs (start at `00-overview.md`).
-- [`RECIPES.md`](RECIPES.md) — reusable commands & scripts.
-- [`DROPPED.md`](DROPPED.md) / [`CHANGES.md`](CHANGES.md) — deferred capabilities / behavior changes.
+`fsd.deploy` is the one verb still a stub: the bundle format is fixed, but pushing a bundle to a
+registry lands in P6.
+
+## Where to go next
+
+| you want | read |
+|---|---|
+| how the code is laid out, and what must stay true | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
+| where fsd is heading | [`ROADMAP.md`](ROADMAP.md) |
+| what a term means | [`CONTEXT.md`](CONTEXT.md) |
+| why something was decided | [`docs/adr/`](docs/adr/) |
+| a measured result about running at scale | [`docs/findings/`](docs/findings/) |
+| the Azure environment variables | [`docs/reference/environment.md`](docs/reference/environment.md) |
+| a reusable command | [`RECIPES.md`](RECIPES.md) |
+| design documents | [`specs/`](specs/) — start at `00-overview.md` |
+| operating procedures for real runs | [`runbooks/`](runbooks/) |
+| open work | `gh issue list` — issues #1–#62 |
+
+A guaranteed-to-succeed offline tutorial (`docs/tutorial.md`) is being built on a committed
+micro-fixture. Until it lands, [`demos/E2E_AUSTRIA.md`](demos/E2E_AUSTRIA.md) is the fullest worked
+example — read it as a benchmark report, not as instructions.
+
+## Contributing
+
+`pytest -q` and `ruff check src/ tests/ demos/` must be clean. Tests are synthetic and offline;
+anything needing credentials or a cluster is a run-book. Design lands as a spec first. Details in
+[`ARCHITECTURE.md` §8](ARCHITECTURE.md#8-contributing).
+
+## License
+
+MIT.

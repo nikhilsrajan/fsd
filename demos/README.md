@@ -1,6 +1,23 @@
-# fsd demos
+# fsd demos — *benchmark harnesses*, not examples
 
-The go-to end-to-end guide is **[`E2E_AUSTRIA.md`](E2E_AUSTRIA.md)** — running the full fsd pipeline
+> ⚠️ **Read this first (spec 41 D10 / ADR 0026).** Despite the folder name, **these are timing
+> harnesses and their `.md` files are benchmark reports.** `e2e_austria.py` is 531 lines of which
+> **12 touch `fsd`** (2.3 %), and `step_download` deliberately calls `cdse.probe_throughput` and
+> `cdse.download_resume` **directly, bypassing `fsd.download`**, because it wants the single-stream
+> baseline probe and the transfer-vs-convert split. Those are measurement concerns. **A newcomer
+> reading this as a reference implementation learns the wrong API.**
+>
+> The folder is **not renamed**: that would churn references across point-in-time documents, which
+> spec 41 D3 forbids. So the label is here instead.
+>
+> | if you want | go to |
+> |---|---|
+> | a minimal readable script to copy | `examples/` |
+> | a guaranteed-to-succeed first run | `docs/tutorial.md` *(being built — spec 42 fixture)* |
+> | "now point it at my own region" | `docs/howto/` *(being built)* |
+> | **measured timings for a real run** | **you are in the right place** |
+
+The fullest end-to-end write-up is **[`E2E_AUSTRIA.md`](E2E_AUSTRIA.md)** — running the full fsd pipeline
 locally (**download → datacube → train → inference → COG/STAC/merged crop map**) on fresh real
 Sentinel-2 data for an Austria ROI, with real timings, the download runner, and the "bring your own
 model" bundling guide.

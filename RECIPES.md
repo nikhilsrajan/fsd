@@ -618,10 +618,14 @@ done < /tmp/concrete.txt
   2026-07-30 also `env.example.sh` / `env.local.sh` (fsd's own filenames), `fsd-aml-env` /
   `fsd-infer-env` (fsd's own AML environment names) and `030f6ac` (an fsd commit sha) — all
   named in the private doc, none of them `rise` identifiers.
-- **Found 2026-07-30 (spec 41 P4):** `cluster-rise-d16`, the concrete cluster name, in a comment
-  in `src/fsd/workflows/runners.py` and a docstring in `demos/plot_aml_timings.py`. Both scrubbed
+- **Found 2026-07-30 (spec 41 P4):** the concrete d16 cluster name, in a comment in
+  `src/fsd/workflows/runners.py` and a docstring in `demos/plot_aml_timings.py`. Both scrubbed
   forward to `cluster-<proj>-d16` + a pointer. **Run this sweep after any session that writes
   prose about a real run** — that is how both of these got in, and how 2026-07-22's two did.
+- ⚠️ **Writing up a leak re-leaks it.** The P4 write-up quoted the offending name verbatim while
+  explaining that it had been scrubbed, so the next sweep (P5) flagged `RECIPES.md` and
+  `PROGRESS.md` themselves. **Describe the identifier, never spell it** — "the concrete d16
+  cluster name", not the value. Scrubbing is the one edit a point-in-time document may receive.
 - A real hit is scrubbed by replacing it with the private doc's **placeholder** form plus a
   pointer (e.g. `` the `rise` storage account (`st<proj>`, concrete name in
   `AZURE_INFRA_PRIVATE.md`) ``). Note this is scrub-*forward* only — if the leaking commit
