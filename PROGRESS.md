@@ -2,14 +2,82 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-30 (✅ SPECS 41 + 42 SIGNED OFF — the docs refactor is designed; next = P1, status headers)_
+_Last updated: 2026-07-30 (✅ P1 REVIEWED + FIXED — the docs refactor's status headers are accepted; next = P2, the issues migration)_
 
-## ✅ 2026-07-30 — P1 DONE: D4 status headers on 79 files + regenerated indexes + test_docs.py. → NEXT: P2 (issues)
+## ✅ 2026-07-30 — P1 REVIEWED (Opus@high) + 3 FIXES APPLIED. Batch accepted, D13 satisfied. → NEXT: P2 (issues)
 
-**Every point-in-time doc got a `status`/`summary` D4 header (ADR 0023):** 46 `specs/*.md`, 22
-`runbooks/*.md` (43 already had one from the prior session), 3 `HANDOFF-*.md` (`historical`),
-`runbooks/TEMPLATE.md` (header baked into the skeleton, not itself statused), 3 `demos/*.md`, and
-8 `benchmarks/*.md`. Every status was **re-derived from evidence** (`CHANGES.md`, ADRs, test files),
+Commit `f905161` reviewed against spec 41 D4/D6/D13. **The batch is NOT redone**: all 10 statuses in
+an independent spot-check were correct, so D13's ">1 wrong ⇒ redo" does not trigger. Every defect
+found was in the `summary:` line, not the `status:` value. Gate re-verified independently:
+`pytest -q` **594 passed / 72 skipped**, `ruff check src/ tests/ demos/` clean.
+
+**The independent 10 (D13), none of them Sonnet's own picks:** `specs/01`, `08`, `09`,
+`research-s2-reprocessing-dedup`; `runbooks/38`, `39`, `40`; `demos/E2E_AUSTRIA.md`;
+`benchmarks/cog_vs_jp2_report.md` + `cog_vs_jp2_storage.md`. Checked against `pyproject.toml`
+(spec 09's dep list, spec 08's `snakemake` "local runner only"), `src/fsd/workflows/` (`runners.py`
++ `task.py` still exist ⇒ spec 08 `current`), `specs/33` (it does cite the research doc twice),
+`TODO.md` #62 and `PROGRESS.md`'s 2026-07-29 entry.
+
+### The three fixes applied
+
+1. **~51 summaries were re-stating process state that D4 evicts and D9 houses elsewhere.**
+   "signed off and implemented", "ran green", "done, reviewed, merged" — and three that were
+   explicitly time-relative: run-book 40 *"not yet run at the time of this stamping"*, 38 *"cluster
+   validation still pending"*, 39 *"a P2 re-run is pending"*. `runbooks/README.md` already carries
+   all of it in a `ran?` column and `specs/README.md` in an `implemented?` column, each with
+   evidence — two homes for one fact, guaranteed to diverge. **The rule now applied uniformly: the
+   summary says what the document IS; the index says how far it got.**
+   **Deliberate exception on 4 files** (`specs/25b`, `26`, `39`, `40`): their own *body* still says
+   "awaiting implementation"/"DRAFT", so each keeps a short parenthetical saying so. That is a fact
+   about the document's text, not about project progress, and deleting it re-opens the exact defect
+   P1 was written to correct.
+2. **`demos/E2E_AUSTRIA.md` was `current` with no staleness disclosure** — while its own §8 (line
+   271) carries a ⚠️ STALE note and TODO #62 exists to re-run it. Left `current` (the same
+   partial-supersession rule that correctly kept `specs/18` current), but the summary now states it,
+   the way spec 18's summary already stated its own. A reader deciding whether to open the file
+   needs to know two of its published numbers are wrong.
+3. **The file counts in this log were wrong three different ways** — see the corrected P1 entry
+   below. Notable because spec 41's amendment A1 was *itself* a file-count correction.
+
+### Confirmed, no change needed (the handoff's four open judgment calls)
+
+- **`specs/18` `current` vs `specs/19` `superseded-by-23`** — both right. 18's ModelAdapter contract
+  stands and only the `cores>1` detail moved; 19's whole subject moved.
+- **`specs/27` `historical`, not `superseded-by-NN`** — right. `superseded_by` takes a *document*
+  number and the replacement is a decision recorded in TODO #26–#29, so there is no target;
+  "its subject no longer exists" is exactly true of a dashboard that will never be built.
+- **The `satellite_benchmark` grep as the signal for `historical`** — verified sound: 6 reports
+  reference it and all 6 are `historical`; the 2 that do not are `current`. One wrinkle worth
+  knowing: `cog_vs_jp2_storage.json` *does* reference the deleted archive, so that measurement was
+  taken on it — still defensible as `current`, since a COG-vs-JP2 format result is not
+  archive-specific.
+- **The hand-rolled header parser over `pyyaml`** — keep it, and the handoff's stated worry is moot:
+  `tests/test_docs.py` never imports `yaml` at all, so there is no transitive dependency to protect.
+
+### Three findings left OPEN (deliberately not fixed here — they are P4/P5 work)
+
+- **`test_docs.py` does not cover `demos/` + `benchmarks/`** — 11 stamped files untested. This
+  matches D6 assertion 4's literal wording ("every `specs/`+`runbooks/` file"), but the stamping
+  went wider than the assertion, so those headers can rot. Extending `_d4_targets()` is 2 lines.
+- **`superseded_by` is ambiguous across the two namespaces** — `runbooks/42`'s `superseded_by: 41`
+  resolves to **`specs/41-docs-refactor.md`**, because `test_docs.py` searches `specs/` first. The
+  test passes on the wrong file; the intended target is `runbooks/41-recover-aml-job-timings.md`.
+  Fix by qualifying the value (`runbooks/41`) or searching the file's own directory first.
+- **The two regenerated indexes are inconsistent** — `specs/README.md` uses markdown links,
+  `runbooks/README.md` uses bare backticked filenames, so D6 assertion 2 ("links resolve", P5) will
+  never check the run-book index.
+
+## ✅ 2026-07-30 — P1 DONE: D4 status headers on 81 files + regenerated indexes + test_docs.py. → NEXT: P2 (issues)
+
+**Every point-in-time doc got a `status`/`summary` D4 header (ADR 0023).** **81 files in commit
+`f905161`** (⚠️ count corrected by the Opus review — the entry first said 79 and the commit message
+said 83): 46 `specs/*.md`, 26 `runbooks/*.md` (22 run-books + 3 `HANDOFF-*.md` (`historical`) +
+`TEMPLATE.md`, whose header is baked into the skeleton as a placeholder and is not itself a status;
+run-book 43 was already stamped in `8437175`), 3 `demos/*.md`, and 6 `benchmarks/*.md`. **Two
+further benchmarks reports were stamped on disk but are NOT in the repo** —
+`datacube_throughput_report_{cog,jp2}.md` are gitignored (`.gitignore:49`), so those two edits are
+local-only; they are left in place (harmless) but they are not part of P1's deliverable. Every
+status was **re-derived from evidence** (`CHANGES.md`, ADRs, test files),
 not lifted from the ~12 existing ad-hoc status-line formats — confirming the three known-wrong ones
 (specs 39/40 said DRAFT, 25b/26 said "awaiting implementation"; all four are actually implemented
 and now `current`). 6 benchmarks reports referencing the deleted `satellite_benchmark/` archive are
@@ -32,11 +100,11 @@ amendment in §1, per ADR 0022 (specs are never silently edited). `runbooks/` co
 already correct.
 
 **Gate (D13):** `pytest -q` → **594 passed / 72 skipped** (up from 520/2 baseline — the +74 are the
-new doc tests); `ruff check src/ tests/ demos/` clean. Per D13, **the user now picks 10 files from
-the 79 to spot-check; more than one wrong means the batch is redone, not patched.**
+new doc tests); `ruff check src/ tests/ demos/` clean. **D13's spot-check is satisfied by the Opus
+review entry above** — an independent 10 files, none of them the 10 Sonnet self-checked.
 
-**Not committed yet** — all changes are in the working tree on `main` (this session worked directly
-in the shared checkout, not a worktree, since the job started there); commit/push is the user's call.
+**Committed as `f905161`** on `main` in the shared checkout (this session worked directly there,
+not a worktree, since the job started there). **Unpushed** — push is the user's call.
 
 **Still deferred, unchanged:** P2 (issues migration), P3 (`docs/findings/`), P4 (env reference), P5
 (README/ARCHITECTURE/PROGRESS split), P6/spec 42 (the fixture build — its 3 scripts still

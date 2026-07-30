@@ -1,6 +1,6 @@
 ---
 status: current
-summary: run_inference(runner="aml") at scale over the cluster; implemented and reviewed, a full cluster validation run is still pending.
+summary: `run_inference(roi=..., runner="aml")` at scale over the cluster: per-cell COGs + STAC.
 ---
 
 # Run-book: 38 Phases 0–4 — inference at scale on Azure ML

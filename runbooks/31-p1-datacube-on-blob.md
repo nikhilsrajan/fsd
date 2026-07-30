@@ -1,6 +1,6 @@
 ---
 status: current
-summary: Build a datacube reading and writing the rise blob; ran and gated spec 31.
+summary: Build a datacube reading and writing the rise blob — the P1 storage-seam gate for spec 31.
 ---
 
 # Run-book 31b — build a Sentinel-2 datacube reading + writing the `rise` blob

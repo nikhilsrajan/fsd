@@ -1,6 +1,6 @@
 ---
 status: current
-summary: Train adapters:DemoRF @ T=8 and bundle it, driver-side; not yet run at the time of this stamping.
+summary: Train `adapters:DemoRF` @ T=8 driver-side and bundle it for inference.
 ---
 
 # Run-book: 40 Phases 1–3 — features → train `adapters:DemoRF` @ T=8 → bundle

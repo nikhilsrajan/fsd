@@ -1,6 +1,6 @@
 ---
 status: current
-summary: Datacube build fan-out across N AML nodes (the 900-field set); ran, Phases 1-3b green.
+summary: Datacube build fan-out across N AML nodes (the 900-field set).
 ---
 
 # Run-book: 36 Phases 1–3 — the AML runner, end to end

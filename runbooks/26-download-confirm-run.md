@@ -1,6 +1,6 @@
 ---
 status: current
-summary: Safe CDSE download (resume + --dry-run/--stop-file seams) on a tiny Austria slice; ran green locally.
+summary: Safe CDSE download (resume + `--dry-run`/`--stop-file` seams) on a tiny Austria slice.
 ---
 
 # Run-book: spec 26 — safe download confirm-run (tiny 1-MGRS-tile Austria slice)

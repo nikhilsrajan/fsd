@@ -1,6 +1,6 @@
 ---
 status: current
-summary: Bugfix: datacube builder was dropping tiles when several covered one shape; signed off and implemented, verified on real data.
+summary: Bugfix: the datacube builder dropped MGRS tiles when several of them covered one shape.
 ---
 
 # Spec 20 — bugfix: datacube builder drops tiles when several cover one shape

@@ -1,6 +1,6 @@
 ---
 status: current
-summary: Part 3: COG-vs-JP2 tile-splitting experiment; signed off and implemented.
+summary: Part 3 of the benchmark harness: the COG-vs-JP2 tile-splitting experiment design.
 ---
 
 # Spec 13 — COG vs JP2 storage/time experiment

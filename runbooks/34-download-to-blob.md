@@ -1,6 +1,6 @@
 ---
 status: current
-summary: Download-to-blob (CDSE + MPC), cloud-VM-first, predecessor of the AML download path; ran.
+summary: Download-to-blob (CDSE + MPC), cloud-VM-first — the predecessor of the AML download path.
 ---
 
 # Run-book 34 — download-to-blob (CDSE + MPC), cloud-VM-first

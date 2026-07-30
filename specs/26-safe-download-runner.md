@@ -1,6 +1,6 @@
 ---
 status: current
-summary: Safe download runner CLI + should_stop seam; implemented 2026-07-11 despite the header still reading "awaiting implementation".
+summary: Safe download runner CLI + the `should_stop` seam (`--dry-run`, `--stop-file`, resume) (the body's own "awaiting implementation" line is stale — see the index).
 ---
 
 # Spec 26 — safe download runner (`--dry-run`/`--stop-file`/progress) + measured confirm-run

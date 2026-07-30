@@ -1,6 +1,6 @@
 ---
 status: current
-summary: sources.mpc.download vs real MPC + processing-baseline harmonization; ran green locally.
+summary: `sources.mpc.download` vs real MPC + processing-baseline harmonization.
 ---
 
 # Run-book: spec 32 — MPC source + processing-baseline harmonization (single tile, B04 + SCL, 2 dates)

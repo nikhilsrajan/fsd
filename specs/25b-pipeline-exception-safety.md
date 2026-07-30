@@ -1,6 +1,6 @@
 ---
 status: current
-summary: Exception-safe download callbacks (no silent hang); implemented 2026-07-11 despite the header still reading "awaiting implementation".
+summary: Exception-safe download callbacks, so a failing convert cannot hang the pipeline silently (the body's own "awaiting implementation" line is stale — see the index).
 ---
 
 # Spec 25b — download pipeline: exception-safe callbacks (no silent hang)

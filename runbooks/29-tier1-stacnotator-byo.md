@@ -1,6 +1,6 @@
 ---
 status: current
-summary: Tier-1 serving: a pre-styled XYZ URL consumed by STACNotator BYO-XYZ; ran green.
+summary: Tier-1 serving: a pre-styled XYZ URL consumed by STACNotator BYO-XYZ.
 ---
 
 # Run-book: spec 29 — Tier-1 pre-styled XYZ, validated via STACNotator Bring-Your-Own-XYZ

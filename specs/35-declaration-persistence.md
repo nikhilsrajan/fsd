@@ -1,6 +1,6 @@
 ---
 status: current
-summary: Persisting the ingest radiometry declaration through the catalog; signed off and implemented.
+summary: Persisting the ingest radiometry declaration through the catalog.
 ---
 
 # Spec 35 — Declaration persistence (the collection declaration survives write→read)

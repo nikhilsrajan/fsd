@@ -1,6 +1,6 @@
 ---
 status: current
-summary: STAC as a thin additive export view over the GeoParquet catalog; signed off, implemented, verified.
+summary: STAC as a thin additive export view over the GeoParquet catalog.
 ---
 
 # Spec 17 — STAC-aligned catalog (thin)

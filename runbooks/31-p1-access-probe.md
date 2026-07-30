@@ -1,6 +1,6 @@
 ---
 status: current
-summary: "Hello Azure" probe: az + adlfs blob round-trip + /vsiadls/ raster read; the first RBAC/seam probe, ran and gated spec 31.
+summary: "Hello Azure" probe: az + adlfs blob round-trip + `/vsiadls/` raster read — the first RBAC/seam probe, gating spec 31.
 ---
 
 # Run-book: 31 — P1 Azure access probe ("hello Azure")

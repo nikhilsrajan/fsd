@@ -1,6 +1,6 @@
 ---
 status: current
-summary: `run_inference(runner="aml")` at scale; signed off and implemented, reviewed; cluster validation run separately (runbook 38).
+summary: `run_inference(runner="aml")`: per-cell inference fanned out over the AML cluster.
 ---
 
 # Spec 38 — inference at scale on Azure ML (P4): dispatch the per-cell build+infer unit onto the cluster

@@ -1,6 +1,6 @@
 ---
 status: current
-summary: Cross-baseline render proof (the -0.1-offset black-tile branch); ran, still the only coverage of that fix.
+summary: Cross-baseline render proof (the `-0.1`-offset black-tile branch) — the only coverage that fix has.
 ---
 
 # Run-book 34b — cross-baseline render proof (spec 34 §1e), self-contained

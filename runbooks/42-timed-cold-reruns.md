@@ -1,7 +1,7 @@
 ---
 status: superseded-by-41
 superseded_by: 41
-summary: Timed cold re-runs of two untimed AML steps, at the cost of two cluster allocations and a 418 GB duplicate archive; superseded by run-book 41 recovering the same bounds for free — explicitly not run, per the user's call.
+summary: Timed cold re-runs of two untimed AML steps, at the cost of two cluster allocations and a 418 GB duplicate archive; superseded by run-book 41, which recovers the same bounds for free.
 ---
 
 # Run-book: 42 — timed COLD re-runs of the two untimed AML steps

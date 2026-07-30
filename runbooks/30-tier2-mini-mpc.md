@@ -1,6 +1,6 @@
 ---
 status: current
-summary: Tier-2 serving: outputs load into stock pgSTAC + titiler-pgstac; ran green.
+summary: Tier-2 serving: outputs load into stock pgSTAC + titiler-pgstac.
 ---
 
 # Run-book: spec 30 — Tier-2 mini-MPC (pgSTAC + stac-fastapi-pgstac + titiler-pgstac)

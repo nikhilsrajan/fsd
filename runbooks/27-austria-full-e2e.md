@@ -1,6 +1,6 @@
 ---
 status: current
-summary: The full Austria end-to-end local showcase run; ran green locally.
+summary: The full Austria end-to-end local showcase run.
 ---
 
 # Run-book: full Austria end-to-end (the go-to-doc showcase run)
