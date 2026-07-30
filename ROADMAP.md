@@ -312,6 +312,28 @@ after this one, not part of it.
 **P0–P1 need zero infra changes** — pure de-risking, two team-visible releases before we're
 ever blocked on someone else's `terraform apply`. The first infra proposal is P2 (Batch quota).
 
+### 5.9 Post-v1 sequencing (user, 2026-07-02) — historical, moved from `TODO.md`
+
+> Moved here verbatim when `TODO.md` became a stub (spec 41 D8/P2, 2026-07-30). **Point-in-time:
+> this is what the ordering looked like on 2026-07-02** — steps 1 and 2 have since happened, and
+> §5's phase table above is the live plan. Kept because it records *why* the order was chosen.
+
+The item numbers are stable IDs, **not** priority order (they are now GitHub issue numbers). The
+intended order of the big efforts:
+
+1. **Finish v1 end-to-end** — download → datacube → flatten, local Snakemake runner
+   (current focus; datacube module #5 is next).
+2. **Azure setup + Batch processing** for datacube creation — the cloud-agnostic
+   scale-out end goal (`specs/10`). Comes **before** any source extension.
+3. **Source extension, incrementally** (issue #11; promotes the source contract to the
+   `sources/base.py: Source` ABC, OQ-3): CDSE **S2 L2A** (done) → **MPC S2 L2A** →
+   CDSE **S1 GRD / S1 RTC** → **MPC S1** → other products (CHIRPS, ERA5, …).
+4. **Benchmark against `rslearn`** (issue #12) — run in parallel with step 3.
+
+The **cross-cutting perf track** that used to sit under this heading (_datacube-creation speed at
+scale_, the 3-part benchmark-first plan and its five parked optimization candidates) moved to
+**issue #15**, which is that item — see its migration comment.
+
 ---
 
 ## 6. STAC decision — now, but deliberately thin
