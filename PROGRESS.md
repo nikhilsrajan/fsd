@@ -2,7 +2,45 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-30 (✅ P1 REVIEWED + FIXED — the docs refactor's status headers are accepted; next = P2, the issues migration)_
+_Last updated: 2026-07-30 (🟡 P2 MANIFEST SIGNED OFF — run-book 44 is written and waiting on the user to run it)_
+
+## 🟡 2026-07-30 — P2: the 62-issue manifest is REVIEWED + SIGNED OFF; run-book 44 written. → NEXT: the user runs run-book 44
+
+Spec 41 D8's binding conditions are met up to the point Claude is allowed to reach.
+
+**Preflight (D8 condition 1) — verified:** `gh issue list --state all` empty, `gh pr list --state
+all` empty, discussions **disabled** (`has_discussions: false`). The shared counter is at **0**, so
+`#N == TODO #N` is achievable. **Re-verified by the script immediately before it creates anything**
+— it exits 2 and creates nothing if any of the three is non-empty (D8's "no partial attempt").
+
+**Manifest (D8 condition 3) — signed off by the user 2026-07-30.** Workspace root (uncommitted,
+outside the public repo): `P2_ISSUE_MANIFEST.md` (human review artifact, 62 titles + states +
+labels + milestones + every body) and `P2_ISSUE_MANIFEST.jsonl` (what the script reads). Bodies are
+**verbatim** from `TODO.md` — verified by substring match, not by eye; longest is 7,045 chars
+against GitHub's 65,536 limit.
+
+**Three decisions the review surfaced, all user-answered 2026-07-30:**
+
+| Question | Answer |
+|---|---|
+| Spec 41 D8/D13 says **"29 closed"**; reading every row gives **24** | **24 is right.** The 29 counted rows *containing* a ✅ (28 do), but 6 are open rows carrying a ✅ on a sub-part: #14 (COG+STAC done, titiler not), #25 (root cause only), #39 (ROI mode only), #48, #60 (measured, not fixed), #61 (fix (a) of (a)–(d)). Same class as spec 41's own A1 file-count correction. |
+| D8's label vocabulary has **no bucket for the model items** (#18, 19, 20, 25, 28 are ModelAdapter/bundle/engine) | **Add `model`.** Final set: `datacube`, `download`, `cloud`, `storage`, `stac`, `docs`, `perf`, `model`, `blocked`. |
+| **#26** (STACNotator serving contract) — closed, or kept open as the P5 north star? | **Closed** (specs 29+30 validated tier-1 and tier-2 end to end), **plus a NEW open north-star issue after the migration** — it lands at #63+, outside the aligned range, which is why it waits. |
+
+**Milestones** are assigned sparingly — only the 6 rows that name a ROADMAP phase as their own
+scope (`P1`, `P2`, `P3`, `P5`). Labels and milestones are editable after creation; **the number is
+not**, so the number is the only thing the manifest had to get right.
+
+**`runbooks/44-todo-to-issues.md` + `todo_to_issues.py` (workspace root) written.** Claude does
+**not** run this — it is networked and side-effecting (spec 24), and a misnumber is unrepairable.
+The script: re-runs the preflight, creates strictly sequentially with a 2 s gap (GitHub's secondary
+rate limits), **verifies every create returned the expected number and halts on the first
+mismatch**, then closes the 24. `--dry-run` (validated, zero side effects: "62 issues, 24 to close")
+and `--resume` (continues from the highest existing issue + 1). ~4 min to create, ~1 min to close.
+
+**Still to do after run-book 44 passes:** `TODO.md` → the ~10-line stub (not deleted — 448
+references name it), the `CLAUDE.md` edit that currently calls `TODO.md` a living register, and the
+new P5 north-star issue.
 
 ## ✅ 2026-07-30 — P1 REVIEWED (Opus@high) + 3 FIXES APPLIED. Batch accepted, D13 satisfied. → NEXT: P2 (issues)
 
