@@ -86,8 +86,38 @@ the scanned corpus — two variables that have since been renamed or dropped, an
 resurrect two dead variables in `env.example.sh`: parity is about the *current* operational corpus,
 and the archive is never edited after the fact.
 
-**Gate:** `pytest -q` **647 passed / 84 skipped** (from 608 — the link tests are parametrized per
-document), `ruff check src/ tests/ demos/` clean.
+**Gate:** `pytest -q` **649 passed / 86 skipped** on `main`, `ruff check src/ tests/ demos/` clean.
 
-**Spec 41 P5's own gate is "readable only — no test exists. Opus review against this spec."** That
-review has not been done: this session wrote it. It is the one outstanding acceptance item.
+> ⚠️ **Expect 649/86 in this checkout and 647/84 in a fresh clone or worktree.** The difference is
+> two *gitignored* benchmark reports (`benchmarks/datacube_throughput_report_{cog,jp2}.md`,
+> `.gitignore:49`) that exist on this laptop, carry D4 headers, and are picked up by
+> `test_docs.py`'s directory glob. Not a defect, but the test target set does depend on untracked
+> files — a stray unheadered `.md` under `benchmarks/` would fail here and pass in CI.
+
+**PUSHED — `origin/main` is at `8da99fc`** (2026-07-30, `b1d9781..8da99fc`, 15 commits). The
+pre-push identifier sweep was clean: all 32 concrete values checked, only the documented
+known-clean false positives hit.
+
+### ⚠️ The one outstanding acceptance item
+
+**Spec 41 P5's gate is "readable only — no test exists. Opus review against this spec."** That
+review **has not happened**: the session that wrote P5 cannot be its reviewer. The precedent is the
+P1 review, which found **6 defects** in work its own session had declared green — including a
+systemic one (process state re-entering 51 `summary:` lines) and two stamped files that were
+gitignored.
+
+**What a reviewer should actually do** (the P1 review's most useful move was the independent
+spot-check, not re-reading the diff):
+
+1. Read `ARCHITECTURE.md` and `README.md` **as a newcomer**, against spec 41 D0/D9/D10 — is the
+   code map true, are the 8 invariants really invariants, does the README's 60-second example run?
+2. Check the **`PROGRESS.md` split (D12)** did not lose or reorder an entry — `docs/progress-archive.md`
+   should hold every pre-P5 entry verbatim, newest-first.
+3. Confirm the D6 assertion 2 **scope call** was right: link checking covers only the root docs and
+   the maintained `docs/` tree, deliberately excluding point-in-time corpora (D3 forbids editing
+   those to fix a rotted link). That call was mine, not the spec's.
+4. **Two review findings from P1 are still open** and belong to whoever touches this next:
+   `superseded_by` is ambiguous across the `specs/`↔`runbooks/` namespaces (`runbooks/42`'s `41`
+   resolves to `specs/41-docs-refactor.md`, and the test passes on the wrong file); and the two
+   register indexes disagree on link style (`specs/README.md` uses markdown links,
+   `runbooks/README.md` bare backticks, so assertion 2 never sees the run-book index).
