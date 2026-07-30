@@ -2,7 +2,59 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-30 (✅ P3 DONE — `docs/findings/` exists and is tested; next = P4, the env reference)_
+_Last updated: 2026-07-30 (✅ P4 DONE — the env seam is documented and tested; next = P5, README/ARCHITECTURE)_
+
+## ✅ 2026-07-30 — P4 DONE: `env.example.sh` + `docs/reference/environment.md`, both under test. Found a real leak. → NEXT: P5
+
+Spec 41 ranked P4 highest of what remained because it is **the only phase backed by runs that
+actually failed**. The measured drift: **50 distinct `AZ_*` variables** (spec 41 said ~45) across
+the run-books with no canonical list.
+
+**Counted, not estimated — and one assumption in D6 was wrong:** `grep` says **no `AZ_*` variable
+is read by `src/fsd/` at all.** D6 assertion 1 is worded *"every `AZ_*` in `env.example.sh` appears
+in `src/` or `runbooks/`"*, which assumes the library reads them. It does not: every one is
+operator-facing (run-book shell, `az` CLI, or `demos/e2e_austria_aml.py`), and fsd's own code takes
+storage locations as **arguments**. The one `_AZ_RE` in `src/fsd/storage/azure.py:29` is a compiled
+regex, not a variable. The parity test therefore scans `runbooks/` + `demos/` + `docs/`.
+
+**Three deliverables:**
+
+| file | what it is |
+|---|---|
+| `env.example.sh` (repo root) | all 50 variables in 9 groups, values blank or derived, comments pointing at the private doc. `cp` → `env.local.sh` → fill → `source`. A missing value is now **one visible blank line**, not an absent export five run-books deep. |
+| `docs/reference/environment.md` | the canonical table: meaning · **where the value comes from** · **a verification command per row**. Continuously-true (D3), so no D4 header. |
+| `AZURE_INFRA_PRIVATE.md` (workspace root) | a new section mirroring `env.example.sh` group for group, so the three read side by side. **No value was copied into `fsd/`.** |
+
+**Parity is exact: 50 declared, 50 used, zero drift in either direction** — and `tests/test_docs.py`
+now enforces it (D6 assertion 1, two new tests: parity, and every variable documented in the
+reference). **The test caught its first defect immediately** — my own reference prose wrote `AZ_RE`
+where the identifier is `_AZ_RE`; the doc was fixed, not the test.
+
+**The four spellings are documented, NOT unified.** `AZ_ARCHIVE` / `_ROOT` / `_PATH` / `_CATALOG`
+(+ `AZ_CATALOG`, `AZ_CATALOG_URL`) all point into the same place. Renaming them would mean editing
+run-books, which D3 forbids — the same rule that forced the issue numbers to align rather than
+rewriting 473 references. So the reference gives the equivalence table and says **set whichever the
+run-book you are running names**; `AZ_ARCHIVE_ROOT` is marked canonical.
+
+### ⚠️ The identifier sweep found a real leak (pre-existing, now scrubbed)
+
+`RECIPES.md`'s pre-push sweep, run before committing, found **`cluster-rise-d16` — the concrete
+cluster name — in two tracked, public files**: a comment in `src/fsd/workflows/runners.py:248` and
+a docstring in `demos/plot_aml_timings.py:148`. Both were prose, so scrubbing to
+`cluster-<proj>-d16` + a pointer is behaviour-free. **Neither came from this session's work.**
+
+This is the **third** time the sweep has caught this class (two on 2026-07-22), and all three
+arrived the same way: **prose written about a real run.** `RECIPES.md` now says to run the sweep
+after any such session, and records the new known-clean false positives.
+
+**It does not close the standing open decision** (private doc, unmade since 2026-07-17): scrubbing
+is *forward-only*, and these identifiers are already in the public repo's **git history**.
+
+**`.gitignore` gained `env.local.sh`** — it did not have it, and that file is designed to hold real
+account names, ids and URLs.
+
+**Gate:** `pytest -q` **608 passed / 84 skipped** (+2, the parity tests), `ruff check src/ tests/
+demos/` clean, identifier sweep clean apart from documented false positives.
 
 ## ✅ 2026-07-30 — P3 DONE: `docs/findings/` — two research write-ups out of the issue bodies. → NEXT: P4 (env reference)
 

@@ -1,9 +1,13 @@
 """Doc-corpus checks (spec 41 D6). Synthetic, no network.
 
-Only assertion 4 is implemented here (spec 41 P1's scope): every point-in-time
-`specs/`+`runbooks/` file parses as a valid D4 status header, and every
-`superseded_by` names a file that exists. Assertions 1-3 (env-var parity,
-link resolution, README verb existence) belong to P4/P5 and are not built yet.
+Implemented here:
+  * assertion 4 (P1) - every point-in-time doc parses as a valid D4 status
+    header, and every `superseded_by` names a file that exists.
+  * assertion 1 (P4) - every `AZ_*` in `env.example.sh` is named somewhere in
+    the corpus, and vice versa, and every one is documented in
+    `docs/reference/environment.md`.
+
+Assertions 2 and 3 (link resolution, README verb existence) belong to P5.
 """
 
 from __future__ import annotations
@@ -95,3 +99,56 @@ def test_d4_superseded_by_target_exists(path: Path):
         if matches:
             return
     pytest.fail(f"{path}: superseded_by {target!r} names no file in specs/ or runbooks/")
+
+
+# --------------------------------------------------------------------------
+# Assertion 1 (spec 41 D6/D7): AZ_* variable parity.
+#
+# The drift this kills is measured: ~50 variables accreted across the run-books
+# with no canonical list, including four spellings of one idea (AZ_ARCHIVE /
+# _ROOT / _PATH / _CATALOG). Every documentation defect that cost a real run was
+# of this class.
+# --------------------------------------------------------------------------
+
+_AZ_VAR_RE = re.compile(r"\bAZ_[A-Z0-9_]+")
+# Directories whose text is allowed to name an AZ_* variable. `src/` is NOT one:
+# no AZ_* is read by library code (the `_AZ_RE` in storage/azure.py is a regex
+# name, and the leading underscore keeps it out of this pattern anyway).
+_AZ_CORPUS_DIRS = ("runbooks", "demos", "docs")
+_ENV_EXAMPLE = REPO_ROOT / "env.example.sh"
+_ENV_REFERENCE = REPO_ROOT / "docs" / "reference" / "environment.md"
+
+
+def _declared_vars() -> set[str]:
+    return set(re.findall(r"^export (AZ_[A-Z0-9_]+)", _ENV_EXAMPLE.read_text(), re.M))
+
+
+def _corpus_vars() -> set[str]:
+    found: set[str] = set()
+    for d in _AZ_CORPUS_DIRS:
+        for p in (REPO_ROOT / d).rglob("*"):
+            if p.is_file() and p.suffix in {".md", ".py", ".sh"}:
+                found |= set(_AZ_VAR_RE.findall(p.read_text(errors="ignore")))
+    return found
+
+
+def test_az_var_parity():
+    """Every declared variable is used, and every used variable is declared."""
+    declared, used = _declared_vars(), _corpus_vars()
+    assert declared, "env.example.sh declares no AZ_* variables"
+    undeclared = used - declared
+    assert not undeclared, (
+        f"used in {'/, '.join(_AZ_CORPUS_DIRS)}/ but missing from env.example.sh: "
+        f"{sorted(undeclared)}"
+    )
+    unused = declared - used
+    assert not unused, (
+        f"declared in env.example.sh but named nowhere in the corpus: {sorted(unused)}"
+    )
+
+
+def test_az_vars_are_documented():
+    """Every declared variable appears in the environment reference table."""
+    reference = _ENV_REFERENCE.read_text()
+    missing = sorted(v for v in _declared_vars() if v not in reference)
+    assert not missing, f"undocumented in docs/reference/environment.md: {missing}"
