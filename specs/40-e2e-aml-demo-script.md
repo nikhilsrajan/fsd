@@ -1,6 +1,6 @@
 ---
 status: current
-summary: The end-to-end AML demo script tying download/build/flatten/train/infer together; header still reads DRAFT but it ran end to end on the cluster (2026-07-29) and carries its own recorded amendments A1-A3.
+summary: The end-to-end AML demo script tying download/build/flatten/train/infer together; carries its own amendments A1-A3 (the body's own "DRAFT" line predates sign-off).
 ---
 
 # Spec 40 — `demos/e2e_austria_aml.py`: the cluster demo run as one script

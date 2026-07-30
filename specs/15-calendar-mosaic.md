@@ -1,6 +1,6 @@
 ---
 status: current
-summary: Calendar-interval median mosaic as the default cube time axis; signed off and implemented.
+summary: Calendar-interval median mosaic as the default cube time axis.
 ---
 
 # Spec 15 — Calendar-interval median mosaic

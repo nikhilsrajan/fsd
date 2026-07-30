@@ -1,6 +1,6 @@
 ---
 status: current
-summary: `create_training_data` as the download-to-build-to-flatten land-local façade on AML; header still reads DRAFT but it shipped and the cluster demo ran it (2026-07-29).
+summary: `create_training_data` as the download-to-build-to-flatten land-local facade on AML (the body's own "DRAFT" line predates sign-off).
 ---
 
 # Spec 39 — create_training_data end-to-end on Azure ML: the flatten → land-local half

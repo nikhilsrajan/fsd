@@ -1,6 +1,6 @@
 ---
 status: current
-summary: P1 Azure storage seam: `storage=` becomes a meaningful compute seam; signed off, pivoted, and implemented.
+summary: P1 Azure storage seam: `storage=` becomes a meaningful compute seam (pivoted mid-spec).
 ---
 
 # Spec 31 — P1 Azure storage seam (adlfs + `/vsiadls/`, config-not-code)

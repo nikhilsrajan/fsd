@@ -1,6 +1,6 @@
 ---
 status: current
-summary: De-duplicating reprocessed Sentinel-2 acquisitions from MPC discovery; signed off and implemented (validated live in runbook 33).
+summary: De-duplicating reprocessed Sentinel-2 acquisitions from MPC discovery.
 ---
 
 # Spec 33 — MPC reprocessing de-duplication (TODO #34)

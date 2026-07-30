@@ -1,6 +1,6 @@
 ---
 status: current
-summary: The local-completeness gate: real CDSE download + ROI-mode inference as one Austria e2e demo; signed off and implemented.
+summary: The local-completeness gate: real CDSE download + ROI-mode inference as one Austria e2e demo.
 ---
 
 # Spec 23 — e2e Austria: the local-completeness gate + team report

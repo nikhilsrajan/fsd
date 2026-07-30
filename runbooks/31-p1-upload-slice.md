@@ -1,6 +1,6 @@
 ---
 status: current
-summary: Upload a real S2 slice to the rise blob and repoint the catalog; ran and gated spec 31.
+summary: Upload a real S2 slice to the rise blob and repoint the catalog at it.
 ---
 
 # Run-book 31 — upload a real S2 slice to the `rise` blob + repoint the catalog

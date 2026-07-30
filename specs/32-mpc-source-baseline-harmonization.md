@@ -1,6 +1,6 @@
 ---
 status: current
-summary: MPC as a second source + processing-baseline radiometry harmonization; done, code reviewed, merged, validated on real MPC data.
+summary: MPC as a second source, plus processing-baseline radiometry harmonization.
 ---
 
 # Spec 32 — MPC source (Sentinel-2 L2A) + processing-baseline harmonization

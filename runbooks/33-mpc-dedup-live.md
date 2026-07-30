@@ -1,6 +1,6 @@
 ---
 status: current
-summary: Reprocessing-dedup fires on the real duplicate acquisition against live MPC; ran green locally.
+summary: Reprocessing-dedup fires on the real duplicate acquisition against live MPC.
 ---
 
 # Run-book: spec 33 — MPC reprocessing dedup, proven on live MPC data

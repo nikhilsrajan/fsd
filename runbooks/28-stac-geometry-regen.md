@@ -1,6 +1,6 @@
 ---
 status: current
-summary: Regenerate the demo STAC with the true slanted cell footprint instead of the bbox; ran green.
+summary: Regenerate the demo STAC with the true slanted cell footprint instead of the bbox.
 ---
 
 # Run-book: spec 28 — regenerate the demo STAC with the true cell geometry

@@ -1,6 +1,6 @@
 ---
 status: current
-summary: Tier-2 serving validation: local pgSTAC + titiler-pgstac "mini-MPC" stack; done and validated end to end.
+summary: Tier-2 serving validation: a local pgSTAC + titiler-pgstac "mini-MPC" stack.
 ---
 
 # Spec 30 — Serving contract Tier 2: local pgSTAC + titiler-pgstac "mini-MPC" (+ stac-geoparquet export)

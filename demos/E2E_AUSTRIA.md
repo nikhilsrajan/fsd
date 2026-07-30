@@ -1,6 +1,6 @@
 ---
 status: current
-summary: The local end-to-end Austria walkthrough with real timings; a tutorial and a benchmark report fused into one doc (spec 41 D10) pending extraction into docs/tutorial.md.
+summary: The local end-to-end Austria walkthrough with real timings; a tutorial and a benchmark report fused into one doc (spec 41 D10) pending extraction into docs/tutorial.md. ⚠️ its step-3/4 numbers are stale — measured 2026-07-13, before `aggregate="median_per_id"` (spec 40 A2); see TODO #62.
 ---
 
 # Running fsd locally — the end-to-end guide (Austria)

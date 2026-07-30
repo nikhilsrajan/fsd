@@ -1,6 +1,6 @@
 ---
 status: current
-summary: Proves the landed AML-downloaded archive is trustworthy (radiometry, catalog completeness, byte-identical); ran green.
+summary: Proves the landed AML-downloaded archive is trustworthy: radiometry, catalog completeness, byte-identical.
 ---
 
 # Run-book: 37 verify-archive — is `$AZ_ROOT/archive` trustworthy?

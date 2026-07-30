@@ -1,6 +1,6 @@
 ---
 status: current
-summary: Part 2: per-read instrumentation benchmark; signed off and implemented.
+summary: Part 2 of the benchmark harness: per-read instrumentation, showing where a datacube build's time actually goes.
 ---
 
 # Spec 12 — Datacube throughput benchmark · Part 2: per-read instrumentation

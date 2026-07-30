@@ -1,6 +1,6 @@
 ---
 status: current
-summary: Download at scale on AML (CDSE one-job + MPC fan-out to blob); signed off, implemented, reviewed, merged.
+summary: Download at scale on AML: CDSE as one job, MPC fanned out to blob.
 ---
 
 # Spec 37 — download on Azure ML (P2): dispatch the existing download-to-blob onto the cluster

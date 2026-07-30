@@ -1,6 +1,6 @@
 ---
 status: current
-summary: The committed offline tutorial micro-fixture (real COGs clipped to one grid cell); signed off, amended same day for an in-region VM build.
+summary: The committed offline tutorial micro-fixture (real COGs clipped to one grid cell); amendment A1 moves the pixel clipping to an in-region Azure VM.
 ---
 
 # Spec 42 — the tutorial micro-fixture: a committed, offline, real-pixel dataset
