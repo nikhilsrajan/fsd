@@ -2,7 +2,51 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-30 (✅ P2 DONE — `TODO.md` is 62 aligned GitHub issues; next = P3, `docs/findings/`)_
+_Last updated: 2026-07-30 (✅ P3 DONE — `docs/findings/` exists and is tested; next = P4, the env reference)_
+
+## ✅ 2026-07-30 — P3 DONE: `docs/findings/` — two research write-ups out of the issue bodies. → NEXT: P4 (env reference)
+
+Spec 41 D14 P3: *extract TODO #59/#61 + `E2E_AUSTRIA_AML.md` §6 → `docs/findings/`*. The two rows
+that were **1,137 and 792 words of research living in a markdown table cell** are now readable
+documents.
+
+| new file | from | says |
+|---|---|---|
+| `docs/findings/cloud-overhead.md` | issue #61 + `E2E_AUSTRIA_AML.md` §6.1 | **35 % of the inference run and 90 % of the merge run was the DRIVER** collecting over blob, not the cluster. Attack the driver, not the cluster. |
+| `docs/findings/workload-regimes.md` | issue #59 + §6.2 | Training units are **781× smaller** than inference units, so one set of fan-out defaults cannot serve both. |
+| `docs/findings/README.md` | new | the index + what a "finding" is and how it is superseded |
+
+**The split that makes this worth doing (D9):** the **finding holds the measurement** — the
+decomposed windows, the method, the caveats, and the readings that turned out wrong. The **issue
+holds the open work**. Both findings carry a D4 `status: current` header; findings are
+**point-in-time** (D3 explicitly lists `docs/findings/`), so a later measurement gets a *new*
+finding and this one is marked superseded — the numbers are never edited.
+
+**What each finding preserves that a summary would have thrown away:** three corrections in
+`cloud-overhead.md` (the "fixed cluster spin-up" reading, the "627 s bundle upload" suspect — the
+bundle stage was **13 s** — and "ramp-up grows with fan-out width"), and one in
+`workload-regimes.md` (the same width claim, from the other direction). Each was plausible and each
+was wrong; that is the reusable part.
+
+**`tests/test_docs.py` widened** — `_D4_DIRS` now covers `specs/`, `runbooks/`, `demos/`,
+`benchmarks/` **and** `docs/findings/` (84 target files, up from 72). This closes the open review
+finding that P1 stamped `demos/` + `benchmarks/` while D6 assertion 4's literal wording only tested
+`specs/`+`runbooks/`, so 11 stamped files could rot untested. The new folder is covered from birth.
+
+**`demos/E2E_AUSTRIA_AML.md` §6.1/§6.2 got a one-line pointer each, and nothing else** — it is
+point-in-time (D3), so it is not gutted to chase a later extraction. Both homes are frozen, so they
+cannot diverge. `TODO.md`'s stub now points at `docs/findings/` as D8 requires.
+
+**Handed to the user (networked, spec 24):** `gh issue comment` on #59 and #61 pointing at their
+findings — bodies prepared at the workspace root.
+
+**Gate:** `pytest -q` **606 passed / 84 skipped** (from 595/73 — the widened glob adds 12 files ×
+2 tests, of which 11 land as skips since only 2 files are superseded), `ruff check src/ tests/
+demos/` clean.
+
+**Two review findings still open** (P4/P5): `superseded_by` is ambiguous across the
+`specs/`↔`runbooks/` namespaces (`runbooks/42`'s `41` resolves to `specs/41`), and the two register
+indexes disagree on link style.
 
 ## ✅ 2026-07-30 — P2 DONE: `TODO.md` → 62 number-aligned GitHub issues. → NEXT: P3 (`docs/findings/`)
 

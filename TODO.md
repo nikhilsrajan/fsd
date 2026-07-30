@@ -10,7 +10,13 @@ keeps its full text, so nothing was deleted.
 - **Add one:** open an issue, not a row here. This file is a signpost, not a register.
 - **Labels:** `datacube` `download` `cloud` `storage` `stac` `docs` `perf` `model` `blocked`
 
-This file is kept rather than deleted because ~448 references across the specs, run-books, ADRs and
+**Measurement write-ups are [`docs/findings/`](docs/findings/), not issue bodies.** Two of the rows
+here were multi-page research write-ups; they are now
+[`cloud-overhead.md`](docs/findings/cloud-overhead.md) (issue #61) and
+[`workload-regimes.md`](docs/findings/workload-regimes.md) (issue #59). The finding holds the
+measurement; the issue holds the open work.
+
+This file is kept rather than deleted because ~473 references across the specs, run-books, ADRs and
 `PROGRESS.md` name it. Two prose sections that used to sit above the table also moved: the
 **post-v1 sequencing** narrative is now `ROADMAP.md` §5.9, and the **perf-track history** (the
 3-part benchmark plan and its parked optimization candidates) is a comment on issue #15.
