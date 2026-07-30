@@ -54,19 +54,19 @@ is heavy and must be cloud-colocated. What it costs when that line is crossed is
 [`docs/findings/cloud-overhead.md`](docs/findings/cloud-overhead.md).
 
 ### 2.3 Layers (swap backends without touching the core)
-- **L0 — fsd core library**: pure pipeline functions. Cloud-agnostic; never imports Azure.
-- **L1 — seams**: storage (fsspec, exists), runner (Snakemake exists → +Azure Batch), and a
-  new **control/trigger seam** (submit-a-job, backend-agnostic).
-- **L2 — deployment backends**: local, Azure Batch, later inference/deploy backends.
-- **L3 — project contract**: the user-supplied **ModelAdapter** (§3).
-- **L4 — product surfaces**: pip UX, config files, hosted TiTiler/STAC. fsd *produces* the
-  STAC+COG; infra *hosts* the tiler.
+
+**Moved to [`ARCHITECTURE.md` §6](ARCHITECTURE.md#6-layers--swap-a-backend-without-touching-the-core)**
+(same D9 reason as §2.1/2.2). L0 core · L1 seams · L2 deployment backends · L3 the project's
+`ModelAdapter` · L4 product surfaces. The shipped L2 backends are **local (Snakemake) and Azure ML**
+— this section previously named Azure *Batch*, which was the earlier plan, not what runs.
 
 ### 2.4 Two datacube types, one builder
-- **Training datacubes** — from known-label polygons → flatten → arrays.
-- **Inference datacubes** — from S2 res-11 grids tiling an ROI → model → COG.
 
-Same `build_datacube`; what differs is the *source of geometries* and *what happens after*.
+**Moved to [`ARCHITECTURE.md` §3](ARCHITECTURE.md#3-code-map).** Training cubes come from
+known-label polygons and are tiny; inference cubes come from S2 grid cells tiling an ROI and are
+large. Same builder — what differs is the *source of geometries* and *what happens after*. The
+opposite economics are measured in
+[`docs/findings/workload-regimes.md`](docs/findings/workload-regimes.md).
 
 ### 2.5 Scope goes UP — high-level verbs hide the plumbing
 Intended users shouldn't say "flatten" or "tile the ROI." fsd grows a high-level API (§4);
