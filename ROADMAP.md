@@ -40,26 +40,18 @@ rewrite. This is the promise we protect at every step.
 ## 2. Organizing principles (the anti-rewrite frame)
 
 ### 2.1 Three usage modes
-- **Mode A — fully local.** Laptop does everything: download → datacube → flatten → train →
-  **inference/deploy**. This is fsd today (minus deploy). The escape hatch for
-  Azure-hesitant colleagues; it never goes away.
-- **Mode B — cloud data+compute, local control + local training.** The laptop is a *thin
-  remote control*: it triggers download/datacube/flatten **in the cloud** (raw tiles never
-  touch the laptop), then pulls back only the **compact flattened arrays** to train locally.
-  Coherent precisely because flattened data is small.
-- **Mode C — fully cloud inference.** Register model + adapter, trigger by ROI+dates, cloud
-  fans out over S2 tiles, runs the model, writes COGs + STAC, TiTiler serves XYZ.
 
-The "downloading raw data to a laptop defeats cloud speed-up" worry is really *Mode A data
-locality with Mode C speed* — incoherent. Resolution: in Mode B you download the *flattened
-result*, not the raw imagery.
+**Moved to [`ARCHITECTURE.md` §5](ARCHITECTURE.md#5-the-three-modes)** (spec 41 D9: the code map,
+invariants and modes have one home). Modes **A** (fully local), **B** (cloud data + compute, local
+control and training) and **C** (fully cloud inference) — B and C were both proven on the real
+cluster 2026-07-29.
 
 ### 2.2 Control plane vs data plane (data gravity)
-The **driver** (control plane) is a thin, portable, authenticated *job submitter* — it can
-run on a **laptop** (VPN + `az login`), the user's **VM**, an **AML job**, or later an
-**Azure Function** ("lambda equivalent"). The **data plane** (download, datacube, flatten,
-inference) is heavy and **must be cloud-colocated** (compute next to storage). Keeping the
-driver thin is *why* "all three driver locations" is cheap to support.
+
+**Moved to [`ARCHITECTURE.md` §2](ARCHITECTURE.md#2-containers--the-four-runtime-pieces).** The
+driver is a thin, portable job submitter (laptop · VM · AML job · later a Function); the data plane
+is heavy and must be cloud-colocated. What it costs when that line is crossed is measured in
+[`docs/findings/cloud-overhead.md`](docs/findings/cloud-overhead.md).
 
 ### 2.3 Layers (swap backends without touching the core)
 - **L0 — fsd core library**: pure pipeline functions. Cloud-agnostic; never imports Azure.

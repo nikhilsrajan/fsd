@@ -115,6 +115,11 @@ _AZ_VAR_RE = re.compile(r"\bAZ_[A-Z0-9_]+")
 # no AZ_* is read by library code (the `_AZ_RE` in storage/azure.py is a regex
 # name, and the leading underscore keeps it out of this pattern anyway).
 _AZ_CORPUS_DIRS = ("runbooks", "demos", "docs")
+# The progress archive is point-in-time history (D3/D12) and names variables that
+# have since been renamed or dropped -- AZ_DOWNLOAD_ROOT, AZ_INFER_ENV_NAME_VERSION.
+# Those are facts about what was true then, not drift to fix, and the file is never
+# edited after the fact. Parity is about the CURRENT operational corpus.
+_AZ_CORPUS_EXCLUDE = {REPO_ROOT / "docs" / "progress-archive.md"}
 _ENV_EXAMPLE = REPO_ROOT / "env.example.sh"
 _ENV_REFERENCE = REPO_ROOT / "docs" / "reference" / "environment.md"
 
@@ -127,7 +132,7 @@ def _corpus_vars() -> set[str]:
     found: set[str] = set()
     for d in _AZ_CORPUS_DIRS:
         for p in (REPO_ROOT / d).rglob("*"):
-            if p.is_file() and p.suffix in {".md", ".py", ".sh"}:
+            if p.is_file() and p.suffix in {".md", ".py", ".sh"} and p not in _AZ_CORPUS_EXCLUDE:
                 found |= set(_AZ_VAR_RE.findall(p.read_text(errors="ignore")))
     return found
 
@@ -152,3 +157,46 @@ def test_az_vars_are_documented():
     reference = _ENV_REFERENCE.read_text()
     missing = sorted(v for v in _declared_vars() if v not in reference)
     assert not missing, f"undocumented in docs/reference/environment.md: {missing}"
+
+
+# --------------------------------------------------------------------------
+# Assertions 2 and 3 (spec 41 D6, P5): links resolve, and the README's verbs
+# are real. Assertion 3 alone would have caught the README that called
+# `run_inference` a stub for weeks after it shipped and ran on a cluster.
+# --------------------------------------------------------------------------
+
+_MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+# Root documents + the maintained docs/ tree. Point-in-time corpora are excluded
+# deliberately: they are never edited after the fact (D3), so a link that rots
+# there is a fact about history, not a defect to fix.
+_LINKED_DOCS = ("README.md", "ARCHITECTURE.md", "CONTEXT.md", "ROADMAP.md", "PROGRESS.md")
+
+
+def _link_targets(text: str):
+    for raw in _MD_LINK_RE.findall(text):
+        target = raw.split("#", 1)[0].strip()
+        if not target or "://" in target or target.startswith("mailto:"):
+            continue
+        yield target
+
+
+def _docs_with_links() -> list[Path]:
+    paths = [REPO_ROOT / n for n in _LINKED_DOCS if (REPO_ROOT / n).exists()]
+    paths += sorted((REPO_ROOT / "docs").rglob("*.md"))
+    return paths
+
+
+@pytest.mark.parametrize("path", _docs_with_links(), ids=lambda p: str(p.relative_to(REPO_ROOT)))
+def test_relative_links_resolve(path: Path):
+    broken = [t for t in _link_targets(path.read_text()) if not (path.parent / t).exists()]
+    assert not broken, f"{path}: link target(s) do not exist: {broken}"
+
+
+def test_readme_verbs_exist():
+    """Every `fsd.<verb>(` the README calls is really in `fsd.__all__`."""
+    import fsd
+
+    called = set(re.findall(r"\bfsd\.([a-z_][a-z0-9_]*)\s*\(", (REPO_ROOT / "README.md").read_text()))
+    assert called, "README quickstart calls no fsd verbs — did the example disappear?"
+    missing = sorted(v for v in called if v not in fsd.__all__)
+    assert not missing, f"README calls fsd.<verb> that is not in fsd.__all__: {missing}"
