@@ -1,18 +1,18 @@
 ---
 status: current
-summary: The committed offline tutorial micro-fixture (real COGs clipped to one grid cell); amendment A1 moves the pixel clipping to an in-region Azure VM.
+summary: The committed offline tutorial micro-fixture (real COGs clipped to one grid cell); A1 moves the pixel clipping to an in-region Azure VM, A2 moves the radiometry source-equality gate onto the generator's _result.json.
 ---
 
 # Spec 42 — the tutorial micro-fixture: a committed, offline, real-pixel dataset
 
-**Status: ✅ SIGNED OFF (2026-07-30, user) — amended A1 the same day, see §8.** Carved out of
+**Status: ✅ SIGNED OFF (2026-07-30, user) — amended A1 and A2 the same day, see §8.** Carved out of
 **spec 41 (D11, phase P6)** because this is data engineering with its own acceptance criteria and its
 own failure modes, not documentation.
 
 > **⚠️ Read §8 (amendments A1, A2) before §2 D1.** A1 moves the build **in-region onto an Azure VM,
 > sourcing the blob MPC archive instead of the local CDSE archive** — which supersedes D1's
 > radiometry mechanism and revises acceptance test 2. D1 is kept intact below because its reasoning
-> is the fallback path. **A2 (⏳ proposed)** then moves A1's *source-equality* half of acceptance
+> is the fallback path. **A2** then moves A1's *source-equality* half of acceptance
 > test 2 **out of the offline test suite and into the generator's `_result.json`**, because the
 > suite runs with the network off and therefore cannot reach the source at all.
 
@@ -319,7 +319,7 @@ precisely so that comparison remains possible.
 
 ---
 
-### A2 — the source-equality gate moves off the offline test suite and onto the generator (⏳ PROPOSED, awaiting sign-off — Opus review of the P6 step-1 implementation, 2026-07-30)
+### A2 — the source-equality gate moves off the offline test suite and onto the generator (✅ SIGNED OFF, 2026-07-30, user — raised by the Opus review of the P6 step-1 implementation)
 
 **Trigger.** The P6 step-1 review asked whether the implementation's offline substitute for A1's
 revised acceptance test 2 was faithful to A1's intent. **It is not**, and neither would any other

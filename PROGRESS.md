@@ -4,7 +4,7 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-07-30 (P6 step 1 **reviewed** — 8 findings, 2 blocking, all fixed; spec 42 amendment **A2 is proposed and needs sign-off** before this merges)_
+_Last updated: 2026-07-30 (P6 step 1 **reviewed + merged** — 8 findings, 2 blocking, all fixed; spec 42 amendment **A2 signed off**; `main` not yet pushed)_
 
 ## Where things stand
 
@@ -39,11 +39,10 @@ all fixed — see the entry below); the rest is in the archive. P6/P7 remain.
 | open work | `gh issue list` |
 | what happened before | [`docs/progress-archive.md`](docs/progress-archive.md) |
 
-**Next up:** sign off **spec 42 amendment A2** (§8 — moves A1's source-equality check off the
-offline suite and onto the generator's `_result.json`), then merge `worktree-p6-build-fixture` into
-`main`. After that the user runs `runbooks/43-build-tutorial-fixture.md` on an Azure ML compute
-instance inside the `rise` VNet (Steps 1-6), pastes back the `_result_step*.json` files, and commits
-the real fixture (Step 7). That lands spec 42, closing spec 41 **P6** and unblocking **P7**
+**Next up:** the user runs `runbooks/43-build-tutorial-fixture.md` on an Azure ML compute instance
+inside the `rise` VNet (Steps 1-6), pastes back the `_result_step*.json` files, and commits the real
+fixture (Step 7). (`main` has the reviewed generators but is **unpushed** — the VM clones from
+GitHub at run-book Step 1c, so **push `main` before starting the run-book**.) That lands spec 42, closing spec 41 **P6** and unblocking **P7**
 (`docs/tutorial.md` + `docs/howto/*`).
 
 ---
@@ -75,7 +74,7 @@ only live check was `assert int(row["offset"]) == -1000` — which a generator t
 also passes, i.e. exactly the failure mode A1 set out to exclude (and on the MPC path no granule id
 carries a `_N####_` token, so the id-agreement branch never fires at all).
 
-**Resolution — spec 42 amendment A2 (⏳ PROPOSED, needs sign-off).** The source-equality gate moves
+**Resolution — spec 42 amendment A2 (✅ signed off, 2026-07-30, user).** The source-equality gate moves
 to where the source is reachable: the generator records per granule whether the offset was
 `declared` (copied from the source catalog's column) or `derived` (D1's id-token fallback) and emits
 `offset_sources` + `all_offsets_declared` in `_result.json`; run-book 43 Steps 2 and 4 gate on it.
@@ -115,9 +114,9 @@ equality is kept as a secondary check, now documented as insufficient on its own
 demos/` clean. Pre-push identifier sweep run over the staged tree: 32 concrete values, 7 hits, all
 7 the documented known-clean false positives, **none in the changed files**.
 
-**Not merged yet** — A2 is a change to a signed-off acceptance criterion, so it waits on the user's
-sign-off (working contract: spec sign-off before implementing against it). Everything else is done
-and green on the branch.
+**Merged.** A2 was signed off the same day; `worktree-p6-build-fixture` went into `main` with
+`--no-ff` and the worktree + branch were pruned (standing practice). **`main` is ahead of
+`origin/main` and not pushed** — push is an outward action and still needs the go-ahead.
 
 ---
 
