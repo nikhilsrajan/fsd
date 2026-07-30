@@ -33,14 +33,17 @@ own failure modes, not documentation.
 
 Everything below is measured, not assumed.
 
-**Grid cell `4772924`** — selected from the 300 cells over `AT_ROI` because it holds the most
-labelled fields.
+**Grid cell `4772924`** — selected from the 300 cells over `AT_ROI`. Originally justified as "the
+cell with the most labelled fields"; **amendment A3 replaces that with a measured ranking**
+(`tests/data/tutorial/survey_cells.py`) and confirms the same cell for a better reason — see §8 A3.
 
 | Property | Value | How established |
 |---|---|---|
 | Bounds (EPSG:4326) | 15.3900 – 15.4717 E, 48.4821 – 48.5320 N | `grid.roi_to_s2_grids('AT_ROI.geojson', grid_size_km=5)` |
 | Labelled fields | **43**, 7 crops | `sjoin` with `AT_2018_TRAIN.geojson` (900 fields) |
 | Crop distribution | maize 20 · hemp 13 · alfalfa 4 · mustard 2 · winter wheat 2 · pasture 1 · spring wheat 1 | same |
+| Label column | **`crop`** (not `EC_hcat_n` — A3) | `AT_2018_TRAIN.geojson` has `fid, crop, geometry` |
+| Raw label values | **HCAT compound names**: `grain_maize_corn_popcorn`, `hemp_cannabis`, … (A3) | same |
 | **MGRS tile** | **`T33UWP`, single tile — 24/24 granules** | granule-id token, `demo_e2e` catalog |
 | Granule dates | 24, **2018-04-06 → 2018-09-28** (~5–15 day cadence) | same |
 | Processing baseline | **`N0500` on all 24** | `_N0500_` token in every granule id |
@@ -111,8 +114,12 @@ small, contained down-payment on TODO #30/#10, which stays open for the archive 
 
 - `tests/data/tutorial/fields.geojson` — the 43 fields clipped to the cell, columns `fid` +
   `crop` (original) + `label` (collapsed).
-- **`label` ∈ {`maize`, `hemp`, `other`}.** The raw 7-class distribution over 43 samples is not
+- **`label` ∈ {major₁, major₂, `other`}.** The raw 7-class distribution over 43 samples is not
   trainable (four near-singletons); a 3-class split is. The tutorial states the collapse and why.
+  **⚠️ A3 (§8): the two majors are DERIVED by clipped area, never hardcoded.** This decision
+  originally wrote them as the literals `maize`/`hemp`, which match nothing — the real values are
+  HCAT compound names. For cell `4772924` the derivation yields
+  `grain_maize_corn_popcorn` + `hemp_cannabis`, i.e. the crops D3 meant all along.
 - `tests/data/tutorial/roi.geojson` — the cell polygon, for the inference leg.
 
 ### D4 — The generator is a committed, re-runnable script
@@ -369,3 +376,68 @@ verbatim `sys.argv` — including the expanded `--archive-root abfss://…` — 
 committed `README.md` in a **public MIT repo**; and run-book 43 Step 4's own invocation made the
 generator's inputs (`roi.geojson`/`fields.geojson`) its outputs, so a mid-write crash destroyed Step
 0's output, which cannot be regenerated on the VM.
+
+
+---
+
+### A3 — the label collapse is derived from data, not hardcoded; the cell choice gets a measured justification (✅ SIGNED OFF, 2026-07-31, user)
+
+**Trigger.** Run-book 43 Step 0, run for real on 2026-07-31, failed at its own gate:
+
+```
+cell 4772924  bounds 15.3900,48.4821,15.4717,48.5320  fields 43  classes other=43
+FAIL: expected 3 classes over a non-empty field set, got 1 class(es) over 43 field(s).
+```
+
+**The gate worked.** That FAIL is the `pass`-is-computed fix from the previous session's review
+(finding F6) doing exactly its job: before it, this run would have written `"pass": true`, shipped a
+single-class fixture, and the defect would have surfaced far downstream — in a tutorial that trains
+a classifier on one class.
+
+**Two defects, one root cause: D3 assumed label values it never checked.**
+
+| | assumed | actual (`shapefiles/AT_2018_TRAIN.geojson`, 900 fields) |
+|---|---|---|
+| label column | `EC_hcat_n` | **`crop`** — `EC_hcat_n` is a column of a *different* workspace file, `austria_eurocrops_sampled_ethiopia_translated.geojson` |
+| label values | `maize`, `hemp` | **HCAT compound names**: `grain_maize_corn_popcorn`, `hemp_cannabis`, `alfalfa_lucerne`, `winter_common_soft_wheat`, `spring_common_soft_wheat`, `pasture_meadow_grassland_grass`, `mustard`, `buckwheat`, `sunflower` (9 crops, exactly 100 fields each) |
+
+`collapse_label` compared the raw value against `{"maize", "hemp"}` case-insensitively but **not**
+fuzzily — correctly, since substring matching would be a worse bug — so every field became `other`.
+
+**Decision.**
+
+1. **The majors are derived, not named.** `pick_major_crops` ranks the cell's crops by **clipped
+   area inside the cell** and keeps the top `--n-major` (default 2); everything else collapses to
+   `other`. Area, not field count: one 8 ha block is more signal than eight 0.1 ha strips, and area
+   is what the datacube's pixels actually are. For `4772924` this yields
+   **`grain_maize_corn_popcorn` (25.1 ha, 20 fields) + `hemp_cannabis` (17.8 ha, 13 fields)** — the
+   crops D3 intended. `--label-col` (default `crop`) makes the column an argument too.
+2. **It refuses rather than degrades.** A cell holding ≤ `n_major` distinct crops raises (the
+   collapse would leave `other` empty); a cell holding no field raises. Neither silently produces a
+   degenerate label set.
+3. **The cell choice is now measured.** `tests/data/tutorial/survey_cells.py` ranks every cell over
+   an ROI by `(n_crops, major_share_pct, crop_area_ha)`. Over `AT_ROI`: **179 of 300 cells contain at
+   least one field**, and the top candidates are
+
+   | cell | fields | crops | crop area | **top-2 share** | 3-class split |
+   |---|---|---|---|---|---|
+   | `4772c8c` | 40 | **8** | 55.8 ha | **50 %** | buckwheat 14.0 / maize 13.8 / **other 28.0** |
+   | `477292c` | 22 | **8** | 21.3 ha | 57 % | w.wheat 8.1 / mustard 4.0 / **other 9.2** |
+   | **`4772924`** | **43** | 7 | 52.5 ha | **82 %** | **maize 25.1 / hemp 17.8 / other 9.6** |
+
+   **`4772924` wins on the number that matters: top-2 share.** Raw crop *variety* is the wrong
+   objective for a 3-class collapse — at `4772c8c` the catch-all `other` would be the **largest**
+   class (28.0 ha vs 14.0 and 13.8), which teaches a beginner the opposite of what a worked example
+   should. `4772924` also has the most fields (43) of any cell in the ROI, and is confirmed
+   single-MGRS-tile `T33UWP` / 24 granules, so §1's measurements stand unchanged.
+
+**Consequence.** §1's crop distribution table was already correct — the survey reproduces
+maize 20 · hemp 13 · alfalfa 4 · mustard 2 · winter wheat 2 · spring wheat 1 · pasture 1 exactly.
+Only D3's *literals* and the label column name were wrong. Run-book 43 Step 0 now reports the
+derived majors in its `_result.json` (`major_crops`, `label_col`) so the tutorial's prose can cite
+them instead of restating a guess.
+
+**Residual risk.** The label values are now data-dependent, so `docs/tutorial.md` (spec 41 P7) must
+render the class names **from `_result_step0.json`**, not hardcode them a second time. The class
+names are long (`grain_maize_corn_popcorn`); shortening them for display is a tutorial-presentation
+choice, deliberately **not** made here — a second mapping is exactly what caused this defect.
