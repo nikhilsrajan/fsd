@@ -71,10 +71,26 @@ python tests/data/tutorial/derive_roi_and_labels.py \
     --result   tests/outputs/p6_tutorial_fixture/_result_step0.json
 ```
 
-- **Expect:** `cell 4772924  bounds 15.3900,48.4821,15.4717,48.5320  fields 43  classes maize=20 hemp=13 other=10`
+- **Expect:**
+  ```
+  cell 4772924  bounds 15.3900,48.4821,15.4717,48.5320  fields 43  classes grain_maize_corn_popcorn=20 hemp_cannabis=13 other=10
+  major crops (derived by area, not hardcoded): grain_maize_corn_popcorn, hemp_cannabis
+  ```
 - **PASS if:** `fields == 43`, three classes present, and both `tests/data/tutorial/roi.geojson` and
-  `fields.geojson` exist. The collapse is **maize / hemp / other** (spec 42 D3) — the raw 7 classes
-  over 43 samples are not trainable.
+  `fields.geojson` exist. All of that is gated in `_result.json`'s `pass` — it is computed, not
+  hardcoded.
+- **The class names are long and that is correct** (spec 42 **A3**). The raw labels in
+  `AT_2018_TRAIN.geojson` are HCAT compound names, and the two majors are **derived by clipped
+  area**, not hardcoded — an earlier version compared against the literals `maize`/`hemp`, matched
+  nothing, and collapsed all 43 fields into `other`. If you want a different split, pass
+  `--n-major N` (N+1 classes); do not edit a crop name into the script.
+- **`--label-col` defaults to `crop`**, which is what `AT_2018_TRAIN.geojson` uses. (`EC_hcat_n`
+  belongs to a *different* workspace file, `austria_eurocrops_sampled_ethiopia_translated.geojson`.)
+
+> **Choosing a different cell?** `tests/data/tutorial/survey_cells.py` ranks every cell over the ROI
+> by crop variety, labelled area and top-2 share. `4772924` wins on **top-2 share (82 %)** — two
+> cells have 8 crops rather than 7, but there the catch-all `other` becomes the *largest* class
+> (spec 42 A3's table).
 - **Sanity check that matters:** the cell must land at **15.39–15.47 E**. If you see ~16.0 E you have
   the *wrong cell* — that is `s2grid=476da24`, which contains **zero labels** (spec 42 §1).
 

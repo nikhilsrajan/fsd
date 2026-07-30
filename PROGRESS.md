@@ -4,7 +4,7 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-07-30 (P6 step 1 **reviewed + merged + pushed** — 8 findings, 2 blocking, all fixed; spec 42 amendment **A2 signed off**)_
+_Last updated: 2026-07-31 (run-book 43 **Step 0 now passes on real data** — spec 42 **A3** signed off: the label collapse is derived, not hardcoded)_
 
 ## Where things stand
 
@@ -39,15 +39,78 @@ all fixed — see the entry below); the rest is in the archive. P6/P7 remain.
 | open work | `gh issue list` |
 | what happened before | [`docs/progress-archive.md`](docs/progress-archive.md) |
 
-**Next up:** the user runs `runbooks/43-build-tutorial-fixture.md` on an Azure ML compute instance
-inside the `rise` VNet (Steps 1-6), pastes back the `_result_step*.json` files, and commits the real
-fixture (Step 7). `main` is pushed, so the VM's `git clone` at run-book Step 1c will have the
-reviewed generators. That lands spec 42, closing spec 41 **P6** and unblocking **P7**
+**Next up:** run-book 43 **Steps 1-6 on an Azure ML compute instance** inside the `rise` VNet, then
+commit the real fixture (Step 7). **Step 0 is done and green on real data** (2026-07-31). Push
+`main` before starting — the VM's `git clone` at Step 1c is how it gets the generators. That lands spec 42, closing spec 41 **P6** and unblocking **P7**
 (`docs/tutorial.md` + `docs/howto/*`).
 
 ---
 
 ## Most recent entry
+
+## 2026-07-31 — run-book 43 Step 0 runs green on real data; spec 42 **A3**: the label collapse is derived, not hardcoded
+
+Step 0 was run for real for the first time and **failed at its own gate** — which is the headline,
+because that gate is one of the fixes from the 2026-07-30 review:
+
+```
+cell 4772924  bounds 15.3900,48.4821,15.4717,48.5320  fields 43  classes other=43
+FAIL: expected 3 classes over a non-empty field set, got 1 class(es) over 43 field(s).
+```
+
+Review finding **F6** replaced a hardcoded `"pass": true` with a computed one. Without it this run
+writes PASS, ships a **single-class** fixture, and the defect surfaces much later — in a tutorial
+that trains a classifier on one class. The guard paid for itself on its first real invocation.
+
+### Root cause: D3 assumed label values nobody had looked at
+
+| | assumed | actual (`shapefiles/AT_2018_TRAIN.geojson`) |
+|---|---|---|
+| label column | `EC_hcat_n` | **`crop`** — `EC_hcat_n` belongs to a *different* workspace file, `austria_eurocrops_sampled_ethiopia_translated.geojson` |
+| label values | `maize`, `hemp` | **HCAT compound names**: `grain_maize_corn_popcorn`, `hemp_cannabis`, … (9 crops, 100 fields each) |
+
+`collapse_label` matched case-insensitively but not fuzzily — correctly — so every field became
+`other`.
+
+### A3: derive the majors, and justify the cell with a measurement
+
+- **`pick_major_crops` ranks by clipped area inside the cell** and keeps the top `--n-major`
+  (default 2). Area, not field count: area is what the datacube's pixels are. For `4772924` it
+  yields `grain_maize_corn_popcorn` (25.1 ha) + `hemp_cannabis` (17.8 ha) — the crops D3 meant.
+  `--label-col` (default `crop`) makes the column an argument too. It **refuses rather than
+  degrades**: ≤ `n_major` distinct crops, or a cell with no field, both raise.
+- **New `tests/data/tutorial/survey_cells.py`** ranks every cell over an ROI. Over `AT_ROI`:
+  **179 of 300 cells hold ≥ 1 field.** `4772924` stays the pick — two cells have **8** crops rather
+  than 7, but their **top-2 share is 50 % / 57 % against `4772924`'s 82 %**, so there the catch-all
+  `other` would be the *largest* class. Variety is the wrong objective for a 3-class collapse.
+- §1's crop distribution table was already right; the survey reproduces it exactly. Only D3's
+  literals and the column name were wrong.
+
+**Step 0 now:** `43 fields → grain_maize_corn_popcorn=20, hemp_cannabis=13, other=10`, `pass: true`.
+
+### `roi_to_s2_grids`: comment corrected, code deliberately unchanged
+
+The clip comment read as *"`gpd.overlay` cannot be used here"*. The real constraint is narrower —
+overlay against the **un-unioned** `roi_gdf` multiplies rows and repeats cell ids; against the union
+it is identical and unique. Measured all four variants (max symmetric difference **0.0**):
+
+| clip method | AT_ROI (1 poly) | 900-poly ROI |
+|---|---|---|
+| `intersection(union)` — kept | **2.6 ms** | 80.5 ms |
+| `overlay(vs union)` | 9.5 ms | 92.6 ms |
+| `overlay(vs raw roi_gdf)` | 7.1 ms | 25.2 ms → **1167 rows, ids not unique** |
+| `overlay(raw) + dissolve("id")` | 12.7 ms | **50.5 ms** |
+
+overlay's speed comes from STRtree pruning **per ROI polygon**; the union collapses the right side
+to one geometry, so the index prunes nothing. **The efficiency and the `InvalidBlockList`
+duplicate-id bug had the same cause.** `dissolve` recovers both but is ~5× slower on the
+single-geometry ROI — the documented shape of an ROI, i.e. the hot path. Kept as-is; only the
+comment changed, now carrying the numbers so nobody re-derives this.
+
+**Gate:** `pytest -q` **681 passed / 87 skipped** (674 + 7), `ruff check src/ tests/ demos/` clean.
+Identifier sweep: 32 values, 7 hits, all documented false positives, none in the 6 changed files.
+
+---
 
 ## 2026-07-30 — P6 step 1 REVIEWED: 8 findings, 2 blocking, all fixed → NEXT: sign off spec 42 **A2**, then merge + run run-book 43
 
