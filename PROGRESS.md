@@ -2,7 +2,52 @@
 
 Resume anchor. Read this + `specs/00-overview.md` to pick up where we left off.
 
-_Last updated: 2026-07-30 (🟡 P2 MANIFEST SIGNED OFF — run-book 44 is written and waiting on the user to run it)_
+_Last updated: 2026-07-30 (✅ P2 DONE — `TODO.md` is 62 aligned GitHub issues; next = P3, `docs/findings/`)_
+
+## ✅ 2026-07-30 — P2 DONE: `TODO.md` → 62 number-aligned GitHub issues. → NEXT: P3 (`docs/findings/`)
+
+**The user ran `runbooks/44-todo-to-issues.md`. It passed exactly.**
+
+```json
+{"step":"todo-to-issues","status":"ok","pass":true,
+ "metrics":{"created":62,"closed":24,"first":1,"last":62},
+ "expected":{"created":62,"closed":24,"first":1,"last":62},"error":null}
+```
+
+**Alignment verified independently** (not from the script's own report):
+`gh issue list --state all` → **62 issues, min 1, max 62, 24 closed**, and the sorted number set
+equals `[1..62]` exactly — no gaps, no drift. **`gh issue view 47` is now the canonical way to read
+what used to be TODO #47.**
+
+**Reference check:** **473 `TODO #NN` references across 61 markdown files**, and the **highest is
+#62** — every existing reference falls inside the aligned range, so all of them resolve. (The 448
+count in spec 41 D8 was measured earlier and before specs 41/42 + the P1/P2 entries added their
+own.) Nothing was rewritten to achieve this, which is exactly what D3 forbids and what the
+number-alignment decision bought.
+
+### What moved where (the prose problem D8 did not anticipate)
+
+`TODO.md`'s first 76 lines were **not rows** — they were narrative that a "~10-line stub" would
+have silently deleted, and it existed nowhere else in the repo (grep-verified against `ROADMAP.md`,
+`CHANGES.md`, `CONTEXT.md`). **The user chose to split it by subject** rather than keep it in the
+stub or fuse it into one new issue:
+
+| Content | New home | Why |
+|---|---|---|
+| "Post-v1 roadmap (sequencing — user, 2026-07-02)" | **`ROADMAP.md` §5.9**, verbatim, marked point-in-time | Roadmap sequencing belongs with the phase table; §5's table is the live plan, this records *why* the order was chosen |
+| "Cross-cutting perf track" — the 3-part benchmark-first plan + the five parked optimization candidates (2026-07-04) | **A comment on issue #15** | Issue #15 **is** that item — one fact, one home (D9) |
+
+**`TODO.md` is now a ~15-line signpost**, not deleted: 473 references name it. **`CLAUDE.md`
+edited** (workspace root, outside the repo): the living-registers line no longer lists `TODO.md`
+and says explicitly *never add a row to it*; the stale "(TODO #30/#10 open)" note in the archive
+warning is corrected — spec 34 closed both, but that archive predates the fix and was never
+re-ingested, so the ~1000 DN warning still stands for a different reason than it claimed.
+
+**Still open from P2:** the new P5 STACNotator north-star issue (the user's call on #26,
+2026-07-30) — it lands at #63+, outside the aligned range, and is a `gh` create, so it goes to the
+user with the command.
+
+**Gate:** `pytest -q` **595 passed / 73 skipped**, `ruff check src/ tests/ demos/` clean.
 
 ## 🟡 2026-07-30 — P2: the 62-issue manifest is REVIEWED + SIGNED OFF; run-book 44 written. → NEXT: the user runs run-book 44
 
