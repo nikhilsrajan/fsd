@@ -245,7 +245,8 @@ def _derive_timing(
 
     **`first_admission` is measured from the FIRST submission, not the last** (revised
     2026-07-29 against real data). Submitting N jobs is sequential and takes real time --
-    40 s for 32 jobs on `cluster-rise-d16` -- while admission of the *early* jobs happens
+    40 s for 32 jobs on the d16 cluster (`cluster-<proj>-d16`, concrete name in
+    `AZURE_INFRA_PRIVATE.md`) -- while admission of the *early* jobs happens
     concurrently. Anchoring on `t_last_submit` therefore made the leg go negative whenever
     a node started before the final job was submitted: run 20260729T132222Z reported
     `driver_prep=40.1, first_admission=-5.0`. Both numbers were arithmetically fine and

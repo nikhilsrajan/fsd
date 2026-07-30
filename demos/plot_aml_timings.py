@@ -145,7 +145,8 @@ def plot_job_gantt(timings: dict, out_fp: str, *, max_rows: int = 120) -> str | 
     cleanly (<= `max_rows`); returns `None` above that (drop it, per D12) or with no data.
 
     `max_rows` is 120, not D12's implied ~49. That figure came from the spec's assumption
-    of 16 jobs per run; the real cluster (`cluster-rise-d16`, max 32 nodes) fans out to 32,
+    of 16 jobs per run; the real d16 cluster (`cluster-<proj>-d16`, max 32 nodes; concrete
+    name in `AZURE_INFRA_PRIVATE.md`) fans out to 32,
     so a full demo run is **97** jobs -- which the original 80 silently dropped. Row height
     shrinks past 60 rows so the figure stays a sane aspect ratio instead of growing to two
     metres of PNG. Use `gantt_skip_reason` to find out WHY it returned None: "too many

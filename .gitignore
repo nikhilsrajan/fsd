@@ -48,3 +48,6 @@ _result_register.json
 # tagged A/B intermediates (spec 13) — regenerable; deliverable is cog_vs_jp2_*
 benchmarks/datacube_throughput_report_*.md
 benchmarks/datacube_throughput_figures_*/
+
+# P4 (spec 41 D7): the filled-in copy of env.example.sh -- real account names, ids, URLs
+env.local.sh
