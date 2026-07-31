@@ -56,22 +56,52 @@ def _import_probe() -> dict:
 
     A subprocess is essential: this module's own interpreter may already have imported
     something heavy, which would make the result a false positive.
+
+    **Never raises on a failed import.** The first VM run (2026-07-31) died with a bare
+    `CalledProcessError` because this used `check=True` + `capture_output=True`, which
+    discarded the child's traceback -- a probe whose entire job is to measure imports must
+    not hide an import error. Each module is now imported individually so the result names
+    *which* one failed, a failure is data rather than a crash, and the heavy-module reading
+    is still reported for whatever did import.
     """
     code = (
-        "import sys, json, time\n"
+        "import sys, json, time, traceback\n"
         f"mods = {ACQUISITION_IMPORTS!r}\n"
+        "imported, failures = [], {}\n"
         "t0 = time.perf_counter()\n"
         "for m in mods:\n"
-        "    __import__(m)\n"
+        "    try:\n"
+        "        __import__(m)\n"
+        "        imported.append(m)\n"
+        "    except BaseException as exc:\n"
+        "        failures[m] = f'{type(exc).__name__}: {exc}'\n"
         "elapsed = time.perf_counter() - t0\n"
         f"heavy = {HEAVY!r}\n"
         "loaded = sorted(h for h in heavy if h in sys.modules)\n"
-        "print(json.dumps({'import_seconds': round(elapsed, 3), 'heavy_loaded': loaded}))\n"
+        "print(json.dumps({'import_seconds': round(elapsed, 3), 'heavy_loaded': loaded,\n"
+        "                  'imported': imported, 'import_failures': failures}))\n"
     )
     out = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+        [sys.executable, "-c", code], capture_output=True, text=True, check=False
     )
-    return json.loads(out.stdout.strip().splitlines()[-1])
+    for line in reversed(out.stdout.strip().splitlines()):
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            continue
+    # The child died before it could report -- a segfault, an OOM, or an exception raised
+    # at interpreter level. Surface its stderr rather than losing it.
+    return {
+        "import_seconds": None,
+        "heavy_loaded": [],
+        "imported": [],
+        "import_failures": {
+            "<child process>": (
+                f"exit {out.returncode}; stderr tail: "
+                + " | ".join(out.stderr.strip().splitlines()[-5:])
+            )
+        },
+    }
 
 
 def main() -> int:
@@ -115,6 +145,13 @@ def main() -> int:
     venv_mb = _venv_size_mb(Path(sys.prefix))
     imp = _import_probe()
 
+    failures = imp.get("import_failures") or {}
+
+    # If part of the acquisition path did not import, `torch not in sys.modules` is a FALSE
+    # NEGATIVE -- torch is absent because the code that would have pulled it never ran. Report
+    # None, not True, so the report cannot cite an unearned pass.
+    torch_free = None if failures else ("torch" not in imp["heavy_loaded"])
+
     metrics = {
         "rslearn_version": version,
         "venv_size_mb": round(venv_mb, 1),
@@ -122,17 +159,21 @@ def main() -> int:
         "download_mb": args.download_mb,
         "acquisition_import_seconds": imp["import_seconds"],
         "heavy_modules_loaded_by_acquisition_path": imp["heavy_loaded"],
-        "torch_free_acquisition_path": "torch" not in imp["heavy_loaded"],
+        "acquisition_modules_imported": imp.get("imported", []),
+        "acquisition_import_failures": failures,
+        "torch_free_acquisition_path": torch_free,
         "probe_wall_seconds": round(time.perf_counter() - t0, 2),
     }
 
-    # The probe PASSES as long as it produced its measurements. It is descriptive, not a
-    # gate -- a heavy venv is a finding, not a failure. The one thing that would make the
-    # numbers meaningless is rslearn not importing at all, handled above.
+    # The probe is descriptive, not a gate -- a heavy venv is a finding, not a failure, so a
+    # successful measurement PASSES however large the numbers are. It fails on exactly two
+    # things, both of which make the numbers meaningless rather than merely unwelcome:
+    # rslearn not importing at all (handled above), and any module on the acquisition path
+    # failing to import, which voids the torch-free reading.
     result = {
         "step": "probe_01_install_weight",
-        "status": "ok",
-        "pass": True,
+        "status": "fail" if failures else "ok",
+        "pass": not failures,
         "metrics": metrics,
         "expected": {
             "torch_free_acquisition_path": True,
@@ -140,14 +181,21 @@ def main() -> int:
                 "torch/lightning are CORE install deps (pyproject.toml:11-31) so venv_size_mb "
                 "is expected to be large regardless; the prediction under test is that the "
                 "acquisition path does not IMPORT torch (utils/array.py:10-11 is TYPE_CHECKING-"
-                "guarded). If torch_free_acquisition_path is False, RSLEARN_READ section 4.3 is wrong."
+                "guarded). If torch_free_acquisition_path is False, RSLEARN_READ section 4.3 is wrong. "
+                "If it is null, part of the acquisition path did not import -- see "
+                "acquisition_import_failures; the reading is void, not passing."
             ),
         },
-        "error": None,
+        "error": (
+            None
+            if not failures
+            else "acquisition path did not fully import: "
+            + "; ".join(f"{m} -> {e}" for m, e in failures.items())
+        ),
     }
     (outdir / "_result_probe01.json").write_text(json.dumps(result, indent=2))
     print(json.dumps(result, indent=2))
-    return 0
+    return 0 if not failures else 1
 
 
 if __name__ == "__main__":
