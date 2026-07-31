@@ -899,3 +899,40 @@ diff "$T/oldbody" "$T/newbody" && echo "BODIES BYTE-IDENTICAL"
 - Then reconcile the **count** across every place it was written: the P5 review found the same fact
   recorded three ways (the PROGRESS entry said 60 entries / 100 lines, the commit message said
   61 / 94, and the truth was 61 / 93). `grep -c '^## '` and `wc -l` settle it.
+---
+
+## Worktrees: remove the checkout, keep the branch (the pre-worktree mental model)
+
+Coming from git-before-worktrees, the reflex is "a working directory *is* a branch, so deleting
+one deletes the other." It doesn't. **A worktree is a checkout, not a branch.** One repo keeps
+one `.git`, one object store and one set of branches, and hangs *several* working directories off
+it. Removing a worktree is like deleting a build directory — the branch, its commits and its
+reflog live in the shared `.git` and are untouched. It is the cheap version of a second
+`git clone`: no duplicated history, no second set of remotes to keep in sync.
+
+Git keeps the two operations strictly separate, and no `git worktree` subcommand deletes a branch
+as a side effect:
+
+```bash
+git worktree list                    # what exists, and which branch each one holds
+git worktree remove <path>           # remove the checkout. The branch SURVIVES.
+git worktree remove --force <path>   # same, when the directory has uncommitted junk
+git worktree prune                   # tidy stale metadata after rm -rf'ing one by hand
+
+git branch -d <branch>               # delete a branch -- a separate, explicit step
+```
+
+- ⚠️ **Claude Code's `ExitWorktree` tool is not `git worktree remove`.** Its `action: "remove"`
+  deletes the directory **and the branch**. That is the tool's convenience, not git semantics. To
+  drop the directory but keep the branch: `ExitWorktree` with **`action: "keep"`**, then
+  `git worktree remove <path>` by hand. Used exactly this way on 2026-07-31 to prune the spike
+  worktree while preserving `spike/rslearn`, which the charter says never to delete.
+- **The same branch cannot be checked out in two worktrees at once.** `git branch -vv` marks one
+  that is with a leading `+` and names the worktree holding it. That is also why you cannot touch
+  `main` from inside a worktree while the primary checkout has it — use `git -C <primary-path>`
+  for those commands, or do the work in the primary checkout.
+- **A branch is not "in" a worktree.** After `git worktree remove`, the branch simply loses its
+  `+` marker and becomes an ordinary branch that happens to be checked out nowhere.
+- Before removing, confirm nothing is stranded: `git -C <worktree> status --porcelain` (empty) and
+  that its commits are pushed or merged. The standing practice is to prune only what is **both**
+  landed **and** clean.
