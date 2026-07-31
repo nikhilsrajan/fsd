@@ -440,13 +440,37 @@ So the 5.3 GB venv is, out of the box, **unusable without one further `pip insta
 one line upstream, and `einops` is the *only* extra-group package a core module imports at top
 level — the others (`osmium` in `openstreetmap.py`, `cdsapi`/`netCDF4` in `climate_data_store.py`,
 `omnicloudmask` in `dataset/omni_cloud_mask.py`) sit behind specific data sources, which is the
-correct pattern. But it is evidence about **operational maturity at the version we would adopt**:
-the most basic possible smoke test — install the package, import it — fails, which means it is not
-in their release CI. For a dependency that would sit under fsd's download path in production, that
-is a real signal, and it is the kind of thing that shows up only by running the install.
+correct pattern.
 
-⬜ **Not yet checked:** whether this is already reported upstream, and whether it is fixed after
-0.1.13. Worth one look before the report is final — and worth filing if not.
+#### Why it survives: the published configuration is never the tested one
+
+Checked upstream 2026-07-31, and the mechanism is specific rather than a general slur on their
+engineering:
+
+- **CI never installs the core-only package.** `Dockerfile:9,13` builds the test image with
+  `uv sync --extra extra --extra dev --extra terratorch`, and `.github/workflows/build-test.yml`
+  runs the whole suite inside that image. `einops` is therefore always present in CI.
+- **The release workflow doesn't close the gap either.** `.github/workflows/publish.yml` validates
+  the tag against `pyproject.toml`, runs `uv build`, and publishes the artifact — it never
+  installs the built wheel and never imports it.
+
+So `pip install rslearn` + `import rslearn` — the exact thing every downstream user does first —
+is not exercised anywhere. That is a **CI-matrix blind spot**, cheap to close (one job that
+installs the wheel into a clean venv and imports it), not evidence of a careless project.
+
+**Confirmed unreported and unfixed** (searched `allenai/rslearn` issues, all states, 2026-07-31):
+the only issues mentioning `einops` concern its *use* inside model code, not its dependency
+classification, and the default branch still carries `version = "0.1.13"` with `einops>=0.8` in
+`extra` at `pyproject.toml:39`. There is a close precedent — issue **#449** (closed), *"bug:
+OlmoEarth missing dependency olmoearth_pretrain"*, is the same class of defect, and its reporter
+hit it having installed `rslearn[extra]`.
+
+**What this is worth to the decision.** Not much on its own — one `pip install einops`. It matters
+as a calibration: the version we would adopt ships in a state where the first line of any
+quickstart fails, and it went unnoticed because the tested configuration and the published
+configuration differ. Under Option B that risk is bounded (fsd pins the version and its own CI
+would catch it); under Option A, fsd's install story becomes rslearn's install story. **Worth
+filing upstream regardless** — it is a good-faith contribution and costs one issue.
 
 fsd's core is `numpy, pandas, geopandas, shapely, rasterio, pyarrow, fsspec, s3fs, pystac,
 pystac-client, numba, snakemake, tqdm` with everything cloud-shaped behind extras (`azure`, `aml`,
@@ -637,7 +661,9 @@ Stated plainly so nothing here is over-read:
 | `rslearn/rslearn/data_sources/copernicus.py:44-90,680` | harmonization is opt-in and hard-asserts −1000 |
 | `rslearn/pyproject.toml:11-97` | torch/lightning/flask/boto3 are core; the four optional groups contain no lite path; `einops>=0.8` sits in `extra` (line 39) though a core module imports it; core declares bare `fsspec` and only `extra` adds `fsspec[gcs, s3]` (line 44) — no Azure backend in either |
 | `rslearn/rslearn/utils/raster_format.py:9,788` + `config/dataset.py:31` | the import chain that makes a stock install fail: `rslearn.config` → `RasterFormat` → bare `import einops` |
-| probe 01 `_result_probe01.json`, VM run 2026-07-31 | 5,289.5 MB venv; 2,892 MB cold download; 88.5 s install; the `einops` failure on all five acquisition imports; `__version__` absent |
+| probe 01 `_result_probe01.json`, VM run 2026-07-31 | 5,289.5 MB venv; 2,892 MB cold download; 88.5 s install; the `einops` failure on all five acquisition imports; then, with einops present, 0.55 s import with torch absent and boto3 loaded; `__version__` absent |
+| `rslearn/Dockerfile:9,13` + `.github/workflows/build-test.yml` + `publish.yml` | CI always installs `--extra extra`, and the release job builds/publishes without installing or importing the wheel — why the core-only install is untested |
+| `allenai/rslearn` issue search, all states, 2026-07-31 | the einops packaging bug is unreported; issue #449 is the same class of defect (closed); the default branch is still 0.1.13 with `einops` in `extra` |
 | `rslearn/rslearn/main.py:52-58,110-1058` | the CLI verb set; `forkserver`; `DEFAULT_MAX_WORKERS = 32` — i.e. local multiprocessing, no distributed runner |
 | `rslearn/rslearn/data_sources/planetary_computer.py:220,265,373,400,1019` | lazy per-read MPC signing (§3.5) |
 | `rslearn/rslearn/dataset/window_data_storage/storage.py:88,110` | public numpy readback exists |
