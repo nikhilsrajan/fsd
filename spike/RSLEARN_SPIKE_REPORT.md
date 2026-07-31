@@ -1,16 +1,15 @@
 ---
 status: current
-summary: Build-vs-borrow report -- rslearn v0.1.13 vs fsd. Teaches rslearn's data model, prices three options (switch / hybrid / stay), and recommends keeping fsd's own S2 pipeline while piloting an rslearn-backed source for breadth. Probes 01-03 measured; one throughput number outstanding.
+summary: Build-vs-borrow report -- rslearn v0.1.13 vs fsd. Teaches rslearn's data model, prices three options (switch / hybrid / stay), and recommends keeping fsd's own S2 pipeline while piloting an rslearn-backed source for breadth. All probes measured; what remains is the decision, not more evidence.
 ---
 
 # rslearn vs fsd — build-vs-borrow report
 
-> **Status: measured, with one number outstanding.** Probes 01, 02 and 03 all ran on the VM
-> (2026-07-31); their numbers are in §4.1.2, §4.2, §4.3 and §5. **One measurement is left** —
-> fsd's `/vsiadls/` read throughput on the same object, for the comparison §4.1.2 opens (probe
-> 03b, run-book Step 3c). **Step 4 (pixel equivalence) is deliberately deferred**, with the
-> reasoning in the run-book: probe 02 showed such a diff would measure our shim, not rslearn.
-> Every remaining gap is marked ⬜.
+> **Status: the measurement programme is complete.** Probes 01, 02, 03 and 03b all ran on the VM
+> (2026-07-31); their numbers are in §4.1.2, §4.1.3, §4.2, §4.3 and §5. **Step 4 (pixel
+> equivalence) is deliberately deferred**, with the reasoning in the run-book: probe 02 showed
+> such a diff would measure our shim, not rslearn. What remains is not a measurement but a
+> decision — the §6.4 pilot.
 >
 > **Pinned version.** Every `file:line` citation below is against **rslearn v0.1.13 @ `a5c50c63`**
 > (2026-07-28) as vendored read-only at the workspace root, and against **fsd `main` @ `9e7c5f2`**.
@@ -42,7 +41,7 @@ formality, the report has failed and you should say so.
 | What rslearn's data model is | ✅ read | §2, cited |
 | Source breadth, model zoo, maintenance | ✅ measured from source | §3, method stated |
 | Azure support | ✅ **measured: rslearn reads AND writes our blob under MSI** — one `pip install adlfs`, no patching | §4.1.2 |
-| Azure read throughput vs fsd's `/vsiadls/` | 🟡 **measured cold: rslearn 21.8–23.6 vs fsd 3.7 MB/s** — the warm figure is the like-for-like one and is the last open number | §4.1.3 |
+| Azure read throughput vs fsd's `/vsiadls/` | ✅ **measured: fsd ~107 MB/s vs rslearn ~22** (warm, like-for-like); fsd pays ≈1.64 s once per process, crossover ≈45 MB | §4.1.3 |
 | Install weight — is there a lite path? | ✅ read (**no**) | §4.2 |
 | Install weight — the actual numbers | ✅ **measured: 5.3 GB venv, 2.9 GB cold download, 88.5 s** | §4.2, §5 |
 | Does the stock install even import? | ✅ **measured: no — undeclared `einops`** | §4.2.1 |
@@ -68,7 +67,7 @@ switch mostly **do not apply to the sources fsd actually lacks**, which are stat
 own cadence. So the live question is small and cheap: does one real ancillary source (ERA5-Land)
 come out cheaper through rslearn than written directly against fsd's `Source` seam?
 
-The five facts behind that:
+The six facts behind that:
 
 1. **Adopting rslearn does not save fsd's hardest work.** Scale-out onto Azure is fsd's, it is
    built, and it was cluster-validated 2026-07-29. rslearn ships **no distributed runner at all**
@@ -80,12 +79,16 @@ The five facts behind that:
 3. **The breadth gap is narrower than it looks on Sentinel-2 specifically** (5 rslearn
    implementations vs fsd's 2) and **wider than it looks everywhere else** — SAR, Landsat, DEM,
    climate, soil, land cover, crop labels (§3.1).
-4. **The `T` contract does not survive, and it is measured, not argued** (§4.3). rslearn returns
+4. **fsd's own storage reader is ~4.8× faster** on the hot path — ~107 MB/s via `/vsiadls/`
+   against rslearn's ~22 MB/s through an fsspec file object, with a crossover around 45 MB read
+   per process (§4.1.3). It argues against moving *bulk optical* reads to rslearn, and not
+   against the low-volume ancillary sources the hybrid targets.
+5. **The `T` contract does not survive, and it is measured, not argued** (§4.3). rslearn returns
    9 timesteps where fsd returns 10, and 7 where fsd returns 9 once a period has no scene — so
    fsd's preflight cost guardrail cannot fire before spending money, and cubes from different grid
    cells cannot be stacked. Underneath that sits a second gap the probe found: rslearn's periods
    yield **one first-coverage scene**, not a median over the window.
-5. **The install is 5.3 GB and does not work out of the box** — a stock
+6. **The install is 5.3 GB and does not work out of the box** — a stock
    `pip install rslearn==0.1.13` cannot `import rslearn.config` without one extra package (§4.2.1).
 
 ---
@@ -466,40 +469,53 @@ backend, and nothing upstream guarantees it keeps working.
 Azure. There is still no distributed runner (§4.5) — the fan-out across an AML cluster is fsd's
 and stays fsd's under every option.
 
-#### 4.1.3 Throughput — measured, and it does not favour fsd's design
+#### 4.1.3 Throughput — fsd's `/vsiadls/` route is ~4.8× faster in steady state
 
-Probe 03b, same object, same VM, 2026-07-31:
+Probe 03b, same object (6.3 MB), same VM, 2026-07-31:
 
 | route | MB/s |
 |---|---|
+| fsd — `/vsiadls/` + `AZURE_STORAGE_ACCESS_TOKEN` (spec 31), **warm** | **105.7, 108.1** |
 | rslearn — fsspec file object → `rasterio.open(f)` | **21.8–23.6** |
-| fsd — `/vsiadls/` + `AZURE_STORAGE_ACCESS_TOKEN` (spec 31), **cold** | **3.7** |
-| fsd — same, **warm** | ⬜ *pending — see the caveat below* |
+| fsd — same route, **cold** (first open in the process) | **3.7** |
 
-**Read the caveat before quoting the 6× ratio, because the cold pair is not like for like.**
-fsd's first `rio_open` pays a one-time AAD token round-trip *inside* the timed section
-(`storage_token()`, `src/fsd/storage/azure.py:48-56`; the credential is module-cached, so
-subsequent calls are ~free). Probe 03, by contrast, resolves its filesystem in `q1_upath`
-*before* timing `q2`, so rslearn's figure is measured with auth already warm. Charging fsd for
-one-time auth and not rslearn overstates the gap. The honest comparison is fsd's **warm** reads
-against rslearn's number — probe 03b records both, and this table is completed when that figure
-lands.
+**The like-for-like comparison is the warm pair, and it favours fsd about 4.8×.** rslearn's
+figure is itself effectively warm: probe 03 resolves the filesystem in `q1_upath` and *writes*
+the object in `q2` before timing the read, so auth is established and the object is freshly
+touched. Compared against that, GDAL's `/vsiadls/` reader moves ~107 MB/s where rslearn's Python
+file object moves ~22.
 
-**Two things are already safe to say.** First, at 6.3 MB the cold figure implies ~1.7 s to first
-array, most of which is plausibly token acquisition — **that is a real per-task cost in a fan-out
-that opens one COG per task**, whatever the steady-state transfer rate turns out to be. Second,
-whatever the warm number says, GDAL's `/vsiadls/` route **did not demonstrate an advantage here**
-— the hedge in §4.1.1 that it might buy measurable throughput is not supported by this
-measurement, and the burden has shifted onto it.
+**The cold figure is a separate, one-time cost — and it is small in context.** fsd's first
+`rio_open` in a process pays an AAD token round-trip inside the timed section (`storage_token()`,
+`src/fsd/storage/azure.py:48-56`). Deriving it from the two measurements — 6.3 MB / 3.7 MB/s =
+1.70 s cold against 6.3 / 105.7 = 0.06 s warm — puts that one-time overhead at **≈1.64 s**
+(a derivation, not a measurement; probe 03b now times it directly via `aad_token_seconds`).
+The credential is module-cached, so a task pays it **once per process**, not per granule.
 
-**This is a finding about fsd, not about rslearn**, and it is worth an issue regardless of the
-Plan B/C decision. It also weakens a cost line this report had priced against Option B: if
-rslearn's storage route is no slower than fsd's, per-granule throughput is not an argument
-against the hybrid.
+**Where the crossover sits.** Setting fsd's total (`1.64 + MB/107`) equal to rslearn's
+(`MB/22`) gives a break-even at **≈45 MB read per process**. Below that, rslearn's route is
+actually faster because it pays no auth setup; above it, fsd's wins and keeps winning. A real
+fsd datacube build reads hundreds of MB to several GB per task — **an order of magnitude past
+the crossover**, which is where the 4.8× applies.
+
+**Correcting this report.** An earlier revision of this section, written when only the cold
+figure was in, said `/vsiadls/` "did not demonstrate an advantage" and that this "removes a cost
+line against Option B." **Both statements were wrong**, and the warm number is why. The
+throughput objection to routing *bulk optical reads* through rslearn is real and is now
+quantified.
+
+**What it does not do is change the recommendation** — and the reason is the same structural
+split as §4.3's. The high-volume path is fsd's Sentinel-2 pipeline, which keeps its own reader;
+the hybrid targets low-volume ancillary sources (ERA5, DEM, soil, land cover) that sit *below*
+the 45 MB crossover, where rslearn's route is no handicap and may be marginally faster. The
+measurement sharpens the division of labour rather than disturbing it — and it adds a fourth
+argument against a **full** switch, where fsd's hottest path would have taken a ~5× read
+penalty.
 
 ⚠️ **One 6.3 MB object read whole is not a COG access pattern.** What GDAL's remote reader is
-actually for — overviews, windowed reads, many small range requests — is untested here. Treat
-this as a floor on the question.
+most useful for — overviews, windowed reads, many small range requests — is untested here, and
+those are cases where the gap would plausibly widen further in fsd's favour. Treat 4.8× as a
+floor, and the 45 MB crossover as indicative rather than exact.
 
 ### 4.2 Install weight — heavy, with categorically no lite path
 
@@ -718,7 +734,9 @@ of probe 02 are still ⬜.
 | scenes per output timestep | median of **all** in window | **1** (first-coverage) | §4.3, probe 02 |
 | re-alignment shim needed? | n/a | **yes — 5 distinct corrections** | §4.3 |
 | Azure read+write under MSI | works (spec 31) | **works** — `pip install adlfs`, no patching | §4.1.2, probe 03 |
-| blob read throughput (6.3 MB object) | **3.7 MB/s cold**, warm ⬜ | **21.8–23.6 MB/s** | §4.1.3, probe 03b |
+| blob read throughput, warm (6.3 MB object) | **105.7–108.1 MB/s** | **21.8–23.6 MB/s** — ~4.8× slower | §4.1.3, probe 03b |
+| first-open cost per process | **≈1.64 s** (AAD token, once) | none | §4.1.3 |
+| crossover: MB read per process | **fsd wins above ≈45 MB** | rslearn wins below | §4.1.3 |
 | distributed runner | AML, cluster-validated | **none** | §4.5 |
 | pixel equivalence vs fixture | baseline | ⬜ Step 4 — **deferred**: needs `T` + phase + compositing reconciled first, at which point it measures our shim | §4.3 |
 
@@ -821,14 +839,17 @@ crop mapping moves to fine-tuned foundation models, or if the project acquires a
 support many sensors rather than Sentinel-2 L2A well, the calculus inverts — because then fsd
 would be rebuilding §3.2 and §3.1 from scratch, which is far more work than a shim.
 
-**The condition this section named for being wrong has now resolved — against fsd's design, not
-for it.** §4.1.3 asked whether fsd's `/vsiadls/` route is materially faster than rslearn's
-fsspec-file-object read; the cold measurement is **3.7 MB/s for fsd against rslearn's
-21.8–23.6**, and even after the like-for-like correction (fsd pays a one-time AAD round-trip
-inside its timed read; rslearn does not) GDAL's route showed **no advantage**. So the
-per-granule-throughput objection to Option B is not merely unproven — the evidence points the
-other way. The warm figure remains ⬜ and could still narrow the gap; it cannot restore the
-objection.
+**The condition this section named for being wrong has resolved — in fsd's favour, after first
+appearing to go the other way.** §4.1.3 asked whether fsd's `/vsiadls/` route is materially
+faster than rslearn's fsspec-file-object read. Like for like (both warm) it is: **~107 MB/s
+against ~22**, about 4.8×. The cold reading briefly suggested the opposite, because fsd pays a
+one-time ≈1.64 s AAD round-trip inside its first read that rslearn's timed read does not pay;
+that cost is per *process*, not per granule, and the crossover sits near 45 MB read per process
+— far below any real fsd task.
+
+So per-granule throughput **is** a genuine objection to routing bulk optical reads through
+rslearn, and a fourth argument against a full switch. It is **not** an objection to the hybrid,
+whose targets are low-volume ancillary sources sitting below that crossover.
 
 **Three honest notes on how this recommendation was reached.**
 
