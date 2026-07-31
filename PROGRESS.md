@@ -4,7 +4,7 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-07-31 (run-book 43 **Step 0 now passes on real data** — spec 42 **A3** signed off: the label collapse is derived, not hardcoded)_
+_Last updated: 2026-07-31 (**spec 42 is DONE** — the tutorial micro-fixture is built, verified offline and committed; spec 41 **P6 closed, P7 unblocked**)_
 
 ## Where things stand
 
@@ -22,7 +22,7 @@ all fixed — see the entry below); the rest is in the archive. P6/P7 remain.
 | **Pipeline** | v1 core complete (S2 L2A, CDSE + MPC), proven local and on AML |
 | **Scale-out** | AML runner seam; download, build, flatten and inference all fan out |
 | **Serving** | tier-1 (pre-styled XYZ) and tier-2 (pgSTAC + titiler-pgstac) both validated |
-| **Docs** | spec 41 P1–P5 done; **P6 (tutorial fixture) and P7 (tutorial + how-tos) open** |
+| **Docs** | spec 41 P1–P6 done (P6 = spec 42's committed fixture); **P7 (tutorial + how-tos) open** |
 | **Deferred work** | **GitHub Issues #1–#62**, number-aligned with the old `TODO.md` rows |
 | **Open decision** | rslearn Plan B vs Plan C (`RSLEARN_COMPARISON.md`), untouched |
 
@@ -39,14 +39,60 @@ all fixed — see the entry below); the rest is in the archive. P6/P7 remain.
 | open work | `gh issue list` |
 | what happened before | [`docs/progress-archive.md`](docs/progress-archive.md) |
 
-**Next up:** run-book 43 **Steps 1-6 on an Azure ML compute instance** inside the `rise` VNet, then
-commit the real fixture (Step 7). **Step 0 is done and green on real data** (2026-07-31). Push
-`main` before starting — the VM's `git clone` at Step 1c is how it gets the generators. That lands spec 42, closing spec 41 **P6** and unblocking **P7**
+**Next up:** spec 41 **P7** — `docs/tutorial.md` + `docs/howto/*`, now unblocked by the committed
+fixture. Two constraints it must respect: the class names are **data-derived** (render them from
+`_result_step0.json`, never hardcode a second mapping — that is what spec 42 A3 fixed), and spec 42
+§4 criterion **4 (cold-start)** is the gate — a fresh clone + fresh venv following the tutorial
+literally must reach a crop map. That lands spec 42, closing spec 41 **P6** and unblocking **P7**
 (`docs/tutorial.md` + `docs/howto/*`).
 
 ---
 
 ## Most recent entry
+
+## 2026-07-31 — ✅ spec 42 DONE: the tutorial micro-fixture is built, verified offline and committed → spec 41 P6 closed, **P7 unblocked**
+
+Run-book 43 ran end to end: Step 0 on the laptop, Steps 1-5 on an Azure ML compute instance against
+the blob MPC archive, Steps 6-7 back on the laptop. **`tests/data/tutorial/` is committed** — 27 MB,
+108 COGs, 36 granules x B04/B08/SCL over grid cell `4772924` (T33UWP, single tile),
+2018-04-01 .. 2018-09-28, with `catalog.parquet`, 43 labelled fields, the cell polygon, `NOTICE` and
+a provenance `README.md`.
+
+**All three automated acceptance criteria pass offline in 3 min 18 s.** Criterion 4 (cold-start, spec
+41 D13) is the user's and belongs to P7.
+
+### What the real run found that no synthetic test could
+
+| | |
+|---|---|
+| **`offset = 0`, not −1000** | The blob MPC archive serves the **pre-Collection-1** 2018 products — generated before baseline 04.00 arrived 2022-01-25, so `BOA_ADD_OFFSET` does not exist and 0 is the true declaration (spec 32 D3 derives it per item). The local CDSE archive's `_N0500_` granules are the *reprocessed* versions of the same acquisitions and correctly carry −1000. Both right; different product versions. |
+| **72 granules over a FULL YEAR** | Spec 42 §1/D2 always said Apr–Sep 2018, but the generator had **no date filter** — invisible while the assumed source was the local (Apr–Sep-only) archive. `--startdate`/`--enddate` added; 72 → 36 in-window. |
+| **43 fields collapsed to one class** | Spec 42 D3 hardcoded `{maize, hemp}` against label values it never checked. Real column is `crop`, real values are HCAT compound names. Fixed by **amendment A3**: majors derived by clipped area. |
+
+### Three review fixes earned their keep on this run
+
+- **F6** (`pass` computed, not hardcoded) is what *caught* the one-class collapse. Without it Step 0
+  writes PASS and ships a single-class fixture.
+- **A2** (`offset in (0, −1000)` instead of a hardcoded `== −1000`) is the only reason acceptance
+  test 2 passed — the assertion it replaced would have **failed** against this archive's correct `0`.
+- **F1** (redact `--archive-root` from the recorded invocation) held on real data: the committed
+  `README.md` shows `--archive-root <archive-root>`, zero `abfss://`, in a public MIT repo.
+
+### Also fixed, all surfaced by running it for real
+
+`from fsd import storage as fs` in 3 run-book snippets (`fsd.storage` is a package; the functions
+live in `fsd.storage.fs`) — now guarded by `test_doc_snippets_use_real_fsd_attributes`, which
+AST-checks 13 documents and was **vacuous on first write** until its file selector matched
+`python -c` blocks, not just ```` ```python ```` fences. `fs.put/get` are file-only, so Step 5's
+directory call could never have worked — tar-one-object is now the primary path. `git check-ignore
+-v` inverted Step 7's own verdict. `pystac.get_all_items()` deprecation. And Step 6 reads as a hang
+because pytest captures the live `[setup] N/43 … ETA` line — the run-book now says `-s`.
+
+**Gate:** `pytest -q` **698 passed / 87 skipped**, `ruff check src/ tests/ demos/` clean. Identifier
+sweep over the staged tree: 7 hits, all documented false positives; no `abfss://` anywhere in the
+committed fixture beyond placeholder docstrings.
+
+---
 
 ## 2026-07-31 — run-book 43 Step 0 runs green on real data; spec 42 **A3**: the label collapse is derived, not hardcoded
 
