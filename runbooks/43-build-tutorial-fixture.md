@@ -357,8 +357,14 @@ du -sh tests/data/tutorial
 neither.
 
 ```bash
-python -m pytest tests/test_tutorial_fixture.py -q
+python -m pytest tests/test_tutorial_fixture.py -s
 ```
+
+**Use `-s`, and expect ~3-4 minutes.** Criterion 3 builds **one datacube per label polygon** — 43
+fields x 36 granules x 3 bands, serially — and `create_datacube.setup` prints a live
+`[setup] N/43 shapes … ETA` line throughout. **pytest captures stdout by default**, so without
+`-s` you get a bare `..` and a long silence that reads exactly like a hang. Measured 2026-07-31 on
+a laptop: **3 min 18 s**, all 3 passing.
 
 - **Expect:** the three automated criteria of spec 42 §4 pass —
   **(1) structural** (every granule × band opens as a valid COG; one catalog row per granule with
