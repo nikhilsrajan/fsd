@@ -15,7 +15,14 @@
 | Static analysis | ✅ done — [`RSLEARN_READ_2026-07-31.md`](RSLEARN_READ_2026-07-31.md) |
 | Probes written | ✅ 01 (install weight) + 02 (the `T` contract) — `probes/` |
 | Probes run | ⬜ none yet — [`RUNBOOK-rslearn-spike.md`](RUNBOOK-rslearn-spike.md), on the VM |
-| Verdict | ⬜ `RSLEARN_SPIKE_REPORT.md` not written |
+| Report | 🟡 **drafted, measurements pending** — [`RSLEARN_SPIKE_REPORT.md`](RSLEARN_SPIKE_REPORT.md). §2 (teaching rslearn), §3 (rslearn's advantages) and §4 (fsd's) are complete and cited; §1, §5, §6 carry ⬜ markers gated on probes 01/02 |
+| Verdict | ⬜ not called — §6.4 states in advance what would flip it |
+
+**Offline census, not a run-book probe:** `probes/census_data_sources.py` re-derives the breadth
+number the report's §3.1 rests on (36 modules → 47 `DataSource` subclasses → 40 concrete names →
+**50 concrete (module, class) entry points**, vs fsd's 2). Pure `ast`, no imports, no install —
+re-run it whenever rslearn is bumped:
+`python spike/probes/census_data_sources.py --rslearn-root ../rslearn`
 
 **Read [`RSLEARN_READ_2026-07-31.md`](RSLEARN_READ_2026-07-31.md) first.** Three of the charter's
 original assumptions did not survive it, and one of the three questions below is now answered
