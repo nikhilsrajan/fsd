@@ -41,7 +41,9 @@ formality, the report has failed and you should say so.
 | Source breadth, model zoo, maintenance | ✅ measured from source | §3, method stated |
 | Azure support | ✅ read (**none exists**) / ⬜ VM probe pending | §4.1, run-book Step 3 |
 | Install weight — is there a lite path? | ✅ read (**no**) | §4.2 |
-| Install weight — the actual numbers | ⬜ **pending probe 01** | §5 |
+| Install weight — the actual numbers | ✅ **measured: 5.3 GB venv, 2.9 GB cold download, 88.5 s** | §4.2, §5 |
+| Does the stock install even import? | ✅ **measured: no — undeclared `einops`** | §4.2.1 |
+| Does the acquisition path import torch? | ⬜ re-run probe 01 after `pip install einops` | §2.3 |
 | Does the calendar-`T` contract survive? | ⬜ **pending probe 02 — the gate** | §4.3, §5 |
 | Pixel equivalence vs fsd | ⬜ pending (Step 4, unwritten) | §5 |
 
@@ -61,7 +63,9 @@ What can be said already, and is unlikely to move:
 3. **The breadth gap is narrower than it looks on Sentinel-2 specifically** (5 rslearn
    implementations vs fsd's 2) and **wider than it looks everywhere else** — SAR, Landsat, DEM,
    climate, soil, land cover, crop labels (§3.1).
-4. **A full switch is the option the evidence is worst for**; the live question is the hybrid
+4. **The install is 5.3 GB and does not work out of the box** — a stock
+   `pip install rslearn==0.1.13` cannot `import rslearn.config` without one extra package (§4.2.1).
+5. **A full switch is the option the evidence is worst for**; the live question is the hybrid
    (§6.2).
 
 ---
@@ -360,8 +364,15 @@ Grep over all 54,850 LOC (`RSLEARN_READ_2026-07-31.md` §3):
 | `gs://` | 13 |
 | `s3://` | 11 |
 
-`pyproject.toml:43` declares `fsspec[gcs, s3]` — no Azure backend. The only `azure` string in the
-repo describes MPC's *own* hosting, i.e. reading from public/signed blobs, not writing to ours.
+The only `azure` string in the repo describes MPC's *own* hosting, i.e. reading from public/signed
+blobs, not writing to ours.
+
+**One precision that cuts in rslearn's favour**, and the source read stated it too loosely: core
+declares plain `fsspec>=2025.10.0` (`pyproject.toml:15`); it is the **`extra`** group that adds
+`fsspec[gcs, s3]` (`pyproject.toml:44`). So *every* cloud backend is opt-in there, not just
+Azure's — which means adding `adlfs` to that same group would be **in pattern**, a small upstream
+PR rather than an architectural change. The Azure gap is a gap in coverage and testing, not a
+structural refusal.
 
 rslearn is built on UPath + fsspec (`rslearn/utils/fsspec.py`), so `abfss://` *should* work with
 `adlfs` installed. But fsd's own experience is that fsspec was never the hard part — **GDAL/VSI
@@ -388,6 +399,46 @@ boto3>=1.39 · fiona>=1.10 · flask>=3.0.0 · rasterio>=1.4 · pyproj · shapely
 whether or not you train anything. The optional groups (`pyproject.toml:33-97`) are `extra`, `dev`,
 `terratorch`, `docs` — and `extra` only *adds* more (xarray, zarr, transformers, wandb). **There
 is no `rslearn[data]`.**
+
+**Measured on the VM, 2026-07-31** (probe 01; `pip install --no-cache-dir 'rslearn==0.1.13'` into
+a fresh `python3.11 -m venv`):
+
+| | |
+|---|---|
+| venv size on disk | **5,289.5 MB (5.3 GB)** |
+| bytes downloaded (cold, `--no-cache-dir`) | **2,892 MB (2.9 GB)** |
+| cold install wall time | **88.5 s** on an Azure VM (~33 MB/s) |
+
+For scale: fsd's own `.venv` is the numpy/rasterio/fsspec set listed above. **5.3 GB is not a
+laptop install**, and it is the floor — it buys you zero data, before any extra.
+
+#### 4.2.1 The stock install does not import — an upstream packaging bug
+
+Probe 01's first successful run found something no source read had predicted: **on a stock
+`pip install rslearn==0.1.13`, `import rslearn.config` — the library's very first import —
+raises `ModuleNotFoundError: No module named 'einops'`.** All five modules on the acquisition
+path fail identically.
+
+The cause is a one-line classification slip upstream:
+
+- `einops>=0.8` is declared in the **`extra`** optional group (`pyproject.toml:39`), not in core;
+- but `rslearn/utils/raster_format.py:9` does a bare top-level `import einops` (used at
+  `raster_format.py:788`, `einops.rearrange(array, "c h w -> h w c")`);
+- and `rslearn/config/__init__.py` → `config/dataset.py:31` imports `RasterFormat` from it.
+
+So the 5.3 GB venv is, out of the box, **unusable without one further `pip install einops`**.
+
+**Be fair about what this is and is not.** It is a packaging defect, not a design flaw: the fix is
+one line upstream, and `einops` is the *only* extra-group package a core module imports at top
+level — the others (`osmium` in `openstreetmap.py`, `cdsapi`/`netCDF4` in `climate_data_store.py`,
+`omnicloudmask` in `dataset/omni_cloud_mask.py`) sit behind specific data sources, which is the
+correct pattern. But it is evidence about **operational maturity at the version we would adopt**:
+the most basic possible smoke test — install the package, import it — fails, which means it is not
+in their release CI. For a dependency that would sit under fsd's download path in production, that
+is a real signal, and it is the kind of thing that shows up only by running the install.
+
+⬜ **Not yet checked:** whether this is already reported upstream, and whether it is fixed after
+0.1.13. Worth one look before the report is final — and worth filing if not.
 
 fsd's core is `numpy, pandas, geopandas, shapely, rasterio, pyarrow, fsspec, s3fs, pystac,
 pystac-client, numba, snakemake, tqdm` with everything cloud-shaped behind extras (`azure`, `aml`,
@@ -466,19 +517,26 @@ weakest of the three options.
 
 ## 5. The overheads, priced
 
-⬜ **Pending probes 01–02, and Steps 3–4.** Table shape fixed now so the numbers drop in:
+Partially measured. Probe 01's weight numbers are in (VM, 2026-07-31); its import reading and all
+of probe 02 are still ⬜.
 
 | overhead | fsd today | rslearn | source |
 |---|---|---|---|
-| venv size on disk | ⬜ measure | ⬜ probe 01 | |
-| wheel download bytes | ⬜ measure | ⬜ probe 01 | |
-| cold install wall time | ⬜ measure | ⬜ probe 01 | |
-| import time (acquisition path) | ⬜ | ⬜ probe 01 | |
-| torch pulled at import? | n/a | ⬜ probe 01 (predicted **no**) | §2.3 |
+| venv size on disk | ⬜ measure | **5,289.5 MB** | probe 01 |
+| wheel download bytes (cold) | ⬜ measure | **2,892 MB** | probe 01, `--no-cache-dir` |
+| cold install wall time | ⬜ measure | **88.5 s** (Azure VM, ~33 MB/s) | probe 01 |
+| stock install actually imports? | yes | **no** — needs `pip install einops` | §4.2.1 |
+| import time (acquisition path) | ⬜ | ⬜ re-run after einops | probe 01 |
+| torch pulled at import? | n/a | ⬜ re-run (predicted **no**) | §2.3 |
 | `T` on the tutorial window | 10 | ⬜ probe 02 (predicted **9**) | §4.3 |
 | re-alignment shim, if needed | 0 LOC | ⬜ estimate after probe 02 | §4.3 |
 | Azure write under MSI | works (spec 31) | ⬜ Step 3 | §4.1 |
 | pixel equivalence vs fixture | baseline | ⬜ Step 4 | |
+
+The first run also reported `rslearn.__version__` as **`unknown`** (the package exposes no
+`__version__` attribute) and showed **`boto3` already in `sys.modules`** even though every
+acquisition import had failed — i.e. an AWS SDK loads on a path that touches no AWS. Both are
+minor; the boto3 reading needs confirming on the re-run, since it was taken from a partial import.
 
 ---
 
@@ -567,7 +625,9 @@ Stated plainly so nothing here is over-read:
 | `rslearn/rslearn/data_sources/utils.py:434-485` | the three `period_duration` divergences (drop-empty, end-anchor, floor) that §4.3 rests on |
 | `rslearn/rslearn/config/dataset.py:445-473` | `period_duration`'s own docstring, and the `per_period_mosaic_reverse_time_order` default + deprecation |
 | `rslearn/rslearn/data_sources/copernicus.py:44-90,680` | harmonization is opt-in and hard-asserts −1000 |
-| `rslearn/pyproject.toml:11-97` | torch/lightning/flask/boto3 are core; the four optional groups contain no lite path; `fsspec[gcs, s3]` with no Azure |
+| `rslearn/pyproject.toml:11-97` | torch/lightning/flask/boto3 are core; the four optional groups contain no lite path; `einops>=0.8` sits in `extra` (line 39) though a core module imports it; core declares bare `fsspec` and only `extra` adds `fsspec[gcs, s3]` (line 44) — no Azure backend in either |
+| `rslearn/rslearn/utils/raster_format.py:9,788` + `config/dataset.py:31` | the import chain that makes a stock install fail: `rslearn.config` → `RasterFormat` → bare `import einops` |
+| probe 01 `_result_probe01.json`, VM run 2026-07-31 | 5,289.5 MB venv; 2,892 MB cold download; 88.5 s install; the `einops` failure on all five acquisition imports; `__version__` absent |
 | `rslearn/rslearn/main.py:52-58,110-1058` | the CLI verb set; `forkserver`; `DEFAULT_MAX_WORKERS = 32` — i.e. local multiprocessing, no distributed runner |
 | `rslearn/rslearn/data_sources/planetary_computer.py:220,265,373,400,1019` | lazy per-read MPC signing (§3.5) |
 | `rslearn/rslearn/dataset/window_data_storage/storage.py:88,110` | public numpy readback exists |

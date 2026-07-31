@@ -142,9 +142,27 @@ Two caveats on that number, both of which the report must state when it cites it
 `time pip install 'rslearn==0.1.13' 2>&1 | tee /tmp/rslearn_install.log` and use the same log
 parse above; you lose only the package count.
 
+> 🔴 **The stock install does not import — you must add `einops` by hand.** Measured on the VM
+> 2026-07-31: after a clean `pip install rslearn==0.1.13`, every acquisition import dies with
+> `ModuleNotFoundError: No module named 'einops'`. This is an upstream packaging bug, not a
+> mistake in your install — `einops>=0.8` is declared in rslearn's **`extra`** optional group
+> (`pyproject.toml:39`), but `rslearn/utils/raster_format.py:9` imports it unconditionally and
+> `rslearn.config` reaches it via `config/dataset.py:31`.
+>
+> ```bash
+> pip install einops       # ~1 MB; does not disturb the weight measurement above
+> ```
+>
+> **Install `einops` alone — not `rslearn[extra]`.** The extra group drags in cdsapi,
+> earthengine, earthdaily, netCDF4, osmium, huggingface_hub and more, which would destroy the
+> install-weight numbers you just paid a cold download for. Record the stock venv size *before*
+> adding it (probe 01 already did, if you ran it first). **Probe 02 needs this too** — it imports
+> `rslearn.config`.
+
 - **Expect:** the install succeeds and pulls torch, torchvision, torchmetrics and lightning as
   **core** dependencies (`pyproject.toml:11-31`) — a multi-GB venv is the *expected* result here,
-  not a problem with your machine.
+  not a problem with your machine. Measured: **5,289.5 MB venv, 2,892 MB downloaded cold,
+  88.5 s** (Azure VM).
 - **PASS if:** `_result_probe01.json` has `"status": "ok"`. The interesting field is
   `metrics.torch_free_acquisition_path` — predicted **`true`**.
 - **If `torch_free_acquisition_path` is `false`:** that contradicts
