@@ -4,8 +4,9 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-07-31 (**spec 41 P7 drafted** — `docs/tutorial.md` + `docs/howto/*` (5 pages) +
-`examples/` written against the committed fixture; awaiting the P7 cold-start gate)_
+_Last updated: 2026-07-31 (**spec 41 P7 drafted and reviewed** — `docs/tutorial.md` + `docs/howto/*`
+(5 pages + an index) + `examples/`, 4 review findings fixed, merged to `main`; awaiting the P7
+cold-start gate)_
 
 ## Where things stand
 
@@ -23,7 +24,7 @@ all fixed — see the entry below); the rest is in the archive. P6/P7 remain.
 | **Pipeline** | v1 core complete (S2 L2A, CDSE + MPC), proven local and on AML |
 | **Scale-out** | AML runner seam; download, build, flatten and inference all fan out |
 | **Serving** | tier-1 (pre-styled XYZ) and tier-2 (pgSTAC + titiler-pgstac) both validated |
-| **Docs** | spec 41 P1–P6 done; **P7 drafted** (`docs/tutorial.md`, 5 `docs/howto/*` pages) — the D13 cold-start gate is the user's, not yet run |
+| **Docs** | spec 41 P1–P6 done; **P7 drafted + reviewed** (`docs/tutorial.md`, 5 `docs/howto/*` pages + index) — the D13 cold-start gate is the user's, not yet run |
 | **Deferred work** | **GitHub Issues #1–#62**, number-aligned with the old `TODO.md` rows |
 | **Open decision** | rslearn Plan B vs Plan C (`RSLEARN_COMPARISON.md`), untouched |
 
@@ -42,14 +43,62 @@ all fixed — see the entry below); the rest is in the archive. P6/P7 remain.
 
 **Next up:** the spec 41 **P7 D13 cold-start gate** — the user, on a fresh clone and fresh venv,
 follows `docs/tutorial.md` *literally* and reports the first instruction that doesn't work (a
-spec-24 `_result.json`; no improvising, no fixing-as-you-go). The docs themselves are drafted and
-`pytest -q tests/test_docs.py` (152 passed) + `ruff check src/ tests/ demos/ examples/` are clean.
-After the gate passes, P7 is done and the remaining open items are the rslearn Plan B/C decision
-and spec 43 (`docs/history.md`, deferred).
+spec-24 `_result.json`; no improvising, no fixing-as-you-go). The docs are drafted **and reviewed**
+(4 findings, all fixed — entry below); `pytest -q tests/test_docs.py` (153 passed) + `ruff check
+src/ tests/ demos/ examples/` are clean. After the gate passes, P7 is done and the remaining open
+items are the rslearn Plan B/C decision and spec 43 (`docs/history.md`, deferred).
 
 ---
 
 ## Most recent entry
+
+## 2026-07-31 — spec 41 P7 **reviewed** (Opus): 4 doc-accuracy findings fixed, merged to `main` → NEXT: the user runs the D13 cold-start gate
+
+Review of `worktree-p7-tutorial-howtos` against spec 41 §3/D9/D10 and D13's "must not fail" bar,
+in the spirit of the P5/P6 reviews (each of which found 8 issues in a branch its authoring session
+had declared green).
+
+**`docs/tutorial.md` came through clean.** Every number in it was re-derived from the committed
+fixture rather than taken on trust — 36 granules / one MGRS tile `T33UWP`, 43 fields at
+20 `grain_maize_corn_popcorn` / 13 `hemp_cannabis` / 10 `other`, `offset == 0` on every row, grid
+cell `4772924` at the stated bounds, 27 MB on disk, date span 2018-04-01 → 2018-09-28 — all
+confirmed. **The handoff's `T = 10` correction is right**, verified two independent ways through
+`fsd.api.compute_n_timestamps`: the tutorial's own midnight window (2018-04-01 → 2018-09-29) and
+the catalog-derived window `test_tutorial_fixture.py` actually uses (min timestamp → max + 1 day)
+both give `ceil(181 / 20) = 10`. Every call in the tutorial matches
+`test_pipeline_create_training_data_train_and_infer`'s real sequence and keyword names, and the
+per-**pixel** return-shape statement (with the `aggregate="median_per_id"` escape hatch) is correct.
+
+**Four findings, all in the how-tos, all fixed** (`cdb7e0d`):
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | `bundle-your-model.md` sold the **F1 anti-skew guarantee as unconditional**. It holds only if the adapter is *also* passed to `create_training_data(adapter=…)`; without it the training call writes raw bands and the transform runs at inference only — the exact skew the section claims to rule out (`api.py:358-359`). A reader following that page plus `run-at-scale.md`, whose snippet passes no `adapter=`, would have shipped skewed features. | states the condition |
+| 2 | Same page attributed the `T == n_timestamps` preflight to **both** verbs. `create_training_data` deliberately does not check it (`api.py:386`, *"D6: no n_timestamps preflight — T is caller-set"*); only `run_inference` does (`api.py:944`). | attributed correctly |
+| 3 | `download-real-imagery.md`'s byte table **did not reproduce from its own stated multiplier**: row 3 applied the 4-band 426 MB figure to a 3-band config (1.7 GB → ~1.5 GB), and row 1's measured ~18 GB is the real-archive average (~357 MB/granule = 74 GB ÷ 207), not 52 × 426 MB = 22 GB. | per-row provenance column + "426 MB is a ceiling" note |
+| 4 | `CdseCredentials` / `fsd` / `os` used in three copy-paste snippets that never imported them. | imports added — which also brings those blocks under `test_doc_snippets_use_real_fsd_attributes`, since it only inspects blocks that import from `fsd` |
+
+**Also added `docs/howto/README.md`** — both `README.md` and the tutorial link to `docs/howto/`,
+which without an index renders as a bare directory listing at exactly the moment a first-timer
+leaves the tutorial. The index restates Diátaxis's "a how-to cannot promise safety" boundary at the
+entry point instead of only inside each page.
+
+**Checks that found nothing**, recorded so they aren't re-run: `AZ_*` parity between the how-tos
+and `env.example.sh` (4 vars, exact match); an identifier sweep of all six new files for GUIDs /
+`abfss://` accounts / `.blob.core` / `.azurecr.io` / subnet CIDRs (**no hits** — the sole `rise`
+mention is the project codename already public in `ARCHITECTURE.md` and `ROADMAP.md`); every
+relative link and run-book/example target resolving; the `mpc`/`azure`/`aml`/`grid`/`model-example`
+extras all existing; `merge="reproject"`, `storage="azure"`, `bundle.save`/`read_spec`,
+`grid.roi_to_s2_grids`, and the `modify.*` feature functions all matching their real signatures;
+and the `~100 km from every labelled field` rejection of `s2grid=476da24` matching the archive.
+
+**Gate:** `pytest -q tests/test_docs.py` → **153 passed, 82 skipped**; `ruff check src/ tests/
+demos/ examples/` clean. `tests/test_tutorial_fixture.py`'s 3–4 min pipeline test was **not**
+re-run — docs-only change, and CLAUDE.md keeps long/pipeline scripts off Claude. Branch merged to
+`main` `--no-ff` and the worktree pruned (standing practice). **`main` is not pushed** — that stays
+the user's call.
+
+---
 
 ## 2026-07-31 — spec 41 P7 drafted: `docs/tutorial.md` + 5 `docs/howto/*` pages + README pointers → NEXT: the user runs the D13 cold-start gate
 
