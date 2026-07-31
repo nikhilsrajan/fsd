@@ -4,7 +4,8 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-07-31 (**spec 42 is DONE** — the tutorial micro-fixture is built, verified offline and committed; spec 41 **P6 closed, P7 unblocked**)_
+_Last updated: 2026-07-31 (**spec 41 P7 drafted** — `docs/tutorial.md` + `docs/howto/*` (5 pages) +
+`examples/` written against the committed fixture; awaiting the P7 cold-start gate)_
 
 ## Where things stand
 
@@ -22,7 +23,7 @@ all fixed — see the entry below); the rest is in the archive. P6/P7 remain.
 | **Pipeline** | v1 core complete (S2 L2A, CDSE + MPC), proven local and on AML |
 | **Scale-out** | AML runner seam; download, build, flatten and inference all fan out |
 | **Serving** | tier-1 (pre-styled XYZ) and tier-2 (pgSTAC + titiler-pgstac) both validated |
-| **Docs** | spec 41 P1–P6 done (P6 = spec 42's committed fixture); **P7 (tutorial + how-tos) open** |
+| **Docs** | spec 41 P1–P6 done; **P7 drafted** (`docs/tutorial.md`, 5 `docs/howto/*` pages) — the D13 cold-start gate is the user's, not yet run |
 | **Deferred work** | **GitHub Issues #1–#62**, number-aligned with the old `TODO.md` rows |
 | **Open decision** | rslearn Plan B vs Plan C (`RSLEARN_COMPARISON.md`), untouched |
 
@@ -39,27 +40,48 @@ all fixed — see the entry below); the rest is in the archive. P6/P7 remain.
 | open work | `gh issue list` |
 | what happened before | [`docs/progress-archive.md`](docs/progress-archive.md) |
 
-**Next up:** spec 41 **P7** — `examples/*.py` + `docs/tutorial.md` + `docs/howto/*`, now unblocked
-by the committed fixture. Read **spec 41 §3** (the target layout / file list), **D10** (the
-examples-vs-tutorial-vs-how-to split and who each is for) and **D13** (the gate). Starting state:
-`examples/eurocrops_rf.py` exists; **`docs/howto/` does not exist yet** — five pages are named in
-§3 (`your-own-region`, `download-real-imagery`, `run-at-scale`, `bundle-your-model`, `serve-xyz`).
-
-Three constraints P7 must respect:
-
-- **The class names are data-derived.** Render them from `_result_step0.json`
-  (`grain_maize_corn_popcorn` / `hemp_cannabis` / `other`), never hardcode a second mapping — a
-  hardcoded mapping is exactly the defect spec 42 **A3** fixed.
-- **The tutorial "must not fail"** (D10) and its gate is D13's **cold-start run**: fresh clone,
-  fresh venv, followed *literally*, the **user is the test subject** and lets it fail rather than
-  fixing as they go, reported as a spec-24 `_result.json`.
-- **`docs/tutorial.md` + `docs/howto/*` are tier-2 "dated"** (§ D-tiers): each carries
-  `Last verified: <date> @ <commit>`. That lands spec 42, closing spec 41 **P6** and unblocking **P7**
-(`docs/tutorial.md` + `docs/howto/*`).
+**Next up:** the spec 41 **P7 D13 cold-start gate** — the user, on a fresh clone and fresh venv,
+follows `docs/tutorial.md` *literally* and reports the first instruction that doesn't work (a
+spec-24 `_result.json`; no improvising, no fixing-as-you-go). The docs themselves are drafted and
+`pytest -q tests/test_docs.py` (152 passed) + `ruff check src/ tests/ demos/ examples/` are clean.
+After the gate passes, P7 is done and the remaining open items are the rslearn Plan B/C decision
+and spec 43 (`docs/history.md`, deferred).
 
 ---
 
 ## Most recent entry
+
+## 2026-07-31 — spec 41 P7 drafted: `docs/tutorial.md` + 5 `docs/howto/*` pages + README pointers → NEXT: the user runs the D13 cold-start gate
+
+Per the P7 handoff (spec 41 §3/D10/D13): wrote `docs/tutorial.md` (narrates
+`tests/test_tutorial_fixture.py::test_pipeline_create_training_data_train_and_infer` against the
+committed fixture — `create_training_data` → train a trivial RF → `workflows.create_datacube.
+run_create_datacube` → `run_inference` → COG + STAC) and five `docs/howto/*` pages (`your-own-
+region`, `download-real-imagery`, `run-at-scale`, `bundle-your-model`, `serve-xyz`), sourced from
+`demos/E2E_AUSTRIA.md` §4/§9/§6, `demos/E2E_AUSTRIA_AML.md` §8, and run-books 29/30. `examples/
+eurocrops_rf.py` already met D10's bar (61 lines, no timing/plotting) — no change needed. Both
+docs and README now point at the tutorial instead of "being built".
+
+**One correction to the handoff's own numbers, caught by doing the arithmetic rather than copying
+it:** the handoff's "T at mosaic_days=20: 9" is stale — it carries over spec 42 D1's original
+24-granule/local-CDSE plan. The **committed** fixture is 36 granules, 2018-04-01 → 2018-09-28
+(A1's MPC path), which gives `T = ceil(181 days / 20) = 10`, and `create_training_data`'s return is
+per-**pixel** rows (not per-field) unless `aggregate="median_per_id"` is passed — the tutorial
+states `(N, 10, 2)` with `N` described, not a specific fabricated pixel count. Neither `test_
+tutorial_fixture.py` nor spec 42's acceptance criteria actually assert `T == 9` (checked — no such
+assertion exists), so this was a documentation-only correction, not a code defect.
+
+**Gate status:** `pytest -q tests/test_docs.py` (152 passed, includes all 6 new files under
+`test_relative_links_resolve` + `test_doc_snippets_use_real_fsd_attributes`) and `pytest -q
+--ignore=tests/test_tutorial_fixture.py` (709 passed / 84 skipped) both clean; `ruff check src/
+tests/ demos/ examples/` clean; the pre-push identifier sweep (`RECIPES.md`) found no tracked hits.
+**`tests/test_tutorial_fixture.py`'s own 3-4 minute pipeline test was deliberately not re-run** —
+Claude doesn't run long scripts (CLAUDE.md), and the P6 entry below already has it passing at
+3 min 18 s against this exact fixture. **The one gate that remains is D13's cold-start run** — the
+user, fresh clone, fresh venv, `docs/tutorial.md` followed literally, first failure reported as a
+spec-24 `_result.json`.
+
+---
 
 ## 2026-07-31 — ✅ spec 42 DONE: the tutorial micro-fixture is built, verified offline and committed → spec 41 P6 closed, **P7 unblocked**
 
