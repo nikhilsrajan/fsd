@@ -72,6 +72,11 @@ python3.11 -m venv .venv-rslearn
 source .venv-rslearn/bin/activate
 python -c "import sys; assert 'venv-rslearn' in sys.prefix, sys.prefix; print('isolated OK', sys.prefix)"
 
+# `--report` needs pip >= 22.2. A fresh `python3.11 -m venv` seeds whatever pip the
+# distro's ensurepip bundles, which on the Azure VM images is older -- it fails with
+# `no such option: --report` (hit for real, 2026-07-31). Upgrade BEFORE the timed install.
+pip install --upgrade pip && pip --version
+
 # Time it and keep the log -- both numbers feed the probe.
 time pip install --report /tmp/rslearn_install.json 'rslearn==0.1.13' 2>&1 | tee /tmp/rslearn_install.log
 ```
@@ -92,6 +97,20 @@ python spike/probes/probe_01_install_weight.py \
     --install-seconds <the `real` seconds from `time`> \
     --download-mb <the number printed above>
 ```
+
+**Fallback if `--report` is still unavailable** (locked-down pip, no upgrade path). It is not a
+blocker: `--download-mb` is *optional* on the probe, and venv size — the number that actually
+carries the argument — is measured by the probe itself from `sys.prefix`. Install plainly and
+parse the log instead:
+
+```bash
+time pip install 'rslearn==0.1.13' 2>&1 | tee /tmp/rslearn_install.log
+grep -oE '\(([0-9.]+) [kM]B\)' /tmp/rslearn_install.log \
+  | tr -d '()' | awk '{ mb += ($2=="kB" ? $1/1024 : $1) } END { printf "download_mb ~= %.0f\n", mb }'
+```
+
+This undercounts anything pip served from its HTTP cache, so on a *re-run* it is a floor, not a
+measurement. Say which route you used when you paste the result — the report cites the number.
 
 - **Expect:** the install succeeds and pulls torch, torchvision, torchmetrics and lightning as
   **core** dependencies (`pyproject.toml:11-31`) — a multi-GB venv is the *expected* result here,
