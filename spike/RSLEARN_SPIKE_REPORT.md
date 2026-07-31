@@ -1,14 +1,15 @@
 ---
 status: current
-summary: Build-vs-borrow report -- rslearn v0.1.13 vs fsd. Teaches rslearn's data model, prices three options (switch / hybrid / stay), and states what each claim rests on. DRAFT -- the measured sections are gated on probes 01 and 02.
+summary: Build-vs-borrow report -- rslearn v0.1.13 vs fsd. Teaches rslearn's data model, prices three options (switch / hybrid / stay), and recommends staying on Plan B with the hybrid deferred. Probes 01/02 measured; the Azure probes (Steps 3-4) are still outstanding.
 ---
 
 # rslearn vs fsd — build-vs-borrow report
 
-> **DRAFT — measurements pending.** Sections 2, 3, 4 and 7 are complete and rest only on source
-> reads that anyone can re-check. Sections 1, 5 and 6 carry **⬜ pending** markers wherever a
-> number has to come from a probe that has not run yet. Do not take the recommendation in §6 as
-> final until those are filled.
+> **Status: the offline half is complete; the Azure half is not.** Probes 01 and 02 have run on
+> the VM (2026-07-31) and their numbers are in §4.2, §4.3 and §5. **Run-book Steps 3 and 4 — can
+> rslearn write to Azure blob under managed identity, and does it reproduce fsd's pixels — have
+> not run**, and they are the one live condition that could change §6.4's recommendation. Every
+> remaining gap is marked ⬜.
 >
 > **Pinned version.** Every `file:line` citation below is against **rslearn v0.1.13 @ `a5c50c63`**
 > (2026-07-28) as vendored read-only at the workspace root, and against **fsd `main` @ `9e7c5f2`**.
@@ -44,29 +45,43 @@ formality, the report has failed and you should say so.
 | Install weight — the actual numbers | ✅ **measured: 5.3 GB venv, 2.9 GB cold download, 88.5 s** | §4.2, §5 |
 | Does the stock install even import? | ✅ **measured: no — undeclared `einops`** | §4.2.1 |
 | Does the acquisition path import torch? | ✅ **measured: no** (0.55 s, torch absent) | §2.3 |
-| Does the calendar-`T` contract survive? | ⬜ **pending probe 02 — the gate** | §4.3, §5 |
+| Does the calendar-`T` contract survive? | ✅ **measured: no — 9 vs 10, and 7 vs 9 with gaps** | §4.3 |
+| Does rslearn's period == fsd's mosaic? | ✅ **measured: no — first-coverage, not median** | §4.3 |
 | Pixel equivalence vs fsd | ⬜ pending (Step 4, unwritten) | §5 |
 
 ---
 
 ## 1. Executive summary
 
-⬜ **Written last.** It states the recommendation in five sentences for someone who reads nothing
-else. Blocked on probes 01 and 02 because the recommendation's price tag comes from them.
+**Recommendation: do not switch. Keep fsd's pipeline, and treat an optional rslearn-backed source
+as a deferred question to revisit only if the breadth need becomes concrete — not as work to start
+now.** rslearn is good software with a genuinely larger reach than fsd (50 data-source entry
+points to our 2, a foundation-model zoo we have no answer to, 52 maintainers to our one), but it
+solves a different problem: it is a dataset-and-training library, while fsd's hard-won assets are
+an Azure scale-out that rslearn has no code for at all, and a `T` contract that rslearn's
+equivalent provably does not reproduce. Adopting it for acquisition would *add* fsd code — a
+five-part re-alignment shim — rather than remove any, while costing the lean-install promise
+(5.3 GB, torch is a core dependency with no lite path). The one thing that should reopen this is
+not infrastructure at all: if the team's direction turns toward fine-tuning geospatial foundation
+models, rslearn offers a path fsd does not have and cannot cheaply grow.
 
-What can be said already, and is unlikely to move:
+The five facts behind that:
 
 1. **Adopting rslearn does not save fsd's hardest work.** Scale-out onto Azure is fsd's, it is
    built, and it was cluster-validated 2026-07-29. rslearn contains **zero** Azure code (§4.1).
 2. **rslearn's breadth is real and large** — 50 distinct concrete data-source entry points versus
-   fsd's 2, and a foundation-model zoo fsd has no analogue for (§3.1, §3.2).
+   fsd's 2, and a foundation-model zoo fsd has no analogue for (§3.1, §3.2). **This is the strongest
+   argument for adoption and it is not close.**
 3. **The breadth gap is narrower than it looks on Sentinel-2 specifically** (5 rslearn
    implementations vs fsd's 2) and **wider than it looks everywhere else** — SAR, Landsat, DEM,
    climate, soil, land cover, crop labels (§3.1).
-4. **The install is 5.3 GB and does not work out of the box** — a stock
+4. **The `T` contract does not survive, and it is measured, not argued** (§4.3). rslearn returns
+   9 timesteps where fsd returns 10, and 7 where fsd returns 9 once a period has no scene — so
+   fsd's preflight cost guardrail cannot fire before spending money, and cubes from different grid
+   cells cannot be stacked. Underneath that sits a second gap the probe found: rslearn's periods
+   yield **one first-coverage scene**, not a median over the window.
+5. **The install is 5.3 GB and does not work out of the box** — a stock
    `pip install rslearn==0.1.13` cannot `import rslearn.config` without one extra package (§4.2.1).
-5. **A full switch is the option the evidence is worst for**; the live question is the hybrid
-   (§6.2).
 
 ---
 
@@ -512,9 +527,53 @@ and cells with different scene availability cannot be stacked. A re-alignment sh
 back onto their period index, fill gaps) restores both — but that is **new fsd code that Plan C
 was supposed to delete.**
 
-⬜ **Pending probe 02.** Prediction: `dense_tutorial_window` gives fsd `T = 10` and rslearn **9**.
-If the probe returns 10, §4.2 of the source read is wrong and this section must be re-derived
-before the recommendation stands.
+#### Measured — probe 02, VM, 2026-07-31. All three divergences confirmed.
+
+Four synthetic cases, zero satellite bytes. **Every prediction held exactly:**
+
+| case | fsd `T` | rslearn groups | predicted | verdict |
+|---|---|---|---|---|
+| `dense_tutorial_window` (181 d, every period populated) | **10** | **9** | 9 | ✅ B — trailing partial period dropped |
+| `exact_multiple_no_partial` (180 d) | 9 | 9 | 9 | ✅ agrees when the span divides evenly |
+| `two_empty_periods` (180 d, 2 periods with no scene) | 9 | **7** | 7 | ✅ A — empty periods dropped |
+| `default_reverse_time_order` | 9 | 9, **reverse-chronological** + `FutureWarning` | same | ✅ C |
+
+`T_matches_fsd_on_dense_window: false`. **The source read stands; the recommendation is not
+disturbed.**
+
+Two things the probe showed that reading alone had not:
+
+**1. The phase shift is concrete.** In the dense case rslearn's first period starts
+**2018-04-02**, not 2018-04-01 — end-anchoring means the *first day of the caller's window is
+silently outside every period*. fsd's windows start at `startdate` by construction. So even where
+the counts happen to agree, the period boundaries can be offset, and any pixel comparison must
+reconcile phase before it means anything.
+
+**2. `period_duration` + `MOSAIC` is first-coverage selection, not a median composite.** Every
+returned group held exactly **one** item, despite four scenes falling in each 20-day period. That
+is by design, not an artifact of synthetic data: the period loop builds a
+`QueryConfig(max_matches=1)` per period and keeps only `period_groups[0]`
+(`data_sources/utils.py:438-442,464-468`), and `MOSAIC` stops adding items once the window is
+spatially covered (`docs/CoreConcepts.md:75-79`).
+
+fsd's `mosaic_days` window is a **median over every scene in the window** (the numba median
+kernel). These are different operations, not different spellings of the same one — rslearn takes
+the first scenes that cover the ground, fsd takes the per-pixel median of all of them, which is
+what suppresses undetected cloud. **This is a second, independent obstacle to equivalence that
+sits underneath the `T` question**, and it is new information: neither the 2026-07-06 comparison
+nor the source read had it. rslearn does ship a `MedianCompositor` (`compositing.py`), but
+reaching it requires a different `space_mode`/compositor combination than the `period_duration`
+route — Step 4 has to establish which combination, if any, reproduces fsd's mosaic.
+
+#### What this costs Plan C
+
+`T` is data-dependent, so **adoption adds fsd code rather than deleting it**: a re-alignment shim
+that maps returned groups back onto their period index and fills the gaps, before preflight or
+cross-cell flatten can work at all. Concretely the shim must (a) recover each group's period index
+from `request_time_range`, (b) insert nodata slices for dropped empty periods, (c) append the
+dropped trailing partial period, (d) re-sort out of reverse-chronological order, and (e) correct
+the end-anchoring phase offset. None of that is hard; all of it is fsd's to write, test and
+maintain, and it is exactly the code Plan C was supposed to remove.
 
 ### 4.4 Harmonization posture — fsd's is more robust
 
@@ -561,10 +620,13 @@ of probe 02 are still ⬜.
 | import time (acquisition path) | ⬜ measure | **0.55 s** | probe 01 |
 | torch pulled at import? | n/a | **no** — prediction confirmed | §2.3, probe 01 |
 | heavy modules that *do* load | n/a | **`boto3`** (an AWS SDK, on a non-AWS path) | probe 01 |
-| `T` on the tutorial window | 10 | ⬜ probe 02 (predicted **9**) | §4.3 |
-| re-alignment shim, if needed | 0 LOC | ⬜ estimate after probe 02 | §4.3 |
+| `T` on the tutorial window | **10** | **9** — prediction confirmed | §4.3, probe 02 |
+| `T` with 2 empty periods | **9** | **7** — data-dependent | §4.3, probe 02 |
+| first period starts at | `startdate` | **`startdate + 1 day`** (end-anchored) | §4.3, probe 02 |
+| scenes per output timestep | median of **all** in window | **1** (first-coverage) | §4.3, probe 02 |
+| re-alignment shim needed? | n/a | **yes — 5 distinct corrections** | §4.3 |
 | Azure write under MSI | works (spec 31) | ⬜ Step 3 | §4.1 |
-| pixel equivalence vs fixture | baseline | ⬜ Step 4 | |
+| pixel equivalence vs fixture | baseline | ⬜ Step 4, now known to need phase + compositing reconciliation too | §4.3 |
 
 Two minor observations from the same run, both now confirmed on a **fully successful** import
 (the first attempt's readings came from a partial one): `rslearn.__version__` is **absent** — the
@@ -620,18 +682,38 @@ permanently.
 issue #32's design question), the `class_path` + `init_args` extension seam for fsd's own `Source`
 ABC (issue #11), and `space_mode: INTERSECTS` as a second matching mode.
 
-### 6.4 Recommendation, and what would change it
+### 6.4 Recommendation
 
-⬜ **Pending.** Written after probe 02. Stated in advance, so it cannot be quietly reverse-engineered
-from whatever the probes say:
+**Option C — stay on Plan B — with Option B (the hybrid) deferred rather than rejected, and the
+copyable ideas in §6.3 taken now.**
 
-- **If probe 02 shows `T` matches** (rslearn returns 10): the strongest technical objection to the
-  hybrid collapses, §4.3 must be re-derived, and Option B gets materially more attractive.
-- **If Step 3 shows rslearn writes to Azure blob under MSI without patching**: the largest cost of
-  both A and B drops, and A stops being unreasonable.
-- **If probe 01 shows a modest install** (contradicting §4.2's read): the Mode-A objection weakens.
-- **If the team's direction turns toward foundation-model fine-tuning** (§3.2): that alone can
-  outweigh every infrastructure argument here, because fsd has no path to it at all.
+Honesty about how the four advance conditions actually resolved, since they were written before
+the probes precisely so this could not be reverse-engineered:
+
+| stated in advance | outcome |
+|---|---|
+| *If probe 02 shows `T` matches → the strongest objection collapses, Option B gets materially more attractive* | **It did not match.** 9 vs 10, and 7 vs 9 with empty periods. The objection stands, and the probe added a second one (first-coverage vs median). |
+| *If probe 01 shows a modest install → the Mode-A objection weakens* | **It did not.** 5.3 GB, 2.9 GB downloaded, and the stock install does not import. |
+| *If Step 3 shows rslearn writes to Azure under MSI without patching → the largest cost of A and B drops, and A stops being unreasonable* | **Still unrun.** This is the one live condition. |
+| *If the team turns toward foundation-model fine-tuning → that can outweigh every infrastructure argument* | **Unchanged and unanswered — it is a question for you and the team, not for this report.** |
+
+**Why "deferred" and not "rejected" for the hybrid.** Nothing measured rules Option B out. What
+the measurements did is move its price: the shim is now known to be required and to have five
+distinct parts, and the compositing gap means an rslearn-backed source would not produce cubes
+interchangeable with fsd's own without further work. Against that, the breadth prize is real and
+the marginal-source question (§6.2 item 4) is still unanswered — nobody has yet checked whether
+ERA5 through rslearn is cheaper than ERA5 in 200 lines of fsd. **Answer that one question before
+committing either way**, because it is what the hybrid's whole value rests on and it costs an
+afternoon.
+
+**What would reopen a full switch (Option A):** essentially only a change in what fsd is for. If
+crop mapping moves to fine-tuned foundation models, or if the project acquires a mandate to
+support many sensors rather than Sentinel-2 L2A well, the calculus inverts — because then fsd
+would be rebuilding §3.2 and §3.1 from scratch, which is far more work than a shim.
+
+**What would make this report wrong:** if Step 3 shows rslearn writing to Azure blob under managed
+identity with no patching, the single largest cost line in both A and B disappears, and the hybrid
+deserves a fresh look rather than a deferral. That step is worth running for that reason alone.
 
 ---
 

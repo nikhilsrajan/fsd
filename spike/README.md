@@ -14,9 +14,9 @@
 | rslearn under evaluation | **v0.1.13** @ `a5c50c63` (2026-07-28), read-only at the workspace root |
 | Static analysis | ✅ done — [`RSLEARN_READ_2026-07-31.md`](RSLEARN_READ_2026-07-31.md) |
 | Probes written | ✅ 01 (install weight) + 02 (the `T` contract) — `probes/` |
-| Probes run | ⬜ none yet — [`RUNBOOK-rslearn-spike.md`](RUNBOOK-rslearn-spike.md), on the VM |
-| Report | 🟡 **drafted, measurements pending** — [`RSLEARN_SPIKE_REPORT.md`](RSLEARN_SPIKE_REPORT.md). §2 (teaching rslearn), §3 (rslearn's advantages) and §4 (fsd's) are complete and cited; §1, §5, §6 carry ⬜ markers gated on probes 01/02 |
-| Verdict | ⬜ not called — §6.4 states in advance what would flip it |
+| Probes run | ✅ **01 + 02 ran on the VM 2026-07-31**; Steps 3-4 (Azure, equivalence) not yet written or run |
+| Report | 🟢 **complete for the offline half** — [`RSLEARN_SPIKE_REPORT.md`](RSLEARN_SPIKE_REPORT.md). §1-§7 written; only the Azure/equivalence rows are ⬜ |
+| Verdict | **stay on Plan B; hybrid deferred, not rejected** (§6.4). The one live condition that could change it is run-book Step 3 — can rslearn write to Azure blob under MSI without patching |
 
 **Offline census, not a run-book probe:** `probes/census_data_sources.py` re-derives the breadth
 number the report's §3.1 rests on (36 modules → 47 `DataSource` subclasses → 40 concrete names →
