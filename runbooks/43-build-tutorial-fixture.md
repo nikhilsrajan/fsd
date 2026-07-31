@@ -19,7 +19,7 @@ do both:
 
 | Step | Where | Why there |
 |---|---|---|
-| 0 | **laptop** | needs `shapefiles/` (`AT_ROI`, `AT_2018_TRAIN`), which live at the **workspace root, outside the repo** — a `git clone` on a VM cannot supply them. Tiny, offline, no bulk data. |
+| 0 | **laptop** | needs `shapefiles/` (`AT_ROI`, `AT_2018_TRAIN`), which live at the **workspace root, outside the repo** — a `git clone` on a VM cannot supply them. Tiny, offline, no bulk data. **Its two outputs reach the VM by being committed** (48 KB) — see Step 0a. |
 | 1–5 | **Azure VM in the `rise` VNet** | needs the **blob MPC archive**; reading it from a laptop would pull tens of GB over your hotspot, which is the whole reason for A1. |
 | 6–7 | **laptop** | verify + commit. Only ~20 MB crosses the wire. |
 
@@ -100,6 +100,32 @@ python tests/data/tutorial/derive_roi_and_labels.py \
 
 ---
 
+## Step 0a — laptop: commit Step 0's output so the VM can clone it
+
+The VM runs Steps 2-4 against `roi.geojson` and `fields.geojson`, but it **cannot produce them** —
+Step 0 needs `shapefiles/` from the workspace root, which is outside the repo. An AML compute
+instance has **no `scp`**, so the practical transport is the repo itself. The two files total
+**48 KB**, are already un-ignored by spec 42 D6's negation, and are part of the fixture anyway
+(D3) — Step 7 would commit them regardless. Committing them here just moves that forward.
+
+```bash
+cd ~/NASA-Harvest/project/fetch_satdata_claude/fsd
+git check-ignore tests/data/tutorial/roi.geojson tests/data/tutorial/fields.geojson
+echo "exit=$?   # want exit=1 -- not ignored (do NOT add -v, see Step 7)"
+du -ch tests/data/tutorial/*.geojson | tail -1
+git add tests/data/tutorial/roi.geojson tests/data/tutorial/fields.geojson
+git commit -m "spec 42: tutorial fixture ROI + labels (run-book 43 Step 0)"
+git push origin main
+```
+
+- **PASS if:** `exit=1`, the total is **tens of KB** (not MB), and the push succeeds.
+- **Why push matters:** Step 1c clones from GitHub. Anything not pushed does not exist on the VM —
+  including the generator scripts themselves.
+- **If you re-run Step 0** (different cell, different `--n-major`), re-commit and re-push before
+  going back to the VM, or Step 2 silently uses the old cell.
+
+---
+
 ## Step 1 — VM: get a shell and set it up (one-time, slow pace)
 
 ```bash
@@ -117,6 +143,10 @@ tmux new -s fixture
 git clone https://github.com/nikhilsrajan/fsd.git
 cd fsd
 git log --oneline -1        # note the SHA; the fixture's provenance records it
+
+# 1c-i) Confirm Step 0a's output actually came down with the clone.
+#       If either is missing, you did not push -- go back to Step 0a.
+ls -l tests/data/tutorial/roi.geojson tests/data/tutorial/fields.geojson
 
 # 1d) venv + the extras this run actually needs.
 python3.11 -m venv .venv && source .venv/bin/activate
@@ -328,6 +358,8 @@ python -m pytest tests/test_tutorial_fixture.py -q
 # ".gitignore:37:!tests/data/tutorial/** ..." and exits 0 -- which reads as a
 # failure but is the pass. Without -v: no output and exit 1 == not ignored.
 git check-ignore tests/data/tutorial/catalog.parquet; echo "exit=$?   # want exit=1"
+# roi.geojson + fields.geojson are already committed (Step 0a); this adds the COGs,
+# catalog.parquet, NOTICE and README.md.
 git add .gitignore tests/data/tutorial tests/test_tutorial_fixture.py
 git status --porcelain
 ```
