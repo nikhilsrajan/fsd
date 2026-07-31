@@ -52,7 +52,7 @@ def main(argv=None) -> int:
 
     try:
         catalog = pystac.Catalog.from_file(catalog_json, stac_io=_stac._StorageStacIO())
-        items = list(catalog.get_all_items())
+        items = list(catalog.get_items(recursive=True))
         _stac_geoparquet.items_to_stac_geoparquet(items, dst_fp)
         result = {
             "step": "export-stac-geoparquet",

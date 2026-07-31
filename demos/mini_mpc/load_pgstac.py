@@ -79,7 +79,7 @@ def main(argv=None) -> int:
     try:
         catalog_json = os.path.join(args.stac_dir, "catalog.json")
         catalog = pystac.Catalog.from_file(catalog_json, stac_io=_stac._StorageStacIO())
-        items = list(catalog.get_all_items())
+        items = list(catalog.get_items(recursive=True))
         collections = list(catalog.get_children())  # pystac.Collection objects
         if not items:
             raise ValueError(f"load_pgstac: no items found under {catalog_json!r}.")

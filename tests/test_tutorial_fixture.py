@@ -223,5 +223,5 @@ def test_pipeline_create_training_data_train_and_infer(tmp_path):
         assert src.nodata == 255
 
     catalog = pystac.Catalog.from_file(result.stac_catalog_filepath)
-    items = list(catalog.get_all_items())
+    items = list(catalog.get_items(recursive=True))
     assert len(items) == 1
