@@ -102,6 +102,24 @@ def main() -> int:
             f"route at all. Expected an abfss:// or az:// URL; got shape {_redact(args.url)}."
         )
 
+    # Time the AAD token acquisition SEPARATELY, because the first `rio_open` pays for it and
+    # that would otherwise be charged to "read throughput". `storage_token()` fetches from a
+    # module-cached `DefaultAzureCredential` whose MSAL cache refreshes internally
+    # (`src/fsd/storage/azure.py:48-56`), so call 1 is a real network round-trip to AAD/IMDS
+    # and calls 2..N are ~free. Without this split, fsd's cold number conflates one-time auth
+    # with transfer -- and the rslearn side of the comparison does NOT pay auth in its timed
+    # read at all, because probe 03's q1 resolves the filesystem first. See run-book Step 3c.
+    token_timings = []
+    try:
+        from fsd.storage.azure import storage_token
+
+        for _ in range(2):
+            t0 = time.perf_counter()
+            storage_token()
+            token_timings.append(round(time.perf_counter() - t0, 4))
+    except Exception as exc:  # noqa: BLE001 -- informational; the reads below are the measurement
+        token_timings = [f"unavailable: {type(exc).__name__}: {exc}"]
+
     reads: list[dict] = []
     mb = None
     shape = None
@@ -137,7 +155,14 @@ def main() -> int:
         "cold_read_mb_per_s": cold["mb_per_s"],
         "warm_read_mb_per_s": [r["mb_per_s"] for r in warm],
         "median_mb_per_s": round(float(np.median([r["mb_per_s"] for r in reads])), 1),
+        "aad_token_seconds": token_timings,
         "reads": reads,
+        "comparison_note": (
+            "Compare WARM against probe 03's q2_raster_format.read_mb_per_s, not cold. "
+            "probe 03 resolves the filesystem in q1 before timing q2, so its read is measured "
+            "with auth already warm; charging fsd's one-time AAD round-trip against its read "
+            "would not be like for like. aad_token_seconds[0] is that one-time cost."
+        ),
     }
 
     result = {

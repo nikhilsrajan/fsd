@@ -298,6 +298,17 @@ python -c "import fsspec,os; fsspec.filesystem('abfss').rm(os.environ['AZ_ROOT']
   baseline. Compare `cold_read_mb_per_s` against probe 03's `q2_raster_format.read_mb_per_s`.
 - **If it fails with `--url did not translate`:** you passed a local path or a non-`abfss://`
   URL; the probe refuses rather than silently measuring the wrong route.
+
+> ⚠️ **Compare WARM against probe 03, not cold — the cold pair is not like for like.** Found
+> after the first run (2026-07-31, cold 3.7 MB/s vs rslearn's 21.8). fsd's first `rio_open` pays
+> a one-time AAD token round-trip inside the timed section (`storage_token()`,
+> `src/fsd/storage/azure.py:48-56`; the credential is module-cached so calls 2..N are ~free),
+> whereas **probe 03 resolves its filesystem in `q1_upath` before timing `q2`** — so rslearn's
+> number is measured with auth already warm. Charging fsd one-time auth and not rslearn would
+> overstate the gap. The probe now reports `aad_token_seconds` separately so the split is
+> visible; use `warm_read_mb_per_s` for the comparison and quote the cold figure only as
+> "first-open latency", which is its own real cost in a fan-out that opens one COG per task.
+
 - ⚠️ **One 6 MB object is not a COG read pattern.** A fair test of what GDAL's remote reader
   actually buys — overviews, windowed reads, many small range requests — needs the real archive.
   Treat this as a floor on the question, and say so if the number gets quoted.
