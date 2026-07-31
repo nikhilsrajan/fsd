@@ -320,7 +320,8 @@ intended order of the big efforts:
 3. **Source extension, incrementally** (issue #11; promotes the source contract to the
    `sources/base.py: Source` ABC, OQ-3): CDSE **S2 L2A** (done) → **MPC S2 L2A** →
    CDSE **S1 GRD / S1 RTC** → **MPC S1** → other products (CHIRPS, ERA5, …).
-4. **Benchmark against `rslearn`** (issue #12) — run in parallel with step 3.
+4. ~~**Benchmark against `rslearn`** (issue #12)~~ — **DONE and DECIDED 2026-07-31; issue #12
+   closed.** See §7.1 below.
 
 The **cross-cutting perf track** that used to sit under this heading (_datacube-creation speed at
 scale_, the 3-part benchmark-first plan and its five parked optimization candidates) moved to
@@ -342,6 +343,47 @@ a STAC API server" (that's L4/infra/later). A tight spec will name exactly which
 populate (`proj:epsg`, `proj:shape`, `proj:transform`, datetime, bbox, COG asset) and stop.
 Applies to **both** the post-download catalog *and* the inference-output catalog (one catalog
 abstraction).
+
+---
+
+## 7.1 ✅ RESOLVED 2026-07-31 — rslearn (Plan B vs Plan C)
+
+**fsd will not use rslearn as a data-download source** — not wholesale, not as a hybrid source
+behind an extra. **Plan B stands**; `spike/rslearn` does not merge into `main`. Issue #12 is
+closed.
+
+**The framing that decided it:** fsd is an alternative to **Google Earth Engine**, for running
+*simpler* models at scale over satellite imagery. rslearn is a **foundation-model library** that
+happens to ship an acquisition layer. Two tools, two jobs — merging the acquisition layers is a
+category error.
+
+**The successor project:** rslearn's real value is its **model library** and deploying heavy
+foundation models. That becomes its own project — *run rslearn on Azure the way fsd now can*. The
+transferable asset is fsd's **scale-out know-how** (the runner seam, the storage seam, the AML
+environment and identity work), not fsd's pipeline code.
+
+**What was measured** (rslearn v0.1.13 @ `a5c50c63`, Azure VM, 2026-07-31): rslearn's `T` is
+data-dependent (9 groups where fsd gives 10; 7 where fsd gives 9 once a period is empty); its
+period yields **one first-coverage scene** where fsd takes a per-pixel **median**; the install is
+**5.3 GB** with no lite path and does not import out of the box; its blob reader runs **~22 MB/s
+against fsd's ~107 MB/s** via `/vsiadls/`, which **vindicates spec 31's design** for fsd's
+workload; and it ships **no distributed runner** at all. Against that, rslearn has **50** concrete
+data-source entry points to fsd's 2 plus a foundation-model zoo fsd has no analogue for — the
+strongest argument for adoption, and the reason the successor project exists.
+
+**One finding carries straight into that project:** rslearn reads *and writes* ADLS Gen2 under
+managed identity **unmodified**, for the price of `pip install adlfs`. So rslearn-on-Azure does
+not begin with a storage problem — it begins at the runner.
+
+**Two byproducts land on fsd regardless:** rslearn's lazy per-read MPC signing answers issue
+**#32**'s design question, and its `class_path` + `init_args` pattern is a good model for the
+`Source` ABC that issue **#11** still owns — which **does not exist yet** (`sources/__init__.py:5`;
+`api.py:264,413` dispatch on a hardcoded `("cdse", "mpc")` check, duplicated).
+
+**Evidence:** [`spike/RSLEARN_SPIKE_REPORT.md`](spike/RSLEARN_SPIKE_REPORT.md) — §6.4 is the
+decision, §6.5 explains why it cut differently from the report's own recommendation. The report
+also supersedes [`RSLEARN_COMPARISON.md`](RSLEARN_COMPARISON.md) (2026-07-06), which was wrong
+about fsd's calendar-`T` contract being unique.
 
 ---
 
