@@ -1,15 +1,16 @@
 ---
 status: current
-summary: Build-vs-borrow report -- rslearn v0.1.13 vs fsd. Teaches rslearn's data model, prices three options (switch / hybrid / stay), and recommends staying on Plan B with the hybrid deferred. Probes 01/02 measured; the Azure probes (Steps 3-4) are still outstanding.
+summary: Build-vs-borrow report -- rslearn v0.1.13 vs fsd. Teaches rslearn's data model, prices three options (switch / hybrid / stay), and recommends keeping fsd's own S2 pipeline while piloting an rslearn-backed source for breadth. Probes 01-03 measured; one throughput number outstanding.
 ---
 
 # rslearn vs fsd — build-vs-borrow report
 
-> **Status: the offline half is complete; the Azure half is not.** Probes 01 and 02 have run on
-> the VM (2026-07-31) and their numbers are in §4.2, §4.3 and §5. **Run-book Steps 3 and 4 — can
-> rslearn write to Azure blob under managed identity, and does it reproduce fsd's pixels — have
-> not run**, and they are the one live condition that could change §6.4's recommendation. Every
-> remaining gap is marked ⬜.
+> **Status: measured, with one number outstanding.** Probes 01, 02 and 03 all ran on the VM
+> (2026-07-31); their numbers are in §4.1.2, §4.2, §4.3 and §5. **One measurement is left** —
+> fsd's `/vsiadls/` read throughput on the same object, for the comparison §4.1.2 opens (probe
+> 03b, run-book Step 3c). **Step 4 (pixel equivalence) is deliberately deferred**, with the
+> reasoning in the run-book: probe 02 showed such a diff would measure our shim, not rslearn.
+> Every remaining gap is marked ⬜.
 >
 > **Pinned version.** Every `file:line` citation below is against **rslearn v0.1.13 @ `a5c50c63`**
 > (2026-07-28) as vendored read-only at the workspace root, and against **fsd `main` @ `9e7c5f2`**.
@@ -40,35 +41,39 @@ formality, the report has failed and you should say so.
 |---|---|---|
 | What rslearn's data model is | ✅ read | §2, cited |
 | Source breadth, model zoo, maintenance | ✅ measured from source | §3, method stated |
-| Azure support | ✅ read (**none exists**) / ⬜ VM probe pending | §4.1, run-book Step 3 |
+| Azure support | ✅ **measured: rslearn reads AND writes our blob under MSI** — one `pip install adlfs`, no patching | §4.1.2 |
+| Azure read throughput vs fsd's `/vsiadls/` | ⬜ **the last open number** (probe 03b, Step 3c) | §4.1.2 |
 | Install weight — is there a lite path? | ✅ read (**no**) | §4.2 |
 | Install weight — the actual numbers | ✅ **measured: 5.3 GB venv, 2.9 GB cold download, 88.5 s** | §4.2, §5 |
 | Does the stock install even import? | ✅ **measured: no — undeclared `einops`** | §4.2.1 |
 | Does the acquisition path import torch? | ✅ **measured: no** (0.55 s, torch absent) | §2.3 |
 | Does the calendar-`T` contract survive? | ✅ **measured: no — 9 vs 10, and 7 vs 9 with gaps** | §4.3 |
 | Does rslearn's period == fsd's mosaic? | ✅ **measured: no — first-coverage, not median** | §4.3 |
-| Pixel equivalence vs fsd | ⬜ pending (Step 4, unwritten) | §5 |
+| Pixel equivalence vs fsd | ⬜ **deferred on purpose** — would measure our shim, not rslearn | run-book Step 4 |
 
 ---
 
 ## 1. Executive summary
 
-**Recommendation: do not switch. Keep fsd's pipeline, and treat an optional rslearn-backed source
-as a deferred question to revisit only if the breadth need becomes concrete — not as work to start
-now.** rslearn is good software with a genuinely larger reach than fsd (50 data-source entry
-points to our 2, a foundation-model zoo we have no answer to, 52 maintainers to our one), but it
-solves a different problem: it is a dataset-and-training library, while fsd's hard-won assets are
-an Azure scale-out that rslearn has no code for at all, and a `T` contract that rslearn's
-equivalent provably does not reproduce. Adopting it for acquisition would *add* fsd code — a
-five-part re-alignment shim — rather than remove any, while costing the lean-install promise
-(5.3 GB, torch is a core dependency with no lite path). The one thing that should reopen this is
-not infrastructure at all: if the team's direction turns toward fine-tuning geospatial foundation
-models, rslearn offers a path fsd does not have and cannot cheaply grow.
+**Recommendation: do not switch wholesale — keep fsd's own pipeline for Sentinel-2 L2A — but run
+a one-afternoon pilot of the hybrid now, not later.** rslearn is good software with a genuinely
+larger reach than fsd (50 data-source entry points to our 2, a foundation-model zoo we have no
+answer to, 52 maintainers to our one), and the spike's riskiest assumption turned out to be wrong
+in rslearn's favour: **it reads and writes our Azure storage under managed identity with no
+patching at all.** What still rules out a full switch is narrower and sturdier — fsd would lose
+its lean-install promise to a 5.3 GB dependency, would have to write a five-part shim because
+rslearn's timestep contract provably differs from ours, and would gain no distributed runner,
+since rslearn has none and fsd's already runs on an AML cluster. But the objections that block a
+switch mostly **do not apply to the sources fsd actually lacks**, which are static or carry their
+own cadence. So the live question is small and cheap: does one real ancillary source (ERA5-Land)
+come out cheaper through rslearn than written directly against fsd's `Source` seam?
 
 The five facts behind that:
 
 1. **Adopting rslearn does not save fsd's hardest work.** Scale-out onto Azure is fsd's, it is
-   built, and it was cluster-validated 2026-07-29. rslearn contains **zero** Azure code (§4.1).
+   built, and it was cluster-validated 2026-07-29. rslearn ships **no distributed runner at all**
+   — local multiprocessing capped at 32 workers (§4.5). *Storage*, by contrast, is a non-issue:
+   rslearn round-trips our blob under managed identity out of the box (§4.1.2).
 2. **rslearn's breadth is real and large** — 50 distinct concrete data-source entry points versus
    fsd's 2, and a foundation-model zoo fsd has no analogue for (§3.1, §3.2). **This is the strongest
    argument for adoption and it is not close.**
@@ -440,10 +445,32 @@ much less threatening one than "it cannot authenticate."
 **Net effect on the decision:** the largest cost line in both Options A and B is smaller than the
 source read priced it. §6.4 is updated accordingly.
 
-⬜ **Still pending run-book Step 3**, now with sharper questions: does `UPath("abfss://…")` resolve
-once `adlfs` is installed by hand (upstream declares no Azure backend); can rslearn's raster format
-and tile store round-trip a tile there under `DefaultAzureCredential`; and what is the read
-throughput versus fsd's `/vsiadls/` path on the same object.
+#### 4.1.2 Measured — probe 03, on the VM, 2026-07-31. **It works.**
+
+| question | result |
+|---|---|
+| `UPath("abfss://…")` resolves? | ✅ `AzureBlobFileSystem`, 0.84 s |
+| `adlfs` needed by hand? | **yes** — undeclared upstream, one `pip install adlfs` |
+| `GeotiffRasterFormat` write + read round-trip under `DefaultAzureCredential` | ✅ **byte-identical**, 0.77 s write / 0.27 s read, **23.6 MB/s** |
+| `DefaultTileStore` round-trip (what `ingest` writes through) | ✅ **byte-identical**, 1.15 s write / 0.29 s read, **21.8 MB/s** |
+| patching rslearn required? | **none** |
+
+**The spike's highest-risk question is answered, and the answer is the opposite of what the
+charter assumed.** rslearn reads *and writes* our ADLS Gen2 storage under managed identity, with
+no `/vsiadls/` translation, no token plumbing, and no source changes. The entire cost is
+`pip install adlfs` — a package rslearn does not declare (`pyproject.toml:44` is
+`fsspec[gcs, s3]`), which remains a real if small finding: an undeclared backend is an untested
+backend, and nothing upstream guarantees it keeps working.
+
+**Note what this does *not* say.** rslearn writing to blob is not rslearn *running at scale* on
+Azure. There is still no distributed runner (§4.5) — the fan-out across an AML cluster is fsd's
+and stays fsd's under every option.
+
+⬜ **One number still open: the throughput comparison.** 21.8–23.6 MB/s is a datum, not a verdict
+— fsd's `/vsiadls/` route on the same object, same VM, is the missing baseline (probe 03b, Step
+3c). GDAL's remote reader has range caching and overview handling that a plain Python file object
+does not get; whether that is worth anything at real COG sizes is unmeasured. Do not quote
+rslearn's number as "slow" or "fine" until the pair exists.
 
 ### 4.2 Install weight — heavy, with categorically no lite path
 
@@ -661,8 +688,10 @@ of probe 02 are still ⬜.
 | first period starts at | `startdate` | **`startdate + 1 day`** (end-anchored) | §4.3, probe 02 |
 | scenes per output timestep | median of **all** in window | **1** (first-coverage) | §4.3, probe 02 |
 | re-alignment shim needed? | n/a | **yes — 5 distinct corrections** | §4.3 |
-| Azure write under MSI | works (spec 31) | ⬜ Step 3 | §4.1 |
-| pixel equivalence vs fixture | baseline | ⬜ Step 4, now known to need phase + compositing reconciliation too | §4.3 |
+| Azure read+write under MSI | works (spec 31) | **works** — `pip install adlfs`, no patching | §4.1.2, probe 03 |
+| blob read throughput | ⬜ measure (probe 03b) | **21.8–23.6 MB/s** on a 6.3 MB object | §4.1.2 |
+| distributed runner | AML, cluster-validated | **none** | §4.5 |
+| pixel equivalence vs fixture | baseline | ⬜ Step 4 — **deferred**: needs `T` + phase + compositing reconciled first, at which point it measures our shim | §4.3 |
 
 Two minor observations from the same run, both now confirmed on a **fully successful** import
 (the first attempt's readings came from a partial one): `rslearn.__version__` is **absent** — the
@@ -720,8 +749,13 @@ ABC (issue #11), and `space_mode: INTERSECTS` as a second matching mode.
 
 ### 6.4 Recommendation
 
-**Option C — stay on Plan B — with Option B (the hybrid) deferred rather than rejected, and the
-copyable ideas in §6.3 taken now.**
+**Keep fsd's own pipeline for Sentinel-2 L2A (Option C), and run the Option B pilot now rather
+than deferring it.** Not a full switch.
+
+> **This is a revision.** An earlier draft of this section said "stay, hybrid *deferred*." Probe
+> 03 then fired the condition that draft had named in advance, so the recommendation moved from
+> *defer the hybrid* to *pilot it now*. The change is recorded rather than smoothed over,
+> because a report that only ever ratifies the incumbent is not doing its job.
 
 Honesty about how the four advance conditions actually resolved, since they were written before
 the probes precisely so this could not be reverse-engineered:
@@ -730,36 +764,57 @@ the probes precisely so this could not be reverse-engineered:
 |---|---|
 | *If probe 02 shows `T` matches → the strongest objection collapses, Option B gets materially more attractive* | **It did not match.** 9 vs 10, and 7 vs 9 with empty periods. The objection stands, and the probe added a second one (first-coverage vs median). |
 | *If probe 01 shows a modest install → the Mode-A objection weakens* | **It did not.** 5.3 GB, 2.9 GB downloaded, and the stock install does not import. |
-| *If Step 3 shows rslearn writes to Azure under MSI without patching → the largest cost of A and B drops, and A stops being unreasonable* | **Still unrun — but the source now says the objection was overstated** (§4.1.1). rslearn never hands GDAL a remote URL, so the GDAL-auth wall fsd hit does not apply. The live question narrows from *"can it authenticate?"* to *"how much throughput does the fsspec-file-object path give up?"* |
+| *If Step 3 shows rslearn writes to Azure under MSI without patching → the largest cost of A and B drops, and A stops being unreasonable* | **It does.** Measured (§4.1.2): read *and* write round-trip byte-identical under `DefaultAzureCredential`, no patching, cost = one `pip install adlfs`. **This condition fired, and the verdict below moves because of it.** |
 | *If the team turns toward foundation-model fine-tuning → that can outweigh every infrastructure argument* | **Unchanged and unanswered — it is a question for you and the team, not for this report.** |
 
-**Why "deferred" and not "rejected" for the hybrid.** Nothing measured rules Option B out. What
-the measurements did is move its price: the shim is now known to be required and to have five
-distinct parts, and the compositing gap means an rslearn-backed source would not produce cubes
-interchangeable with fsd's own without further work. Against that, the breadth prize is real and
-the marginal-source question (§6.2 item 4) is still unanswered — nobody has yet checked whether
-ERA5 through rslearn is cheaper than ERA5 in 200 lines of fsd. **Answer that one question before
-committing either way**, because it is what the hybrid's whole value rests on and it costs an
-afternoon.
+**Why the hybrid got better, and it is not only the Azure result.** Two things compound:
+
+1. **Storage is no longer a cost line at all** (§4.1.2). rslearn reads and writes `rise` blob
+   under managed identity for the price of one undeclared package. The charter's riskiest
+   question is closed in rslearn's favour.
+2. **The `T` and compositing objections barely touch the sources the hybrid is actually for.**
+   This is the structural point the measurements exposed, and it deserves stating plainly:
+   §4.3's divergences are all properties of `period_duration` — i.e. of **optical time-series
+   mosaicking**, which is exactly the one thing fsd already does well and would never delegate.
+   The sources fsd genuinely lacks (issue #11) are mostly **static** — Copernicus DEM, SRTM,
+   SoilGrids, WorldCover, EuroCrops — or carry their **own native cadence**, like ERA5-Land's
+   hourly/daily/monthly variants. For a static layer you never set `period_duration`, so there
+   is no `T` to realign and no mosaic to reconcile. **The shim cost is concentrated precisely
+   where fsd does not need rslearn, and is close to zero where it does.**
+
+What remains genuinely against B: the `fsd[rslearn]` extra would be a 5.3 GB install (§4.2),
+two dependency trees must agree on rasterio and fsspec versions, and the marginal-source question
+is still unanswered — nobody has checked whether ERA5 through rslearn beats ERA5 in 200 lines of
+fsd. **That last one is the pilot, and it is an afternoon.**
 
 **What would reopen a full switch (Option A):** essentially only a change in what fsd is for. If
 crop mapping moves to fine-tuned foundation models, or if the project acquires a mandate to
 support many sensors rather than Sentinel-2 L2A well, the calculus inverts — because then fsd
 would be rebuilding §3.2 and §3.1 from scratch, which is far more work than a shim.
 
-**What would make this report wrong:** if Step 3 shows rslearn writing to and reading from Azure
-blob under managed identity at throughput comparable to fsd's `/vsiadls/` path, the single largest
-cost line in both A and B disappears and the hybrid deserves a fresh look rather than a deferral.
-§4.1.1 already moved that line down on source evidence alone; Step 3 decides how far.
+**What would still make this wrong:** if probe 03b shows fsd's `/vsiadls/` route materially faster
+than rslearn's fsspec-file-object read at real COG sizes, per-granule throughput becomes a cost
+line in B that this section has priced at zero. That is the one measurement left, and it is why
+Step 3c exists.
 
-**Two honest notes on how this recommendation was reached.** First, the Azure objection — the one
-the source read called "the single highest-risk question in the spike" — turned out to be
-substantially weaker than written, and that was found while designing the probe meant to confirm
-it. The verdict survives on the `T` contract, the compositing gap and install weight, not on the
-Azure argument. Second, none of the measurements touched §3's advantages: the breadth and the
-model zoo were never in doubt and are not diminished by anything here. **If the team's answer to
-"where is our work heading?" is foundation models, this recommendation is the wrong one** — and
-that question is not this report's to answer.
+**Three honest notes on how this recommendation was reached.**
+
+First, **the Azure objection did not survive contact with the evidence, twice.** The source read
+called it "the single highest-risk question in the spike." Reading the code to build the probe
+showed the GDAL-auth premise was wrong (§4.1.1); running the probe showed it works outright
+(§4.1.2). The verdict against a *full switch* survives on the `T` contract, the compositing gap,
+install weight and the missing distributed runner — not on Azure.
+
+Second, **none of the measurements touched §3's advantages.** The breadth and the model zoo were
+never in doubt and nothing here diminishes them. **If the team's answer to "where is our work
+heading?" is foundation models, this recommendation is the wrong one** — and that question is not
+this report's to answer.
+
+Third, **what makes the case against a full switch robust is that it does not rest on any single
+finding.** Remove the Azure argument entirely — as the evidence has now done — and Options A's
+problems are unchanged: fsd would still lose Mode-A to a 5.3 GB dependency, still need the
+five-part shim for its core optical pipeline, still get no distributed runner, and still be
+rebuilding its own finished scale-out on top of a library that does not have one.
 
 ---
 

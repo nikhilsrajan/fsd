@@ -266,6 +266,42 @@ python spike/probes/probe_03_azure.py \
 > `abfss://<fs>@<account>/<N path segments>`). Paste the JSON freely; do not paste your
 > `--dst-prefix`. This branch is a public MIT repo.
 
+#### Step 3c — fsd's `/vsiadls/` baseline over the same object
+
+**The last open number in the spike.** Step 3b measured rslearn at 21.8–23.6 MB/s reading blob
+through an fsspec file object. That is a datum, not a verdict — fsd's own route over the *same
+object, same VM* is what turns it into a comparison. Report §4.1.2 will not call rslearn's number
+fast or slow until this exists.
+
+Two venvs, one object — deliberately, since the charter keeps fsd out of `.venv-rslearn`:
+
+```bash
+# 1. re-run probe 03 with --keep so the geotiff survives
+source .venv-rslearn/bin/activate
+python spike/probes/probe_03_azure.py --out tests/outputs/rslearn_spike --keep \
+    --dst-prefix "$AZ_ROOT/$AZ_SCRATCH_PREFIX/rslearn_spike"
+
+# 2. read it back through fsd's VSI route, in fsd's OWN venv
+deactivate && source .venv/bin/activate
+python spike/probes/probe_03b_fsd_vsi_baseline.py --out tests/outputs/rslearn_spike \
+    --url "$AZ_ROOT/$AZ_SCRATCH_PREFIX/rslearn_spike/raster_format/geotiff.tif"
+
+# 3. clean up
+python -c "import fsspec,os; fsspec.filesystem('abfss').rm(os.environ['AZ_ROOT'].split('://',1)[1], recursive=True)" 2>/dev/null || \
+  echo "clean up $AZ_ROOT/$AZ_SCRATCH_PREFIX/rslearn_spike by hand"
+```
+
+- The filename is `geotiff.tif` — `GeotiffRasterFormat.fname` (`raster_format.py:510`).
+- Reads three times: the **cold** figure is the honest one for a fan-out that opens each COG
+  once; the warm reads only show what caching would buy.
+- **PASS if:** `_result_probe03b.json` has `"status": "ok"`. There is no pass/fail bar — it is a
+  baseline. Compare `cold_read_mb_per_s` against probe 03's `q2_raster_format.read_mb_per_s`.
+- **If it fails with `--url did not translate`:** you passed a local path or a non-`abfss://`
+  URL; the probe refuses rather than silently measuring the wrong route.
+- ⚠️ **One 6 MB object is not a COG read pattern.** A fair test of what GDAL's remote reader
+  actually buys — overviews, windowed reads, many small range requests — needs the real archive.
+  Treat this as a floor on the question, and say so if the number gets quoted.
+
 ### Step 4 — pixel equivalence against the tutorial fixture *(optional; deliberately deferred)*
 
 **Recommendation: do not run this yet, and possibly not at all.** Stating the reasoning rather
