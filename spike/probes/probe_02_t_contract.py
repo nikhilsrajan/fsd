@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import traceback
 import warnings
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -104,6 +105,24 @@ def make_items(
     return items
 
 
+# `match_candidate_items_to_window` returns `MatchedItemGroup`, whose period window is named
+# **`request_time_range`** (`data_sources/utils.py:30-34`), not `time_range`. The first VM run
+# (2026-07-31) crashed on the assumed name -- the probe had never been run against a real
+# install, only reasoned about. The lookup is a fallback chain rather than one hardcoded name so
+# an upstream rename degrades the *detail* (period bounds) instead of killing the group COUNT,
+# which is the number the gate actually turns on.
+_RANGE_ATTRS = ("request_time_range", "time_range")
+
+
+def _group_range(group: object) -> tuple[str, str] | None:
+    """The group's period bounds as ISO strings, or None if it exposes none."""
+    for attr in _RANGE_ATTRS:
+        rng = getattr(group, attr, None)
+        if rng:
+            return (rng[0].isoformat(), rng[1].isoformat())
+    return None
+
+
 def run_case(
     name: str,
     start: datetime,
@@ -128,10 +147,7 @@ def run_case(
         groups = match_candidate_items_to_window(window, items, query)
         future_warnings = [str(w.message) for w in caught if issubclass(w.category, FutureWarning)]
 
-    group_ranges = [
-        (g.time_range[0].isoformat(), g.time_range[1].isoformat()) if g.time_range else None
-        for g in groups
-    ]
+    group_ranges = [_group_range(g) for g in groups]
     chronological = group_ranges == sorted(group_ranges, key=lambda r: r[0] if r else "")
 
     return {
@@ -140,9 +156,28 @@ def run_case(
         "fsd_T": fsd_n_timestamps(start, end, mosaic_days),
         "rslearn_n_groups": len(groups),
         "group_time_ranges": group_ranges,
+        "group_item_counts": [len(getattr(g, "items", []) or []) for g in groups],
         "chronological_order": chronological,
         "future_warnings": future_warnings,
     }
+
+
+def safe_case(name: str, *args, **kwargs) -> dict:
+    """`run_case`, but an exception becomes a recorded case rather than a dead probe.
+
+    Same lesson as probe 01's import handling: this probe is the spike's decision gate, so one
+    case tripping on an upstream API detail must not destroy the other three. A failed case
+    carries `error` and no `rslearn_n_groups`, which makes `pass` false -- so a partial result
+    can never be mistaken for a clean one.
+    """
+    try:
+        return run_case(name, *args, **kwargs)
+    except Exception as exc:  # noqa: BLE001 -- any upstream failure is data here
+        return {
+            "case": name,
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc().strip().splitlines()[-3:],
+        }
 
 
 def main() -> int:
@@ -158,7 +193,7 @@ def main() -> int:
     # 181 days / 20 -> fsd T = 10. Divergence B predicts rslearn returns 9 (floor), since
     # 9 * 20 = 180 and the trailing 1 day cannot fit a whole period.
     cases.append(
-        run_case(
+        safe_case(
             "dense_tutorial_window",
             WINDOW_START,
             WINDOW_END,
@@ -172,7 +207,7 @@ def main() -> int:
     # 1 as well, the difference in case 1 is attributable to the dropped partial period.
     exact_end = WINDOW_START + timedelta(days=180)
     cases.append(
-        run_case(
+        safe_case(
             "exact_multiple_no_partial",
             WINDOW_START,
             exact_end,
@@ -186,7 +221,7 @@ def main() -> int:
     # or gap-filled stretch is completely normal). fsd still emits 9 timestamps, two of
     # them nodata. rslearn is predicted to return 7.
     cases.append(
-        run_case(
+        safe_case(
             "two_empty_periods",
             WINDOW_START,
             exact_end,
@@ -197,7 +232,7 @@ def main() -> int:
 
     # --- Case 4: ordering + the deprecation warning. -----------------------------------
     cases.append(
-        run_case(
+        safe_case(
             "default_reverse_time_order",
             WINDOW_START,
             exact_end,
@@ -213,25 +248,38 @@ def main() -> int:
     holes = by_name["two_empty_periods"]
     rev = by_name["default_reverse_time_order"]
 
+    def n(case: dict) -> int | None:
+        """Group count, or None if that case failed. Keeps a finding honestly unknown."""
+        return case.get("rslearn_n_groups")
+
+    def cmp(a: int | None, b: int | None, op) -> bool | None:
+        return None if a is None or b is None else op(a, b)
+
     findings = {
         # A: empty periods dropped -> T is data-dependent, so preflight cannot fire early
         # and cubes from different cells cannot be stacked.
-        "A_empty_periods_dropped": holes["rslearn_n_groups"] < exact["rslearn_n_groups"],
+        "A_empty_periods_dropped": cmp(n(holes), n(exact), lambda x, y: x < y),
         # B: trailing partial period dropped -> floor rather than fsd's ceil.
-        "B_partial_period_dropped": dense["rslearn_n_groups"] < dense["fsd_T"],
+        "B_partial_period_dropped": cmp(n(dense), dense.get("fsd_T"), lambda x, y: x < y),
         # C: default ordering is reverse-chronological and warns.
-        "C_reverse_order_by_default": (not rev["chronological_order"])
-        or bool(rev["future_warnings"]),
-        "T_matches_fsd_on_dense_window": dense["rslearn_n_groups"] == dense["fsd_T"],
+        "C_reverse_order_by_default": (
+            None
+            if "rslearn_n_groups" not in rev
+            else (not rev["chronological_order"]) or bool(rev["future_warnings"])
+        ),
+        "T_matches_fsd_on_dense_window": cmp(
+            n(dense), dense.get("fsd_T"), lambda x, y: x == y
+        ),
     }
 
     # This probe is descriptive: it PASSES when all four cases ran and produced a group
     # count. What it is really reporting is `findings`, which decide whether Plan C needs
     # a re-alignment shim. A "pass" here does NOT mean rslearn matched fsd.
+    failed = {c["case"]: c["error"] for c in cases if "error" in c}
     result = {
         "step": "probe_02_t_contract",
-        "status": "ok",
-        "pass": all(isinstance(c["rslearn_n_groups"], int) for c in cases),
+        "status": "fail" if failed else "ok",
+        "pass": all(isinstance(c.get("rslearn_n_groups"), int) for c in cases),
         "metrics": {"cases": cases, "findings": findings},
         "expected": {
             "dense_tutorial_window": {"fsd_T": 10, "rslearn_n_groups_predicted": 9},
@@ -242,11 +290,15 @@ def main() -> int:
                 "is true, that read is WRONG and must be re-derived before the spike continues."
             ),
         },
-        "error": None,
+        "error": (
+            None
+            if not failed
+            else "case(s) failed: " + "; ".join(f"{k} -> {v}" for k, v in failed.items())
+        ),
     }
     (outdir / "_result_probe02.json").write_text(json.dumps(result, indent=2))
     print(json.dumps(result, indent=2))
-    return 0
+    return 0 if not failed else 1
 
 
 if __name__ == "__main__":
