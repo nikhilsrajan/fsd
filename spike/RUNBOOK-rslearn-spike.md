@@ -81,16 +81,23 @@ pip install --upgrade pip && pip --version
 time pip install --report /tmp/rslearn_install.json 'rslearn==0.1.13' 2>&1 | tee /tmp/rslearn_install.log
 ```
 
-Then read the two numbers off it and run the probe:
+Then read the two numbers off it and run the probe.
+
+> ⚠️ **Download bytes come from the LOG, not from `--report`.** This run-book originally summed
+> `download_info.archive_info.size` out of the report JSON. **That field does not exist** — pip's
+> installation report gives each entry a PEP 610 *Direct URL* object (`url` +
+> `archive_info.hashes`), which carries hashes, not sizes. The sum was therefore `0` on every
+> machine, and was measured as `0` on the VM on 2026-07-31 before anyone noticed the extraction
+> was unsound rather than the install being cached. Check it yourself in one line:
+> `python -c "import json;print(json.load(open('/tmp/rslearn_install.json'))['install'][0]['download_info'])"`
 
 ```bash
-# MB actually downloaded, from pip's own machine-readable report
-python - <<'PY'
-import json
-r = json.load(open('/tmp/rslearn_install.json'))
-mb = sum(i.get('download_info', {}).get('archive_info', {}).get('size', 0) or 0 for i in r.get('install', []))/1e6
-print(f"download_mb ~= {mb:.0f}   packages = {len(r.get('install', []))}")
-PY
+# MB actually downloaded -- parsed from pip's own progress lines
+grep -oE '\(([0-9.]+) [kM]B\)' /tmp/rslearn_install.log \
+  | tr -d '()' | awk '{ mb += ($2=="kB" ? $1/1024 : $1) } END { printf "download_mb ~= %.0f\n", mb }'
+
+# package count -- this the report DOES carry
+python -c "import json;print('packages =', len(json.load(open('/tmp/rslearn_install.json'))['install']))"
 
 python spike/probes/probe_01_install_weight.py \
     --out tests/outputs/rslearn_spike \
@@ -98,19 +105,19 @@ python spike/probes/probe_01_install_weight.py \
     --download-mb <the number printed above>
 ```
 
-**Fallback if `--report` is still unavailable** (locked-down pip, no upgrade path). It is not a
-blocker: `--download-mb` is *optional* on the probe, and venv size — the number that actually
-carries the argument — is measured by the probe itself from `sys.prefix`. Install plainly and
-parse the log instead:
+Two caveats on that number, both of which the report must state when it cites it:
 
-```bash
-time pip install 'rslearn==0.1.13' 2>&1 | tee /tmp/rslearn_install.log
-grep -oE '\(([0-9.]+) [kM]B\)' /tmp/rslearn_install.log \
-  | tr -d '()' | awk '{ mb += ($2=="kB" ? $1/1024 : $1) } END { printf "download_mb ~= %.0f\n", mb }'
-```
+- **It is a floor.** Anything pip served from its HTTP cache prints no `Downloading` line at all,
+  so a second run on the same machine will under-report. A near-zero result means "cached", not
+  "small" — re-run with `--no-cache-dir` if you need the true cold figure.
+- **It is optional.** `--download-mb` defaults to `None` on the probe. The number that actually
+  carries the install-weight argument is **venv size**, which probe 01 measures itself from
+  `sys.prefix` (`probe_01_install_weight.py:46-51`). If the log parse is unavailable or
+  untrustworthy, omit the flag and say so — do not paste a figure you don't trust.
 
-This undercounts anything pip served from its HTTP cache, so on a *re-run* it is a floor, not a
-measurement. Say which route you used when you paste the result — the report cites the number.
+**If `--report` is unavailable entirely** (locked-down pip, no upgrade path): drop it. Run
+`time pip install 'rslearn==0.1.13' 2>&1 | tee /tmp/rslearn_install.log` and use the same log
+parse above; you lose only the package count.
 
 - **Expect:** the install succeeds and pulls torch, torchvision, torchmetrics and lightning as
   **core** dependencies (`pyproject.toml:11-31`) — a multi-GB venv is the *expected* result here,
