@@ -39,11 +39,22 @@ all fixed — see the entry below); the rest is in the archive. P6/P7 remain.
 | open work | `gh issue list` |
 | what happened before | [`docs/progress-archive.md`](docs/progress-archive.md) |
 
-**Next up:** spec 41 **P7** — `docs/tutorial.md` + `docs/howto/*`, now unblocked by the committed
-fixture. Two constraints it must respect: the class names are **data-derived** (render them from
-`_result_step0.json`, never hardcode a second mapping — that is what spec 42 A3 fixed), and spec 42
-§4 criterion **4 (cold-start)** is the gate — a fresh clone + fresh venv following the tutorial
-literally must reach a crop map. That lands spec 42, closing spec 41 **P6** and unblocking **P7**
+**Next up:** spec 41 **P7** — `examples/*.py` + `docs/tutorial.md` + `docs/howto/*`, now unblocked
+by the committed fixture. Read **spec 41 §3** (the target layout / file list), **D10** (the
+examples-vs-tutorial-vs-how-to split and who each is for) and **D13** (the gate). Starting state:
+`examples/eurocrops_rf.py` exists; **`docs/howto/` does not exist yet** — five pages are named in
+§3 (`your-own-region`, `download-real-imagery`, `run-at-scale`, `bundle-your-model`, `serve-xyz`).
+
+Three constraints P7 must respect:
+
+- **The class names are data-derived.** Render them from `_result_step0.json`
+  (`grain_maize_corn_popcorn` / `hemp_cannabis` / `other`), never hardcode a second mapping — a
+  hardcoded mapping is exactly the defect spec 42 **A3** fixed.
+- **The tutorial "must not fail"** (D10) and its gate is D13's **cold-start run**: fresh clone,
+  fresh venv, followed *literally*, the **user is the test subject** and lets it fail rather than
+  fixing as they go, reported as a spec-24 `_result.json`.
+- **`docs/tutorial.md` + `docs/howto/*` are tier-2 "dated"** (§ D-tiers): each carries
+  `Last verified: <date> @ <commit>`. That lands spec 42, closing spec 41 **P6** and unblocking **P7**
 (`docs/tutorial.md` + `docs/howto/*`).
 
 ---
