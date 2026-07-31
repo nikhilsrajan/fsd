@@ -6,7 +6,7 @@
 > Do **not** do main-line spec work here; keep this branch focused so the final keep/merge
 > decision is clean.
 
-## Status — 2026-07-31
+## Status — ✅ DECIDED 2026-07-31: no rslearn for data download
 
 | | |
 |---|---|
@@ -16,7 +16,7 @@
 | Probes written | ✅ 01 (install weight) + 02 (the `T` contract) — `probes/` |
 | Probes run | ✅ **01, 02 and 03 all ran on the VM 2026-07-31.** Headline: rslearn reads AND writes `rise` blob under managed identity with no patching — one `pip install adlfs`. Step 3c closed it too: fsd's `/vsiadls/` reads ~107 MB/s warm against rslearn's ~22 (crossover ≈45 MB/process). Step 4 (pixel equivalence) is **deliberately deferred** — probe 02 showed a diff would measure our shim, not rslearn |
 | Report | 🟢 **complete for the offline half** — [`RSLEARN_SPIKE_REPORT.md`](RSLEARN_SPIKE_REPORT.md). §1-§7 written; only the Azure/equivalence rows are ⬜ |
-| Verdict | **keep fsd's own S2 pipeline; run the hybrid pilot NOW** (§6.4). Revised upward from "hybrid deferred" after probe 03 fired the condition §6.4 had named in advance. The pilot: get ERA5-Land into an fsd-shaped array through rslearn and directly against fsd's `Source` seam; compare |
+| **Verdict** | ✅ **DECIDED 2026-07-31 (project owner): fsd will NOT use rslearn as a data-download source.** No full switch, no hybrid, no pilot. rslearn's value is its **model library** — that becomes a **separate project: run rslearn on Azure the way fsd now can.** fsd stays a Google Earth Engine alternative for simpler models at scale. Full reasoning + the measurements: [`RSLEARN_SPIKE_REPORT.md`](RSLEARN_SPIKE_REPORT.md) §6.4, and §6.5 on why the decision cut differently from the report's own recommendation. |
 
 **Offline census, not a run-book probe:** `probes/census_data_sources.py` re-derives the breadth
 number the report's §3.1 rests on (36 modules → 47 `DataSource` subclasses → 40 concrete names →

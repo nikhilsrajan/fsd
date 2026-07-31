@@ -1,15 +1,20 @@
 ---
 status: current
-summary: Build-vs-borrow report -- rslearn v0.1.13 vs fsd. Teaches rslearn's data model, prices three options (switch / hybrid / stay), and recommends keeping fsd's own S2 pipeline while piloting an rslearn-backed source for breadth. All probes measured; what remains is the decision, not more evidence.
+summary: Build-vs-borrow report -- rslearn v0.1.13 vs fsd. DECIDED 2026-07-31: fsd will NOT use rslearn for data download; rslearn's value is its model library, which belongs in a separate rslearn-on-Azure project. Teaches rslearn's data model and carries the measurements behind the call.
 ---
 
 # rslearn vs fsd — build-vs-borrow report
 
-> **Status: the measurement programme is complete.** Probes 01, 02, 03 and 03b all ran on the VM
-> (2026-07-31); their numbers are in §4.1.2, §4.1.3, §4.2, §4.3 and §5. **Step 4 (pixel
-> equivalence) is deliberately deferred**, with the reasoning in the run-book: probe 02 showed
-> such a diff would measure our shim, not rslearn. What remains is not a measurement but a
-> decision — the §6.4 pilot.
+> # ✅ DECIDED 2026-07-31 — see §6.4
+> **fsd will not use rslearn as a data-download source.** No full switch, no hybrid, no pilot.
+> rslearn's value is its **model library**, and that belongs in a **separate project**: run
+> rslearn on Azure the way fsd now can. fsd stays what it was built to be — a Google Earth Engine
+> alternative for running simpler models at scale.
+>
+> The rest of this document is the teaching material and the measurements behind that call.
+> Probes 01, 02, 03 and 03b all ran on the VM (2026-07-31); their numbers are in §4.1.2, §4.1.3,
+> §4.2, §4.3 and §5. Step 4 (pixel equivalence) was deliberately never run — probe 02 showed such
+> a diff would measure our shim, not rslearn.
 >
 > **Pinned version.** Every `file:line` citation below is against **rslearn v0.1.13 @ `a5c50c63`**
 > (2026-07-28) as vendored read-only at the workspace root, and against **fsd `main` @ `9e7c5f2`**.
@@ -20,7 +25,8 @@ summary: Build-vs-borrow report -- rslearn v0.1.13 vs fsd. Teaches rslearn's dat
 
 **It is:** a teaching document plus a costed decision. It assumes you know fsd and know nothing
 about rslearn. §2 teaches rslearn from zero. §3 and §4 are the two halves of the comparison,
-deliberately written in that order. §5 prices the overheads. §6 is the recommendation.
+deliberately written in that order. §5 prices the overheads. §6 carries the decision (§6.4) and
+why it cut differently from the report's own recommendation (§6.5).
 
 **It is not** a benchmark of model accuracy, and it is not an evaluation of rslearn's training
 stack on its own merits. fsd deliberately does not train models (`ROADMAP.md`); training stays on
@@ -54,20 +60,26 @@ formality, the report has failed and you should say so.
 
 ## 1. Executive summary
 
-**Recommendation: do not switch wholesale — keep fsd's own pipeline for Sentinel-2 L2A — but run
-a one-afternoon pilot of the hybrid now, not later.** rslearn is good software with a genuinely
-larger reach than fsd (50 data-source entry points to our 2, a foundation-model zoo we have no
-answer to, 52 maintainers to our one), and the spike's riskiest assumption turned out to be wrong
-in rslearn's favour: **it reads and writes our Azure storage under managed identity with no
-patching at all.** What still rules out a full switch is narrower and sturdier — fsd would lose
-its lean-install promise to a 5.3 GB dependency, would have to write a five-part shim because
-rslearn's timestep contract provably differs from ours, and would gain no distributed runner,
-since rslearn has none and fsd's already runs on an AML cluster. But the objections that block a
-switch mostly **do not apply to the sources fsd actually lacks**, which are static or carry their
-own cadence. So the live question is small and cheap: does one real ancillary source (ERA5-Land)
-come out cheaper through rslearn than written directly against fsd's `Source` seam?
+**Decision (2026-07-31): fsd will not use rslearn as a data-download source — not wholesale, not
+as a hybrid. rslearn's value is its model library, and that is a separate project: run rslearn on
+Azure the way fsd now can.**
 
-The six facts behind that:
+fsd is a **Google Earth Engine alternative for running simpler models at scale**. rslearn is a
+foundation-model library that happens to ship an acquisition layer. Those are two tools for two
+jobs, and the measurements below say the acquisition layers should not be merged: rslearn's
+timestep contract provably differs from fsd's (9 vs 10, and 7 vs 9 once a period has no scene),
+its periods return one first-coverage scene where fsd takes a per-pixel median, its install is
+5.3 GB with no lite path and does not import out of the box, and its blob reader is ~4.8× slower
+than fsd's on the hot path. None of that impugns rslearn — it is a different tool doing a
+different job well.
+
+**The one measurement that carries into the new project is the best news in this report:**
+rslearn reads *and writes* our ADLS Gen2 storage under managed identity, unmodified, for the
+price of `pip install adlfs` (§4.1.2). So an rslearn-on-Azure project does not begin with a
+storage problem. It begins where fsd's hard part began — at the runner, which rslearn does not
+have (§4.5).
+
+The six facts behind the call:
 
 1. **Adopting rslearn does not save fsd's hardest work.** Scale-out onto Azure is fsd's, it is
    built, and it was cluster-validated 2026-07-29. rslearn ships **no distributed runner at all**
@@ -81,8 +93,7 @@ The six facts behind that:
    climate, soil, land cover, crop labels (§3.1).
 4. **fsd's own storage reader is ~4.8× faster** on the hot path — ~107 MB/s via `/vsiadls/`
    against rslearn's ~22 MB/s through an fsspec file object, with a crossover around 45 MB read
-   per process (§4.1.3). It argues against moving *bulk optical* reads to rslearn, and not
-   against the low-volume ancillary sources the hybrid targets.
+   per process (§4.1.3). fsd's spec-31 design choice is vindicated for fsd's actual workload.
 5. **The `T` contract does not survive, and it is measured, not argued** (§4.3). rslearn returns
    9 timesteps where fsd returns 10, and 7 where fsd returns 9 once a period has no scene — so
    fsd's preflight cost guardrail cannot fire before spending money, and cubes from different grid
@@ -794,15 +805,50 @@ permanently.
 issue #32's design question), the `class_path` + `init_args` extension seam for fsd's own `Source`
 ABC (issue #11), and `space_mode: INTERSECTS` as a second matching mode.
 
-### 6.4 Recommendation
+### 6.4 DECISION — taken 2026-07-31 by the project owner
 
-**Keep fsd's own pipeline for Sentinel-2 L2A (Option C), and run the Option B pilot now rather
-than deferring it.** Not a full switch.
+> ## ✅ fsd will not use rslearn as a data-download source. No hybrid, no pilot.
+> ## rslearn's value is its model library. That belongs in a **separate project**: run rslearn on Azure the way fsd now does.
 
-> **This is a revision.** An earlier draft of this section said "stay, hybrid *deferred*." Probe
-> 03 then fired the condition that draft had named in advance, so the recommendation moved from
-> *defer the hybrid* to *pilot it now*. The change is recorded rather than smoothed over,
-> because a report that only ever ratifies the incumbent is not doing its job.
+**This supersedes the recommendation this section carried.** The analysis below is kept as the
+reasoning that led here, including where it was overtaken — see §6.5 for why the decision is a
+better cut than the report's own recommendation was.
+
+The decision in the owner's terms:
+
+- **fsd is an alternative to Google Earth Engine**, for running *simpler* models at scale over
+  satellite imagery. That is what it was designed for and what it now does end to end.
+- **rslearn's benefits are many — but they are in the model library**, and in deploying heavy
+  foundation models. That is a different problem from acquisition.
+- **The way forward is a new project:** work out how to run rslearn on Azure, the way fsd now
+  can. The transferable asset is fsd's *scale-out know-how* — the runner seam, the storage seam,
+  the AML environment and identity work — not fsd's pipeline code.
+
+**What this closes:** Option A (full switch) and Option B (hybrid source behind an extra) are
+both rejected. The ERA5-Land pilot designed in the grilling session is **not being run**. Issue
+**#12** ("Benchmark fsd against other RS/ML data libraries") is answered.
+
+**What stays open, and is now someone's actual next project:** rslearn-on-Azure for foundation
+models. §3.2 (the model zoo), §3.4 (52 maintainers) and §4.1.2 (rslearn reads and writes our blob
+under managed identity, unmodified) are the findings that carry forward into it — the last one
+especially, since it means the new project does not start with a storage problem.
+
+**What §6.3 still recommends taking regardless:** rslearn's lazy per-read MPC signing (§3.5,
+closes fsd issue #32's design question) and the `class_path` + `init_args` extension seam for
+fsd's own `Source` ABC (issue #11, which the grilling confirmed does not yet exist —
+`sources/__init__.py:5`, `api.py:264,413`).
+
+---
+
+#### The analysis that led here, kept for the record
+
+**The report's own recommendation was:** keep fsd's pipeline for Sentinel-2 L2A, and run the
+Option B pilot now rather than deferring it. Not a full switch.
+
+> **That itself was a revision.** An earlier draft said "stay, hybrid *deferred*." Probe 03 then
+> fired the condition that draft had named in advance, so it moved to *pilot it now*. Both
+> movements are recorded rather than smoothed over, because a report that only ever ratifies the
+> incumbent is not doing its job.
 
 Honesty about how the four advance conditions actually resolved, since they were written before
 the probes precisely so this could not be reverse-engineered:
@@ -869,6 +915,36 @@ finding.** Remove the Azure argument entirely — as the evidence has now done �
 problems are unchanged: fsd would still lose Mode-A to a 5.3 GB dependency, still need the
 five-part shim for its core optical pipeline, still get no distributed runner, and still be
 rebuilding its own finished scale-out on top of a library that does not have one.
+
+### 6.5 Why the decision is a sharper cut than the recommendation was
+
+Recorded because the gap is instructive, and because the second note above turned out to be the
+important one.
+
+**The report framed the question as "how much rslearn should fsd absorb?"** — three options along
+one axis, from full switch to nothing. Every measurement was about *acquisition*, because that is
+what a spike comparing two data pipelines measures.
+
+**The decision reframed it as "these are two tools for two jobs."** fsd is a Google Earth Engine
+alternative for running simpler models at scale; rslearn is a foundation-model library. On that
+framing the hybrid is not a compromise between them — it is a category error, bolting a
+model-library's acquisition layer onto a pipeline that already has one, to gain sources that were
+never the reason rslearn is interesting.
+
+**Three things in this report point the same way and the recommendation under-weighted all
+three.** §3.2 called the model zoo *"the strongest argument for adoption and it is not close"* —
+and then §6 spent its length on data sources. §6.4's second note said in as many words that if the
+direction is foundation models *"this recommendation is the wrong one"*, and deferred that
+question rather than pressing it. And the grilling's third question established that an
+rslearn-backed source can only work **driver-side**, off the cluster (ADR 0020) — which quietly
+shrinks the hybrid to "a convenience on the operator's laptop", a prize that never justified two
+days plus a permanent second dependency tree.
+
+**The one thing the acquisition spike buys the new project outright** is §4.1.2: rslearn reads and
+writes ADLS Gen2 under managed identity, unmodified, for the price of `pip install adlfs`. A
+project standing rslearn up on Azure therefore does not begin with a storage problem — it begins
+where fsd's own hard part began, at the runner. That is the reusable asset, and it is knowledge,
+not code.
 
 ---
 
