@@ -437,3 +437,94 @@ def test_build_fixture_raises_when_radiometry_unresolvable(tmp_path):
             root, roi_path, fields_path, out_dir, ["B04", "B08", "SCL"],
             max_bytes=30 * 1024 * 1024, dry_run=False, progress=False,
         )
+
+
+# --- spec 42 D2's Apr-Sep window (run-book 43 Step 2 returned a FULL YEAR) ----
+
+
+def _make_year_archive(tmp_path):
+    """12 monthly granules across 2018 -- the shape the blob archive actually has
+    (Step 2 on the VM: 72 granules, 2018-01-01 .. 2019-01-01), not the local
+    archive's Apr-Sep-only 24."""
+    root = tmp_path / "archive"
+    rows = []
+    for month in range(1, 13):
+        gid = f"S2B_MSIL2A_2018{month:02d}15T100019_R122_T33UWP_20201014T00000{month % 10}"
+        folder = root / gid
+        for band, val in [("B04", 100), ("B08", 200), ("SCL", 4)]:
+            _write_band(str(folder / f"{band}.tif"), val)
+        rows.append({
+            "id": gid, "satellite": "sentinel-2-l2a",
+            "timestamp": pd.Timestamp(f"2018-{month:02d}-15", tz="UTC"),
+            "s3url": "", "local_folderpath": str(folder),
+            "files": "B04.tif,B08.tif,SCL.tif", "cloud_cover": 5.0,
+            "geometry": GRANULE_BOX,
+        })
+    catalog = gpd.GeoDataFrame(rows, crs=CRS)
+    catalog["offset"] = 0      # MPC pre-baseline-04.00 products declare 0, correctly
+    catalog["nodata"] = 0
+    fs.write_parquet(str(root / "catalog.parquet"), catalog)
+    return str(root)
+
+
+def test_select_granules_applies_the_date_window(tmp_path):
+    root = _make_year_archive(tmp_path)
+    roi_path = _make_roi(tmp_path)
+    catalog_gdf = fs.read_parquet(os.path.join(root, "catalog.parquet"))
+    roi_gdf = fs.read_geo(roi_path)
+
+    assert len(build_fixture_mod.select_granules(catalog_gdf, roi_gdf)) == 12
+    apr_sep = build_fixture_mod.select_granules(
+        catalog_gdf, roi_gdf, "2018-04-01", "2018-09-30")
+    assert len(apr_sep) == 6
+    assert str(apr_sep["timestamp"].min().date()) == "2018-04-15"
+    assert str(apr_sep["timestamp"].max().date()) == "2018-09-15"
+    # bounds are inclusive
+    assert len(build_fixture_mod.select_granules(
+        catalog_gdf, roi_gdf, "2018-04-15", "2018-04-15")) == 1
+
+
+def test_check_archive_reports_the_window_and_the_pre_filter_count(tmp_path):
+    root = _make_year_archive(tmp_path)
+    roi_path = _make_roi(tmp_path)
+    catalog_gdf = fs.read_parquet(os.path.join(root, "catalog.parquet"))
+    roi_gdf = fs.read_geo(roi_path)
+
+    s = build_fixture_mod.check_archive(
+        catalog_gdf, roi_gdf, bands=["B04", "B08", "SCL"],
+        startdate="2018-04-01", enddate="2018-09-30")
+    assert s["granules"] == 6
+    assert s["granules_before_date_filter"] == 12
+    assert s["date_window"] == ["2018-04-01", "2018-09-30"]
+    assert s["date_span"] == ["2018-04-15", "2018-09-15"]
+    # offset 0 is a REAL, correct declaration for pre-baseline-04.00 MPC products
+    assert s["offset_values"] == [0]
+    assert s["offset_sources"] == {"declared": 6}
+
+
+def test_build_fixture_honours_the_date_window(tmp_path):
+    root = _make_year_archive(tmp_path)
+    roi_path = _make_roi(tmp_path)
+    fields_path = _make_roi(tmp_path, name="fields.geojson")
+
+    summary = build_fixture_mod.build_fixture(
+        root, roi_path, fields_path, str(tmp_path / "out"), ["B04"],
+        max_bytes=30 * 1024 * 1024, startdate="2018-04-01", enddate="2018-09-30",
+        dry_run=False, progress=False,
+    )
+    assert summary["granules"] == 6
+    assert summary["date_span"] == ["2018-04-15", "2018-09-15"]
+    assert summary["offsets"] == [0]
+
+
+def test_build_fixture_raises_when_the_window_selects_nothing(tmp_path):
+    root = _make_year_archive(tmp_path)
+    roi_path = _make_roi(tmp_path)
+    fields_path = _make_roi(tmp_path, name="fields.geojson")
+
+    with pytest.raises(ValueError, match="no granule intersects the cell within"):
+        build_fixture_mod.build_fixture(
+            root, roi_path, fields_path, str(tmp_path / "out"), ["B04"],
+            max_bytes=30 * 1024 * 1024, startdate="2019-01-01", enddate="2019-12-31",
+            dry_run=False, progress=False,
+        )

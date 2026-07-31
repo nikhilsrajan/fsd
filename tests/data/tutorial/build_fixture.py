@@ -54,6 +54,7 @@ import time
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import rasterio.windows
 from shapely.ops import unary_union
 
@@ -154,12 +155,37 @@ def bands_present(catalog_gdf: gpd.GeoDataFrame) -> list[str]:
     return sorted(bands)
 
 
-def select_granules(catalog_gdf: gpd.GeoDataFrame, roi_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    """spec 42 §3 step 1: granules intersecting the cell, oldest-first."""
+def select_granules(
+    catalog_gdf: gpd.GeoDataFrame,
+    roi_gdf: gpd.GeoDataFrame,
+    startdate: str | None = None,
+    enddate: str | None = None,
+) -> gpd.GeoDataFrame:
+    """spec 42 §3 step 1: granules intersecting the cell, oldest-first, within
+    `[startdate, enddate]` inclusive.
+
+    **The date window is not optional in spirit.** Spec 42 §1/D2 specify
+    **Apr-Sep 2018** -- a growing season, ~9 mosaic intervals at
+    `mosaic_days=20`. The generator originally had no date filter at all, which
+    was invisible while the assumed source was the *local* archive (Apr-Sep
+    only, 24 granules). Run-book 43 Step 2 against the **blob** archive returned
+    **72 granules spanning 2018-01-01 .. 2019-01-01** -- a full year, ~3x the
+    bytes, half of it winter. Passing no window here means "take whatever the
+    archive holds", which is a different fixture than the spec describes.
+    """
     if roi_gdf.crs is None:
         roi_gdf = roi_gdf.set_crs("EPSG:4326")
     roi_shape = unary_union(roi_gdf.to_crs(catalog_gdf.crs).geometry.values)
     sel = catalog_gdf[catalog_gdf.intersects(roi_shape)].copy()
+    if startdate is not None or enddate is not None:
+        # Catalog timestamps are tz-aware UTC; localize the bounds to match, or
+        # the comparison raises (the dt2ts rule, spec 06).
+        ts = pd.to_datetime(sel["timestamp"], utc=True)
+        if startdate is not None:
+            sel = sel[ts >= pd.Timestamp(startdate, tz="UTC")]
+            ts = ts[sel.index]
+        if enddate is not None:
+            sel = sel[ts <= pd.Timestamp(enddate, tz="UTC")]
     return sel.sort_values("timestamp").reset_index(drop=True)
 
 
@@ -167,6 +193,8 @@ def check_archive(
     catalog_gdf: gpd.GeoDataFrame,
     roi_gdf: gpd.GeoDataFrame,
     bands: list[str] | None = None,
+    startdate: str | None = None,
+    enddate: str | None = None,
 ) -> dict:
     """Run-book 43 Step 2's three A1 preconditions + the structural facts --
     read-only, no writes.
@@ -181,7 +209,8 @@ def check_archive(
     invented" is only checkable where the source is reachable (here, on the VM),
     never offline in the test suite (see amendment A2 / spec 42 §8).
     """
-    sel = select_granules(catalog_gdf, roi_gdf)
+    all_in_cell = select_granules(catalog_gdf, roi_gdf)
+    sel = select_granules(catalog_gdf, roi_gdf, startdate, enddate)
     tiles = sorted({t for t in (mgrs_tile_of(i) for i in sel["id"]) if t})
     radiometry_col = collapse_radiometry_column(sel)
     resolved = [row_offset(row, radiometry_col) for _, row in sel.iterrows()]
@@ -191,6 +220,8 @@ def check_archive(
     date_span = [str(ts.min().date()), str(ts.max().date())] if ts is not None and len(sel) else [None, None]
     summary = {
         "granules": int(len(sel)),
+        "granules_before_date_filter": int(len(all_in_cell)),
+        "date_window": [startdate, enddate],
         "mgrs_tiles": tiles,
         "single_tile": len(tiles) == 1,
         "bands": present,
@@ -322,6 +353,8 @@ def build_fixture(
     bands: list[str],
     *,
     max_bytes: int,
+    startdate: str | None = None,
+    enddate: str | None = None,
     max_timestamps: int | None = None,
     dry_run: bool = False,
     progress: bool = True,
@@ -332,7 +365,12 @@ def build_fixture(
     catalog_gdf = fs.read_parquet(f"{archive_root.rstrip('/')}/catalog.parquet")
     roi_gdf = fs.read_geo(roi_path)
 
-    sel = select_granules(catalog_gdf, roi_gdf)
+    sel = select_granules(catalog_gdf, roi_gdf, startdate, enddate)
+    if not len(sel):
+        raise ValueError(
+            f"no granule intersects the cell within [{startdate}, {enddate}] -- "
+            "widen the window or check --roi."
+        )
     if max_timestamps is not None:
         sel = subsample_timestamps(sel, max_timestamps)
 
@@ -561,6 +599,11 @@ def _parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--out", default=None, help="output dir for the fixture")
     p.add_argument("--bands", nargs="+", default=None, help="band list, e.g. B04 B08 SCL")
     p.add_argument("--max-bytes", type=int, default=None, help="hard stop, spec 42 D2 (30 MB)")
+    p.add_argument("--startdate", default=None,
+                   help="inclusive start of the acquisition window, YYYY-MM-DD "
+                        "(spec 42 D2: Apr-Sep 2018)")
+    p.add_argument("--enddate", default=None,
+                   help="inclusive end of the acquisition window, YYYY-MM-DD")
     p.add_argument("--max-timestamps", type=int, default=None,
                    help="fallback cap on granule count if --dry-run reports over --max-bytes "
                         "(spec 42 D2: drop timestamps before dropping bands)")
@@ -580,7 +623,8 @@ def main(argv=None) -> int:
         try:
             catalog_gdf = fs.read_parquet(f"{args.archive_root.rstrip('/')}/catalog.parquet")
             roi_gdf = fs.read_geo(args.roi)
-            summary = check_archive(catalog_gdf, roi_gdf, bands=args.bands)
+            summary = check_archive(catalog_gdf, roi_gdf, bands=args.bands,
+                                    startdate=args.startdate, enddate=args.enddate)
         except Exception as e:  # noqa: BLE001
             _write_result(args.result, {
                 "step": step, "status": "failed", "pass": False,
@@ -588,7 +632,11 @@ def main(argv=None) -> int:
             })
             raise
         print(
-            f"granules intersecting cell : {summary['granules']}\n"
+            f"granules intersecting cell : {summary['granules']}"
+            + (f"   (of {summary['granules_before_date_filter']} before the "
+               f"{summary['date_window'][0]}..{summary['date_window'][1]} window)"
+               if summary["date_window"] != [None, None] else "   (NO DATE WINDOW -- see spec 42 D2)")
+            + "\n"
             f"single MGRS tile           : {summary['single_tile']} {summary['mgrs_tiles']}\n"
             f"bands present              : {', '.join(summary['bands'])}"
             + (f"   (missing: {summary['missing_bands']})" if summary.get("missing_bands") else "")
@@ -632,6 +680,7 @@ def main(argv=None) -> int:
         summary = build_fixture(
             args.archive_root, args.roi, args.fields, args.out, args.bands,
             max_bytes=args.max_bytes, max_timestamps=args.max_timestamps,
+            startdate=args.startdate, enddate=args.enddate,
             dry_run=args.dry_run, progress=not args.quiet,
         )
     except Exception as e:  # noqa: BLE001 - still leave a pasteable result, then re-raise
