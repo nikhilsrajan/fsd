@@ -6,7 +6,8 @@ state plus the most recent entry, not the log.
 
 _Last updated: 2026-07-31 (**spec 41 P7 drafted and reviewed** — `docs/tutorial.md` + `docs/howto/*`
 (5 pages + an index) + `examples/`, 4 review findings fixed, merged to `main`; awaiting the P7
-cold-start gate)_
+cold-start gate. Same day: the **project-state diagnostic was re-run** — the locked demo target was
+hit 2026-07-29 and has no successor named; and the **rslearn spike opened** on `spike/rslearn`.)_
 
 ## Where things stand
 
@@ -25,8 +26,8 @@ all fixed — see the entry below); the rest is in the archive. P6/P7 remain.
 | **Scale-out** | AML runner seam; download, build, flatten and inference all fan out |
 | **Serving** | tier-1 (pre-styled XYZ) and tier-2 (pgSTAC + titiler-pgstac) both validated |
 | **Docs** | spec 41 P1–P6 done; **P7 drafted + reviewed** (`docs/tutorial.md`, 5 `docs/howto/*` pages + index) — the D13 cold-start gate is the user's, not yet run |
-| **Deferred work** | **GitHub Issues #1–#62**, number-aligned with the old `TODO.md` rows |
-| **Open decision** | rslearn Plan B vs Plan C (`RSLEARN_COMPARISON.md`), untouched |
+| **Deferred work** | **GitHub Issues #1–#63**, number-aligned with the old `TODO.md` rows (39 open / 24 closed) |
+| **Open decision** | rslearn Plan B vs Plan C — **no longer untouched: the spike is LIVE on `spike/rslearn`** (see below) |
 
 **Where to look:**
 
@@ -40,6 +41,17 @@ all fixed — see the entry below); the rest is in the archive. P6/P7 remain.
 | an env variable | [`docs/reference/environment.md`](docs/reference/environment.md) |
 | open work | `gh issue list` |
 | what happened before | [`docs/progress-archive.md`](docs/progress-archive.md) |
+
+> ⚠️ **A second workstream opened 2026-07-31 and does NOT live on `main`: the rslearn spike.**
+> `spike/rslearn` (pushed, `b91f982`) is refreshed from `main` and now carries a re-read of
+> rslearn **v0.1.13**, two offline probes and a VM run-book. **Its status lives in
+> [`spike/README.md`](https://github.com/nikhilsrajan/fsd/blob/spike/rslearn/spike/README.md) —
+> read that, not this file, when resuming the spike.** Three headline findings so far, all from
+> source, nothing run yet: torch/lightning are **core** rslearn deps (no lite path);
+> **zero** Azure support in 54,850 LOC; and `RSLEARN_COMPARISON.md`'s claim that fsd's
+> calendar-`T` contract is *unique* is **wrong** — `QueryConfig.period_duration` is the analogue,
+> but it drops empty periods, floors the span and end-anchors, so rslearn's `T` is data-dependent.
+> Nothing about the spike belongs in `main` until the Plan-B/C decision.
 
 **Next up:** the spec 41 **P7 D13 cold-start gate** — the user, on a fresh clone and fresh venv,
 follows `docs/tutorial.md` *literally* and reports the first instruction that doesn't work (a
