@@ -43,7 +43,7 @@ formality, the report has failed and you should say so.
 | Install weight — is there a lite path? | ✅ read (**no**) | §4.2 |
 | Install weight — the actual numbers | ✅ **measured: 5.3 GB venv, 2.9 GB cold download, 88.5 s** | §4.2, §5 |
 | Does the stock install even import? | ✅ **measured: no — undeclared `einops`** | §4.2.1 |
-| Does the acquisition path import torch? | ⬜ re-run probe 01 after `pip install einops` | §2.3 |
+| Does the acquisition path import torch? | ✅ **measured: no** (0.55 s, torch absent) | §2.3 |
 | Does the calendar-`T` contract survive? | ⬜ **pending probe 02 — the gate** | §4.3, §5 |
 | Pixel equivalence vs fsd | ⬜ pending (Step 4, unwritten) | §5 |
 
@@ -142,11 +142,19 @@ The compositors that build each group are in `rslearn/dataset/compositing.py`:
 `SpatialMosaicTemporalStackCompositor` (`compositing.py:283`) — the last is the closest analogue
 of fsd's mosaic-then-stack and is the first thing to try in an equivalence test.
 
-**Torch is not on this path at import time.** `rslearn/utils/array.py` is imported by
-`materialize.py:13`, `compositing.py:18` and `config/dataset.py:29`, but its torch import is under
-`if TYPE_CHECKING:` (`utils/array.py:10-11`). Static reading says the acquisition path is
-torch-free to *import*. It is emphatically not torch-free to *install* (§4.2). Probe 01 checks the
-import claim empirically.
+**Torch is not on this path at import time — measured, not just read.** `rslearn/utils/array.py`
+is imported by `materialize.py:13`, `compositing.py:18` and `config/dataset.py:29`, but its torch
+import is under `if TYPE_CHECKING:` (`utils/array.py:10-11`).
+
+Probe 01 confirmed it empirically on the VM (2026-07-31): importing all five acquisition modules
+(`rslearn.config`, `data_sources.utils`, `dataset.materialize`, `dataset.compositing`,
+`utils.raster_format`) into a clean interpreter takes **0.55 s** and leaves **`torch` absent from
+`sys.modules`** — `torch_free_acquisition_path: true`. The only heavy module that does load is
+**`boto3`**, an AWS SDK pulled in on a path touching no AWS.
+
+**This matters for the hybrid (§6.2).** It is the one measured result that makes Option B
+mechanically plausible: you pay the 5.3 GB at install time, but you do not pay torch's import cost
+or memory on every datacube build. It is emphatically not torch-free to *install* (§4.2).
 
 ### 2.4 Worked example — rslearn
 
@@ -526,17 +534,19 @@ of probe 02 are still ⬜.
 | wheel download bytes (cold) | ⬜ measure | **2,892 MB** | probe 01, `--no-cache-dir` |
 | cold install wall time | ⬜ measure | **88.5 s** (Azure VM, ~33 MB/s) | probe 01 |
 | stock install actually imports? | yes | **no** — needs `pip install einops` | §4.2.1 |
-| import time (acquisition path) | ⬜ | ⬜ re-run after einops | probe 01 |
-| torch pulled at import? | n/a | ⬜ re-run (predicted **no**) | §2.3 |
+| import time (acquisition path) | ⬜ measure | **0.55 s** | probe 01 |
+| torch pulled at import? | n/a | **no** — prediction confirmed | §2.3, probe 01 |
+| heavy modules that *do* load | n/a | **`boto3`** (an AWS SDK, on a non-AWS path) | probe 01 |
 | `T` on the tutorial window | 10 | ⬜ probe 02 (predicted **9**) | §4.3 |
 | re-alignment shim, if needed | 0 LOC | ⬜ estimate after probe 02 | §4.3 |
 | Azure write under MSI | works (spec 31) | ⬜ Step 3 | §4.1 |
 | pixel equivalence vs fixture | baseline | ⬜ Step 4 | |
 
-The first run also reported `rslearn.__version__` as **`unknown`** (the package exposes no
-`__version__` attribute) and showed **`boto3` already in `sys.modules`** even though every
-acquisition import had failed — i.e. an AWS SDK loads on a path that touches no AWS. Both are
-minor; the boto3 reading needs confirming on the re-run, since it was taken from a partial import.
+Two minor observations from the same run, both now confirmed on a **fully successful** import
+(the first attempt's readings came from a partial one): `rslearn.__version__` is **absent** — the
+package exposes no version attribute — and **`boto3` loads on the acquisition path**, an AWS SDK
+pulled in for a job touching no AWS. Neither changes the verdict; the boto3 one is a small
+contribution to import cost and process memory in a fan-out.
 
 ---
 
