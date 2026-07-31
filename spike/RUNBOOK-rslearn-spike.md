@@ -105,6 +105,29 @@ python spike/probes/probe_01_install_weight.py \
     --download-mb <the number printed above>
 ```
 
+> ⚠️ **Warm cache ⇒ neither timing nor bytes is a cold-install measurement.** Observed on the VM
+> 2026-07-31: every wheel came from pip's cache, so `download_mb` parsed to ~0 *and* the `time`
+> figure is a warm-cache install (unpack + link only, no transfer). Both are floors. **Pass
+> neither flag rather than passing a number that will be cited as cold** — probe 01 records
+> `null`, which is honest, and its two load-bearing metrics (`venv_size_mb`,
+> `torch_free_acquisition_path`) are unaffected by caching.
+>
+> To get the cold figure, use a **throwaway** venv so the working one survives, and force real
+> downloads with `--no-cache-dir` (inside the existing venv pip would just report "already
+> satisfied" and measure nothing):
+>
+> ```bash
+> deactivate
+> python3.11 -m venv /tmp/venv-rslearn-cold && source /tmp/venv-rslearn-cold/bin/activate
+> pip install --upgrade pip
+> time pip install --no-cache-dir 'rslearn==0.1.13' 2>&1 | tee /tmp/rslearn_cold.log
+> du -sh /tmp/venv-rslearn-cold
+> deactivate && rm -rf /tmp/venv-rslearn-cold && source <fsd>/.venv-rslearn/bin/activate
+> ```
+>
+> This costs a few GB of VM egress and ~5–15 min. It is **optional and non-blocking** — do it
+> after Step 2, never before, since Step 2 is the gate that can veto the expensive half.
+
 Two caveats on that number, both of which the report must state when it cites it:
 
 - **It is a floor.** Anything pip served from its HTTP cache prints no `Downloading` line at all,
