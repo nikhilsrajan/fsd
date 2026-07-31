@@ -249,3 +249,100 @@ def test_readme_calls_bind_to_real_signatures():
         except TypeError as exc:
             failures.append(f"fsd.{verb}(...): {exc}")
     assert not failures, "README example call(s) would raise TypeError:\n  " + "\n  ".join(failures)
+
+
+# --- run-book python snippets reference real fsd attributes --------------------
+#
+# Run-book snippets are copy-pasted verbatim onto a remote VM, where a typo costs a
+# round-trip through VPN + `az login` + a clone. Three have bitten already:
+# `git check-ignore -v` inverting its own PASS verdict; `from fsd import storage as fs`
+# (fsd.storage is a PACKAGE -- the functions live in fsd.storage.fs), which raised
+# AttributeError at run-book 43 Step 1f; and `fs.put(<dir>, ..., recursive=True)`, where
+# put/get are file-only and take no `recursive`.
+#
+# This checks the class the first two belong to: every attribute a snippet reads off a
+# module it imported from `fsd` must actually exist. It imports the module (cheap, no
+# side effects) but executes no snippet.
+
+_SNIPPET_DIRS = ("runbooks", "docs")
+# The selector MUST match every form `_fsd_attr_uses` parses. Selecting only on
+# ```python fences made this test vacuous on its first write: run-book 43 has none
+# -- all three of its snippets are `python -c "..."` inside ```bash blocks, i.e.
+# exactly the file the test was added for.
+_SNIPPET_RE = re.compile(r'```(?:python|py)\n|python -c "\n', re.S)
+
+
+def _docs_with_python_snippets() -> list[Path]:
+    paths = []
+    for d in _SNIPPET_DIRS:
+        for path in sorted((REPO_ROOT / d).rglob("*.md")):
+            if path in _AZ_CORPUS_EXCLUDE:
+                continue  # point-in-time corpus, never edited after the fact (D3)
+            if _SNIPPET_RE.search(path.read_text()):
+                paths.append(path)
+    return paths
+
+
+def _fsd_attr_uses(text: str):
+    """`(module, attr)` for every `alias.attr` where `alias` came from an
+    `import fsd...`/`from fsd... import ...` in the SAME snippet.
+
+    Both `python -c "..."` bodies inside bash blocks and plain ```python blocks are
+    covered: the former are extracted first, so a snippet's imports and its uses are
+    always parsed together.
+    """
+    blocks = list(re.findall(r"```(?:python|py)\n(.*?)```", text, re.S))
+    blocks += re.findall(r'python -c "\n(.*?)"\n', text, re.S)
+    for block in blocks:
+        try:
+            tree = ast.parse(block)
+        except SyntaxError:
+            continue  # a prose-y or templated snippet; not this test's business
+        alias_to_module: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("fsd"):
+                for a in node.names:
+                    alias_to_module[a.asname or a.name] = f"{node.module}.{a.name}"
+            elif isinstance(node, ast.Import):
+                for a in node.names:
+                    if a.name.startswith("fsd"):
+                        alias_to_module[a.asname or a.name] = a.name
+        if not alias_to_module:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+                module = alias_to_module.get(node.value.id)
+                if module:
+                    yield module, node.attr
+
+
+@pytest.mark.parametrize(
+    "path", _docs_with_python_snippets(), ids=lambda p: str(p.relative_to(REPO_ROOT))
+)
+def test_doc_snippets_use_real_fsd_attributes(path: Path):
+    import importlib
+
+    failures = []
+    for module_path, attr in _fsd_attr_uses(path.read_text()):
+        obj = None
+        for candidate in (module_path, module_path.rsplit(".", 1)[0]):
+            try:
+                obj = importlib.import_module(candidate)
+                break
+            except ImportError:
+                continue
+        if obj is None:
+            continue  # an optional-extra module this env lacks; not a doc defect
+        if candidate != module_path:  # imported the parent, so resolve the leaf
+            leaf = module_path.rsplit(".", 1)[1]
+            if not hasattr(obj, leaf):
+                failures.append(f"{module_path} does not exist")
+                continue
+            obj = getattr(obj, leaf)
+        if not hasattr(obj, attr):
+            failures.append(
+                f"{module_path}.{attr} does not exist "
+                f"(is {module_path} a package whose functions live one level deeper?)"
+            )
+    assert not failures, f"{path.name} snippet references a missing fsd attribute:\n  " + \
+        "\n  ".join(sorted(set(failures)))
