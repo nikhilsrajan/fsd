@@ -193,6 +193,7 @@ python tests/data/tutorial/build_fixture.py \
     --archive-root "$AZ_ARCHIVE_ROOT/archive" \
     --roi   tests/data/tutorial/roi.geojson \
     --bands B04 B08 SCL \
+    --startdate 2018-04-01 --enddate 2018-09-30 \
     --check-only \
     --result tests/outputs/p6_tutorial_fixture/_result_step2.json
 ```
@@ -201,14 +202,19 @@ python tests/data/tutorial/build_fixture.py \
 PASS condition below cannot be evaluated and `_result.json` records it as `unchecked` rather than
 silently satisfied.
 
+**`--startdate`/`--enddate` are required in practice.** Spec 42 §1/D2 specify **Apr–Sep 2018**, but
+the blob archive holds the **full year**: the first real Step 2 run (2026-07-31) returned **72
+granules, 2018-01-01 .. 2019-01-01** — ~3× the bytes, half of it winter. Without a window the
+generator takes whatever the archive has, which is a different fixture than the spec describes.
+
 - **Expect** something like:
   ```
-  granules intersecting cell : 24        (local CDSE archive gave 24; MPC may differ -- see below)
-  single MGRS tile           : T33UWP    (24/24)
-  bands present              : B04, B08, SCL
-  radiometry declared        : 24/24 rows non-null   (column: 'offset')
-  offset value(s)            : [-1000]  sources={'declared': 24}
-  date span                  : 2018-04-06 .. 2018-09-28
+  granules intersecting cell : 21   (of 72 before the 2018-04-01..2018-09-30 window)
+  single MGRS tile           : True ['33UWP']
+  bands present              : B02, B03, B04, B08, B8A, SCL
+  radiometry declared        : 21/21 rows non-null   (column: 'offset')
+  offset value(s)            : [0]  sources={'declared': 21}
+  date span                  : 2018-04-.. .. 2018-09-..
   ```
 - **PASS if:** all four of — a single MGRS tile, all three bands present, **every** row carries a
   non-null radiometry declaration, and the date span is non-empty and covers Apr–Sep 2018. All four
@@ -218,8 +224,20 @@ silently satisfied.
   the only place that fact is observable: run-book Step 6 runs offline and cannot see the source at
   all. `derived` means the generator fell back to D1's id-token rule, which on the MPC path should
   never happen — if you see it, **stop and tell Claude.**
+- **`offset value(s): [0]` is CORRECT here, not a bug.** Spec 42 D1 worried about the opposite
+  (the *local* CDSE archive is all `_N0500_`, i.e. baseline ≥ 04.00, so it needs −1000). The blob
+  MPC archive serves the **pre-Collection-1** products for 2018: the sample landed by run-book
+  37-verify is `S2A_MSIL2A_20180106T100401_R122_T33UVP_`**`20201014`**`T034051` — generated
+  **2020-10-14**, before baseline 04.00 arrived on **2022-01-25**, so `BOA_ADD_OFFSET` does not
+  exist for it and 0 is the true declaration. Spec 32 D3 derives this per item from
+  `s2:processing_baseline`, and hit the boundary empirically (`03.00 → 0`, `04.00 → −1000`). Both
+  archives are internally correct — they are **different product versions of the same
+  acquisitions**. What *would* be a bug is `0` on a granule whose baseline is ≥ 04.00, which
+  `sources={'declared': N}` plus spec 32's per-item derivation rules out.
+  *(Acceptance test 2 asserts `offset in (0, −1000)` precisely so both paths pass; the earlier
+  hardcoded `== −1000` would have failed this run.)*
 - **The granule count is NOT a pass criterion.** MPC applies different cloud-cover filtering and
-  reprocessing dedup (spec 33), so it may not give 24. **Whatever it gives is the fixture's timestamp
+  reprocessing dedup (spec 33), so it may not give 24 — and the first real run returned **72** over the full year, i.e. *more*, before the Apr–Sep window. **Whatever it gives is the fixture's timestamp
   count**, and `T` in step 6 follows from it — do not expect 9 mosaic intervals in advance.
 - **FAIL on "radiometry declared" → stop and tell Claude.** That is the one assumption A1 rests on:
   the blob archive is supposed to be MPC-sourced and self-declaring, unlike the local CDSE archive
@@ -239,6 +257,7 @@ python tests/data/tutorial/build_fixture.py \
     --fields tests/data/tutorial/fields.geojson \
     --out    tests/data/tutorial \
     --bands  B04 B08 SCL \
+    --startdate 2018-04-01 --enddate 2018-09-30 \
     --max-bytes 31457280 \
     --dry-run \
     --result tests/outputs/p6_tutorial_fixture/_result_step3.json
@@ -267,6 +286,7 @@ python tests/data/tutorial/build_fixture.py \
     --fields tests/data/tutorial/fields.geojson \
     --out    tests/data/tutorial \
     --bands  B04 B08 SCL \
+    --startdate 2018-04-01 --enddate 2018-09-30 \
     --max-bytes 31457280 \
     --result tests/outputs/p6_tutorial_fixture/_result_step4.json
 ```
