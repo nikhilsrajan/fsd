@@ -1,3 +1,8 @@
+---
+status: current
+summary: Storage-vs-time COG vs JP2 sweep (spec 13); the measured result still stands.
+---
+
 # COG vs JP2 — storage-vs-time (spec 13)
 _generated 2026-07-04T12:53:03.788075Z_
 Same grids, window and `cores` sweep; the two runs differ **only** in tile format (native CDSE JP2 vs base COG = DEFLATE+PREDICTOR=2, tiled, no overviews). `speedup` = JP2 / COG (>1 = COG faster).

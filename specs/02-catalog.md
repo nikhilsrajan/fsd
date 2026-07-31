@@ -1,3 +1,8 @@
+---
+status: current
+summary: File-based GeoParquet tile catalog design; still the format in use.
+---
+
 # Spec 02 — Tile catalog (file-based)
 
 Folds in: catalog-writing parts of `core/sentinel2_via_s3.py` and the
@@ -62,6 +67,13 @@ spatial overlap, with `area_contribution` persisted. The builder (spec 03) then
 reads the subset and uses the stored `area_contribution` to pick `dst_crs` — it
 does *not* re-filter. (Legacy recomputed `area_contribution` inside the builder via
 `calculate_area_contribution`; folding it into `filter` is a small clean-up.)
+
+## STAC export (spec 17)
+
+This GeoParquet stays the **query format**. `specs/17-stac-catalog.md` adds an **additive**
+STAC interchange view (`fsd.catalog.stac`, `TileCatalog.to_stac`) — one STAC Item per row, one
+asset per band file, `proj:code` from the MGRS tile (no raster reads). The schema here is
+unchanged.
 
 ## Real-catalog notes (from `satellite/.../catalog_sentinel-2.geojson`)
 

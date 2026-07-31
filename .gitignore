@@ -6,6 +6,7 @@ __pycache__/
 build/
 dist/
 .venv/
+.venv-*/
 venv/
 env/
 
@@ -13,6 +14,8 @@ env/
 .pytest_cache/
 .ruff_cache/
 .ipynb_checkpoints/
+# Claude Code session state + worktrees — never commit
+.claude/
 
 # Data / artifacts (never commit downloaded tiles or datacubes)
 data/
@@ -24,6 +27,15 @@ tests/outputs/
 *.jp2
 *.tif
 *.tiff
+
+# Tutorial micro-fixture (spec 42 D6) — deliberately committed; see
+# tests/data/tutorial/NOTICE. Un-excludes the directory tree itself first
+# (a parent-directory exclusion above, "data/", can't be re-included by a
+# file-level negation alone), then the whole subtree.
+!tests/data/
+!tests/data/tutorial/
+!tests/data/tutorial/**
+tests/data/tutorial/__pycache__/
 
 # Secrets
 *credentials*.json
@@ -37,7 +49,17 @@ mysecrets.py
 # Snakemake working dir (from local runner / dry-runs)
 .snakemake/
 
+# mini-MPC harness (spec 30) — Docker Postgres data dir + generated load artifacts
+demos/mini_mpc/.pgdata/
+*.ndjson
+_result_register.json
+
 # tagged A/B intermediates (spec 13) — regenerable; deliverable is cog_vs_jp2_*
 benchmarks/datacube_throughput_report_*.md
 benchmarks/datacube_throughput_figures_*/
-.venv-rslearn/
+
+# P4 (spec 41 D7): the filled-in copy of env.example.sh -- real account names, ids, URLs
+env.local.sh
+
+# The spike's isolated rslearn venv (spike/README.md) is already covered by the
+# ".venv-*/" rule near the top -- never install rslearn into .venv; main stays lean.

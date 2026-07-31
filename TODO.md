@@ -1,91 +1,22 @@
-# TODO — deferred / revisit-later
+# TODO — moved to GitHub Issues
 
-Items intentionally parked so the v1 core stays focused. Each notes the area and why
-it's deferred. Promote to a spec + implementation when it becomes important. Several
-came out of the 2026-07-01 design Q&A with the user (see CHANGES.md / specs).
+**The 62 items that lived here are now [GitHub Issues](https://github.com/nikhilsrajan/fsd/issues),
+migrated 2026-07-30 (spec 41 D8).** Issue numbers are **aligned**: `TODO #47` is
+[issue #47](https://github.com/nikhilsrajan/fsd/issues/47), so every `TODO #NN` reference already
+in this repo resolves. 24 of the 62 were already done and were created then closed — a closed issue
+keeps its full text, so nothing was deleted.
 
-## Post-v1 roadmap (sequencing — user, 2026-07-02)
+- **Read one:** `gh issue view 47` · **list open:** `gh issue list`
+- **Add one:** open an issue, not a row here. This file is a signpost, not a register.
+- **Labels:** `datacube` `download` `cloud` `storage` `stac` `docs` `perf` `model` `blocked`
 
-The table numbers below are stable IDs, **not** priority order. The intended order of
-the big efforts:
+**Measurement write-ups are [`docs/findings/`](docs/findings/), not issue bodies.** Two of the rows
+here were multi-page research write-ups; they are now
+[`cloud-overhead.md`](docs/findings/cloud-overhead.md) (issue #61) and
+[`workload-regimes.md`](docs/findings/workload-regimes.md) (issue #59). The finding holds the
+measurement; the issue holds the open work.
 
-1. **Finish v1 end-to-end** — download → datacube → flatten, local Snakemake runner
-   (current focus; datacube module #5 is next).
-2. **Azure setup + Batch processing** for datacube creation — the cloud-agnostic
-   scale-out end goal (`specs/10`). Comes **before** any source extension.
-3. **Source extension, incrementally** (item #11; promotes the source contract to the
-   `sources/base.py: Source` ABC, OQ-3): CDSE **S2 L2A** (done) → **MPC S2 L2A** →
-   CDSE **S1 GRD / S1 RTC** → **MPC S1** → other products (CHIRPS, ERA5, …).
-4. **Benchmark against `rslearn`** (item #12) — run in parallel with step 3.
-
-**Cross-cutting perf track:** _datacube-creation speed at scale_ (item #15) — a dedicated
-effort to make building **many** datacubes as fast as possible. Not a one-off tweak; an
-ongoing design thread. Closely tied to step 2 (Azure Batch) since the bottleneck is I/O,
-not CPU. **Now scoped into a 3-part benchmark-first plan (interviewed 2026-07-03):**
-- **Part 1 — spec 11 (DONE):** reusable parallelism-sweep harness + baseline report
-  (`benchmarks/datacube_throughput_sweep.py`) — throughput vs `cores`, per-step timing,
-  static grid×tile overlap. Answers *how much does parallelism help before I/O contention?*
-- **Part 2 — spec 12 (DONE, implemented 2026-07-04):** per-read instrumentation — builder
-  `write_read_log` → `reads.jsonl` per grid (id, mgrs_tile, product_id, band, filepath, epoch
-  start/end, duration); harness `--read-log` computes read conflicts + read-duration-vs-
-  concurrency (tests "processes wait on each other") + **same-file / same-tile / different-tile**
-  split. **Only same-file conflicts are what Part 3 removes** — the report's verdict is the
-  go/no-go for Part 3. Smoke-validated; a full 100-grid `--read-log` run gives the real numbers.
-  **Full run finding (2026-07-04):** hypothesis confirmed (read duration 4.87× at concurrency
-  1→10; total load_images 3.27× for identical read count) = **disk-bandwidth ceiling**; but
-  conflicts are **only 0.6% same-file** → splitting-to-avoid-same-file-conflicts is NOT the win.
-- **COG vs JP2 experiment — spec 13 (implemented 2026-07-04):** the *first* speed lever actually
-  pursued, because Part 2 pointed at per-read *decode* cost (JP2 wavelet) more than same-file
-  sharing. Measures build-time gain + storage cost of storing tiles as COG vs native JP2, via a
-  parallel COG dataset/catalog (no `src/fsd/` change) A/B'd on the Part-1/2 harness. Scripts:
-  `prep_cog_dataset.py`, `compare_cog_jp2.py` + harness `--catalog/--tag`; runbook
-  `cog_experiment.md`. **Full 4-month A/B DONE (2026-07-04):** COG **1.58×→3.46× faster wall**,
-  up to **9.42× faster load_images**, COG read cost **flat vs concurrency (1.01×)** → decode-bound
-  confirmed (corrects Part-2's "disk-bandwidth" framing). Cost: base COG **1.225× JP2 (+23%)**,
-  lossless — a clear win. **Adopt COG in the ingest/download path → DONE (spec 14, 2026-07-04):**
-  `sources.cdse.download(cog=True)` converts each fetched JP2 → lossless COG **with overviews**
-  (new `src/fsd/raster/cog.py::to_cog`); `cog=False` keeps JP2. Local-dst only in v1. Follow-ups
-  (not scheduled): (a) **remote-dst COG** — stage-local→convert→upload, needed for the Azure/Blob
-  ingest path; (b) a **dedicated conversion process pool** to decouple CPU fan-out from the S3
-  network fan-out (conversion currently runs inline in the download threads); (c) **bulk-migrate
-  the existing `satellite_benchmark` JP2 archive to COG → DONE (2026-07-04):**
-  `benchmarks/migrate_jp2_to_cog.py` converted all 2316 band files in place (COG + overviews,
-  lossless), deleted the JP2s, and rewrote `catalog.parquet` to `.tif` (0 failed, 72 min at 8
-  workers; archive 94→159 GiB). Tool is resumable, has a disk-safety floor + progress bar, and a
-  `--verify {full,quick,none}` pre-delete gate (default quick; conversion is memory-bandwidth-bound
-  so 8 workers = the knee, 10 gave no gain); (d) alternative: source AWS
-  `sentinel-2-l2a-cogs` directly instead of converting CDSE JP2 (a different discovery source,
-  TODO #11 territory).
-- **Other candidates — PARKED (2026-07-04, not scheduled):** the benchmark-first track (Parts 1–2)
-  is complete; **parked candidate optimizations** (revisit only if datacube-build speed becomes a
-  priority again), all pointing at the measured *bandwidth/decode* costs rather than same-file
-  conflicts (which are negligible, 0.6%):
-  - **tile-centric batching** — read each tile's region once, crop to every intersecting grid
-    (kills *redundant* reads, which Part 2 does NOT measure). Two-phase fit: a tile-crop pass →
-    chips → the existing per-grid builder. Density-dependent (wins when grids densely cover a tile;
-    can *lose* on scattered grids where the union ≈ whole tile). Would need a dense/inference-like
-    grid set to test, measured on the Part-1/2 harness. *(Interview was started then deferred.)*
-  - cap parallelism at the throughput knee (~cores=4 on the test machine);
-  - raise the bandwidth ceiling (faster / independent disks, per-node storage on Batch);
-  - cheaper per-read format (COG + overviews vs windowed JP2 decode);
-  - tile pre-splitting may still fit the distinct *inference* workload (one region → disjoint
-    sub-grids, 1 grid ↔ 1 pre-split file); scope separately if ever pursued.
-
-| # | Item | Area | Why deferred / note |
-|---|------|------|---------------------|
-| 1 | **Configurable output resolution.** Builder hardcodes 10 m via reference band B08. Allow other targets (e.g. 20 m) by resampling to a *known-resolution reference image* (a different reference band), per the user's reference-image resampling rule. | datacube builder | works for the S2 L2A demo path at 10 m; not blocking |
-| 2 | ~~**median_mosaic anchor date.**~~ ✅ DONE (spec 15, 2026-07-05) — `median_mosaic` now defaults to **calendar-interval** windows anchored at the caller's `startdate` (labels = window-start boundaries, empty windows emitted), and `create_datacube.setup` threads the caller's calendar dates in (not per-shape actual). Every cube over the same window now shares an identical `timestamps` axis → `flatten` works across multi-tile sets. Legacy via `mosaic_scheme="acquisition"`. | datacube ops + workflows | — |
-| 3 | **setup→create two-step execution.** Reconsider whether the separate *setup* (per-shape catalog copies) + *create* steps can be simplified/merged. Kept split for parallel-safety (see spec 08). | workflows | maintain as-is; revisit if it complicates Azure Batch |
-| 4 | **`mask_value` int-truncation.** `bands.modify.mask_invalid_and_interpolate` defaults `mask_value=0` (int); on an integer datacube interpolated values truncate to int. Test float-vs-int; decide whether to force float internally. | bands | potential silent precision loss; demos cast to float first so unaffected today |
-| 5 | **dst_crs single-zone collapse.** All tiles collapse into the max-mean-`area_contribution` CRS because `rasterio.merge` needs a uniform CRS. Deliberate; revisit only if multi-zone output is ever required. | datacube builder | working as intended |
-| 6 | **Local `.SAFE` layout without long filenames.** Current download flattens `.SAFE` to short per-band names (avoids long-path CLI issues) but breaks tools like SNAP that expect `.SAFE`. Investigate keeping a `.SAFE`-compatible structure without the long paths. | sources/cdse + storage | the long-path problem may not actually bite; verify before solving |
-| 7 | ~~**RGB GeoTIFF save helper.**~~ ✅ DONE — `raster.save_geotiff` / `stack_bands` / `save_rgb_geotiff` added + tested; used by `tests/manual/realdata.md` (TCC/FCC/NDVI verified in QGIS). | raster | — |
-| 8 | **Validate the geospatial nit-picks.** Design tests to confirm the user's assumptions are real — e.g. does `rasterio` resample actually misalign pixels vs. resampling to a known reference image? **Concrete case found (2026-07-03, `tests/manual/datacube.md`):** the datacube's output rectangle doesn't hug the ROI edges — it carries a nodata halo (measured left −4 m, right +55 m, bottom −48 m, top +113 m; edge strips ~98–100% nodata) and its slanted edges staircase. Two causes: (a) the builder crops to the shape once up front then reproject→merge→resample onto a reference grid and **never re-crops to the polygon** (extent = merged bbox + halo); (b) the ROI is a rotated parallelogram (0.86 of its UTM bbox) so a north-up raster can't align to slanted edges. Legacy behaviour + cosmetic (`flatten` drops all-nodata pixels). **Decision to make:** add an optional final `rasterio.mask` re-crop-to-shape after resampling (tested: trims 554×533→539×528; won't fix the diagonal staircase) — a deliberate behaviour change needing a spec note. | testing / datacube builder | some nit-picks may prove unnecessary; worth measuring |
-| 9 | **At-scale download** ✅ DONE (2026-07-02) — 1-year Ethiopia multi-CRS download completed: 579/579 tiles, 94 GiB, verified integrity (`benchmarks/download_report_2018_ethiopia.md`); hardened download resilience (atomic transfer, timeouts, circuit-breaker/resume, log-friendly progress). **Still open: concurrency/quota benchmarking** — vary `max_workers` to probe CDSE's real limit (report cited 4, resilience report ran ~6); needs a `max_workers` param. | sources/cdse | at-scale download done; throughput/quota sweep remains |
-| 11 | **Additional data sources (MPC, CHIRPS, ERA5, …).** Beyond CDSE S2 L2A, add other sources — Microsoft Planetary Computer, CHIRPS (precip), ERA5 (climate reanalysis), etc. This is the trigger to promote the source contract from a documented function signature to the `sources/base.py: Source` ABC (OQ-3). Each source keeps CDSE's split: source owns discovery + product-specific file-selection; bytes go through the provider-agnostic `fsd.storage` transport. Note non-optical sources (CHIRPS/ERA5) are gridded climate rasters, not tiled `.SAFE`, so the catalog/datacube contracts may need generalizing. | sources/* | future; keep the seams clean now so it stays additive |
-| 12 | **Benchmark against other libraries (e.g. `rslearn`).** Compare fsd's download→datacube→flatten pipeline against existing RS/ML data libraries such as `rslearn` — on correctness, throughput, ergonomics, and scale-out. Informs whether fsd's abstractions carry their weight. | testing / project | future; do after the core pipeline + at-scale runs (TODO #9) exist |
-| 10 | **Honor STAC `raster:offset` / `raster:scale` per asset.** The CDSE STAC catalog exposes `raster:offset` and `raster:scale` at the same level as each asset's `href`. Read them during discovery/build and apply the correct scale/offset per band so downstream values are physically consistent **across the Sentinel-2 processing-baseline change** (pre- vs post-baseline images carry different radiometric offsets). This is a CDSE advantage over e.g. **Microsoft Planetary Computer**, whose thinner STAC forces the developer to track baseline processing by hand — a known source of silent errors where models trained on one baseline fail on images from another because the offset mismatch went unnoticed. Capture the offset/scale in the catalog and/or apply in the raster/datacube pipeline. | sources/cdse + raster/datacube | correctness across baselines; not blocking the single-baseline demo path but high-value before mixing acquisition eras |
-| 13 | **Adopt `xarray` + `zarr` as the datacube artifact (post-v1 / Azure milestone).** Replace `datacube.npy` + `metadata.pickle.npy` with a single self-describing `.zarr` store written via `xarray` (+ `rioxarray` for CRS/transform). Wins: **named dims + coordinates carried *with* the array** (retires the hand-maintained `data_shape_desc` tuple), **JSON attrs instead of pickle** — which *kills the macOS↔Ubuntu pickle-corruption hack* (see memory `fsd-metadata-pickle-npy`), **chunked/compressed partial reads** (flatten + Batch workers read a slice, not the whole cube), and **fsspec-native** local/S3/Blob storage = exactly the `specs/10` seam. The `build_datacube` seam + `fsd.storage` make this a *contained, versioned artifact swap*, not a caller rewrite. Track **GeoZarr** as the target dialect. | datacube + storage | numpy fine at current small (per-polygon) scale; it's a breaking change to the `specs/00 §6` artifact contract + the train/deploy notebooks, so pair it with the Azure Batch milestone where partial reads + Blob-native storage pay off |
-| 14 | **COG tiles + STAC-conformant catalog → `titiler` XYZ serving.** When staging downloads to Azure Blob, convert CDSE `.jp2` tiles to **COG** (`rio-cogeo` / `gdal_translate`) so HTTP range-reads + overviews work; and make the catalog **STAC-conformant** — e.g. **`stac-geoparquet`** (keep the parquet ergonomics we have but emit valid STAC Items, symmetric with the CDSE STAC we already *query* for discovery). The COG+STAC combo lets a **titiler** (rio-tiler + FastAPI; optionally `titiler-pgstac` for search-driven mosaics) serve the archive as **XYZ/WMTS tiles** — browsable in a web map or QGIS. Strong QA/observability layer that fits the visual-validation principle (QGIS eyeballing), and orthogonal to the core pipeline. Caveats: COG conversion is an extra step + storage decision (replace jp2 or keep both); decide **raw-DN vs applied offset** before converting (ties to #10); XYZ implies on-the-fly reproject UTM→EPSG:3857 (titiler handles it). | storage + sources/cdse | post-v1 / Azure milestone; a serving/observability concern, not required for download→datacube→flatten |
-| 16 | **`flatten` multi-zone `coords.npy`.** `flatten` concatenates per-cube easting/northing coordinates but only checks bands+timestamps for consistency — so a training set spanning two UTM zones (e.g. EuroCrops→Ethiopia: west fields EPSG:32636, east fields EPSG:32637) mixes eastings/northings from different zones in one `coords` array. Fine when coords are used only as per-pixel identifiers; **silently wrong if used spatially** (a 32636 easting and a 32637 easting at the same number are different places). Options: store a per-pixel CRS/zone alongside coords, or reproject all coords to a single common CRS (e.g. EPSG:4326 lon/lat, or the dataset's dominant zone) at flatten time. Surfaced during the spec-15 flatten work. | datacube flatten | does not affect the spectral training arrays (`data.npy` + `ids` + `labels`); matters only when coords are consumed as geography |
-| 15 | **Datacube-creation speed at scale (dedicated throughput track — SCOPE VIA INTERVIEW).** Goal: minimize *total* wall-time to build **many** datacubes, not single-datacube latency. The 1-yr benchmark (`benchmarks/datacube_report_2018_ethiopia.md`) showed creation is **I/O-bound**: ~70–75% of time is `load_images` reading/cropping JP2 tiles, and a warm OS page cache made a repeat run ~3.3× faster (238 s→72 s) purely from cached reads. **User's key insight (2026-07-03):** many shapes fall inside the *same* tile(s), yet today we re-read the same tile bytes once per shape — wasteful. Candidate directions to explore (unranked, refine with user): (a) **tile-centric batching** — group shapes by tile, read each tile's bytes *once*, crop to every shape intersecting it (invert today's shape-centric loop); (b) **deliberately exploit the page cache** — order/parallelize so a tile stays warm in RAM while all its shapes are processed (keep the working set resident); (c) **a read-through tile cache in `fsd.storage`** (in-memory / mmap / on-node disk) so repeat reads never re-hit remote storage; (d) **parallelism** — many datacubes concurrently (processes / Batch tasks) but *sharing* reads, not each cold-reading; (e) **COG range-reads + overviews** (#14) + **tile locality** on Azure Batch (co-locate data+compute, reuse warm nodes — a fresh Batch node is always *cold*); (f) drop the `reference_profile` full pixel-merge (grid-from-bounds). Keep as an **open design thread**; interview to define the target workload (shapes-per-tile, local vs Batch) before picking an approach. | datacube + storage + workflows | biggest single-lever perf win; I/O-bound so caching/locality beats CPU |
+This file is kept rather than deleted because ~473 references across the specs, run-books, ADRs and
+`PROGRESS.md` name it. Two prose sections that used to sit above the table also moved: the
+**post-v1 sequencing** narrative is now `ROADMAP.md` §5.9, and the **perf-track history** (the
+3-part benchmark plan and its parked optimization candidates) is a comment on issue #15.

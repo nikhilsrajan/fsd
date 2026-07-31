@@ -13,19 +13,32 @@ in a uint16 container, which PREDICTOR=2 rejects — we set `NBITS=16`, promotin
 NOTE (specs/10): like all pixel I/O, conversion reads/writes **local** paths through
 rasterio/GDAL (VSI), not fsspec — the documented raster-I/O exception. A remote source
 must be fetched to local scratch first (`fsd.storage.get`).
+
+**Remote dst (spec 38 D5, ADR 0001):** when `dst_path` is a remote `fsd.storage` URL (e.g.
+`abfss://...`), the COG is still produced by GDAL on **node-local scratch** (the identical
+local path above, byte-for-byte), then published to `dst_path` via `storage.transfer`
+(itself a write-to-`.part`-then-atomic-`mv`, spec 36 D7's publish pattern) — never a
+remote `rasterio.open(mode="w")` (TODO #39). This is the single chokepoint that lets both
+the per-cell `output.tif` (`model.engine._write_output_cog`, on an AML node) and the
+merged `merged.tif` (`api._merge_outputs`, on the driver) land on blob — both callers are
+unchanged; only `to_cog` learned the remote-dst branch.
 """
 
 from __future__ import annotations
 
 import os
+import tempfile
+import uuid
 
 import numpy as np
 import rasterio
 import rasterio.shutil
 
 from fsd import config
+from fsd.raster import rio_open
+from fsd.storage import fs
 
-__all__ = ["to_cog", "cog_creation_opts"]
+__all__ = ["to_cog", "cog_creation_opts", "stamp_gdal_tags", "stamp_or_reencode"]
 
 
 def cog_creation_opts(
@@ -39,7 +52,7 @@ def cog_creation_opts(
     """COG driver creation options for `src_path`. Adds `NBITS=16` for uint16 sources
     (PREDICTOR=2 needs an 8/16/32/64-bit declared depth; S2 declares NBITS=15) — a
     lossless promotion of the *declared* depth only."""
-    with rasterio.open(src_path) as s:
+    with rio_open(src_path) as s:
         dtype = s.dtypes[0]
     opts = dict(
         driver="COG",
@@ -66,9 +79,16 @@ def to_cog(
     """Convert a local raster `src_path` -> Cloud-Optimized GeoTIFF `dst_path`.
 
     Lossless (DEFLATE + PREDICTOR, NBITS=16 for uint16). Overviews per `overviews`
-    (``"AUTO"`` builds them, ``"NONE"`` skips). **Atomic:** writes a sibling
-    ``dst.part`` then ``os.replace`` onto ``dst`` — a crash never leaves a truncated
-    ``.tif`` that a resume would mistake for done. Returns bytes written.
+    (``"AUTO"`` builds them, ``"NONE"`` skips). Returns bytes written.
+
+    **Local `dst_path` (unchanged):** writes a sibling ``dst.part`` then ``os.replace``
+    onto ``dst`` — a crash never leaves a truncated ``.tif`` that a resume would mistake
+    for done.
+
+    **Remote `dst_path`** (D5, ADR 0001): GDAL still writes the COG to node-local scratch
+    (byte-identical to the local path above), then `storage.transfer` publishes it to
+    `dst_path` (write-to-`.part`-then-atomic-`mv` on the destination filesystem) and the
+    scratch file is removed. Never a remote `rasterio.open(mode="w")` (TODO #39).
 
     `verify=True` reads both rasters back and asserts they are bit-identical (used in
     tests / a paranoid ingest); off by default since the conversion is deterministic
@@ -81,24 +101,109 @@ def to_cog(
         blocksize=blocksize,
         overviews=overviews,
     )
-    parent = os.path.dirname(dst_path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    tmp = f"{dst_path}.part"
-    try:
-        rasterio.shutil.copy(src_path, tmp, **opts)  # GDAL picks format from driver=
-        os.replace(tmp, dst_path)
-    except BaseException:
-        if os.path.exists(tmp):
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
-        raise
+
+    if fs.is_local(dst_path):
+        parent = os.path.dirname(dst_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = f"{dst_path}.part"
+        try:
+            rasterio.shutil.copy(src_path, tmp, **opts)  # GDAL picks format from driver=
+            os.replace(tmp, dst_path)
+        except BaseException:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+            raise
+        nbytes = os.path.getsize(dst_path)
+    else:
+        fd, scratch = tempfile.mkstemp(suffix=".tif", prefix=f"fsd-cog-{uuid.uuid4().hex}-")
+        os.close(fd)
+        os.remove(scratch)  # GDAL's COG driver must create the file itself
+        try:
+            rasterio.shutil.copy(src_path, scratch, **opts)
+            fs.transfer(scratch, dst_path)  # -> dst_path.part -> atomic mv (spec 36 D7 pattern)
+        finally:
+            if os.path.exists(scratch):
+                os.remove(scratch)
+        nbytes = fs.size(dst_path)
 
     if verify:
-        with rasterio.open(src_path) as s, rasterio.open(dst_path) as d:
+        with rio_open(src_path) as s, rio_open(dst_path) as d:
             if not np.array_equal(s.read(), d.read()):
                 raise ValueError(f"to_cog: {dst_path} is not bit-identical to {src_path}")
 
-    return os.path.getsize(dst_path)
+    return nbytes
+
+
+def stamp_gdal_tags(
+    filepath: str,
+    *,
+    offset: float = 0.0,
+    scale: float = 1.0,
+    set_nodata_if_missing: float | None = None,
+) -> None:
+    """Declare radiometry + nodata as GDAL band-level metadata, in place (spec 34 §1a).
+
+    A header-tag edit: reopens `filepath` in update ("r+") mode and sets every band's
+    `SCALE`/`OFFSET` (what `rio-tiler`/titiler's `unscale=true` reads — STAC
+    `raster:bands` alone is **not** forwarded to the viewer, per titiler discussion
+    #803) and, if the raster has no nodata tag yet, sets it to `set_nodata_if_missing`
+    (spec 34 §1c — never overwrites an already-declared nodata). Never decodes pixels:
+    no radiometric loss, cheap even on a large COG.
+
+    Plain `rasterio.open(...).read()` (what the datacube builder uses) never
+    auto-applies these tags — they are inert metadata on a normal read, so this and
+    the STAC `raster:bands` declaration (`fsd.catalog.stac`) can coexist with the
+    builder's own read-time `apply_offset` without double-applying (spec 34 §1a).
+
+    `IGNORE_COG_LAYOUT_BREAK=YES`: GDAL's COG driver refuses an in-place metadata
+    edit by default ("has COG layout... updating it will generally result in losing
+    part of the optimizations") even though a scale/offset/nodata tag is a header-only
+    change that never touches pixel data or block layout — this open option is exactly
+    what lets the "cheap header edit" this function promises actually happen in place.
+    """
+    with rio_open(filepath, "r+", IGNORE_COG_LAYOUT_BREAK="YES") as dst:
+        dst.scales = (scale,) * dst.count
+        dst.offsets = (offset,) * dst.count
+        if set_nodata_if_missing is not None and dst.nodata is None:
+            dst.nodata = set_nodata_if_missing
+
+
+def stamp_or_reencode(
+    filepath: str,
+    *,
+    offset: float = 0.0,
+    scale: float = 1.0,
+    set_nodata_if_missing: float | None = None,
+) -> str:
+    """`stamp_gdal_tags`, falling back to a GDAL-COG-driver re-encode if the in-place
+    stamp breaks COG validity (spec 34 §1a "runbook observation" — whether an in-place
+    tag edit keeps a strictly-valid COG is source/GDAL-version dependent; this is the
+    documented fallback, not the expected path). Returns ``"stamped"`` or
+    ``"reencoded"`` (informational, for a runbook to report which path was taken).
+    """
+    try:
+        stamp_gdal_tags(
+            filepath, offset=offset, scale=scale,
+            set_nodata_if_missing=set_nodata_if_missing,
+        )
+        return "stamped"
+    except Exception:
+        tmp = f"{filepath}.reencode.part"
+        try:
+            rasterio.shutil.copy(filepath, tmp, **cog_creation_opts(filepath))
+            os.replace(tmp, filepath)
+        finally:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+        stamp_gdal_tags(
+            filepath, offset=offset, scale=scale,
+            set_nodata_if_missing=set_nodata_if_missing,
+        )
+        return "reencoded"

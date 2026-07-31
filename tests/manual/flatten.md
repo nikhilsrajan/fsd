@@ -147,11 +147,12 @@ for lab, ct in sorted(Counter(labels.tolist()).items()):
 
 ## 4. Known caveats
 
-- **Multi-zone `coords.npy` (TODO #16).** `coords` easting/northing are concatenated
-  across cubes but a west field is EPSG:32636 and an east field EPSG:32637, so the array
-  mixes two UTM zones (here easting ranges ~255k–908k). Fine as per-pixel identifiers,
-  **wrong if used as geography** — reproject to a common CRS or store per-pixel CRS first.
-  Does **not** affect the spectral arrays (`data` / `ids` / `labels`).
+- **Multi-zone `coords.npy` (TODO #16 — RESOLVED).** `coords` are now emitted as
+  `(lon, lat)` in **EPSG:4326**: each cube's per-pixel easting/northing is reprojected
+  from its native CRS before concatenation, so a west field (was EPSG:32636) and an east
+  field (was EPSG:32637) share one common CRS and are geographically comparable. Expect
+  lon/lat values (e.g. ~14–15°E / ~48–49°N for Austria), not raw UTM eastings. Still does
+  **not** affect the spectral arrays (`data` / `ids` / `labels`).
 - **`mosaic_days` vs revisit (spec 15).** With `mosaic_days` ≥ the S2 revisit you get real
   temporal compositing; set it *below* the cadence and calendar mode pads the axis with
   all-nodata slices (documented in `ops.median_mosaic`). `mosaic_days=20` here → 2 windows.

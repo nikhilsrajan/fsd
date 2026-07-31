@@ -21,12 +21,15 @@ for CDSE S3:
 from __future__ import annotations
 
 import io
+import json
 import os
 import shutil
 from typing import Any
 
 import fsspec
 import numpy as np
+
+from fsd.storage.azure import to_vsi
 
 __all__ = [
     "open",
@@ -40,8 +43,43 @@ __all__ = [
     "load_npy",
     "read_parquet",
     "write_parquet",
+    "peek_parquet_attrs",
+    "rename",
     "transfer",
+    "to_vsi",
+    "is_local",
+    "write_bytes",
+    "write_text",
+    "SOURCE_PATH_ATTRS_KEY",
 ]
+
+# REVERTED 2026-07-28 (TODO #57 -> #58): there was a `_write_with_retry` here that
+# retried a write whose error message looked like a transient Azure block-commit
+# race (`InvalidBlockList`). It fixed nothing. The failure it was built for was
+# duplicate work-unit ids making 16 threads write the SAME blob (spec 21 D-GRID-1),
+# which a retry can never resolve -- the collision is deterministic, so every writer
+# just retried into every other writer. Worse, it turned a fast, legible failure into
+# a minutes-long error storm that BURIED the real cause. No transient adlfs race has
+# ever been observed here: runbook 36 wrote 900 distinct blobs at the same 16-way
+# concurrency, same VPN, same account, in 71 s with zero errors.
+#
+# If a genuine transient race is ever demonstrated (distinct paths, monotonic
+# attempts), reintroduce it -- but match only the Azure storage error codes, never
+# adlfs's `"Failed to upload block"` prefix: that comes from a catch-all
+# `except Exception` in `adlfs/spec.py::_async_upload_chunk`, so every write failure
+# wears it, including permanent auth/RBAC ones.
+
+# spec 35 §2/§5a. `PANDAS_ATTRS_FOOTER_KEY` is the upstream pandas/geopandas
+# convention (pandas issue #54321, geopandas PR #3597) that `.attrs` is
+# JSON-encoded under -- reusing it means fsd converges with a future geopandas
+# release instead of forking a second convention (spec 35 §2).
+PANDAS_ATTRS_FOOTER_KEY = b"PANDAS_ATTRS"
+
+# `read_parquet` stamps this onto the returned `.attrs` so downstream code can
+# tell "read from a file" apart from "hand-built in this process" (spec 35 §5a).
+# It is bookkeeping, not data: `write_parquet` always strips it before writing
+# (spec 35 §10), so it never leaks an absolute local path into a written artifact.
+SOURCE_PATH_ATTRS_KEY = "fsd:source_path"
 
 
 # --- internal helpers --------------------------------------------------------
@@ -50,6 +88,15 @@ __all__ = [
 def _fs_and_path(url: str, storage_options: dict | None = None):
     """Resolve a URL/path to (filesystem, path-on-that-filesystem)."""
     return fsspec.core.url_to_fs(url, **(storage_options or {}))
+
+
+def is_local(path: str) -> bool:
+    """True if `path` resolves to the local filesystem (vs. an `abfss://`/`s3://`/...
+    URL). Guards code that must not apply local-path-only operations (`os.path.abspath`,
+    `os.makedirs`, bare `open`) to a remote URL — see specs/31 §6."""
+    import fsspec.utils
+
+    return fsspec.utils.get_protocol(path) in ("file", "local")
 
 
 def _ensure_parent(fs, path: str) -> None:
@@ -109,6 +156,20 @@ def get(remote_path: str, local_path: str, **storage_options: Any) -> None:
     fs.get_file(rpath, local_path)
 
 
+def rename(src_path: str, dst_path: str, **storage_options: Any) -> None:
+    """Move `src_path` onto `dst_path` on one fsspec filesystem, in a single `mv`.
+
+    The atomic-publish primitive for D7 (spec 36): on an HNS Azure account rename is a
+    single metadata operation, and locally it is `os.rename` -- so a writer that saves
+    to `src_path` and renames onto `dst_path` at the end leaves no window where a reader
+    can observe a partial artifact.
+    """
+    fs, spath = _fs_and_path(src_path, storage_options)
+    _, dpath = _fs_and_path(dst_path, storage_options)
+    _ensure_parent(fs, dpath)
+    fs.mv(spath, dpath)
+
+
 def ls(url: str, **storage_options: Any) -> list[str]:
     fs, p = _fs_and_path(url, storage_options)
     return fs.ls(p, detail=False)
@@ -119,11 +180,45 @@ def glob(pattern: str, **storage_options: Any) -> list[str]:
     return fs.glob(p)
 
 
+def write_bytes(path: str, data: bytes, **storage_options: Any) -> None:
+    """Write raw bytes to `path` (parent dirs created as needed)."""
+    fs, p = _fs_and_path(path, storage_options)
+    _ensure_parent(fs, p)
+    with fs.open(p, "wb") as f:
+        f.write(data)
+
+
+def write_text(path: str, text: str, **storage_options: Any) -> None:
+    """Write a text string to `path` as UTF-8. One call instead of an
+    `fs.open(path, "w")` block, so callers don't hand-roll encoding."""
+    write_bytes(path, text.encode("utf-8"), **storage_options)
+
+
 def size(url: str, **storage_options: Any) -> int:
     """Byte size of a file (0 if empty). Used to distinguish a real download from a
     zero-byte "touched" leftover."""
     fs, p = _fs_and_path(url, storage_options)
     return fs.size(p)
+
+
+def modified(url: str, **storage_options: Any) -> Any | None:
+    """The backend's own last-modified time for a file, or `None` when the backend
+    does not record one.
+
+    The *server's* clock, not this process's — which is the point: spec 40 D11
+    measures driver-vs-storage clock skew by writing a scratch blob and reading back
+    the stamp the storage account put on it. `ls`/`glob` deliberately return bare
+    path strings (`ls` passes `detail=False`), so there is no other route to an
+    mtime through this module.
+
+    `None` rather than a raise for a backend without mtimes, so a caller measuring
+    skew can report "unavailable" instead of silently reporting zero skew.
+    """
+    fs, p = _fs_and_path(url, storage_options)
+    try:
+        return fs.modified(p)
+    except (NotImplementedError, KeyError, AttributeError):
+        return None
 
 
 # --- typed helpers -----------------------------------------------------------
@@ -151,23 +246,107 @@ def load_npy(path: str, allow_pickle: bool = False, **storage_options: Any):
         return np.load(io.BytesIO(f.read()), allow_pickle=allow_pickle)
 
 
-def read_parquet(path: str, **storage_options: Any):
-    """Read a (Geo)Parquet file -> GeoDataFrame."""
+def read_geo(path: str, **storage_options: Any):
+    """Read a vector file (GeoJSON/shapefile/…) -> GeoDataFrame, through the storage seam.
+
+    **Never hand a path straight to `gpd.read_file`.** GDAL/pyogrio has no `abfss://`
+    driver, so an fsspec-only scheme never reaches a reader and the failure is reported as
+    `DataSourceError: <abfss url>: No such file or directory` — for a file that
+    demonstrably exists. That message has now cost time on three separate cluster runs
+    (`workflows/task.py` spec 36 D6a/TODO #40, `sources/cdse._roi_gdf` run-book 37 Phase 1,
+    and `create_training_data`'s label polygons on the spec-40 demo). fsspec understands
+    the scheme; GDAL does not. This is the one shared reader TODO #47 asks for.
+
+    Local paths work unchanged — `fs.open` passes them through — so callers need no
+    is-it-remote branch.
+    """
     import geopandas as gpd
 
     fs, p = _fs_and_path(path, storage_options)
     with fs.open(p, "rb") as f:
-        return gpd.read_parquet(io.BytesIO(f.read()))
+        return gpd.read_file(io.BytesIO(f.read()))
+
+
+def _decode_pandas_attrs(footer_metadata: dict | None) -> dict:
+    """`pyarrow` schema/file metadata -> the restored `.attrs` dict, or `{}` if
+    there is no `PANDAS_ATTRS` footer key (spec 35 §2)."""
+    if not footer_metadata:
+        return {}
+    raw = footer_metadata.get(PANDAS_ATTRS_FOOTER_KEY)
+    if raw is None:
+        return {}
+    return json.loads(raw.decode("utf-8"))
+
+
+def read_parquet(path: str, **storage_options: Any):
+    """Read a (Geo)Parquet file -> GeoDataFrame.
+
+    Restores `.attrs` from the Parquet footer's `PANDAS_ATTRS` key if present
+    (spec 35 §2 -- geopandas' own writer/reader does not do this, unlike
+    pandas'), and always stamps `attrs[SOURCE_PATH_ATTRS_KEY] = path` so
+    downstream code can tell this GeoDataFrame came from a file (spec 35 §5a).
+    """
+    import geopandas as gpd
+
+    fs, p = _fs_and_path(path, storage_options)
+    with fs.open(p, "rb") as f:
+        raw = f.read()
+    gdf = gpd.read_parquet(io.BytesIO(raw))
+    import pyarrow.parquet as pq
+
+    attrs = _decode_pandas_attrs(pq.read_metadata(io.BytesIO(raw)).metadata)
+    if attrs:
+        gdf.attrs.update(attrs)
+    gdf.attrs[SOURCE_PATH_ATTRS_KEY] = path
+    return gdf
 
 
 def write_parquet(path: str, df, **storage_options: Any) -> None:
-    """Write a (Geo)DataFrame to `path` as (Geo)Parquet."""
+    """Write a (Geo)DataFrame to `path` as (Geo)Parquet.
+
+    If `df.attrs` is non-empty (minus `SOURCE_PATH_ATTRS_KEY`, always stripped
+    -- spec 35 §10, it is read-side bookkeeping that would otherwise leak a
+    local path into a written artifact), the attrs are JSON-encoded into the
+    footer under `PANDAS_ATTRS` (spec 35 §2): `to_parquet` -> `pq.read_table` ->
+    `replace_schema_metadata` -> `pq.write_table`. Empty attrs skip this
+    entirely -- byte-for-byte today's write path at today's cost.
+
+    Note: the attrs-present path re-encodes the table through pyarrow, so
+    row-group layout/compression follow pyarrow's defaults rather than
+    necessarily being byte-identical to plain `to_parquet` output -- harmless
+    for catalog-sized data (KB-MB), but don't route a large dataframe through
+    this expecting zero extra cost (spec 35 §10).
+    """
     fs, p = _fs_and_path(path, storage_options)
     _ensure_parent(fs, p)
     buf = io.BytesIO()
     df.to_parquet(buf)
+
+    attrs = {k: v for k, v in df.attrs.items() if k != SOURCE_PATH_ATTRS_KEY}
+    if attrs:
+        import pyarrow.parquet as pq
+
+        buf.seek(0)
+        table = pq.read_table(buf)
+        metadata = dict(table.schema.metadata or {})
+        metadata[PANDAS_ATTRS_FOOTER_KEY] = json.dumps(attrs).encode("utf-8")
+        buf = io.BytesIO()
+        pq.write_table(table.replace_schema_metadata(metadata), buf)
+
     with fs.open(p, "wb") as f:
         f.write(buf.getvalue())
+
+
+def peek_parquet_attrs(path: str, **storage_options: Any) -> dict:
+    """Read only the Parquet footer -- no row group -- and return the restored
+    `.attrs` dict, or `{}` if there is none (spec 35 §1/§6: cheap inspection of
+    the declaration stamp, e.g. for `fsd-catalog-inspect`)."""
+    import pyarrow.parquet as pq
+
+    fs, p = _fs_and_path(path, storage_options)
+    with fs.open(p, "rb") as f:
+        metadata = pq.read_metadata(f)
+    return _decode_pandas_attrs(metadata.metadata)
 
 
 # --- first-class S3-compatible transport -------------------------------------

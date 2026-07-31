@@ -1,3 +1,8 @@
+---
+status: current
+summary: The source seam (CDSE first) and download responsibility; MPC (spec 32) later joined as a second source without contradicting this.
+---
+
 # Spec 01 — Sources (seam + CDSE)
 
 Folds in: `cdseutils/{utils,sentinel2,constants,mydataclasses,evalscripts}.py`,

@@ -2,8 +2,8 @@
 
 Spec: specs/08-workflows.md. Preserves the demo_01 UX of run_create_datacube.
 
-Setup pre-slices the big catalog once per shape (via TileCatalog.filter) so each
-parallel build job reads only its small subset — no shared-file contention. The
+Setup reads the catalog once, then pre-slices it per shape (via `catalog.filter_gdf`)
+so each parallel build job reads only its small subset — no shared-file contention. The
 per-row start/end dates are the *actual* tile-derived min/max (the median_mosaic
 anchor, spec 04 caveat / TODO #2). This is the shape-centric workflow TODO #15 will
 later optimize.
@@ -11,19 +11,30 @@ later optimize.
 
 from __future__ import annotations
 
+import concurrent.futures
 import datetime
+import io
 import os
+import time
 
 import geopandas as gpd
 import pandas as pd
 
 from fsd import config
-from fsd.catalog.catalog import TileCatalog
+from fsd.catalog.catalog import TileCatalog, filter_gdf
 from fsd.storage import fs
 from fsd.workflows import runners
 
 COL_ID = "id"
 COL_LABEL = "label"
+
+# D13 (spec 38, TODO #53): a unit's CONTENT identity -- same id+params means the same
+# work, safe to collapse to one row. `export_folderpath` is keyed by `id` ALONE
+# (below), a narrower thing than this tuple -- two rows can share this identity and
+# still collide on folder (that's the guard in `workflows.runners`, not this dedupe).
+_UNIT_IDENTITY_COLS = (
+    COL_ID, "startdate", "enddate", "bands", "mosaic_days", "mosaic_scheme", "scl_mask_classes",
+)
 
 
 def setup(
@@ -40,11 +51,19 @@ def setup(
     csv_filepath: str,
     label_col: str | None,
     mosaic_scheme: str = config.MOSAIC_SCHEME,
+    max_concurrent: int = config.SETUP_MAX_CONCURRENT,
 ) -> None:
     """Per geometry: write geometry.geojson + catalog.parquet slice + input.csv row.
 
-    Reuses `TileCatalog.filter` for the date+overlap slice (which also persists
-    `area_contribution`). Shapes with no intersecting tiles are skipped with a note.
+    Reads the catalog **once**, then reuses `catalog.filter_gdf` for each shape's
+    date+overlap slice (which also persists `area_contribution`). Shapes with no
+    intersecting tiles are skipped with a note. Prints live progress + ETA: the
+    per-shape writes are network I/O on a remote run folder, so this can run for
+    minutes and must not look like a hang.
+
+    Shapes are prepared concurrently (`max_concurrent` threads) because that work is
+    latency-bound blob I/O, not CPU. `input.csv` row order still follows the
+    shapefile's order. Pass `max_concurrent=1` for the old serial behaviour.
 
     The mosaic anchor written to each row is the caller's `startdate`/`enddate` (not
     the per-shape actual acquisition min/max), so every shape mosaics on the same
@@ -54,11 +73,64 @@ def setup(
     """
     startdate = pd.to_datetime(startdate, utc=True)
     enddate = pd.to_datetime(enddate, utc=True)
-    catalog = TileCatalog(catalog_filepath)
-    shapes_gdf = gpd.read_file(shapefilepath)
+    # D6a (spec 36, TODO #40): read via fsd.storage + BytesIO -- a local path behaves
+    # exactly as before (fsd.storage routes file:// transparently), and this closes the
+    # last raw-path geometry read that a cluster node (no `shapefiles/` checkout) can't do.
+    with fs.open(shapefilepath, "rb") as f:
+        shapes_gdf = gpd.read_file(io.BytesIO(f.read()))
 
-    rows = []
-    for _, srow in shapes_gdf.iterrows():
+    # `export_folderpath` is derived from `srow[id_col]`, so two shapes sharing an id are two
+    # work-units writing the SAME folder -- concurrently, once `max_concurrent > 1`. On blob
+    # that collides on the block-blob commit (`InvalidBlockList`) and the surviving
+    # geometry.geojson is whichever shape committed last; locally it silently overwrites.
+    # Either way the run is wrong, so refuse it here rather than race. (Found 2026-07-28: a
+    # multi-polygon ROI made `roi_to_s2_grids` repeat cell ids -- fixed at source in grid.py,
+    # but the guard belongs here too, for every caller.)
+    if shapes_gdf[id_col].duplicated().any():
+        counts = shapes_gdf[id_col].value_counts()
+        repeated = counts[counts > 1]
+        worst = ", ".join(f"{i}x{n}" for i, n in repeated.head(3).items())
+        raise ValueError(
+            f"shapes have duplicate '{id_col}' values: {len(repeated)} of "
+            f"{shapes_gdf[id_col].nunique()} ids repeated across {len(shapes_gdf)} shapes "
+            f"(worst: {worst}). Each id becomes one export folder, so duplicates make "
+            f"multiple work-units write the same files concurrently. Deduplicate the shapes "
+            f"(or pass an id column that is unique per shape) before calling setup()."
+        )
+
+    # Read the catalog ONCE for the whole run, then filter it in memory per shape
+    # (`filter_gdf`). `TileCatalog.filter` re-reads the file on every call, which on a
+    # remote catalog made setup cost one full download per shape: 900 shapes over
+    # `abfss://` = 900 downloads of the same ~121 KiB parquet (~106 MiB, ~900 VPN
+    # round-trips) before a single job was submitted. Same rows out, one read in.
+    catalog_gdf = TileCatalog(catalog_filepath).read()
+
+    n_shapes = len(shapes_gdf)
+    print(f"[setup] catalog read once: {len(catalog_gdf)} rows, for {n_shapes} shapes",
+          flush=True)
+
+    t0 = time.time()
+    last_print = 0.0
+
+    def _tick(done: int, force: bool = False) -> None:
+        """Live progress + ETA -- setup does per-shape network I/O and can run for
+        many minutes on a remote run folder; silence is indistinguishable from a hang."""
+        nonlocal last_print
+        now = time.time()
+        if not force and now - last_print < 2.0:
+            return
+        last_print = now
+        elapsed = now - t0
+        rate = done / elapsed if elapsed > 0 and done else 0.0
+        eta = f"{(n_shapes - done) / rate:.0f}s" if rate else "?"
+        pct = 100 * done / n_shapes if n_shapes else 100.0
+        print(f"[setup] {done}/{n_shapes} shapes ({pct:.0f}%) | {rate:.1f} shapes/s "
+              f"| elapsed {elapsed:.0f}s | eta {eta}", flush=True)
+
+    def _prepare(srow) -> dict | None:
+        """One shape's control files + its input.csv row. Pure per-shape work: it
+        touches only this shape's own folder, and reads (never mutates) the shared
+        `catalog_gdf` — which is what makes the pool below safe."""
         shape_gdf = gpd.GeoDataFrame(
             {"geometry": [srow["geometry"].buffer(0)], COL_ID: [srow[id_col]]},
             crs=shapes_gdf.crs,
@@ -66,24 +138,29 @@ def setup(
         if label_col is not None:
             shape_gdf[COL_LABEL] = srow[label_col]
 
-        # NOTE: re-reads the catalog per shape (TileCatalog.filter). Fine for v1
-        # setup (not the hot path); a bulk single-read is a TODO #15 optimisation.
-        subset = catalog.filter(shape_gdf, startdate, enddate)
+        subset = filter_gdf(catalog_gdf, shape_gdf, startdate, enddate)
         if subset.shape[0] == 0:
-            print(f"[setup] skip id={srow[id_col]}: no tiles in range/overlap")
-            continue
+            print(f"[setup] skip id={srow[id_col]}: no tiles in range/overlap", flush=True)
+            return None
 
         actual_start = subset[timestamp_col].min()
         actual_end = subset[timestamp_col].max()
-        export_folderpath = os.path.abspath(os.path.join(
+        export_folderpath = os.path.join(
             run_folderpath,
             f"{actual_start.strftime('%Y%m%d')}_{actual_end.strftime('%Y%m%d')}",
             str(srow[id_col]),
-        ))
+        )
+        if fs.is_local(export_folderpath):
+            # os.path.abspath is only meaningful (and safe) for a local path — on a
+            # URL (e.g. abfss://...) it would corrupt the host/scheme (specs/31 §6).
+            export_folderpath = os.path.abspath(export_folderpath)
         fs.makedirs(export_folderpath)
         shape_path = os.path.join(export_folderpath, "geometry.geojson")
         catalog_path = os.path.join(export_folderpath, "catalog.parquet")
-        shape_gdf.to_file(shape_path, driver="GeoJSON")
+        # D6a (spec 36): write via fsd.storage rather than gpd.to_file(path) directly, so
+        # this per-unit geometry lands correctly on a remote export_folderpath too.
+        # write_text (not fs.open) so a concurrent adlfs InvalidBlockList retries (TODO #57).
+        fs.write_text(shape_path, shape_gdf.to_json())
         fs.write_parquet(catalog_path, subset)
 
         row = {
@@ -101,7 +178,35 @@ def setup(
         }
         if label_col is not None:
             row[COL_LABEL] = srow[label_col]
-        rows.append(row)
+        return row
+
+    # Threads, not processes: every shape costs ~4-7 tiny blob round-trips
+    # (`makedirs` + `geometry.geojson` + the `catalog.parquet` slice), so the loop is
+    # latency-bound and the GIL is released for the duration of each call. Same
+    # pattern `sources.mpc.download`/`download_shard` already run concurrently through
+    # `fsd.storage` against blob. Measured 2026-07-22: 900 shapes serially = ~1.8
+    # s/shape (~27 min) on `rise` over VPN.
+    #
+    # Results are placed BY INDEX and compacted afterwards, so `input.csv` row order
+    # is the shapefile's order regardless of completion order — parallelism must not
+    # change the manifest. (An exception in a worker still propagates out of
+    # `fut.result()`, as before; the pool's `__exit__` lets in-flight shapes finish
+    # first, so slightly more work lands before it surfaces.)
+    prepared: list[dict | None] = [None] * n_shapes
+    _tick(0, force=True)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent) as pool:
+        futures = {
+            pool.submit(_prepare, srow): i
+            for i, (_, srow) in enumerate(shapes_gdf.iterrows())
+        }
+        done = 0
+        for fut in concurrent.futures.as_completed(futures):
+            prepared[futures[fut]] = fut.result()
+            done += 1
+            _tick(done)
+
+    rows = [r for r in prepared if r is not None]
+    _tick(n_shapes, force=True)
 
     if not rows:
         raise ValueError("setup produced no work-units (no shape had tiles in range).")
@@ -116,8 +221,40 @@ def setup(
     if fs.exists(csv_filepath):
         with fs.open(csv_filepath, "r") as f:
             input_df = pd.concat([pd.read_csv(f), input_df], ignore_index=True)
+    input_df = _dedupe_on_unit_identity(input_df)
     with fs.open(csv_filepath, "w") as f:
         input_df.to_csv(f, index=False)
+
+
+def _dedupe_on_unit_identity(input_df: pd.DataFrame) -> pd.DataFrame:
+    """D13 (spec 38, TODO #53): collapse rows sharing the same content identity
+    (`_UNIT_IDENTITY_COLS`) to one, keeping the NEWEST (`added_on`) -- an idempotent
+    re-run of `setup` (which appends unconditionally) must not grow `input.csv` by one
+    duplicate copy of every unit each time. A re-run adding a genuinely new shape (or a
+    changed window/params for an existing id) still adds a distinct row -- this is a
+    dedupe, not a "one row per id" collapse. Order otherwise preserved (`setup`'s own
+    manifest-order contract, `test_setup_manifest_order_is_shapefile_order_not_completion_order`)."""
+    cols = [c for c in _UNIT_IDENTITY_COLS if c in input_df.columns]
+    if not cols:
+        return input_df
+    # A prior run's rows round-tripped through CSV (dates/added_on came back as
+    # strings); this run's freshly-prepared rows are still in-memory Timestamps. Build
+    # a canonicalized identity key per row (dates normalized to a comparable ISO
+    # string) rather than comparing the raw columns, so the two never fail to match on
+    # type/format alone.
+    date_cols = {"startdate", "enddate"} & set(cols)
+    key_df = input_df[cols].copy()
+    for c in date_cols:
+        key_df[c] = pd.to_datetime(key_df[c], utc=True).astype(str)
+    identity_key = key_df.astype(str).agg("|".join, axis=1)
+
+    if "added_on" not in input_df.columns:
+        return input_df.loc[~identity_key.duplicated(keep="last")]
+    sort_key = pd.to_datetime(input_df["added_on"], utc=True)
+    order = sort_key.argsort(kind="stable")
+    keep_last = ~identity_key.iloc[order].duplicated(keep="last")
+    keep_index = identity_key.iloc[order].index[keep_last.to_numpy()]
+    return input_df.loc[input_df.index.isin(keep_index)]  # restore manifest order
 
 
 def run_create_datacube(
@@ -140,8 +277,14 @@ def run_create_datacube(
     unlock: bool = False,
     overwrite_setup_csv: bool = True,
     runner: str = "local",
+    runner_kwargs: dict | None = None,
 ):
-    """Run setup (unless csv exists), then dispatch the task via `runner`."""
+    """Run setup (unless csv exists), then dispatch the task via `runner`.
+
+    `runner_kwargs` (spec 36 D3) is forwarded to `runners.run_aml` when `runner="aml"`
+    (e.g. `cluster=`, `environment=`, `root=`, `identity_client_id=`) -- the local runner
+    takes no extra kwargs, so it is ignored for `runner="local"`.
+    """
     if overwrite_setup_csv and fs.exists(csv_filepath):
         fs.rm(csv_filepath)
 
@@ -154,6 +297,8 @@ def run_create_datacube(
             csv_filepath=csv_filepath, label_col=label_col, mosaic_scheme=mosaic_scheme,
         )
 
-    if runner != "local":
-        raise ValueError(f"Unknown runner={runner!r}; only 'local' exists in v1.")
-    return runners.run_local(csv_filepath, cores=cores, dry_run=dry_run, unlock=unlock)
+    if runner == "local":
+        return runners.run_local(csv_filepath, cores=cores, dry_run=dry_run, unlock=unlock)
+    if runner == "aml":
+        return runners.run_aml(csv_filepath, **(runner_kwargs or {}))
+    raise ValueError(f"Unknown runner={runner!r}; valid values: 'local', 'aml'.")

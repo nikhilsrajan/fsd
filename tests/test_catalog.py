@@ -7,6 +7,7 @@ Covers: append -> read round-trip, `files` union on re-append, and `filter`
 import datetime
 
 import geopandas as gpd
+import pytest
 import shapely.geometry as sg
 
 from fsd import config
@@ -125,9 +126,133 @@ def test_filter_inclusive_bounds(tmp_path):
     assert set(out["id"]) == {"start", "end"}
 
 
+# --- declaration stamping / conflict rule (spec 35 §4/§8.7) -------------------
+
+
+def test_append_stamps_declaration_on_new_catalog(tmp_path):
+    from fsd.catalog.declaration import S2_L2A_DECLARATION
+
+    cat = TileCatalog(str(tmp_path / "catalog.parquet"))
+    cat.append(
+        [_row("t1", "2024-08-01T10:00:00Z", "B02.jp2", _box(0, 0, 1, 1))],
+        declaration=S2_L2A_DECLARATION,
+    )
+    assert cat.declaration == S2_L2A_DECLARATION
+
+
+def test_constructor_declaration_is_appends_default(tmp_path):
+    from fsd.catalog.declaration import S2_L2A_DECLARATION
+
+    cat = TileCatalog(str(tmp_path / "catalog.parquet"), declaration=S2_L2A_DECLARATION)
+    cat.append([_row("t1", "2024-08-01T10:00:00Z", "B02.jp2", _box(0, 0, 1, 1))])
+    assert cat.declaration == S2_L2A_DECLARATION
+
+
+def test_append_conflicting_declaration_raises(tmp_path):
+    from fsd.catalog.declaration import MaskSpec, SourceDeclaration
+
+    a = SourceDeclaration(reference_band="B04")
+    b = SourceDeclaration(reference_band="B08", mask_spec=MaskSpec(band="SCL", classes=(1,)))
+
+    cat = TileCatalog(str(tmp_path / "catalog.parquet"))
+    cat.append([_row("t1", "2024-08-01T10:00:00Z", "B02.jp2", _box(0, 0, 1, 1))], declaration=a)
+    with pytest.raises(ValueError, match="declaration conflict"):
+        cat.append([_row("t2", "2024-08-02T10:00:00Z", "B02.jp2", _box(1, 1, 2, 2))], declaration=b)
+    # the original stamp is untouched by the rejected append.
+    assert cat.declaration == a
+
+
+def test_append_declaration_none_preserves_existing_stamp(tmp_path):
+    from fsd.catalog.declaration import SourceDeclaration
+
+    a = SourceDeclaration(reference_band="B04")
+    cat = TileCatalog(str(tmp_path / "catalog.parquet"))
+    cat.append([_row("t1", "2024-08-01T10:00:00Z", "B02.jp2", _box(0, 0, 1, 1))], declaration=a)
+    # an fsd-agnostic top-up (no declaration= given) must not erase the stamp.
+    cat.append([_row("t2", "2024-08-02T10:00:00Z", "B02.jp2", _box(1, 1, 2, 2))])
+    assert cat.declaration == a
+    assert len(cat.read()) == 2
+
+
 def test_append_empty_is_noop(tmp_path):
     cat = TileCatalog(str(tmp_path / "catalog.parquet"))
     cat.append([])
     from fsd.storage import fs
 
     assert not fs.exists(cat.filepath)
+
+
+# --- offset / nodata (spec 34 §1, retiring spec 32's boa_add_offset) -----------
+
+
+def test_append_rows_without_offset_or_nodata_default_to_zero(tmp_path):
+    # CDSE-shaped rows (no offset/nodata key) must not KeyError on write.
+    cat = TileCatalog(str(tmp_path / "catalog.parquet"))
+    cat.append([_row("t1", "2024-08-01T10:00:00Z", "B02.jp2", _box(0, 0, 1, 1))])
+    gdf = cat.read()
+    assert gdf["offset"].iloc[0] == 0
+    assert gdf["nodata"].iloc[0] == 0
+
+
+def test_offset_and_nodata_round_trip(tmp_path):
+    cat = TileCatalog(str(tmp_path / "catalog.parquet"))
+    cat.append([
+        _row("t1", "2024-08-01T10:00:00Z", "B04.tif", _box(0, 0, 1, 1),
+             offset=-1000, nodata=0),
+    ])
+    gdf = cat.read()
+    assert gdf.loc[gdf["id"] == "t1", "offset"].iloc[0] == -1000
+    assert gdf.loc[gdf["id"] == "t1", "nodata"].iloc[0] == 0
+
+
+def test_read_does_not_backfill_a_legacy_catalog_missing_offset_nodata(tmp_path):
+    # spec 34 [G4]: no back-compat shim — a catalog written before offset/nodata
+    # existed is disposable (re-ingest, don't migrate), so `.read()` must NOT
+    # silently patch the columns back in.
+    import geopandas as gpd
+    import pandas as pd
+
+    from fsd.catalog.catalog import COLUMNS
+    from fsd.storage import fs
+
+    old_cols = [c for c in COLUMNS if c not in ("offset", "nodata")]
+    row = _row("t1", "2024-08-01T10:00:00Z", "B02.jp2", _box(0, 0, 1, 1))
+    gdf = gpd.GeoDataFrame([row], geometry="geometry", crs="EPSG:4326")
+    gdf["timestamp"] = pd.to_datetime(gdf["timestamp"], utc=True)
+    gdf = gdf[old_cols]
+    fp = str(tmp_path / "old_catalog.parquet")
+    fs.write_parquet(fp, gdf)
+
+    read_back = TileCatalog(fp).read()
+    assert "offset" not in read_back.columns
+    assert "nodata" not in read_back.columns
+
+
+def test_declaration_survives_catalog_roundtrip(tmp_path):
+    """spec 35 §8.1 — footer round-trip: a non-S2 declaration stamped through
+    `TileCatalog.append` survives write->read byte-identical, tuples still
+    tuples (replaces the deleted TODO-#42 pin, which this closes)."""
+    import geopandas as gpd
+
+    from fsd.catalog.declaration import MaskSpec, SourceDeclaration
+
+    custom = SourceDeclaration(
+        reference_band="B04",
+        mask_spec=MaskSpec(band="QA", classes=(1, 2, 3)),
+        mask_keep=True,
+        mosaic_method="median",
+    )
+    cat = TileCatalog(str(tmp_path / "catalog.parquet"), declaration=custom)
+    cat.append([
+        _row("t1", "2024-08-01T10:00:00Z", "B04.tif", _box(0, 0, 1, 1),
+             offset=-1000, nodata=7),
+    ])
+
+    back = cat.read()
+    assert isinstance(back, gpd.GeoDataFrame)
+    # per-row declarations survive...
+    assert back["offset"].iloc[0] == -1000
+    assert back["nodata"].iloc[0] == 7
+    # ...and now so does the collection-level one (spec 35, closing TODO #42).
+    assert cat.declaration == custom
+    assert isinstance(cat.declaration.mask_spec.classes, tuple)

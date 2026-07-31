@@ -1,3 +1,8 @@
+---
+status: current
+summary: Storage-footprint COG vs JP2 comparison (spec 13); the measured result still stands.
+---
+
 # COG vs JP2 — storage (spec 13)
 _generated 2026-07-04T12:07:34.991758Z · first 4 months · 192 products_
 Base COG = DEFLATE + PREDICTOR=2, tiled 512, **no overviews** (the build never reads overviews). The COG+overviews column is the *estimated* extra cost if these same files were also made XYZ-tiling-ready (e.g. for TiTiler) — measured from a sample, not materialised.

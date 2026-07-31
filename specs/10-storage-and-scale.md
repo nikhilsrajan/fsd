@@ -1,3 +1,8 @@
+---
+status: current
+summary: The storage seam (fsspec) and scale-out principle that all later Azure work builds on.
+---
+
 # Spec 10 — Storage seam & scale-out (Azure-ready, cloud-agnostic)
 
 New module + cross-cutting design. This spec exists so the **real end goal** —
@@ -5,12 +10,22 @@ running download + datacube creation **on Azure at scale via Azure Batch, withou
 cloud lock-in** — is reachable *additively* from the v1 local core, never as a
 rewrite. **No Azure code ships in v1**; this spec defines the seams v1 must honor.
 
+> **Pointer (2026-07-16):** MPC (`sources/mpc.py`, spec 32) is another first-class source through
+> this same `fsd.storage` seam — its download is a pure `storage.transfer(signed_https, local)`
+> byte-copy (fsspec `http` -> local), no S3-specific transport. Its Phase-2 realization (streaming
+> MPC COGs in place on Azure vs copying to `rise`) is spec 31's retargeted scope.
+
 ## Principle
 
 Lock-in risk lives in two places: **where files are** and **what schedules
 compute**. Put both behind seams; keep everything else cloud-unaware.
 
 ## Seam 1 — Storage (`fsd/storage/fs.py`, via `fsspec`)
+
+> **Realized for Azure by spec 31 (P1, 2026-07-17)** — the compute half (build + flatten
+> reading/writing blob via `abfss://` + GDAL `/vsiadls/`; `fsd/storage/azure.py` +
+> `fsd/raster/rio_open`). Download-to-blob is **suspended** into the ingest/normalization
+> contract spec (fsd's own `mpc.py`/`cdse.py` keep their local-only guards in P1).
 
 - Every read/write in the package goes through this module — no other module calls
   `open`, `os.path.exists`, `np.save(path)`, `gpd.read_*(path)` on a raw path.
@@ -47,7 +62,12 @@ Any S3-compatible store is just an fsspec filesystem (`s3fs`) configured with
 - **rasterio caveat:** rasterio reads remote rasters via GDAL VSI (`/vsicurl/`,
   `/vsiaz/`), not fsspec. The raster module (`07`) must accept either a real local
   path or a VSI path; the task may `get()` a tile to local scratch before heavy
-  rasterio work. Document this explicitly when implementing.
+  rasterio work. Document this explicitly when implementing. **Realized (spec 31,
+  P1): `fsd.raster.rio_open`** — a thin `rasterio.open` wrapper in the three
+  pixel-read sites (`raster/images.py`, `raster/cog.py`, `catalog/stac.py`); local
+  paths pass straight through, an `abfss://`/`az://` path routes to GDAL's
+  `/vsiadls/` handler under a per-open refreshed token. No `get()`-to-scratch path
+  was needed — streaming range-reads via VSI is the P4 Batch-node behavior wanted.
 
 ## Seam 2 — Compute (task + runner, see `08-workflows.md`)
 

@@ -1,3 +1,8 @@
+---
+status: historical
+summary: Full-year EuroCrops training-data benchmark against the satellite_benchmark/ archive, which no longer exists (deleted 2026-07-17, CLAUDE.md).
+---
+
 # Full-year datacube benchmark + stats — 1015 EuroCrops fields (2018)
 
 _Generated 2026-07-05 15:37 UTC by `benchmarks/eurocrops_year_report.py`._

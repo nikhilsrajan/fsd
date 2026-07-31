@@ -40,41 +40,33 @@ rewrite. This is the promise we protect at every step.
 ## 2. Organizing principles (the anti-rewrite frame)
 
 ### 2.1 Three usage modes
-- **Mode A — fully local.** Laptop does everything: download → datacube → flatten → train →
-  **inference/deploy**. This is fsd today (minus deploy). The escape hatch for
-  Azure-hesitant colleagues; it never goes away.
-- **Mode B — cloud data+compute, local control + local training.** The laptop is a *thin
-  remote control*: it triggers download/datacube/flatten **in the cloud** (raw tiles never
-  touch the laptop), then pulls back only the **compact flattened arrays** to train locally.
-  Coherent precisely because flattened data is small.
-- **Mode C — fully cloud inference.** Register model + adapter, trigger by ROI+dates, cloud
-  fans out over S2 tiles, runs the model, writes COGs + STAC, TiTiler serves XYZ.
 
-The "downloading raw data to a laptop defeats cloud speed-up" worry is really *Mode A data
-locality with Mode C speed* — incoherent. Resolution: in Mode B you download the *flattened
-result*, not the raw imagery.
+**Moved to [`ARCHITECTURE.md` §5](ARCHITECTURE.md#5-the-three-modes)** (spec 41 D9: the code map,
+invariants and modes have one home). Modes **A** (fully local), **B** (cloud data + compute, local
+control and training) and **C** (fully cloud inference) — B and C were both proven on the real
+cluster 2026-07-29.
 
 ### 2.2 Control plane vs data plane (data gravity)
-The **driver** (control plane) is a thin, portable, authenticated *job submitter* — it can
-run on a **laptop** (VPN + `az login`), the user's **VM**, an **AML job**, or later an
-**Azure Function** ("lambda equivalent"). The **data plane** (download, datacube, flatten,
-inference) is heavy and **must be cloud-colocated** (compute next to storage). Keeping the
-driver thin is *why* "all three driver locations" is cheap to support.
+
+**Moved to [`ARCHITECTURE.md` §2](ARCHITECTURE.md#2-containers--the-four-runtime-pieces).** The
+driver is a thin, portable job submitter (laptop · VM · AML job · later a Function); the data plane
+is heavy and must be cloud-colocated. What it costs when that line is crossed is measured in
+[`docs/findings/cloud-overhead.md`](docs/findings/cloud-overhead.md).
 
 ### 2.3 Layers (swap backends without touching the core)
-- **L0 — fsd core library**: pure pipeline functions. Cloud-agnostic; never imports Azure.
-- **L1 — seams**: storage (fsspec, exists), runner (Snakemake exists → +Azure Batch), and a
-  new **control/trigger seam** (submit-a-job, backend-agnostic).
-- **L2 — deployment backends**: local, Azure Batch, later inference/deploy backends.
-- **L3 — project contract**: the user-supplied **ModelAdapter** (§3).
-- **L4 — product surfaces**: pip UX, config files, hosted TiTiler/STAC. fsd *produces* the
-  STAC+COG; infra *hosts* the tiler.
+
+**Moved to [`ARCHITECTURE.md` §6](ARCHITECTURE.md#6-layers--swap-a-backend-without-touching-the-core)**
+(same D9 reason as §2.1/2.2). L0 core · L1 seams · L2 deployment backends · L3 the project's
+`ModelAdapter` · L4 product surfaces. The shipped L2 backends are **local (Snakemake) and Azure ML**
+— this section previously named Azure *Batch*, which was the earlier plan, not what runs.
 
 ### 2.4 Two datacube types, one builder
-- **Training datacubes** — from known-label polygons → flatten → arrays.
-- **Inference datacubes** — from S2 res-11 grids tiling an ROI → model → COG.
 
-Same `build_datacube`; what differs is the *source of geometries* and *what happens after*.
+**Moved to [`ARCHITECTURE.md` §3](ARCHITECTURE.md#3-code-map).** Training cubes come from
+known-label polygons and are tiny; inference cubes come from S2 grid cells tiling an ROI and are
+large. Same builder — what differs is the *source of geometries* and *what happens after*. The
+opposite economics are measured in
+[`docs/findings/workload-regimes.md`](docs/findings/workload-regimes.md).
 
 ### 2.5 Scope goes UP — high-level verbs hide the plumbing
 Intended users shouldn't say "flatten" or "tile the ROI." fsd grows a high-level API (§4);
@@ -206,6 +198,21 @@ fsd.deploy(model_bundle, ...)               # register a bundle for scaled infer
 `runner=` and `storage=` are the seams: the **same call** runs Mode A (local, local disk) or
 Mode B/C (Batch, blob) by config alone — no code change.
 
+**ROI → S2-grid tiling** (inside `run_inference(roi=…)`, **P0.75** — the tiling itself landed as
+`fsd.grid`, spec 19) is a **port, not an invention** — the
+legacy `rsutils.s2_grid_utils.get_s2_grids_gdf` already does it, and
+`fetch_satdata/notebooks/demo_preparation.ipynb` pins the intended recipe:
+1. `get_s2_grids_gdf(roi_geojson_4326, grid_size_km=5, scale_fact=1.1, res=None)` — map
+   `grid_size_km`→S2 level (**5 km → res 11**, as in the legacy `100_random_grids`),
+   `s2.polyfill` the ROI's **convex hull** at that level, keep cells that **intersect** the
+   ROI, then **scale each cell by `scale_fact` (1.1 → 10 % overlap per side)** so adjacent
+   grid cells don't leave seams at mosaic time.
+2. `gpd.overlay(grids_gdf, roi_gdf)` — clip the scaled grids to the ROI → the per-cell
+   geometries that feed datacube creation (each **grid cell** = one inference datacube = one
+   **per-cell task**).
+3. Deps: `s2` (`from s2 import s2`, gives `polyfill`) + `s2cell`. ✅ ported into `fsd/grid.py`
+   (spec 19); consumed by the **P0.75** wrapper, not P4. Not needed for P0's `create_training_data`.
+
 ---
 
 ## 5. Roadmap — small, demoable releases
@@ -213,19 +220,111 @@ Mode B/C (Batch, blob) by config alone — no code change.
 Each phase is a shippable release to show the team. **Infra-ask** flags where we must *propose*
 a `raapid-infra` change to the admin (we never edit it ourselves).
 
+### 5.0 ⭐ THE DEMO TARGET (locked 2026-07-21, user)
+
+Everything below is background; **this is what we are driving at**, and anything not on this
+path is a distraction until it ships:
+
+> **A researcher runs the same fsd pipeline on Azure at scale — `runner="aml"` /
+> `storage="abfss://…"` is *configuration*, not a rewrite.** That is **P2 → P4** (TODO #41).
+> Audience: **a researcher who would actually use fsd**, so the self-serve bar applies —
+> `pip install`, docs, adapter-writing, error messages that teach.
+
+> **Wording widened 2026-07-21 (user), from "on Azure **Batch** at scale" / `runner="batch"`.**
+> The promise being locked is **the seam** — cloud as a swappable backend — not a product name, and
+> hardcoding the vendor's product into the north-star is precisely the failure mode that cost us a
+> session to detect. *Why Batch was displaced:* `runbooks/36-runner-fork-probe.md` measured the
+> project's Batch account at a **6 vCPU** dedicated core quota against a **64-core** pool VM — it
+> cannot allocate one node — while the AML `d16` cluster offers 512 cores today under **the same
+> managed identity spec 31 already proved against blob**. Full evidence: `AZURE_INFRA.md` §3.1.
+> **Batch is dropped, not deferred** (user, 2026-07-21 — strict YAGNI): AML ships the demo, and the
+> seam is already demonstrated by local-Snakemake ↔ AML. Revisit only if something actually needs it.
+
+**Everything local is already done and proven on real data** (P0 → P0.9), and the storage half
+of the cloud story is proven too (P1: runbook `31-p1-datacube-on-blob.md` green,
+`34-download-to-blob.md` green on both sources). **The single missing piece is the runner.**
+
+⚠️ **A tension to hold consciously, not resolve by accident.** "Researcher self-serve" and
+"runs on Batch" pull apart: a researcher without `rise` credentials + VPN **cannot run the Batch
+path at all**. So the honest shape of the demo is *"the local path is theirs to run; the cloud
+path is the same call with two arguments changed, which we drive."* Protecting that — one code
+path, cloud as a backend — **is** the demo. If the Batch runner ends up needing its own pipeline
+code, the demo has failed even if it runs fast.
+
+**What is left, in order** (detail: `AZURE_INFRA.md` §3.1/§7/§8, TODO #41):
+
+1. ~~**Decide Batch vs AML.**~~ ✅ **RESOLVED 2026-07-21 → AML** (`cluster-<proj>-d16`), by measurement
+   rather than argument: `runbooks/36-runner-fork-probe.md` + `AZURE_INFRA.md` §3.1. Batch dropped.
+2. **Write spec 36 (the scale-runner spec)** — settles §7's remaining questions: where the driver
+   runs, blob data layout, the job environment/image, the `--runner=` seam, idempotency under
+   retries, telemetry. *(§7's task-granularity question is already answered — see below.)*
+3. **Implement the runner seam** + fix the local Snakemake sentinels' blob-unsafety (both TODO #41;
+   the second falls out of the first, since §8.1's atomic-rename publish replaces the sentinels).
+
+**Two things got materially cheaper on 2026-07-21, and both are worth naming:**
+
+- **Zero infra asks.** The old plan needed two platform-admin changes (a Batch core-quota bump and
+  probably `max_tasks_per_node`). The AML clusters are provisioned, quota'd, and identity-attached
+  **today** — so P2 no longer waits on anyone. The project's "first infra proposal" is deferred
+  indefinitely.
+- **No container build blocking the path.** "Container image + ACR push — the largest genuinely new
+  build" was a Batch requirement. AML builds and versions the job environment itself, so an image is
+  an optimization, not a gate. (`az acr build` is available server-side if we ever want one — the
+  registry is Basic SKU with public access, so no local Docker is needed either.)
+
+**Task granularity is decided (user, 2026-07-21): one dispatched unit = a *shard* of `input.csv`,**
+executed by the **existing local Snakemake runner** inside the job. The cloud runner shards the work
+list and launches copies of code that is already proven — the strongest form of "cloud is a backend,
+not a rewrite." Retry/resume is per-shard, made safe by per-cube skip-if-exists (§8.1).
+
+✅ **No spike is needed first.** GDAL/VSI auth under MSI — long carried as *the* technical
+unknown (`AZURE_INFRA.md` §7.3) — was **solved and proven on real Azure by spec 31**
+(`fsd.raster.rio_open` → `/vsiadls/` + fresh token; runbook `31-p1-datacube-on-blob.md` green
+2026-07-18). §7.3/§8 are now marked resolved. The residual is narrower and lands in **P4**, not
+here: GDAL *writes* to blob for inference-output COGs are still unproven (`rio_open` raises on a
+remote `mode="w"` by design), i.e. TODO #39. **P2 is design + build, not discovery.**
+
+**Not on the path** (real, but do them when we hit them — `LIMITATIONS.md`): more data sources,
+xarray/zarr, the config-only adapter, tile serving. Serving (P5) is the natural *next* demo
+after this one, not part of it.
+
 | Phase | Ships | Demo | Infra-ask |
 |---|---|---|---|
 | **P0** | fsd pip-installable (GitHub); high-level verb *skeletons*; STAC-aligned catalog (§6) | `pip install fsd`, local download→datacube→flatten via `create_training_data` | none |
-| **P0.5** | **ModelAdapter contract** + reimplement legacy train/deploy on it, **fully local** | Mode A end-to-end: EuroCrops RF train → inference → COG + STAC, one plug-in adapter | none |
-| **P1** | Storage seam on Azure: adlfs/MSI read+write to `st<proj>`; GDAL-VSI auth proven | build a datacube locally but I/O against `rise` blob (over VPN) | none (uses existing) |
-| **P2** | Azure Batch runner for datacube fan-out (the runner seam) | N datacubes built across autoscaled `<proj>-pool` nodes | **quota bump; likely `max_tasks_per_node`** |
-| **P3** | Thin control plane ("trigger from laptop"): submit-a-job UX + config files | Mode B: laptop triggers cloud build, pulls flattened arrays | none new |
-| **P4** | Inference at scale: ROI → S2 tiles → model → COG outputs on Batch | Mode C first light | maybe scale `max_nodes` |
+| **P0.5** | ✅ **DONE (spec 18, 2026-07-06)** — **ModelAdapter contract** + legacy train/deploy reimplemented on it, **fully local**. `src/fsd/model/` (adapter/features/engine/bundle), `run_inference` real, `create_training_data(adapter=…)`, self-describing bundle. | Mode A end-to-end: EuroCrops RF train → inference → COG + STAC, one plug-in adapter (`tests/manual/deploy.md`) | none |
+| **P0.75** | ✅ **DONE (spec 21, 2026-07-07)** — **Local ROI inference verb (completes Mode A).** `run_inference(roi=…)` chains **tile the ROI (`fsd.grid.roi_to_s2_grids`) → build one datacube per grid cell → infer → COG + STAC (+ optional display merge)** in a single call, all local. The per-cell **build+infer** is one runner-dispatched unit-of-work (`workflows/infer_task.py` + Snakefile → **Batch swaps in at P4 unchanged**, not a second pool). `merge=True\|"reproject"` (strict vs lossy display merge). Imagery assumed present in the catalog — **inference never calls CDSE** (conserve quota, SO-6). *(`create_training_data(roi=…)` deferred — labelled field shapes need no ROI→cell tiling.)* | Mode A: one call turns an ROI GeoJSON into per-cell crop-class COGs (`tests/manual/roi_inference.md`) | none |
+| **P0.9** | ✅ **DONE (spec 23, 2026-07-10)** — **Local-completeness gate + team run-book.** `demos/e2e_austria.py` runs the *whole* local pipeline on **fresh real CDSE data** (download → jp2→COG → datacube → flatten → train → bundle → ROI build+infer → COG/STAC/merged), a **reusable template** (swap `--roi/--train`), **cross-UTM-zone-safe** (`merge="reproject"` area-dominant/`merge_crs`). Adds **decomposed download timing** (transfer vs COG-convert) + a **throughput probe** (factor out link/VPN), the **`plan_download` guardrail** (missing imagery → actionable `fsd.download` plan; verbs never auto-fetch), and a **no-download `estimate_run`** (ETA for any region/window/bands). Doc: `demos/E2E_AUSTRIA.md`. | the go-to "how fsd runs locally" doc + trustworthy timings | none | 
+| **P1** | Storage seam on Azure: adlfs/MSI read+write to the `rise` project storage; GDAL-VSI auth proven | build a datacube locally but I/O against `rise` blob (over VPN) | none (uses existing) |
+| **P2** | Azure **AML** runner for datacube fan-out (the runner seam; spec 36) | N datacubes built across the autoscaled `rise` AML `d16` cluster | **none** (was: Batch quota bump + `max_tasks_per_node` — moot since the fork went to AML) |
+| **P3** | 🟡 **PARTIALLY DONE (spec 39, 2026-07-24, pending cluster validation)** — **create-training-data-at-scale.** `create_training_data`/`flatten_training_data` gain `runner="aml"`: an optional download phase (`api.download`, reused), the spec-36 build fan-out (reused), and a new **single-node flatten reduce** (`workflows.runners.run_aml_flatten`, D3 — flatten is a reduce over ALL cubes, not a per-cell fan-out) whose compact output lands back on the laptop (`api._land_local`, D4, `storage.transfer`). The driver stays control-plane-only (ADR-0004) — only the flattened array (+ optional `features.npy`, computed on the driver, ADR-0020) comes home, never the raw cubes. All unit tests mocked at the AML-client boundary — `runbooks/39-training-data-on-aml.md` Phases 0-2 are the pending real-cluster validation. Docs: `docs/adr/0020`, `CONTEXT.md`. | Mode B: laptop triggers cloud download→build→flatten, pulls the flattened arrays | none new |
+| **P4** | ✅ **DONE (spec 38, 2026-07-23, pending cluster validation)** — **Inference at scale.** `run_inference(roi=…, runner="aml")` dispatches the P0.75 per-cell build+infer unit-of-work onto the **`rise` AML cluster**, reusing the P2 datacube-fan-out runner (`workflows.runners.run_aml_inference` + a new node entrypoint `workflows/infer_shard.py`) — a **thin runner/dispatch swap** (`runner=`/`storage=`/`runner_kwargs=` config), no new pipeline algorithm, **plus** the I/O-seam fixes the swap exposed: remote-dst COG (`raster.cog.to_cog`, closes TODO #17), bundle-loaded-once-per-node (closes TODO #25's root cause), a dedicated inference AML Environment (adapter + deps, an operator run-book step), and a one-node adapter-import smoke before the fan-out. 31 tests, all mocked at the AML-client boundary (no test needs Azure) — `runbooks/38-inference-on-aml.md` Phases 0-3 are the pending real-cluster validation. Docs: `docs/adr/0001`, `docs/adr/0002`, `CONTEXT.md`. | Mode C: the P0.75 ROI verb fanned out across AML nodes | maybe scale `max_nodes` |
 | **P5** | Output STAC + hosted TiTiler / XYZ | outputs viewable as web tiles | TiTiler hosting (infra) |
 | **P6** | Deploy/registration UX; model-bundle push/register | one-command deploy of a bundle | model store (infra) |
 
 **P0–P1 need zero infra changes** — pure de-risking, two team-visible releases before we're
 ever blocked on someone else's `terraform apply`. The first infra proposal is P2 (Batch quota).
+
+### 5.9 Post-v1 sequencing (user, 2026-07-02) — historical, moved from `TODO.md`
+
+> Moved here verbatim when `TODO.md` became a stub (spec 41 D8/P2, 2026-07-30). **Point-in-time:
+> this is what the ordering looked like on 2026-07-02** — steps 1 and 2 have since happened, and
+> §5's phase table above is the live plan. Kept because it records *why* the order was chosen.
+
+The item numbers are stable IDs, **not** priority order (they are now GitHub issue numbers). The
+intended order of the big efforts:
+
+1. **Finish v1 end-to-end** — download → datacube → flatten, local Snakemake runner
+   (current focus; datacube module #5 is next).
+2. **Azure setup + Batch processing** for datacube creation — the cloud-agnostic
+   scale-out end goal (`specs/10`). Comes **before** any source extension.
+3. **Source extension, incrementally** (issue #11; promotes the source contract to the
+   `sources/base.py: Source` ABC, OQ-3): CDSE **S2 L2A** (done) → **MPC S2 L2A** →
+   CDSE **S1 GRD / S1 RTC** → **MPC S1** → other products (CHIRPS, ERA5, …).
+4. **Benchmark against `rslearn`** (issue #12) — run in parallel with step 3.
+
+The **cross-cutting perf track** that used to sit under this heading (_datacube-creation speed at
+scale_, the 3-part benchmark-first plan and its five parked optimization candidates) moved to
+**issue #15**, which is that item — see its migration comment.
 
 ---
 

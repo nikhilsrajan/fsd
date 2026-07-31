@@ -1,3 +1,8 @@
+---
+status: current
+summary: Part 2 of the benchmark harness: per-read instrumentation, showing where a datacube build's time actually goes.
+---
+
 # Spec 12 — Datacube throughput benchmark · Part 2: per-read instrumentation
 
 > **Status: signed off + implemented (2026-07-04).** Builder `write_read_log` +

@@ -4,6 +4,1019 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## `_timing.json`'s `first_admission` leg is anchored on the FIRST submission (spec 40 A3, 2026-07-29)
+
+`<run_root>/_timing.json` (ADR 0021) is a schema other things read, so this records a change in
+what two existing fields *mean* — the keys are unchanged and nothing breaks on read.
+
+- **`driver_prep_seconds`** was `t_start → last submission` (i.e. it contained the whole submission
+  loop). It is now `t_start → first submission`: driver work done before any job went out.
+- **`first_admission_seconds`** was `last submission → earliest process_start_at`. It is now
+  `first submission → earliest process_start_at`.
+
+*Why:* submitting N jobs is sequential (~40 s for 32) and the early jobs are admitted **during**
+it, so the two overlap and could not be adjacent legs. Run `20260729T132222Z` reported
+`driver_prep=40.1, first_admission=-5.0` on a healthy dispatch — arithmetically additive, but
+neither number meant what its name said. It also destroyed a signal: D11 defines a negative
+admission as *the clock-skew bound being exceeded*, and the overlap artefact was producing
+negatives too.
+
+- **New `submission_span_seconds`** (first → last submission) and **`t_first_submit`**, both in
+  `wall`. `submission_span_seconds` is deliberately **not** one of the five additive legs — it
+  overlaps `first_admission` rather than partitioning it — but it answers the obvious follow-up to
+  a large `first_admission`.
+
+The split still telescopes to `t_end - t_start`. ⚠️ **`timings.json` from before 2026-07-29 carries
+the old definition:** those two fields are not comparable across the boundary, though their sum is.
+
+## `create_training_data` becomes the download→build→flatten→land-local façade (spec 39, 2026-07-24)
+
+The flatten → single-array → land-local half of "training data on the cloud" (the build fan-out
+was already proven, spec 36/37): `create_training_data` grows an optional download phase, and
+flatten gains its own AML dispatch + a local-landing step, so the full pipeline runs as one call.
+
+- **New verb `flatten_training_data`** (D5) — the flatten-only sibling: an `input_csv` of
+  already-built `datacube_filepath`s -> one training array. `runner="local"` calls
+  `datacube.flatten.flatten` in-process (unchanged); `runner="aml"` dispatches the new single-node
+  cluster reduce (D3) then lands the compact result locally (D4). `create_training_data`'s own
+  flatten phase now delegates here instead of calling `datacube.flatten.flatten` directly.
+- **New `workflows/flatten.py` + `runners.run_aml_flatten`** (D3) — a thin in-job CLI (mirrors
+  `workflows/download.py`'s shape) + a dispatcher that submits **exactly ONE** `command(...)` job
+  (`n=1`, no `shard_units` — flatten is a reduce, not a per-cell fan-out), reusing
+  `_aml_preflight_common`/`_aml_submit_and_wait` (spec 37) unchanged. Runs on the **existing
+  general-purpose fsd Environment** — no adapter, no new image (ADR-0020).
+- **New `api._land_local`** (D4) — after the reduce writes to a blob export prefix, one
+  `storage.transfer` per compact array file (`data.npy`/`coords.npy`/`ids.npy`/
+  `metadata.pickle.npy` + `labels.npy` iff present) brings it down to the local
+  `export_folderpath`. `transfer` is already single-object + atomic, so this loop is a safe re-run.
+- **`create_training_data` gains an optional download phase** (D1): new `source="mpc"` (demo
+  default), `download: bool = False`, `max_tiles`, `max_cloudcover`, `cog`, `creds`. When
+  `download=True` it calls `api.download(roi=label_polygons, …)` into `catalog_filepath`'s folder
+  before building — `download=False` (the back-compat default) keeps the existing "catalog must
+  already exist" preflight. The *build* step still never fetches from a provider itself (spec 23
+  D13 unchanged) — download is an explicit prior phase the façade now orchestrates, not a change
+  to what the build reads.
+- **Blob-vs-local split for `runner="aml"`** (D1/D4): `export_folderpath` is always the LOCAL
+  landing target; the blob working root comes from `runner_kwargs["root"]` (catalog, cubes,
+  `input.csv`, and the raw flatten output all live there, under `root/runs/<run_id>/…`).
+  `run_folderpath` defaults to a folder under that blob root for `runner="aml"`, and to
+  `export_folderpath/run` (unchanged) only for `runner="local"`.
+- **In-memory `label_polygons` auto-staged for `runner="aml"`** (Q3): the GeoDataFrame is written
+  once, via the storage seam (`fs.open` + `gdf.to_json()`, not `gdf.to_file` — which needs a real
+  local path and cannot target a blob `run_folderpath`), to one GeoJSON under the blob root that
+  serves as both the download ROI and the per-cell build shapefile. `runner="local"` still writes
+  it the same way (behavior-preserving; previously used `gdf.to_file(driver="GeoJSON")` on a
+  guaranteed-local path).
+- **`label_col` is now optional** (D-labels) in both `create_training_data` and
+  `flatten_training_data` — `label_col: str | None = None`. When omitted, no `labels.npy` is
+  written; `ids.npy` is the join key for labels joined in later without re-flattening. The
+  required-`label_col` preflight check is dropped (`id_col` stays required).
+- **Adapter `n_timestamps` preflight dropped** (D6): `create_training_data` no longer asserts
+  `compute_n_timestamps(...) == adapter.n_timestamps` — `T` is whatever the caller's window/
+  `mosaic_days` produce; a model is retrained at that `T`, not the other way around. The
+  cross-cube calendar-mosaic invariant flatten enforces (spec 15) is unchanged and still raises.
+- **Driver-side features unchanged, now explicitly after land-local** (D2/ADR-0020): the feature
+  transform (`adapter=`/`feature_sequence=` -> `features.npy`) already ran on the driver before
+  this spec; for `runner="aml"` it now runs *after* `flatten_training_data` lands the array
+  locally, reading/writing the local `export_folderpath` — no cluster node ever imports an
+  adapter. Behavior for `runner="local"` is unchanged.
+
+Reuse ledger (spec 39 §4): `datacube/flatten.py::flatten`, `api.download`,
+`api._apply_training_features`, `workflows/runners.py::_aml_submit_and_wait`/
+`_aml_preflight_common`, `storage/fs.py::transfer`, `workflows/create_datacube.py`, and
+`raster/`/`bands/`/`catalog/`/`sources/`/`fsd.model` are **unchanged** — spec 39 is orchestration +
+land-local, not new pipeline code. Docs: `docs/adr/0020`, `CONTEXT.md` ("reduce job",
+"land-local").
+
+## Inference at scale on Azure ML — `runner="aml"` for ROI-mode `run_inference` (spec 38, 2026-07-23)
+
+P4: `run_inference(roi=…, runner="aml")` dispatches the per-cell build+infer unit (spec 21)
+onto the `rise` AML cluster, reusing spec 36's runner machinery — a **thin step-4 dispatch
+swap**, no new pipeline algorithm — plus the I/O-seam fixes the swap exposed:
+
+- **`raster.cog.to_cog` learns a remote-dst branch** (D5, closes TODO #17): when `dst` is a
+  remote `fsd.storage` URL, GDAL still converts on node-local scratch, then `storage.transfer`
+  publishes it. `model.engine._write_output_cog` and `api._merge_outputs` land on blob through
+  it. **Two instances of the same latent bug had to be fixed at the callers** (both derived a
+  raw scratch tif from `dst` itself, `f"{dst}.raw.tif"`, + did `os.makedirs(dirname(dst))` — for
+  a remote `dst` that is a forbidden `rasterio.open("abfss://…","w")` on a remote-looking path
+  that scatters junk local dirs): `api._merge_outputs` (the driver-side `merged.tif`) **and**
+  `model.engine._write_output_cog` (the per-cell `output.tif` an AML node writes — the primary
+  site; the latter was caught in the Opus review, not the initial impl). Both now stage the raw
+  tif on node-local scratch (`tempfile`) regardless of `dst`; `to_cog` handles the remote publish.
+- **Bundle loads once per core per node, not once per cell** (D7, closes TODO #25's root
+  cause): `run_local_inference` now forwards `cubes_per_task` (previously silently dropped);
+  the `create_inference` Snakefile groups `cubes_per_task` cells per job instead of one job per
+  cell; `infer_task.run_infer_task` resolves the adapter via `engine._adapter_from_bundle_cached`
+  (the per-process cache spec 22's infer-only path already used) instead of a fresh
+  `bundle.load` per cell. `infer_task.run_infer_group(input_csv, (lo, hi), bundle_path, …)` is
+  the new grouped entrypoint (mirrors `infer_only_task.run_infer_only`'s shape); the CLI grows an
+  `--input-csv`/`--rows` mode alongside the original single-cell positional-args mode. **The
+  load-per-core default is computed on the node** (`infer_shard._resolve_cores_and_group`): with
+  `cores`/`cubes_per_task` unset the node picks `cores = os.cpu_count()` and groups cells into
+  `ceil(n_units/cores)` so the bundle loads once per core (heavy-model opt-out: `cores=1` →
+  one whole-shard group, one load). `api.run_inference`'s `cores`/`cubes_per_task` now default to
+  `None` (= auto); local/pre-built paths still behave as the old `1`.
+- **`infer_task.run_infer_task` gains a first-line skip-if-`output.tif`-exists** (D6, `overwrite=`
+  kwarg to force a rebuild) — the durable per-cell resume signal, mirroring `task.run_task`'s
+  existing `datacube.npy`-exists skip. The `create_inference` Snakefile no longer touches
+  `export_folderpath` at all (grouping/sentinels are keyed by row-range + node-local scratch), so
+  the D7-style `is_local`-guarded `abspath` this Snakefile predated is now moot rather than
+  reproduced — a remote `export_folderpath` plans cleanly with no special-casing.
+- **New:** `workflows/infer_shard.py` (node entrypoint, mirrors `workflows/shard.py`) and
+  `workflows/adapter_smoke.py` (D11: a one-node adapter-import smoke run once before the N-node
+  fan-out, `skip_smoke=True` opt-out). Bundle staging is manifest-driven (D3): the driver's
+  `runners._stage_bundle` and the node's `infer_shard.fetch_bundle_to_scratch` both walk
+  `bundle.json`'s `artifacts` map — no recursive directory listing, no change to `bundle.load`.
+- **New:** `workflows.runners.run_aml_inference` (D1/D1a/D2/D11) — stages the bundle, shards the
+  already-tiled+`setup`'d cells (`shard_units`, reused verbatim), submits one job per shard (+ the
+  smoke job), waits, aggregates `_status/<k>.json`, raises on failure. `api.run_inference` gains
+  `runner="aml"`/`runner_kwargs` for ROI mode only (D14) — `_check_local_seams`'s
+  `storage_allowed` is now `roi_mode and runner=="aml"` (was unconditionally `False`); the
+  pre-built-cubes path and local ROI mode are unchanged.
+- **Three cross-cutting folds, not P4-specific but surfaced by it:**
+  - **D8 (closes TODO #51, MPC-only):** each MPC AML shard now writes its own
+    `{root}/runs/{run_id}/shards/catalog-<k>.parquet` instead of all shards racing an
+    unsynchronised read-modify-write against the same `catalog.parquet`; the driver
+    sequentially `TileCatalog.append`s each shard catalog into the canonical one after every
+    shard finishes (`runners._merge_shard_catalogs`) — a deliberate serialization, not a lock.
+    CDSE (single job, already single-writer) is untouched.
+  - **D9/D10 (closes TODO #52):** `api._normalize_window` coerces `startdate`/`enddate` to
+    tz-aware UTC `Timestamp`s once, as the first thing `download`/`run_inference` do, raising a
+    `PreflightError` on the driver for an unparseable date — before any AML job, not after a
+    40-380s node cold-start. Closes the CDSE/MPC divergence (only the CDSE AML node path
+    normalized before) and the type-dependent pystac search-window bug (issue #644: a date
+    string expands to end-of-day, a `Timestamp` does not). `run_inference`'s `dt` (the STAC
+    output-item datetime) is coerced too (a minor instance of the same smell); `bands`/
+    `scl_mask_classes`/`mosaic_scheme`/`source`/`merge`/`runner` audited and verified clean.
+  - **D13 (closes TODO #53):** `create_datacube.setup` dedupes `input.csv` on a unit's content
+    identity (`id`+`startdate`+`enddate`+`bands`+`mosaic_days`+`mosaic_scheme`+
+    `scl_mask_classes`, keeping the newest) instead of appending unconditionally forever; **and**
+    `run_aml`/`run_aml_inference`/`run_local_inference` all raise before dispatch if two
+    distinct-content rows still share an `export_folderpath` (keyed by `id` alone — dedupe on
+    content identity does not by itself prevent that collision).
+
+Reuse ledger (spec 38 §4): `workflows/task.py`, `datacube/`, `raster/` (besides `to_cog`),
+`bands/`, `catalog/` query, `model/bundle.py`, and `storage/*` (incl. `azure.py`) are **unchanged**
+— P4 is a dispatcher + a node entrypoint + the I/O-seam fixes above, not a rewrite of the
+build/inference algorithm spec 21/36 already proved. Docs: `docs/adr/0001`, `docs/adr/0002`,
+`CONTEXT.md` (new glossary).
+
+## `create_datacube.setup` reads the catalog once, and reports progress (2026-07-22)
+
+Two changes to `workflows/create_datacube.py::setup`, both provoked by running
+`runbooks/36-aml-runner.md` Phase 3 (900 labelled fields, catalog on `abfss://`), where setup ran
+for many minutes with **no output at all** before submitting a single AML job.
+
+- **One catalog read per run, not one per shape.** `setup` called `TileCatalog.filter(...)` inside
+  its per-shape loop, and `filter` opens with `gdf = self.read()` -- a *full* read of the catalog
+  file (`fs.read_parquet` does `raw = f.read()`, no range read, no cache). Locally that is a ~12 ms
+  page-cache hit and nobody notices; on a remote catalog it is one full download per shape: **900
+  shapes = 900 downloads of the same ~121 KiB parquet, ~106 MiB of redundant transfer and ~900 VPN
+  round-trips** before any work started. The pure filtering logic is now
+  **`catalog.filter_gdf(gdf, shapes_gdf, startdate, enddate)`**, a module-level function;
+  `TileCatalog.filter` is unchanged behaviourally and simply delegates
+  (`return filter_gdf(self.read(), ...)`), while `setup` reads once and calls `filter_gdf` per
+  shape. **Identical output** -- same rows, same files, same order, and `.attrs` (the spec-35
+  declaration stamp) still propagates to each slice, since the same operations run on the same
+  frame. Pinned by `tests/test_workflows.py::test_setup_reads_catalog_once_regardless_of_shape_count`,
+  verified non-vacuous (restoring the per-shape `filter` call makes it fail).
+- **Live progress + ETA.** `setup` now prints a throttled (2 s) `[setup] i/N shapes (p%) | r
+  shapes/s | elapsed Xs | eta Ys` line, plus a one-line note that the catalog was read once. The
+  per-shape writes are genuine network I/O on a remote run folder, so the loop can legitimately run
+  for minutes -- and silence there is indistinguishable from a hang (which is exactly how it was
+  first reported).
+
+- **Shapes are prepared concurrently** (`max_concurrent`, default `config.SETUP_MAX_CONCURRENT =
+  16`; pass `1` for the old serial behaviour). With the catalog read hoisted, the remaining cost is
+  the per-shape *writes* -- `makedirs` + `geometry.geojson` + the `catalog.parquet` slice, ~4-7 tiny
+  blob calls -- which measured **~1.8 s/shape serially on `rise` over VPN (~27 min for 900 shapes)**.
+  That is latency, not bandwidth or CPU, so it parallelises nearly linearly with threads. Each shape
+  touches only its own folder and only *reads* the shared catalog frame, so there is no shared
+  mutable state; this is the same pattern `sources.mpc.download`/`download_shard` already use to
+  drive `fsd.storage` concurrently against blob (proven at 3456 assets on the cluster).
+  **`input.csv` row order is unchanged** -- results are placed by index and compacted, so the
+  manifest follows the shapefile's order, not completion order. Pinned by
+  `test_setup_manifest_order_is_shapefile_order_not_completion_order` (verified non-vacuous: writing
+  results in completion order makes it fail). One behavioural nuance: when a shape raises, the pool
+  lets in-flight shapes finish before the exception propagates, so slightly more work lands than in
+  the serial version -- the exception itself still surfaces from `setup`.
+
+Further collapsing the per-shape writes (batching them into fewer objects) is a design change, not a
+fix -- see TODO #15.
+
+## Download on Azure ML — `runner="aml"` for `api.download`, per-source dispatch (spec 37, 2026-07-22)
+
+The download sibling of spec 36: dispatches the **already-working** download-to-blob path (spec 34)
+onto the same `rise` AML cluster, colocated with blob, instead of relaying every byte through the
+driver machine. `sources/cdse.py`'s `download()` and `sources/mpc.py`'s `download()` change by
+**zero lines** (spec 37 §4's reuse ledger) — this only adds a dispatcher and two additive source
+entries.
+
+- **Dispatch shape is per-source, not uniform fan-out (D1):** CDSE always submits **exactly one**
+  whole-ROI job (`sources.cdse.download` called unmodified) — its S3 concurrency cap is per
+  credential (4 connections, CDSE *Quotas and Limitations*), so more nodes contend for the same
+  connections rather than adding throughput. MPC **fans out across N shards** — its bytes come
+  straight from Azure Blob (no per-credential cap), so parallel nodes scale near-linearly.
+- **`workflows/runners.py::run_aml_download`** is the new dispatcher; it reuses spec 36's
+  `shard_units`, D5 Environment, D4 identity, D10-style preflight, and D9 telemetry. A shared
+  `_aml_submit_and_wait` was factored out of `run_aml`'s submit/poll/aggregate/raise loop and is
+  now used by both `run_aml` (spec 36) and `run_aml_download` (spec 37) — a pure refactor, `run_aml`'s
+  own tests are unchanged. `_aml_preflight`'s cluster/environment/storage-root checks were
+  similarly split into a shared `_aml_preflight_common`, reused by a new download-specific
+  `_aml_download_preflight` (D7: also checks discovery non-emptiness, the Key Vault secret
+  resolves/parses and isn't expired, and warns — doesn't block — when a CDSE GB estimate exceeds an
+  injected remaining-quota threshold).
+- **`workflows/download.py`** (new): the thin in-job CLI, mirroring `workflows/shard.py`'s role for
+  spec 36. `--roi` mode is the CDSE job (calls `sources.cdse.download` unmodified, reading S3 creds
+  from Key Vault on the node); `--shard` mode is one MPC shard (calls the new
+  `sources.mpc.download_shard` over a pre-discovered, pre-partitioned asset-row CSV). Both write a
+  `_status/<k>.json` (D9), same `_result.json` shape as spec 24/36.
+- **`sources/mpc.py` gained two additive entries** (the ROI-based `download()` is untouched):
+  `discover_shard_rows(...)` — driver-side STAC discovery **without** eager SAS-signing (a new
+  `_search_items_unsigned`, sibling of `_search_items`), flattened to one row per asset; and
+  `download_shard(rows, ...)` — signs each asset's href **on the node** (`_import_pc_sign`, lazy,
+  mirrors `runners._import_aml_command`'s injection pattern) right before the transfer, so a SAS
+  token never sits idle between AML job submit and the job actually starting, then reuses the
+  existing `_transfer_and_stamp_one` per asset.
+- **`sources/cdse.py` gained one additive entry:** `CdseCredentials.from_json_str(s)`, a sibling of
+  `from_json` that parses an in-memory JSON string (the Key Vault secret value) instead of a file
+  path. The stale `download()` docstring line claiming a remote+`cog=True` dst "raises... deferred"
+  (predating spec 34's `_push_scratch_to_remote` fix) is corrected to describe the actual
+  stage→convert→push behavior.
+- **New `fsd/secrets.py`:** `get_secret(vault_url, name)`, a thin `SecretClient(vault_url,
+  DefaultAzureCredential()).get_secret(name).value` (D5) — lazy-imports `azure-keyvault-secrets`
+  (new dependency, added to the `[azure]` extra) so `import fsd` never needs it; substitutable in
+  tests via `get_secret=` on `run_aml_download`/directly monkeypatched on the CLI. Both the CDSE S3
+  creds and (optionally) `PC_SDK_SUBSCRIPTION_KEY` ride this one path, under the **same**
+  `AZURE_CLIENT_ID` identity spec 36 D4 already sets for blob — no new infra grant needed (the
+  compute identity already holds `Key Vault Secrets User` on the `rise` vault).
+- **`api.download` accepts `runner="local"|"aml"` + `runner_kwargs`**, mirroring
+  `create_training_data`'s existing pattern. `creds` is ignored for `runner="aml"` (the dispatched
+  job reads them from Key Vault instead), and `roi` must be a url the node can also read, not an
+  in-memory GeoDataFrame.
+- **Job timeout (D6):** each submitted job now carries `limits=CommandJobLimits(timeout=...)`,
+  sized from a GB estimate at a conservative throughput (`runners._estimate_timeout_seconds`) —
+  `run_aml` (spec 36) had no explicit timeout; `run_aml_download` always sets one.
+- **New `config.CDSE_MONTHLY_QUOTA_GB`** (12,000 — CDSE's rolling-30-day cap) backs the D7 quota
+  warning.
+- **Idempotency/crash-resume limitation, stated plainly (D8):** the skip check is against local
+  scratch, and spec 34's push is whole-run, so a job that crashes mid-run loses its un-pushed
+  scratch — a fresh-node resume re-downloads the unpushed remainder rather than seeing what already
+  landed on blob. Accepted for v1 (see `LIMITATIONS.md`); MPC's fan-out makes this cheap (only the
+  crashed shard's slice re-runs).
+
+### `run_aml_download` stops ignoring per-source arguments (TODO #49, 2026-07-22)
+
+One signature serves both sources, and two arguments were being accepted and dropped:
+
+- **Credentials are now refused for `source="mpc"`.** MPC is anonymous; supplying `creds_url` /
+  `vault_url` / `secret_name` is a hard preflight error naming the argument, rather than a silent
+  no-op. This was not cosmetic — a run written as `source="mpc"` but wrapped in the run-book's
+  `blob_creds()` staged the CDSE S3 keys in plaintext on blob for the whole run and never read them.
+- **`max_tiles` is now enforced on the driver, for both sources.** Previously it reached CDSE only,
+  via `--max-tiles` on the node (i.e. after the cluster had spun up), and the MPC path dropped it
+  entirely. Since `sources/mpc.download` *does* raise on `len(tiles) > max_tiles`, the same call
+  meant different things by runner — `api.download(source="mpc", max_tiles=N)` raised locally and
+  downloaded everything on AML, breaking spec 36 D3's premise that the runner is not part of the
+  semantics. Preflight now raises before any node starts. **MPC counts distinct MGRS tiles**, not
+  shard rows (assets = tiles x bands), matching the unit the local guard counts.
+
+**Behaviour change to expect:** an MPC AML run whose ROI x window matches more tiles than
+`max_tiles` now fails fast instead of downloading everything. Real case: a 2018 full-year Austria
+run = 572 tiles, which a nominal `max_tiles=500` now refuses.
+
+### `sources/cdse._roi_gdf` reads the roi through the storage seam (2026-07-22)
+
+`_roi_gdf` (used by `cdse.query_catalog`/`download` **and** all three `sources/mpc` entry points)
+passed its path straight to `gpd.read_file`. GDAL/pyogrio has no `abfss://` driver, so a roi on
+blob failed with `DataSourceError: <url>: No such file or directory` — for a file that was
+demonstrably there. It now reads via `fs.open` + `BytesIO`, the same fix `workflows/task.py`
+already carried (spec 36 D6a, TODO #40); local paths and in-memory GeoDataFrames behave exactly as
+before. **Found live** in `runbooks/37-download-on-aml.md` Phase 1, on the first CDSE dispatch with
+the roi on blob — spec 37 is what made a remote roi mandatory (the node has no `shapefiles/`).
+⚠️ **The node runs the wheel baked into the AML image, so the image must be rebuilt** for the fix
+to reach the job. Three sibling sites still bypass the seam — TODO #47.
+
+### D5 REVISED (keep-both): blob-JSON `--creds-url` CDSE creds fallback (2026-07-22)
+
+Key Vault *write* turned out operationally blocked for the operator (`ForbiddenByRbac` from both the
+driver laptop and the compute VM — the identity only holds *read*), so CDSE creds delivery now
+accepts **either** source, caller's choice, **mutually exclusive**:
+
+- `run_aml_download`/`workflows/download.py`'s `run_roi` gained `creds_url: str | None` alongside the
+  existing `vault_url`/`secret_name`. Exactly one must be supplied — `_aml_download_preflight` raises
+  on neither and on both.
+- The blob path reuses the **existing** `CdseCredentials.from_json(creds_url)` (already blob-capable
+  via `fs.open`) — no new read code, unlike the KV path which needed the additive `from_json_str`.
+- `run_aml_download`'s command builder emits `--creds-url <url>` **xor** `--vault-url <url>
+  --secret-name <name>` — never both, and never a secret *value* (unchanged invariant, now asserted
+  for the blob path too, spec 37 §7 test 7b).
+- KV stays wired unchanged for when a write role lands; blob creds are a documented plaintext-at-rest
+  trade-off (`LIMITATIONS.md`), mitigated by the runbook writing to a `_secrets/` prefix and deleting
+  the file once the run completes.
+
+## The AML scale runner — `runner="aml"`, plus local resumability on blob (spec 36, 2026-07-21/22)
+
+Closes TODO #40/#41. Gives the runner seam (spec 10 Seam 2) a second backend without touching the
+unit of work: `workflows/task.py::run_task` is byte-for-byte the function spec 08 defined, and
+`datacube/`, `raster/`, `bands/`, `catalog/`, `sources/` are untouched (spec 36 §4's reuse ledger).
+
+- **`runner="aml"` dispatches shards of `input.csv` onto the `rise` AML cluster**
+  (`workflows/runners.py::run_aml`): shard → submit one command job per shard (each running
+  `python -m fsd.workflows.shard <shard_csv_url> --cores N`, which calls back into the **existing**
+  `run_local`) → wait → aggregate `_status/<k>.json` → raise, listing which shards failed. The AML
+  SDK (`azure-ai-ml`) is imported lazily inside `run_aml` only — `import fsd` never requires it (new
+  `[aml]` extra, opt-in, not in the default install).
+- **Idempotency changed for both runners, not just AML** (D7): a task whose `datacube.npy` already
+  exists at `export_folderpath` now returns immediately (`run_task`'s first line) instead of
+  rebuilding, and each artifact publish is temp-path-then-`fs.rename` (`datacube/builder.py::
+  _save_npy_atomic`) rather than a direct write — a reader never observes a partial artifact, and a
+  recovery-retried shard skips every cube it already finished. Metadata publishes before the
+  datacube (the datacube's existence is the resume signal, so it must imply the metadata is done).
+- **The local Snakemake runner's own `start.txt`/`done.txt` sentinels moved to node-local scratch**
+  (`_snakefiles/create_datacube/Snakefile`), keyed by a hash of `export_folderpath` instead of
+  living inside it. **Behavior change:** the Snakefile's `RuntimeError` on a remote
+  `export_folderpath` is gone — the local runner now works with artifacts on blob (durable resume
+  is `run_task`'s own existence check, not Snakemake's DAG, across separate invocations/machines).
+- **ROI/label geometry I/O now goes through `fsd.storage`** (TODO #40, closing the last raw-path
+  I/O the spec-31 §6 audit found): `workflows/create_datacube.py::setup`'s two geometry sites and
+  `workflows/task.py::run_task`'s geometry read all go via `fs.open` + `BytesIO`/`to_json()` instead
+  of `gpd.read_file(path)`/`gdf.to_file(path)` directly. A local path behaves exactly as before
+  (`fsd.storage` already routes `file://` transparently) — this closes the gap that made ROI inputs
+  unreadable from a cluster node with no `shapefiles/` checkout.
+- **`fsd.storage.fs` gained `rename(src, dst)`** — the atomic-publish primitive (`fs.mv` under the
+  hood), generalizing the temp-then-rename pattern `fs.transfer` already used for downloads.
+- **`api.create_training_data`/`workflows.create_datacube.run_create_datacube` accept
+  `runner="aml"`** end-to-end, with a new `runner_kwargs` dict forwarded to `run_aml` (`cluster=`,
+  `environment=`, `root=`, `identity_client_id=`, ...). `_check_local_seams` now validates against
+  `("local", "aml")` instead of hardcoding `"local"`.
+- Azure **Batch** was evaluated and dropped, not deferred (quota: 6 dedicated cores vs. a 64-core
+  pool VM cannot allocate one node) — `AZURE_INFRA.md` §3.1, spec 36 D1.
+
+## Declaration persistence — the collection declaration survives write→read (spec 35, 2026-07-21)
+
+Amends spec 34 §2a/§4, closing TODO #42 (below): the collection-level `SourceDeclaration`
+now survives every catalog write→read hop, not just the per-row `offset`/`nodata` columns.
+
+- **Authority moved from `GeoDataFrame.attrs["declaration"]` (in-memory only, a typed
+  dataclass) to the catalog Parquet file's own footer**, as a JSON dict under
+  `attrs["fsd:declaration"]` (versioned, `fsd_declaration_version`). `fsd.storage.fs`'s
+  `write_parquet`/`read_parquet` gained generic `.attrs` <-> `PANDAS_ATTRS` footer
+  preservation (the upstream pandas/geopandas convention, geopandas PR #3597) — the fix
+  lives at the storage seam so it covers all three write→read hops (ingest catalog,
+  per-cell slice, builder entry) at one choke point, not just `TileCatalog`.
+- **`TileCatalog.append` now stamps a declaration** (`declaration=` kwarg, constructor
+  default); one catalog file = one collection = one declaration — a conflicting append
+  raises. `sources.cdse.download`/`sources.mpc.download` stamp `S2_L2A_DECLARATION` at
+  their existing `catalog.append` call (this is the change that makes hop 1 real — before
+  this, *nothing* in the ingest path declared anything).
+- **Behavior change, intentional (spec 34 `[G4]`'s "fail loudly, don't half-understand"
+  rule applied here too): a catalog read from a file with no declaration stamp now
+  raises** at `flatten_catalog`/`build_datacube`, naming the file and the re-stamp
+  command (`python -m fsd.catalog.restamp_cli <catalog.parquet> --declaration s2_l2a`,
+  a sub-second rewrite of the catalog Parquet alone — the imagery is untouched, nothing
+  is re-downloaded). A **hand-built** `GeoDataFrame` (never through
+  `fs.read_parquet`) keeps the S2 L2A default — an explicit in-process call is treated as
+  an explicit choice, preserving synthetic-test/notebook ergonomics. The four catalogs
+  written before this spec (`demo_e2e`, `mpc_baseline`, the `rise` blob catalog, old
+  per-cell slices) need re-stamping before they build again; folded into TODO #44's
+  re-ingest, not a separate migration.
+- **STAC gets an additive Collection mirror** (`TileCatalog.to_stac`/`write_stac_catalog`):
+  the mask band's classes as the standard `classification:classes` on an `item_assets`
+  entry, plus `fsd:declaration` for the fields STAC has no vocabulary for. Read back via
+  `fsd.catalog.stac.collection_to_declaration`. The Parquet footer stays authoritative —
+  the mirror cannot drift because both are written from the same object.
+- **`GeoDataFrame.attrs["declaration"]` (the typed dataclass key) is retired** — a
+  dataclass must never sit in `.attrs` once any writer JSON-encodes it (verified: a future
+  geopandas raises `TypeError` on write). Use `fsd.catalog.declaration.from_attrs`/
+  `to_attrs` instead of touching `.attrs["declaration"]` directly.
+- Was logged as TODO #42 (review pass, 2026-07-20; corrected 2026-07-21 while writing this
+  spec — the gap was **not** latent on the production path, `run_task` used
+  `S2_L2A_DECLARATION` unconditionally). Pinned meanwhile by
+  `tests/test_catalog.py::test_declaration_does_not_survive_catalog_roundtrip_todo_42`,
+  deleted and replaced by `test_declaration_survives_catalog_roundtrip` + the spec 35 §8
+  test suite (`tests/test_declaration.py`, `tests/test_restamp_cli.py`, and additions to
+  `test_storage.py`/`test_catalog.py`/`test_datacube_builder.py`/`test_catalog_stac.py`).
+
+## Ingest/normalization contract: `stage → normalize → put`, declaration-driven builder (spec 34, 2026-07-20)
+
+- **`apply_boa_offset`'s lossy `clip(DN−1000, 0, 65535)` is dropped from the store path**
+  (it was never actually called there — spec 32 only used it at build/read time — but
+  the function itself is renamed `fsd.raster.images.apply_offset` and documented as
+  read-time-only, generalized past S2's BOA-specific name). The on-disk COG is now
+  explicitly the lossless artifact; the offset is metadata, applied at read time by the
+  builder and, independently, by an `unscale`-aware viewer (spec 34 §1).
+- **`boa_add_offset` catalog column retired; `offset` + `nodata` replace it** (spec 34
+  §1/`[G4]`) — `fsd.catalog.catalog.COLUMNS`. `offset` is the same additive-DN semantics,
+  renamed generic (not S2-BOA-specific); `nodata` is new (spec 34 §1c — some MPC COGs
+  omit a nodata tag; ingest now declares one, defaulting to 0). **No back-compat shim:**
+  `TileCatalog.read()` does not backfill a legacy catalog missing these columns
+  (`fsd/catalog/catalog.py`); a pre-spec-34 catalog is disposable, not migrated.
+- **CDSE now derives `offset` from `s2:processing_baseline`** (`fsd.sources._s2_radiometry
+  .offset_for_item`, shared with MPC) — closes #30/#10 (CDSE previously hardcoded 0/never
+  harmonized). CDSE's jp2→COG conversion (`_convert_one`) now also stamps the GDAL
+  scale/offset + nodata-if-missing tag (`fsd.raster.cog.stamp_or_reencode`) — free, since
+  it already re-encodes.
+- **MPC's download is no longer a pure byte-copy** — after `fs.transfer`, it stamps the
+  same GDAL tags on the local file (`_transfer_and_stamp_one`) before the file is
+  considered done. Still cheap (a header-only edit, `IGNORE_COG_LAYOUT_BREAK=YES`; no
+  pixel decode) unless the in-place stamp breaks COG validity, in which case
+  `stamp_or_reencode` falls back to a GDAL-COG-driver re-encode.
+- **Both CDSE's and MPC's local-only download guards are lifted** (spec 31 §5-ARCHIVE
+  suspended these) — a remote (`abfss://`) `root_folderpath` now works for both. MPC
+  streams each file through local scratch before pushing (`fs.put`); CDSE reuses its
+  entire existing local pipeline unchanged against a temp scratch root, then does one
+  whole-run batch push + catalog-rewrite at the end (`_push_scratch_to_remote`) — **not**
+  per-file streaming (that's TODO #31, still out of scope), so a CDSE run against a
+  remote root is not yet crash-resumable the way a local-root run is.
+- **`build_datacube` is declaration-driven, not S2-hardcoded** (spec 34 §2, closes #35):
+  a new `fsd.catalog.declaration.SourceDeclaration` (+ `MaskSpec`) carries reference
+  band, mask spec, mask-keep, nodata default, mosaic method. Resolved from the explicit
+  `declaration=` kwarg, else `catalog_subset.attrs["declaration"]` (set by
+  `flatten_catalog`), else the S2 L2A default (`S2_L2A_DECLARATION`) — so every existing
+  caller (`workflows/task.py`, `api.py`, `create_datacube.py`) is unchanged. The mask
+  step is skipped entirely (not just tolerated) when the declared mask band isn't in the
+  requested `bands` — `bands=["B04"]` no longer raises `ValueError: SCL band not present`.
+  A `mask_type` other than `"categorical_classes"`, or `native_grid=True`, raises
+  `NotImplementedError` (loud, documented gaps — `[G2]`/`[G3]`) instead of silently
+  mis-assembling or mis-collapsing. `ops.apply_cloud_mask_scl` gained a `mask_band="SCL"`
+  parameter (default preserves old behavior) so the same op works for any categorical
+  mask band, not just SCL.
+- **STAC export carries `raster:bands` + role-tagged asset `roles`**
+  (`fsd.catalog.stac.tile_catalog_to_items`) — every raster asset gets `offset`/`scale`/
+  `nodata` (pystac `raster` extension) and a role (`reflectance`/`mask`/`reference`)
+  alongside `"data"`. `items_to_rows` recovers `offset`/`nodata` on the reverse mapping.
+- **New:** `fsd/catalog/declaration.py` (`SourceDeclaration`, `MaskSpec`,
+  `S2_L2A_DECLARATION`), `fsd/sources/_s2_radiometry.py` (shared baseline→offset),
+  `fsd/raster/cog.py::stamp_gdal_tags`/`stamp_or_reencode`, `fsd/docs/adding-a-source.md`.
+
+## P1 Azure compute seam: `storage=` is now meaningful (spec 31, 2026-07-17)
+- **`storage=` on `download`/`create_training_data` now does something** — previously
+  `_check_local_seams` (`api.py`) rejected any non-`None` `storage` unconditionally ("blob lands
+  in P1"). It now accepts `storage="azure"` or `{"backend": "azure", ...}`, which sets
+  `FSSPEC_ABFSS_ANON=false` in **both** `os.environ` (for Snakemake-subprocess children, which
+  re-read `FSSPEC_*` at their own import) and `fsspec.config.conf` (for the already-imported
+  parent — fsspec only reads env at import time, so a later `os.environ` mutation alone would not
+  be seen in-process). `runner!="local"` and any other `storage` backend still raise.
+  `run_inference`/`deploy` are **unchanged** — `_check_local_seams` gained a `storage_allowed`
+  flag and those two verbs pass `storage_allowed=False`: inference/serving-on-blob is P4/P5, out
+  of P1 scope, and stays rejected exactly as before.
+- **No new registry, no credential object.** adlfs, given only `account_name` (parsed from the
+  `abfss://` URL host) + `anon=False`, builds its own `DefaultAzureCredential`. All ~94 existing
+  `fs.<fn>` call sites in `fsd.storage.fs` are untouched — an `abfss://…` URL now simply resolves
+  through `fsspec.core.url_to_fs` to a credentialed adlfs filesystem, no fsd code in the path.
+- **New `fsd/storage/azure.py`**: `to_vsi(url)` (deterministic `abfss://<fs>@<account>.dfs.core
+  .windows.net/<path>` -> `/vsiadls/<fs>/<path>`; local paths pass through unchanged; `az://<fs>/
+  <path>` accepted as an alias), `account_from_url(url)`, `storage_token()` (a fresh
+  Storage-scoped bearer token from a single **module-cached** `DefaultAzureCredential` — reused
+  across calls per the documented best practice; the SDK's own token cache/refresh means "fetch a
+  fresh one per open" is cheap and correct, no hand-rolled expiry margin), and
+  `configure_storage(storage)` (the `storage=` -> env/`conf` helper above). `fsd.storage.fs.to_vsi`
+  re-exports it.
+- **Raster pixel reads now route through `fsd.raster.rio_open`** in the three pixel-read modules
+  (`raster/images.py`, `raster/cog.py`, `catalog/stac.py`), replacing bare `rasterio.open`. For a
+  local path it is a **byte-for-byte passthrough** (no `Env`, no translation — the regression
+  hinge). For an `abfss://`/`az://` path it opens via GDAL's `/vsiadls/` handler inside a
+  `rasterio.Env(AZURE_STORAGE_ACCESS_TOKEN=…, AZURE_STORAGE_ACCOUNT=…)` — the account comes from
+  the URL host (D1), not ambient config — and keeps that `Env` alive for the dataset's lifetime
+  (closed when the dataset is closed), since GDAL may issue further range-reads after open.
+  `mode="w"` on a remote path **raises** rather than silently half-writing: P1 has no write path
+  to blob (MPC-to-blob, when it lands, is a byte-copy via `fs.transfer`, never a GDAL write; CDSE-
+  to-blob is out of P1 scope). `raster/cog.py`'s `to_cog` **write** path (`rasterio.shutil.copy`)
+  is unchanged — it is local-only by design (CDSE's jp2->COG conversion; CDSE is untouched by P1).
+- **Not changed, deliberately**: `sources/mpc.py` (`mpc.py:294`'s local-only guard stays) and
+  `sources/cdse.py` (its `cog=True`-needs-local guard stays) — download-to-blob is **suspended**
+  into the next spec (the ingest/normalization contract); P1's blob data is hand-staged
+  (`runbooks/31-p1-upload-slice.md`). `datacube/builder.py` and `workflows/*.py` needed **no**
+  fixes for the §6 URL-safety audit — both were already clean (`fs.*` throughout, `os.path.join`
+  on catalog rows is posix-safe on an `abfss://…` host per §2). The remaining bare
+  `rasterio.open(...)` sites (`api.py`'s inference-merge path, `model/engine.py`'s inference-output
+  write) are **out of P1 scope** (inference/serving-on-blob is P4/P5) and were not touched.
+- **New optional dependency**: `azure-identity` added to the `[azure]` extra (alongside `adlfs`) —
+  `DefaultAzureCredential` construction needs it directly for the GDAL VSI token path (adlfs
+  resolves its own copy internally, but `fsd.storage.azure` also needs one for `rio_open`).
+- **New §6 audit finding + fix (beyond the spec's own grep head-start, which only checked
+  `os.path.exists`/`os.makedirs`/bare `open(` and missed this): `workflows/create_datacube.py`'s
+  `setup()` and its Snakefile both called `os.path.abspath()` on `export_folderpath` unconditionally.**
+  `os.path.abspath` does not recognize a URL as absolute (`os.path.isabs("abfss://...")` is `False`),
+  so it silently prepended the local cwd and mangled the `abfss://` scheme into `abfss:/` — a real,
+  silent corruption bug for a blob `export_folderpath`, not just a style nit. Fixed with a new
+  `fsd.storage.fs.is_local(path)` guard (both call sites) — no behavior change for local paths.
+- **New, deliberately-not-fixed finding: the local Snakemake runner's own `start.txt`/`done.txt`
+  sentinel bookkeeping (`create_datacube/Snakefile`'s `touch()`) is plain `os.makedirs`/`open`, not
+  routed through `fsd.storage`.** Even with the `os.path.abspath` bug fixed, a remote
+  `export_folderpath` would make Snakemake's own DAG/resumability tracking silently create a garbage
+  local sentinel directory (not a crash — `open("abfss://.../done.txt", "w")` is a valid, if bizarre,
+  *local* relative path). This is a **real limitation of the local runner**, not something spec 31's
+  scope (§1–§4/§6/§7) covers or that a "swap bare `rasterio.open`" pass can fix — it needs a design
+  decision about where Snakemake's own bookkeeping lives when artifacts are remote (candidates: keep
+  it always-local via a separate scratch dir, or a proper Snakemake remote-storage plugin). **The
+  Snakefile now raises a clear `RuntimeError` instead of silently corrupting** (fail loud, per the
+  project's `rio_open`-write-guard precedent) — the workaround today is to keep `run_folderpath` local
+  (the datacube/flatten artifact writes themselves are fully storage-seam-safe on blob regardless) or
+  to invoke `python -m fsd.workflows.task` directly for a single remote build (no Snakemake
+  involved — this is exactly what the demo run-book does). Logged as TODO #41 (folded into the Batch
+  runner item, since a real fix likely arrives with that redesign anyway).
+- See `specs/31-p1-azure-storage-seam.md` (realizes spec 10 Seam 1: storage = config, not code).
+
+## MPC discovery dedupes reprocessed acquisitions (spec 33, 2026-07-16)
+- **`sources/mpc.py`** now de-duplicates STAC items at discovery time: `query_catalog` and
+  `download` both call a new `_dedupe_reprocessed_items(items)` immediately after `_search_items`,
+  before any catalog row is built. MPC can serve >1 STAC item for the same physical acquisition
+  (a one-off `sen2cor` reprocessing pipeline bug, since cleaned up on MPC's side, per spec 33's
+  cross-validation) — same sensing `item.datetime` + same `s2:mgrs_tile`, different item id. Prior
+  behavior: both items downloaded (redundant bytes) and both catalogued, with
+  `datacube.builder._stack_datacube`'s CRS/`image_index` tie-break arbitrarily picking a winner at
+  merge time. Grouping key is in-memory `(item.datetime, _mgrs_tile_from_item(item))` — no new
+  catalog column. Winner = the item with the latest `s2:generation_time` (a populated STAC
+  property; reversing the id-string-parsing approach the runbook originally suspected, since ESA's
+  naming-convention doc does not guarantee the id's trailing field is monotonic). A duplicate group
+  missing `s2:generation_time` on any member raises (deterministic, no silent pick); a singleton
+  item is never affected even if it lacks the property. **MPC-only** — `sources/cdse.py` and
+  `_finalize_catalog_gdf` are untouched; CDSE's own multi-item surfacing (datastrip-split
+  near-duplicates) is a structurally different, ESA-by-design case that can carry legitimate
+  different pixel coverage, so a shared rule risked dropping real CDSE data. See
+  `specs/33-mpc-reprocessing-dedup.md`.
+
+## MPC source + S2 processing-baseline harmonization (spec 32, 2026-07-16)
+- **New source `sources/mpc.py`** — Sentinel-2 L2A discovery + download against Microsoft
+  Planetary Computer (MPC), signed via the official `planetary-computer` package (new `[mpc]`
+  extra), anonymous by default. Unlike CDSE (spec 01/14/25), MPC assets are **already COG on
+  Azure**, so `mpc.download` is a **pure byte-copy** (`fsd.storage.transfer`, signed HTTPS ->
+  local) — no `jp2->COG` conversion, no convert-process-pool. `api.download` gains
+  `source: "cdse" | "mpc"` (default `"cdse"`, unchanged); `source="mpc"` does not require `creds`.
+- **New catalog column `boa_add_offset`** (`catalog/catalog.COLUMNS`, before `geometry`) — the
+  additive S2 processing-baseline reflectance offset (fixes correctness debt #10: baseline 04.00,
+  introduced 2022-01-25, adds `BOA_ADD_OFFSET=-1000` to L2A reflectance DN; MPC serves raw,
+  unharmonized DN and does not expose the offset in STAC `raster:bands`, so it's derived from the
+  item property `s2:processing_baseline`, **keyed on baseline not acquisition date** — MPC
+  reprocessing can stamp a >=04.00 baseline on a pre-2022 date). **Backward-compatible**:
+  `TileCatalog.read`/`append` fill a missing/absent column with `0` — old catalogs and CDSE rows
+  (which don't yet set it, see `TODO.md`) are unaffected.
+- **`datacube.builder.flatten_catalog`** now emits a per-band `boa_add_offset` output column:
+  the tile-row's offset for reflectance bands (`B01`…`B12`/`B8A`), `0` for non-reflectance
+  (`SCL`/`AOT`/`WVP`/`visual`/…) — `raster/images._is_reflectance`. **`build_datacube` applies the
+  offset per source image** (new `builder._apply_boa_offsets`, called right after
+  `images.load_images` returns, before `dst_crs`/reference/resample/mosaic) via the new
+  `raster/images.apply_boa_offset(data, profile, *, offset)` op
+  (`clip(DN + offset, 0, 65535)`, dtype-preserved, nodata-safe). This guarantees a calendar window
+  straddling the baseline cutover is harmonized to one scale **before** `median_mosaic` collapses
+  it — a datacube-level op would be too late (the median would already have mixed baselines).
+- **Not yet done** (see `TODO.md`): CDSE rows still default `boa_add_offset=0` unconditionally
+  (wiring CDSE's own baseline capture is a follow-on); MPC stays local-download-only (Phase 2 /
+  spec 31 decides stream-in-place vs copy-to-`rise`).
+
+## flatten `coords.npy` reprojected to EPSG:4326 (TODO #16, 2026-07-15)
+- **`datacube.flatten` now emits `coords.npy` as `(lon, lat)` in EPSG:4326**, not raw per-cube
+  easting/northing in the cube's native UTM CRS. Each cube's kept-pixel coords are reprojected
+  from `geotiff_metadata["crs"]` to EPSG:4326 (`rasterio.warp.transform`) before concatenation, so
+  a training set spanning multiple UTM zones (e.g. EuroCrops west EPSG:32636 / east EPSG:32637) no
+  longer mixes incomparable eastings/northings in one array (the same easting number in two zones
+  is two different places). No-op when a cube's metadata carries no CRS (synthetic/legacy) or is
+  already EPSG:4326. **Behavior change to the `coords.npy` artifact** — downstream code that read
+  coords as native UTM must now expect lon/lat; the spectral arrays (`data`/`ids`/`labels`) are
+  unaffected. Multi-zone reprojection covered by a new test in `tests/test_datacube_flatten.py`.
+
+## stac-geoparquet export + Tier-2 mini-MPC harness (spec 30, 2026-07-15)
+- **New, additive module `catalog/stac_geoparquet.py`** — `items_to_stac_geoparquet(items,
+  dst_filepath)` writes a `list[pystac.Item]` to a single GeoParquet file via the `stac-geoparquet`
+  library (new optional `[serving]` extra); `stac_geoparquet_to_items(src_filepath)` is the inverse
+  (round-trip validation). Both stage through a local tmp file + the `fsd.storage` seam
+  (`fs.put`/`fs.open`), since the installed `stac-geoparquet==0.8.1` API always wants a real
+  filesystem path, not an fsspec handle. Not wired into any default write path — `run_inference`
+  still writes the JSON STAC catalog as before; the full catalog-format migration is TODO #26's
+  follow-on. Round-trip-tested (`tests/test_stac_geoparquet.py`, `pytest.importorskip`-guarded so
+  the core `.venv` skips it) and smoke-run against the real 300-item Austria catalog via the new
+  `demos/mini_mpc/export_stac_geoparquet.py` CLI.
+- **New `demos/mini_mpc/` — the Tier-2 "mini-MPC" validation harness**, a local, throwaway
+  pgSTAC + stac-fastapi-pgstac + titiler-pgstac stack proving fsd's inference outputs load and
+  serve through the same register→searchId→XYZ flow MPC uses. `docker-compose.yml` pins the
+  `pgstac:v0.9.11` DB image as-is; the two app services (`dockerfiles/Dockerfile.{stac-fastapi-pgstac,
+  titiler-pgstac}`) install the **pinned stock PyPI packages** (`stac-fastapi.pgstac==6.3.1`,
+  `titiler.pgstac==3.0.0`) on a slim Python base rather than forking a Dockerfile/source
+  checkout — no published "just pull it" app-layer image exists upstream (see the README's table
+  for the full rationale). `load_pgstac.py` converts the existing static STAC catalog to ndjson,
+  rewriting each output COG's href to the container-visible `/data/<path>` the compose bind-mount
+  exposes (the one non-obvious wiring step — 500s without it), and `pypgstac load`s it.
+  `register_and_url.py` reuses spec 29's `build_colormap`, registers a
+  `collections=["fsd-inference"]` search, and prints the XYZ tile template. **Deviates from spec
+  30's draft assumption:** the installed `titiler.pgstac==3.0.0`'s own routes are
+  `/searches/register` + `/searches/{id}/tiles/...` (response key `id`), not `/mosaic/register` /
+  `searchid` — that's MPC's own product naming around the identical underlying contract
+  (`STACNOTATOR_DIGEST.md §3`); documented in `register_and_url.py`'s docstring, à la spec 29's
+  rio-tiler pin. Scripts + `runbooks/30-tier2-mini-mpc.md` only — Claude never runs Docker; the
+  href-rewrite/ndjson-emission logic was smoke-tested directly (no Docker) against the real
+  300-item catalog before handoff.
+- **Runbook-run fix (2026-07-15):** the `raster` (titiler-pgstac) container crashed at startup with
+  `ImportError: libexpat.so.1` — `python:3.12-slim` doesn't ship the system lib rasterio (via
+  rio-tiler) links at import. `dockerfiles/Dockerfile.titiler-pgstac` now `apt-get install -y
+  libexpat1` before pip. Runbook clarified: bring the stack up with `docker compose up --build -d`
+  and keep it running for steps 2–6, run all `docker compose` commands from `demos/mini_mpc/` (it's
+  directory-scoped), and `docker compose ps -a` to catch a crashed/exited container. Plain-language
+  primer + running issue log kept at the workspace root in `MINI_MPC_NOTES.md` (outside the public
+  repo).
+
+## STAC inference-output Item geometry: true cell polygon, not raster bbox (spec 28, 2026-07-14)
+- **Behavior change:** `catalog/stac.py::cog_outputs_to_items` gains a `geometries=` kwarg — a
+  `{output_cog_filepath: geometry.geojson_path}` mapping sourced from the `run_inference` build
+  manifest (`input.csv.shapefilepath`). When given, every output Item's `geometry`/`bbox` is now the
+  **true S2-cell polygon** (CRS84, read straight from the manifest's `geometry.geojson`) instead of
+  the raster bounding box — the old behavior over-claimed coverage past the ROI's slanted edges
+  (BUG entry). `bbox` is tightened to the polygon's own bounds (still STAC-valid: `bbox` contains
+  `geometry`). **Deterministic, manifest-driven, no fallback:** a COG missing a geometry entry, or
+  one whose `geometry.geojson` is unreadable/empty, **raises** — this is not a per-item best-effort.
+  `geometries=None` (the default) is unchanged: the raster-bbox path, for geometry-less callers
+  (bare COG lists, unit tests, the pre-built folder/list inference modes with no manifest).
+- `api.py::_finalize_outputs` gains a matching `geometries=` passthrough. Both `run_inference` modes
+  now supply it: ROI mode (`_run_inference_roi`) builds it from the `input.csv` rows it already
+  reads back; the pre-built `input.csv` mode (`_resolve_inference_pairs`) now also captures
+  `shapefilepath` alongside `datacube_filepath`/`id` when present. Folder/list pre-built modes have
+  no manifest and keep passing `geometries=None` (raster bbox, unchanged).
+- New convenience wrapper `catalog/stac.py::cog_outputs_to_items_from_manifest(input_csv)` — reads
+  an `input.csv`, builds the `geometries` map, calls `cog_outputs_to_items`. Used by the new
+  `demos/regen_output_stac.py` (regenerates an existing output STAC from its manifest, no
+  re-inference) and available to any future caller that only has an `input.csv` path.
+
+## Titiler demo server: Tier-1 pre-styled XYZ for STACNotator BYO (spec 29, 2026-07-14)
+- Purely additive (`demos/` + a new `[titiler]` optional extra) — no `src/fsd/` change. New
+  `demos/titiler_serve.py`: a minimal FastAPI app serving `merged.tif` as a param-free pre-styled
+  XYZ (`GET /cropmap/tiles/{z}/{x}/{y}.png`) via `rio-tiler` — discrete categorical colormap (from
+  `demos/e2e_austria.py::CLASS_COLORS`, overridable by a `render.json`), `nodata=255` -> transparent,
+  `resampling_method="nearest"` (categorical codes must never interpolate), permissive CORS.
+  Validates fsd's serving-contract with the real consumer (STACNotator's Bring-Your-Own-XYZ mode)
+  before the heavier Tier-2 pgSTAC + titiler-pgstac stack. Not part of fsd's core `.venv` — installs
+  into an isolated `.venv-titiler`.
+
+## Download pipeline: transfer/convert process-pool split (spec 25, 2026-07-11)
+- **Conversion decoupled onto a process pool.** `sources/cdse.py::download` previously ran
+  transfer+convert serially on one of `MAX_CONCURRENT_S3=4` worker threads
+  (`_transfer_and_convert`); GDAL's `to_cog` holds the GIL, so a few converting threads starved the
+  rest and collapsed download concurrency (~0.2 file/s observed, spec 23 instrumentation). Now a
+  `MAX_CONCURRENT_S3`-wide **thread** pool only transfers bytes, while a separate
+  `MAX_CONVERT_PROCS`-wide **process** pool (`spawn`, GDAL-safe) converts JP2→COG concurrently —
+  chained via `add_done_callback` and bounded by a `sem_staged` backpressure semaphore (staged-but-
+  unconverted JP2s on disk). Behavior kept: conversion is still lossless COG **with overviews**
+  (`COG_OVERVIEWS="AUTO"` unchanged, D2). `_transfer_and_convert` is removed, replaced by
+  `_transfer_one` (thread stage) + `_convert_one` (process stage, top-level & picklable);
+  `_download_one` survives as the sequential reference wrapper (`_transfer_one` then inline
+  `_convert_one`) but `download()` no longer calls it. New optional `download`/`download_resume`
+  kwargs: `max_convert_procs`, `max_staged`, `convert_executor` (all defaulted, backward-compatible;
+  `convert_executor` is the test seam — inject a synchronous stand-in to exercise the pipeline
+  without a subprocess). The convert pool is created **lazily** (first file needing conversion) —
+  `cog=False` or an all-skip resume pass spawns zero processes.
+- **`MAX_STAGED` is disk-aware, not a static constant** (D5/D6): `cdse._default_max_staged` helper
+  sizes the backpressure cap once at `download()` start from
+  `shutil.disk_usage(root_folderpath).free` (`STAGING_DISK_FRACTION=0.25`,
+  `STAGING_ITEM_GB=0.2`), targeting `headroom = MAX_CONCURRENT_S3 + 2*MAX_CONVERT_PROCS`. Disk is a
+  **cap, not a lever** — a larger buffer past the saturation floor gives no throughput gain (bounded-
+  buffer queueing), so free disk only shrinks the cap, never grows it. New `config.py` constants:
+  `MAX_CONVERT_PROCS = min(os.cpu_count(), 8)`, `STAGING_DISK_FRACTION`, `STAGING_ITEM_GB`.
+- **Circuit breaker → streaming stop, transfer-failures-only** (conscious semantics change). The old
+  breaker "finished the current chunk, then stopped" (`ThreadPoolExecutor` per file-chunk); the new
+  one continuous pipeline has no chunk boundary. The breaker now keys on **consecutive transfer
+  failures only** — a `_convert_one` failure is a local/data fault (`"ConvertError"`), not a CDSE
+  window, and does not touch the consecutive counter. On trip, the submit loop stops queuing new
+  work; in-flight transfers/converts drain; the pass returns `circuit_tripped=True`, stopping within
+  roughly `max_staged` items of the trip (no exact chunk count — `download_resume` is still the real
+  recovery). `test_circuit_breaker_trips_and_stops_early` rewritten to monkeypatch `_transfer_one`
+  and assert early stop, not the old exact "4 of 6" chunk count.
+- **`chunksize` repurposed.** No longer batches the executor (there is one continuous pipeline); it
+  now controls only the catalog-flush cadence (flush every `chunksize` completed files). Default
+  stays `100`; callers (`download_resume`, api, demos) are unaffected.
+
+## Download pipeline: exception-safe callbacks, no silent hang (spec 25b, 2026-07-11)
+- **`download()`'s inner callbacks are now exception-safe.** A Phase-1 review of spec 25 found that
+  `_on_transfer_done`/`_on_convert_done`/`_finalize` assumed the happy path — a **broken convert
+  process pool** (GDAL segfault / OOM-kill) or a **catalog-flush write error** raised *before* the
+  `remaining` decrement / `sem_staged` release, and `add_done_callback` swallows callback exceptions,
+  so the drain never completed and `download()` hung forever on `all_done.wait()`. Fixed: `remaining`
+  and `sem_staged` accounting no longer sit behind any fallible call (`pool.submit`, `cfut.result()`,
+  the parquet write) — `fut.result()`, the convert hand-off, and `cfut.result()` are all wrapped, and
+  the `sem_staged` release in `_on_convert_done` moved to a `finally`.
+- **New `DownloadResult.pool_broken`** (additive, defaults `False`): set when the convert process pool
+  dies mid-run. On a broken pool, the submit loop halts cleanly (no more new work queued; in-flight
+  transfers still drain) instead of transferring granules that can no longer be converted.
+  `sum_results` ORs it across passes, like `circuit_tripped`.
+- **New `"PoolBroken"` failure reason** — counted in `failed_count`/`failures`/`reason_counts`, but
+  **breaker-neutral** (does not touch the transfer circuit breaker's consecutive counter), same
+  rationale as `"ConvertError"` (spec 25 C4): a broken local process pool is not a bad CDSE window.
+  `download_resume` already retries a `pool_broken` pass with no cooldown (its completion check is
+  keyed on `failed_count`/`circuit_tripped`, unaffected by this new reason) — bounded by `max_passes`
+  as before; a deterministically-crashing granule re-breaks the pool each pass (TODO: per-granule
+  quarantine).
+- **Chunk-flush moved off the counters lock.** `_finalize` now snapshots-and-clears `pending_results`
+  under `lock`, then calls `_append_downloaded` (the parquet write) outside it — serialized by a
+  dedicated `flush_lock` (needed because concurrent flushes of *different* snapshots would otherwise
+  race-write the same catalog file). A flush failure logs a warning and re-queues the snapshot for a
+  later flush (recovered by `download_resume`'s idempotent-skip on the next pass if it's never
+  retried within the run). The end-of-run flush is likewise wrapped.
+
+## Safe download runner CLI + should_stop seam (spec 26, 2026-07-11)
+- **New `should_stop: Callable[[], bool] | None = None` kwarg on `download()`/`download_resume`**
+  (additive, default `None` = unchanged behavior). A generic user-stop predicate — not a hard-coded
+  stop-file — checked in `download()`'s submit loop at the two existing checkpoints (top-of-loop and
+  post-`sem_staged.acquire()`), alongside `tripped`/`pool_broken`, throttled to at most once per
+  `config.PROGRESS_EVERY_S` (a filesystem `os.path.exists` isn't stat-ed per granule). Semantics are
+  identical to `tripped`/`pool_broken`: halts **new** submissions only, every already-submitted
+  transfer/convert finalizes normally and drains, a stopped item is never attempted (not a failure,
+  not counted). New **`DownloadResult.stopped: bool = False`** (additive); `sum_results` ORs it.
+  `download_resume` passes `should_stop` through to each pass, adds `if r.stopped: break` (a user
+  stop ends the resume loop immediately — no cooldown, not a completion), and checks `should_stop()`
+  once before starting each new pass.
+- **New CLI `python -m fsd.sources.download_cli`** (`src/fsd/sources/download_cli.py`) — a thin
+  driver wrapping `download_resume`: `--dry-run` (metadata-only preview via `plan_download` +
+  `format_download_plan`, **zero band bytes**, no `probe_throughput`), `--stop-file` (builds the
+  `should_stop` closure), an optional single `probe_throughput` baseline on the real path
+  (skippable `--no-probe`), and a spec-24 `_result.json` per run. Exit code doubles as PASS/FAIL:
+  `0` on clean completion **or** a user stop, non-zero on `failed_count>0`/`circuit_tripped`/
+  unresolved `pool_broken`.
+- **`_fmt_progress` ETA edge case fixed.** Rate/ETA were already reported (`N.N file/s | ETA ~Xm`);
+  now `ETA ~?` is shown until `done > 0` (previously `ETA 0m`, misleadingly precise with no
+  completions yet to extrapolate from). All existing fields/tokens unchanged (spec 23 assertions
+  still hold).
+- **Confirm-run runbook** `runbooks/26-download-confirm-run.md` — the first real CDSE network
+  exercise of the spec-25/25b pipeline, over the tiny 1-MGRS-tile Austria slice (~7 granules/~2 GB,
+  reusing `demos/e2e_austria.py::_single_tile_roi`). Not run yet (mobile-hotspot pause, spec 26) —
+  self-contained `expected` block so a later session can verify the user's pasted `_result.json`
+  without this conversation's memory.
+- **Review fix (2026-07-11): CLI completion gate is now the terminal pass, not the summed
+  `failed_count`.** `sum_results` sums `failed_count` across passes, so a resume that hit a
+  transient failure on an earlier pass and recovered it on a later, clean pass previously reported
+  `status="failed"`/exit 1 even though every file landed — the CLI was stricter than
+  `download_resume`'s own completion semantics. `download_cli.main` now judges `status`/exit code
+  from `results[-1]` (the terminal pass); an empty `results` list (stop-file already present before
+  pass 1) is now `status="stopped"`, not a false "ok". `metrics.failed` reflects the terminal pass;
+  a new `metrics.failed_total` keeps the historical sum as a diagnostic. Plus: a stale `--stop-file`
+  silently turned "re-run to resume" into an instant no-op — the CLI now warns on startup if the
+  stop-file already exists, and the runbook's step-2 failure guidance now says to `rm -f` it before
+  resuming.
+- **UX fix (2026-07-13): label the two silent startup phases.** `probe_throughput` silently
+  downloads one full JP2 (~50–150 MB) and `download_resume` does its own STAC search before the
+  first progress line, so a real run looked hung for up to a minute at launch. `download_cli` now
+  prints `probing throughput (downloads 1 band file)…` / `probe: N.N MB/s` around the probe and
+  `discovering + planning download…` before the download loop (all gated by `--quiet`, like the
+  live progress lines). The runbook's step-2 "Expect" and "Stop / observe" wording — which had
+  promised a standalone probe line that the code never emitted — now match.
+- **Runbook criteria fix (2026-07-13), after the first real confirm-run (13-granule Austria slice).**
+  Two defects in `runbooks/26-download-confirm-run.md`, both found while verifying the pasted
+  `_result.json`: (a) the step-2 PASS formula `successful + skipped == missing_count` was wrong —
+  `missing_count` is **granules** while `successful`/`skipped` are **files** (`len(bands)+1` per
+  granule, the +1 being `MTD_TL.xml`), and `successful` already *includes* the skipped files, so the
+  sum double-counted and mixed units; corrected to `successful == missing_count × (len(bands)+1)`
+  with `failed == 0`. (b) the step-1 `missing_count` range `[5,10]` (assumed ~7) was too low — the
+  real slice is **13 granules** (single MGRS tile, S2A+S2B ~5-day revisit over 2 months), so the
+  range is now `[10,15]` and `--max-tiles` bumped `10 → 15` (13 would trip the old guardrail). Also
+  documented that a real throughput measurement (step 4) needs a **fresh** download (`skipped == 0`),
+  not a resume — a resume yields `transfer_s == aggregate == 0`.
+- **Bugfix (2026-07-13): `download()` creates a missing local output root.** A fresh `--dst`
+  `FileNotFoundError`'d because `_default_max_staged`'s `shutil.disk_usage(root_folderpath)` disk
+  probe runs before any write, and nothing created the root (leaf dirs auto-create on write, but the
+  probe is earlier). `cdse.download` now `fs.makedirs(root_folderpath, exist_ok=True)` for a local
+  root right after the cog/local guard — creating the destination root is part of `download()`'s
+  contract, not the caller's job, so this fixes the CLI, `fsd.download`, and workflows at once.
+- **`_result.json` fix (2026-07-13): populate `expected` and `error`** (they were hardcoded `{}` /
+  `None`, defeating spec 26 §4's self-contained-diff design). `download_cli` now (a) auto-fills the
+  real-run `expected` with the universal success invariants (`failed=0, stopped=false,
+  circuit_tripped=false, pool_broken=false`) and merges the runbook's run-specific criteria from a
+  new `--expected-json PATH` flag; (b) sets `error` to a short reason on a non-exception
+  `status="failed"`; and (c) wraps the run so a crash (network/creds/disk) still writes a
+  `status="failed"` result with `error=repr(exc)` **before** re-raising — the runbook flow always has
+  a result to paste. The confirm-run runbook now writes an `expected.json` and passes `--expected-json`
+  to steps 1–2.
+- **Stop-file UX (2026-07-13): acknowledge the stop + tighten the poll.** Two issues with
+  `touch <stop-file>`: it was silent (no sign the stop was seen), and it appeared to take "too long"
+  (progress kept climbing well past the touch). `download()` now (a) prints
+  `stop requested — halting new submissions; draining N in-flight …` the moment the stop is first
+  seen (N = in-flight count), and (b) polls the stop-file on a dedicated `STOP_CHECK_EVERY_S = 1.0`s
+  interval (was coupled to `PROGRESS_EVERY_S = 5`s) so new submissions halt within ~1s of the touch.
+  The *overshoot itself is by design*: a clean stop drains everything already in flight (≈ `max_staged`
+  ≈ `MAX_CONCURRENT_S3 + 2×MAX_CONVERT_PROCS` ≈ 20 files) so no partial `.part`/`.src.jp2` is left —
+  lower `--max-staged` to trade throughput for a tighter stop. Runbook stop-drill + "Stop / observe"
+  updated accordingly.
+- **Throughput metric honesty (2026-07-13), after the first fresh-download measurement.** The first
+  real confirm-run read as `aggregate 4.83` vs `probe 25.4 MB/s` — alarming until you notice they
+  aren't measured the same way. `aggregate_mb_per_s = bytes / thread-summed transfer_s` is a
+  **per-stream** rate; comparing it to the single-stream probe is fine, but it isn't the effective
+  throughput. `DownloadResult` gains **`transfer_wall_seconds`** (the wall-clock span the transfer
+  phase actually occupied, earliest-start..latest-end, tracked in `_on_transfer_done`), and
+  `download_cli` now reports **`wall_transfer_mb_per_s = bytes / transfer_wall_seconds`** — the
+  honest all-streams effective rate. `wall ≥ probe` ⇒ concurrency helped; `wall < probe` ⇒ it didn't.
+  First run: probe 25 / per-stream 4.8 / **wall 19** MB/s → link-bound, 4 streams slower than 1.
+- **New `--max-concurrent-s3` knob (2026-07-13).** `download()`/`download_resume()`/`download_cli`
+  gained `max_concurrent_s3` (default `config.MAX_CONCURRENT_S3=4`), threaded through the transfer
+  `ThreadPoolExecutor` and `_default_max_staged` sizing, so a link-bound run can sweep stream count
+  (`--max-concurrent-s3 1|2`) without editing `config.py`. Runbook step-4 rewritten to explain the
+  three rates (probe / per-stream / wall) and which pair to compare.
+- **`demos/e2e_austria.py` crop-map/NDVI colors (2026-07-13):** replaced the arbitrary `tab20`
+  class colormap (which painted pasture/grassland pink) with a curated `CLASS_COLORS` dict —
+  semantic where possible (grass→green, mustard→yellow, sunflower→orange, alfalfa→violet, …) and
+  spread across hue/lightness for separability. Applied to **both** the crop map and the NDVI
+  timeseries so each class has one consistent color; unlisted classes fall back to `tab20`. Cosmetic
+  (demo-only); regenerate `demos/figures/{crop_map,ndvi_timeseries}.png` by re-running the demo.
+- **`demos/E2E_AUSTRIA.md §8` filled from the real 2026-07-13 full run** (stitched: download+train
+  from pass 1, inference from a clean re-pass) — timing table, download transfer/convert/wall block,
+  per-cell build-vs-infer decomposition, and merged-map coverage (6830×6868, EPSG:32633, 99.2% valid).
+- **`E2E_AUSTRIA.md` is now the single go-to doc (2026-07-13).** Threaded the safe download runner
+  (`python -m fsd.sources.download_cli`: `--dry-run` sizing, `--stop-file`, `--max-concurrent-s3`,
+  `_result.json`/`--expected-json`, the probe/per-stream/wall rates) into §2 + a §5 dry-run tip; added
+  **Appendix C** ("why run the full ROI") capturing the real bugs full-ROI runs caught — spec-20
+  tile-merge, spec-26 STAC id collision, the multi-UTM-zone display merge. **`demos/README.md`**
+  rewritten from the stale Ethiopia writeup (referenced the renamed `e2e_ethiopia.py` /
+  `inference_roi.geojson`) into a **thin redirect** to `E2E_AUSTRIA.md` (driver/adapter/estimator/
+  figures pointers + a one-paragraph history note).
+- **STAC inference-output item-id collision fixed (2026-07-13).** `catalog.stac.cog_outputs_to_items`
+  derived each Item id from the COG **filename stem** (`os.path.basename → splitext`), but fsd writes
+  every output as `<cube_id>/output.tif` — so all N items got the constant id `"output"`.
+  `write_stac_catalog`'s `normalize_hrefs` then mapped them all to `./output/output.json`, producing a
+  `collection.json` with **N identical item links** and **one** item file on disk (all others
+  overwritten). Surfaced on the full Austria run (300 cells → 300 dup links, 1 file). Fix: id now comes
+  from the **parent directory** (`_output_item_id`, the cube id — unique by fsd's `<cube_id>/output.tif`
+  layout in both ROI and prebuilt-cubes modes), plus a **uniqueness guard** that raises if ids ever
+  collide again instead of silently emitting a corrupt catalog. `merged.tif` + per-cell COGs were
+  unaffected (they use `output_filepaths`, not the ids). Regression: `test_run_inference_writes_cogs_and_stac`
+  now asserts **distinct** item ids (the old `len(items)==2` passed on the bug because
+  `get_items(recursive=True)` followed the duplicate links to the same file twice). 213 passed.
+- **`demos/e2e_austria.py` step 5 bugfix (2026-07-13): pass the required `output_folderpath`.**
+  `step_inference` called `fsd.run_inference(...)` without `output_folderpath`, so ROI-mode preflight
+  aborted with `PreflightError: output_folderpath is required.` — surfaced on the first full run to
+  reach step 5 (smoke levels never exercised it end-to-end). Now passes
+  `output_folderpath=OUTDIR/model_outputs`, matching the runbook 27 / `E2E_AUSTRIA.md §5` output paths
+  (`model_outputs/<cell>/output.tif`, `stac/`, `merged.tif`). Demo-only; no `src/fsd/` change.
+- **`demos/e2e_austria.py` step 2 now reports the aggregate (wall) transfer rate (2026-07-13)**, to
+  match `download_cli` and the wall metric above. It divided `bytes_downloaded / transfer_seconds`
+  (the thread-summed **per-stream** rate) everywhere; now the console `transfer` line shows the
+  transfer-only wall seconds + **both** rates (`X MB/s aggregate / Y per stream`), the
+  probe-vs-effective verdict compares the probe against the **aggregate** rate, and
+  `cost_model["transfer_mb_per_s"]` (→ `demos/estimate.py` ETAs) is the aggregate rate
+  (`per_stream_mb_per_s` kept as a diagnostic). Rationale: per-stream understated throughput ~4×
+  (confirm-run 4.8 vs 19 MB/s) → the demo printed the wrong link-vs-contention verdict and
+  `estimate.py` predicted download times ~4× too slow. Reporting/calibration only — no pipeline
+  behavior change; `E2E_AUSTRIA.md §8`'s "MB/s summed" template line follows when §8 is filled.
+
+## e2e Austria local-completeness gate + download instrumentation (spec 23, 2026-07-10)
+- **`DownloadResult` gained decomposed metrics** (`fsd.sources.cdse`): `bytes_downloaded`,
+  `transfer_seconds`, `convert_seconds`, `bytes_by_band`. `_transfer_and_convert` now times the CDSE
+  byte-transfer separately from the local jp2→COG conversion (interleaved per file in worker
+  threads, so the summed seconds may exceed wall-time). `_download_one` returns `(ok, reason,
+  metrics)` — a **signature change** (its 4 call-site tests updated). New `sum_results` aggregates
+  `download_resume`'s per-pass results.
+- **New `cdse.probe_throughput`** — single-threaded one-file fetch → achievable MB/s baseline, so a
+  run can tell CDSE/link-bound from local contention (VPN/background load).
+- **New `cdse.plan_download` + `format_download_plan`** (the D13 guardrail) — query STAC + diff
+  needed-vs-present tiles → an actionable `fsd.download(...)` plan (JSON + printed command, +GB/ETA
+  when a cost model is known). Wired into the `create_training_data` / `run_inference` preflight:
+  **missing imagery now raises a clear "run fsd.download first" with the exact params**, not a deep
+  file-not-found. Compute verbs still never auto-fetch (quota + the Batch download-once model).
+- **`run_inference` merge is now cross-UTM-zone-safe by default policy.** `_merge_outputs`
+  `"reproject"` picks the target CRS by **max total cell area** (was most-cells; correct for clipped
+  ROI-edge cells) and accepts a **`merge_crs=`** override (EPSG/CRS string). It is **lossless where a
+  cell already matches the target** (single-zone ROIs like Austria don't resample). `run_inference`
+  gained `merge_crs`.
+- **`demos/e2e_ethiopia.py` → `demos/e2e_austria.py`** — now a **reusable template** that starts from
+  a real CDSE **download** (step 2, probe + `download_resume` + decomposed timing), uses ROI-mode
+  `run_inference(merge="reproject")`, and is driven by `--roi/--train/--id-col/--label-col/--creds`.
+  New `demos/estimate.py` (no-download ETA) + `demos/E2E_AUSTRIA.md` (the go-to local-run doc).
+
+## Inference parallelism: retire `mp.Pool`, unify on the runner seam + idempotent outputs (spec 22, 2026-07-07)
+- **`engine.run_local` no longer uses `multiprocessing.Pool`.** It is now the **in-process
+  sequential** path only (`cores=1` / live adapter / tests / debug). Parallel pre-built-cube
+  inference (`cores>1`) fans out through the **Snakemake infer-only runner**
+  (`workflows/infer_only_task.py` + `_snakefiles/infer_only/Snakefile` +
+  `runners.run_local_infer_only`), routed from `api.run_inference` (kept out of `engine` to avoid a
+  model→workflows import cycle). So **all** parallel fan-out (build, ROI, pre-built inference) now
+  goes through the runner seam → Batch (P4) can dispatch pre-built inference too, as a pure
+  `runner=` swap. **No `mp.Pool` anywhere in fsd.**
+- **Inference is now idempotent.** Both paths **skip existing outputs unless `overwrite=True`** —
+  a re-run of `run_inference` over an already-inferred set does nothing (fixes the observed
+  behaviour where the engine re-inferred every cube despite existing `output.tif`). `cores>1`
+  resumes via per-group sentinels; `cores=1` via an `fs.exists` check.
+- **New `cubes_per_task` knob (default 1)** groups K cubes per Snakemake job so the one-per-job
+  bundle load amortises (recovers the pool's economics without a pool — the intra-task loop is
+  sequential). `overwrite=True` forces recompute (`--forceall`). `run_inference` gains
+  `overwrite` + `cubes_per_task`; **default `cores=1` → fully backward-compatible** (only new
+  default behaviour is skip-existing).
+- **Behaviour preserved:** `cores=1` stays no-bundle in-process; `cores>1` requires a bundle (a live
+  adapter is auto-saved), same as the old pool. Positional calls `run_inference(model, cubes, out)`
+  unchanged.
+- **Bundle drift-check relaxed for *unset* spec fields (`model/bundle.py::load`).** A field the
+  adapter class leaves unset — `None`, an empty list, or `n_timestamps == 0` (the base default) — is
+  now **skipped** by the code/bundle drift check; the bundle value is authoritative. This lets **one
+  adapter class back models trained on different `T`** (n_timestamps is a trained-model property, not
+  a code constant) — surfaced when the demo's `cores>1` path first exercised `bundle.load` in a
+  worker. Fields the class *does* pin are still drift-checked (real drift still raises).
+- **Demo (`demos/e2e_ethiopia.py`) now infers via the bundle at `cores>0`** (`model=bundle_dir,
+  cores=CORES, cubes_per_task=20`) instead of a live sequential adapter — so step 5 is parallel +
+  resumable and the demo is real coverage for spec 22. `demos/adapters.py::DemoRF` no longer
+  hardcodes `n_timestamps` (model-determined). The demo exports its dir to `PYTHONPATH` so the
+  runner's subprocesses can import `adapters:DemoRF`.
+
+## run_inference: ROI mode + three merge modes (spec 21 / P0.75, 2026-07-07)
+- **`api.run_inference`** now has two mutually-exclusive modes. Old (spec 18): pass
+  `inference_datacubes=` (pre-built cubes, engine `mp.Pool`). New (spec 21): pass `roi=`
+  (+ `catalog_filepath`/`startdate`/`enddate`/`mosaic_days`/`bands`) → fsd tiles the ROI
+  (`fsd.grid`), then fans out a per-cell **build-datacube + infer → COG** task via the **runner
+  seam** (`workflows/infer_task.py` + `_snakefiles/create_inference/Snakefile` +
+  `runners.run_local_inference`). `inference_datacubes` + `output_folderpath` are now optional
+  (both default `None`, validated) — **positional calls `run_inference(model, cubes, out)` still
+  work**. `InferenceResult` gains `grids_filepath`.
+- **Why the runner seam, not the existing pool:** the per-cell unit-of-work is what Azure Batch
+  dispatches at P4, so folding inference into the runner keeps P4 a pure `runner=` swap. (The
+  pre-built `mp.Pool` path was **subsequently retired too** — see the spec-22 entry above.)
+- **`merge=` is now tri-state:** `False` (per-cell COGs only) | `True` (**strict single-CRS**,
+  refuses cross-CRS, error points at `"reproject"`) | `"reproject"` (**display** merge: reproject
+  to the dominant zone, nearest-neighbour, lossy). The demo's ad-hoc reproject-merge moved into
+  `api._merge_outputs`; `demos/e2e_ethiopia.py` now calls `merge="reproject"`.
+- **CDSE quota (SO-6):** ROI inference **never downloads from CDSE** — imagery is assumed present
+  in the catalog (download is a separate up-front phase). On cloud (P4) this means Batch tasks read
+  imagery from blob, never CDSE.
+
+## Datacube builder: merge multiple tiles per acquisition (spec 20 bugfix, 2026-07-07)
+- **`datacube/builder.py::_stack_datacube`** — when a shape is covered by several tiles of the
+  **same acquisition** (it straddles an MGRS tile boundary), all of them are now **nodata-fill
+  merged** onto the reference grid. Previously `ts_band_index` was a `dict((timestamp, band) ->
+  image_index)`, which silently kept **one** tile and nodata-filled the shape's other portions —
+  a faithfully-ported legacy bug (see `BUGS.md` BUG-002). Overlap tie-break: `dst_crs`-native
+  tiles win over reprojected ones, then lower `image_index`.
+- **Behavior change:** boundary-straddling shapes (e.g. the 5 km inference grids) now get full
+  coverage instead of partial/mostly-nodata (worst spec-19 grid: 0.6 % → 82.8 % valid).
+  Small single-tile shapes are largely unaffected (one image per `(timestamp, band)` → the merge
+  is a no-op), but a **minority of training fields do straddle boundaries** — the spec-19 demo's
+  cold rebuild recovered ~6 % more training pixels (217,914 → 230,567) on top of rescuing the
+  inference grids. Output shape/axes unchanged.
+
+## ROI→S2-grid tiling + end-to-end demo (spec 19, 2026-07-06)
+- **New `src/fsd/grid.py`** — `roi_to_s2_grids(roi, grid_size_km=5, scale_fact=1.1)`: clean-room
+  port of `rsutils.s2_grid_utils.get_s2_grids_gdf` (polyfill the ROI's convex hull at S2 res 11,
+  keep intersecting cells, scale 1.1 for 10 % overlap, `gpd.overlay` clip to the ROI). `s2`+`s2cell`
+  live in the optional **`[grid]`** extra so fsd core stays lean. This is the ROADMAP §4 / P4
+  groundwork; the `run_inference(roi=…)` front-end that consumes it is still P4.
+- **`demos/`** — `e2e_ethiopia.py` runs demo_01+02+03 as one flow (tiling → `create_training_data`
+  → RF → inference datacubes → `run_inference` → COG/STAC + a crop map) on the existing Ethiopia
+  data; `adapters.py::DemoRF` (NDVI+SAVI, band-limited to what the benchmark has); `README.md` is
+  the report. Runs in an **isolated `.venv-modeldeploy`** (`[dev,grid,model-example]`).
+- **Real finding:** the inference ROI straddles the S2 MGRS zone-36/37 boundary in practice, so
+  per-grid datacubes land in **both** EPSG:32636 and 32637. `run_inference(merge=True)` refuses the
+  cross-CRS merge (the single-CRS-merge principle, spec 18); the demo reprojects outputs to the
+  **dominant** zone and mosaics that for the display map.
+- New extras: `[grid]` (s2, s2cell); `matplotlib`/`seaborn` added to `[model-example]` for the plots.
+
+## ModelAdapter contract + local train/deploy (spec 18 / P0.5, 2026-07-06)
+- **New `src/fsd/model/`** (`adapter`/`features`/`engine`/`bundle`) generalizes the legacy
+  `demo_02_model_train` + `model/demo_model_deploy.py` into a plug-in **ModelAdapter** contract.
+  The feature transform (`mask_invalid_and_interpolate → NDVI/NDRE/… → remove raw bands`) that
+  was **copy-pasted** between the train notebook and the deploy script now has **one** definition
+  (the adapter's `feature_sequence`), run by fsd in **both** `create_training_data` and
+  `run_inference` — the F1 anti-skew fix.
+- **`create_training_data` wiring:** the previously-stubbed `feature_sequence`/`aggregate` params
+  are live, plus a new `adapter=` (preferred). When any is given, fsd writes `features.npy`
+  (+ `feature_ids`/`feature_labels`) **additively**; raw `data.npy` is kept. `aggregate ∈
+  {None, "median_per_id", callable}` (the `np.nanmedian`-per-id reducer from demo_02 cell-3).
+- **`run_inference` is real (was a P4 stub):** local engine over **pre-built inference datacubes**
+  (input.csv / folder / list) → one COG per cube + a STAC catalog (+ optional merged map). fsd
+  owns the predict loop (drop-NaN → chunked `predict` → nodata scatter → `(bands,H,W)`). Output
+  COGs use **`raster.cog.to_cog`** (lossless + overviews) — **not** the legacy `rio_cogeo`/
+  `cog_translate` path (see DROPPED.md). The ROI→S2-tiling front-end stays P4 and will call this
+  same engine. Preflight asserts bands + `T` before any predict.
+- **`catalog.stac.cog_outputs_to_items`** implemented (spec 17 SO-6, was designed-for): one STAC
+  Item per output COG, `proj:*` read straight from the COG we just wrote.
+- **Bug fixed:** `engine.infer_datacube` now **copies `band_indices`** before `modify_bands`,
+  which mutates its `band_indices` argument in place — reusing one dict across cubes could
+  otherwise corrupt it (caught by `test_predict_batch_size_matches_whole_tile`).
+- **Deps:** no new *core* dep (sklearn/joblib live in the `[model-example]` extra for the example
+  + runbook only). Exports: `fsd.ModelAdapter/BaseModelAdapter/Output/load_bundle/save_bundle`.
+
+## STAC export view of the tile catalog (spec 17 / P0, 2026-07-06)
+- **New (additive), `TileCatalog` GeoParquet schema unchanged:** `src/fsd/catalog/stac.py` maps
+  catalog rows → **STAC Items** (one Item per tile-product acquisition, one asset per band file)
+  and writes a **static, self-contained STAC catalog (JSON)** via `pystac`, through the
+  `fsd.storage` seam. `TileCatalog.to_stac(dst)` is the convenience entrypoint.
+- **Pure-metadata by default:** `proj:code` (EPSG) is derived from the **MGRS tile in the product
+  id** (e.g. `T37PBP`→`EPSG:32637`), so `to_stac` reads **no rasters** (579-tile benchmark → 579
+  items in 0.06 s, both UTM zones correct). Per-asset `proj:shape`/`proj:transform` are opt-in
+  (`read_proj=True`). Media types by extension (COG for `.tif`); `eo:cloud_cover` from
+  `cloud_cover`; `MTD_TL.xml` as a metadata asset; source `.SAFE` as a `via` link.
+- **Round-trippable:** `stac.items_to_rows(...)` reconstructs the catalog columns losslessly.
+- `pystac` promoted to a **direct** dependency (was transitive via `pystac-client`).
+  `stac-geoparquet` deferred (add when pgstac/TiTiler needs it). Advances TODO #14 (STAC half).
+
+## High-level API façade — `fsd.*` verbs (spec 16 / P0, 2026-07-06)
+- **New (additive), no behavior change to existing modules:** `src/fsd/api.py` adds the
+  user-facing verbs `fsd.download`, `fsd.create_training_data` (+ `run_inference` / `deploy`
+  stubs, `compute_n_timestamps`, `TrainingData`, `PreflightError`), re-exported at top level so
+  `import fsd; fsd.create_training_data(...)` works. It is a **façade** over
+  `sources.cdse` / `workflows.create_datacube` / `datacube.flatten` — the legacy-derived
+  entrypoints (`run_create_datacube`, `flatten`) are unchanged and still public.
+- **Scope raised (ROADMAP §2.5):** `create_training_data` hides `input.csv` + the word
+  "flatten"; the user provides label polygons + a catalog and gets back
+  `data/ids/labels/coords/metadata`.
+- **Seams present from day one:** every verb takes `runner="local"` / `storage=None`; non-local
+  values raise (Azure Batch / blob land in P1/P2 as config, not API changes).
+- **Preflight (ROADMAP §2.6):** cheap checks (window/`T`/bands/columns/catalog) run *before*
+  any download or build and raise `PreflightError`, aggregating all failures.
+- **`feature_sequence` / `aggregate`** are pinned in the `create_training_data` signature but
+  raise `NotImplementedError` until P0.5 (ModelAdapter). Version bumped `0.0.1 → 0.1.0`.
+
 ## Calendar-interval median mosaic — new default (spec 15, 2026-07-05)
 - **Behavior change (kept-but-changed): `median_mosaic` now buckets acquisitions into fixed
   calendar windows by default** (`mosaic_scheme="calendar"`, `config.MOSAIC_SCHEME`). Windows are

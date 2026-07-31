@@ -1,3 +1,8 @@
+---
+status: current
+summary: Part 1 of the datacube-throughput benchmark harness design (parallelism sweep baseline).
+---
+
 # Spec 11 — Datacube throughput benchmark · Part 1: parallelism-sweep harness
 
 Part 1 of a 3-part effort against the datacube-creation bottleneck:

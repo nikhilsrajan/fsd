@@ -1,3 +1,8 @@
+---
+status: historical
+summary: First real batch-download benchmark against the satellite_benchmark/-era CDSE pipeline; the archive it fed no longer exists (deleted 2026-07-17, CLAUDE.md).
+---
+
 # Download benchmark #1 — 1 year, Ethiopia multi-CRS ROI
 
 First real batch-download run of `fsd.sources.cdse.download` (TODO #9). Purpose: see

@@ -1,0 +1,3708 @@
+---
+status: historical
+summary: Every PROGRESS entry before the current one, moved here verbatim 2026-07-30 (spec 41 D12) — the primary archaeology source for spec 43's docs/history.md.
+---
+
+## ✅ 2026-07-30 — P4 DONE: `env.example.sh` + `docs/reference/environment.md`, both under test. Found a real leak. → NEXT: P5
+
+Spec 41 ranked P4 highest of what remained because it is **the only phase backed by runs that
+actually failed**. The measured drift: **50 distinct `AZ_*` variables** (spec 41 said ~45) across
+the run-books with no canonical list.
+
+**Counted, not estimated — and one assumption in D6 was wrong:** `grep` says **no `AZ_*` variable
+is read by `src/fsd/` at all.** D6 assertion 1 is worded *"every `AZ_*` in `env.example.sh` appears
+in `src/` or `runbooks/`"*, which assumes the library reads them. It does not: every one is
+operator-facing (run-book shell, `az` CLI, or `demos/e2e_austria_aml.py`), and fsd's own code takes
+storage locations as **arguments**. The one `_AZ_RE` in `src/fsd/storage/azure.py:29` is a compiled
+regex, not a variable. The parity test therefore scans `runbooks/` + `demos/` + `docs/`.
+
+**Three deliverables:**
+
+| file | what it is |
+|---|---|
+| `env.example.sh` (repo root) | all 50 variables in 9 groups, values blank or derived, comments pointing at the private doc. `cp` → `env.local.sh` → fill → `source`. A missing value is now **one visible blank line**, not an absent export five run-books deep. |
+| `docs/reference/environment.md` | the canonical table: meaning · **where the value comes from** · **a verification command per row**. Continuously-true (D3), so no D4 header. |
+| `AZURE_INFRA_PRIVATE.md` (workspace root) | a new section mirroring `env.example.sh` group for group, so the three read side by side. **No value was copied into `fsd/`.** |
+
+**Parity is exact: 50 declared, 50 used, zero drift in either direction** — and `tests/test_docs.py`
+now enforces it (D6 assertion 1, two new tests: parity, and every variable documented in the
+reference). **The test caught its first defect immediately** — my own reference prose wrote `AZ_RE`
+where the identifier is `_AZ_RE`; the doc was fixed, not the test.
+
+**The four spellings are documented, NOT unified.** `AZ_ARCHIVE` / `_ROOT` / `_PATH` / `_CATALOG`
+(+ `AZ_CATALOG`, `AZ_CATALOG_URL`) all point into the same place. Renaming them would mean editing
+run-books, which D3 forbids — the same rule that forced the issue numbers to align rather than
+rewriting 473 references. So the reference gives the equivalence table and says **set whichever the
+run-book you are running names**; `AZ_ARCHIVE_ROOT` is marked canonical.
+
+### ⚠️ The identifier sweep found a real leak (pre-existing, now scrubbed)
+
+`RECIPES.md`'s pre-push sweep, run before committing, found **the concrete d16 cluster
+name in two tracked, public files**: a comment in `src/fsd/workflows/runners.py:248` and
+a docstring in `demos/plot_aml_timings.py:148`. Both were prose, so scrubbing to
+`cluster-<proj>-d16` + a pointer is behaviour-free. **Neither came from this session's work.**
+
+This is the **third** time the sweep has caught this class (two on 2026-07-22), and all three
+arrived the same way: **prose written about a real run.** `RECIPES.md` now says to run the sweep
+after any such session, and records the new known-clean false positives.
+
+**It does not close the standing open decision** (private doc, unmade since 2026-07-17): scrubbing
+is *forward-only*, and these identifiers are already in the public repo's **git history**.
+
+**`.gitignore` gained `env.local.sh`** — it did not have it, and that file is designed to hold real
+account names, ids and URLs.
+
+**Gate:** `pytest -q` **608 passed / 84 skipped** (+2, the parity tests), `ruff check src/ tests/
+demos/` clean, identifier sweep clean apart from documented false positives.
+
+# PROGRESS archive
+
+> **Moved, not deleted** (spec 41 D12, 2026-07-30). `PROGRESS.md` was 3,691 lines of resume
+> anchor **and** historical log fused into one document — read at the start of every session,
+> so the cost was paid every time. The anchor stayed in `PROGRESS.md`; all **61** entries before the
+> current one are below, **verbatim and in the same order** — with exactly one deliberate exception:
+> the move **scrubbed a concrete cluster identifier** out of one line (the pre-push sweep caught it;
+> it is described there now, not spelled). No other byte was changed.
+>
+> **One file on purpose** (user, 2026-07-29): it is a log, nobody browses it, and splitting it
+> by month would invent a boundary that means nothing. It is **point-in-time** (D3) — entries
+> are never edited after the fact, including the ones that record a conclusion later proven
+> wrong. Those corrections are the most valuable thing in here and are why this file exists
+> rather than `git log -p`: it is the archaeology source for **spec 43** (`docs/history.md`),
+> which has not been written yet.
+
+---
+
+## ✅ 2026-07-30 — P3 DONE: `docs/findings/` — two research write-ups out of the issue bodies. → NEXT: P4 (env reference)
+
+Spec 41 D14 P3: *extract TODO #59/#61 + `E2E_AUSTRIA_AML.md` §6 → `docs/findings/`*. The two rows
+that were **1,137 and 792 words of research living in a markdown table cell** are now readable
+documents.
+
+| new file | from | says |
+|---|---|---|
+| `docs/findings/cloud-overhead.md` | issue #61 + `E2E_AUSTRIA_AML.md` §6.1 | **35 % of the inference run and 90 % of the merge run was the DRIVER** collecting over blob, not the cluster. Attack the driver, not the cluster. |
+| `docs/findings/workload-regimes.md` | issue #59 + §6.2 | Training units are **781× smaller** than inference units, so one set of fan-out defaults cannot serve both. |
+| `docs/findings/README.md` | new | the index + what a "finding" is and how it is superseded |
+
+**The split that makes this worth doing (D9):** the **finding holds the measurement** — the
+decomposed windows, the method, the caveats, and the readings that turned out wrong. The **issue
+holds the open work**. Both findings carry a D4 `status: current` header; findings are
+**point-in-time** (D3 explicitly lists `docs/findings/`), so a later measurement gets a *new*
+finding and this one is marked superseded — the numbers are never edited.
+
+**What each finding preserves that a summary would have thrown away:** three corrections in
+`cloud-overhead.md` (the "fixed cluster spin-up" reading, the "627 s bundle upload" suspect — the
+bundle stage was **13 s** — and "ramp-up grows with fan-out width"), and one in
+`workload-regimes.md` (the same width claim, from the other direction). Each was plausible and each
+was wrong; that is the reusable part.
+
+**`tests/test_docs.py` widened** — `_D4_DIRS` now covers `specs/`, `runbooks/`, `demos/`,
+`benchmarks/` **and** `docs/findings/` (84 target files, up from 72). This closes the open review
+finding that P1 stamped `demos/` + `benchmarks/` while D6 assertion 4's literal wording only tested
+`specs/`+`runbooks/`, so 11 stamped files could rot untested. The new folder is covered from birth.
+
+**`demos/E2E_AUSTRIA_AML.md` §6.1/§6.2 got a one-line pointer each, and nothing else** — it is
+point-in-time (D3), so it is not gutted to chase a later extraction. Both homes are frozen, so they
+cannot diverge. `TODO.md`'s stub now points at `docs/findings/` as D8 requires.
+
+**Handed to the user (networked, spec 24):** `gh issue comment` on #59 and #61 pointing at their
+findings — bodies prepared at the workspace root.
+
+**Gate:** `pytest -q` **606 passed / 84 skipped** (from 595/73 — the widened glob adds 12 files ×
+2 tests, of which 11 land as skips since only 2 files are superseded), `ruff check src/ tests/
+demos/` clean.
+
+**Two review findings still open** (P4/P5): `superseded_by` is ambiguous across the
+`specs/`↔`runbooks/` namespaces (`runbooks/42`'s `41` resolves to `specs/41`), and the two register
+indexes disagree on link style.
+
+## ✅ 2026-07-30 — P2 DONE: `TODO.md` → 62 number-aligned GitHub issues. → NEXT: P3 (`docs/findings/`)
+
+**The user ran `runbooks/44-todo-to-issues.md`. It passed exactly.**
+
+```json
+{"step":"todo-to-issues","status":"ok","pass":true,
+ "metrics":{"created":62,"closed":24,"first":1,"last":62},
+ "expected":{"created":62,"closed":24,"first":1,"last":62},"error":null}
+```
+
+**Alignment verified independently** (not from the script's own report):
+`gh issue list --state all` → **62 issues, min 1, max 62, 24 closed**, and the sorted number set
+equals `[1..62]` exactly — no gaps, no drift. **`gh issue view 47` is now the canonical way to read
+what used to be TODO #47.**
+
+**Reference check:** **473 `TODO #NN` references across 61 markdown files**, and the **highest is
+#62** — every existing reference falls inside the aligned range, so all of them resolve. (The 448
+count in spec 41 D8 was measured earlier and before specs 41/42 + the P1/P2 entries added their
+own.) Nothing was rewritten to achieve this, which is exactly what D3 forbids and what the
+number-alignment decision bought.
+
+### What moved where (the prose problem D8 did not anticipate)
+
+`TODO.md`'s first 76 lines were **not rows** — they were narrative that a "~10-line stub" would
+have silently deleted, and it existed nowhere else in the repo (grep-verified against `ROADMAP.md`,
+`CHANGES.md`, `CONTEXT.md`). **The user chose to split it by subject** rather than keep it in the
+stub or fuse it into one new issue:
+
+| Content | New home | Why |
+|---|---|---|
+| "Post-v1 roadmap (sequencing — user, 2026-07-02)" | **`ROADMAP.md` §5.9**, verbatim, marked point-in-time | Roadmap sequencing belongs with the phase table; §5's table is the live plan, this records *why* the order was chosen |
+| "Cross-cutting perf track" — the 3-part benchmark-first plan + the five parked optimization candidates (2026-07-04) | **A comment on issue #15** | Issue #15 **is** that item — one fact, one home (D9) |
+
+**`TODO.md` is now a ~15-line signpost**, not deleted: 473 references name it. **`CLAUDE.md`
+edited** (workspace root, outside the repo): the living-registers line no longer lists `TODO.md`
+and says explicitly *never add a row to it*; the stale "(TODO #30/#10 open)" note in the archive
+warning is corrected — spec 34 closed both, but that archive predates the fix and was never
+re-ingested, so the ~1000 DN warning still stands for a different reason than it claimed.
+
+**Still open from P2:** the new P5 STACNotator north-star issue (the user's call on #26,
+2026-07-30) — it lands at #63+, outside the aligned range, and is a `gh` create, so it goes to the
+user with the command.
+
+**Gate:** `pytest -q` **595 passed / 73 skipped**, `ruff check src/ tests/ demos/` clean.
+
+## 🟡 2026-07-30 — P2: the 62-issue manifest is REVIEWED + SIGNED OFF; run-book 44 written. → NEXT: the user runs run-book 44
+
+Spec 41 D8's binding conditions are met up to the point Claude is allowed to reach.
+
+**Preflight (D8 condition 1) — verified:** `gh issue list --state all` empty, `gh pr list --state
+all` empty, discussions **disabled** (`has_discussions: false`). The shared counter is at **0**, so
+`#N == TODO #N` is achievable. **Re-verified by the script immediately before it creates anything**
+— it exits 2 and creates nothing if any of the three is non-empty (D8's "no partial attempt").
+
+**Manifest (D8 condition 3) — signed off by the user 2026-07-30.** Workspace root (uncommitted,
+outside the public repo): `P2_ISSUE_MANIFEST.md` (human review artifact, 62 titles + states +
+labels + milestones + every body) and `P2_ISSUE_MANIFEST.jsonl` (what the script reads). Bodies are
+**verbatim** from `TODO.md` — verified by substring match, not by eye; longest is 7,045 chars
+against GitHub's 65,536 limit.
+
+**Three decisions the review surfaced, all user-answered 2026-07-30:**
+
+| Question | Answer |
+|---|---|
+| Spec 41 D8/D13 says **"29 closed"**; reading every row gives **24** | **24 is right.** The 29 counted rows *containing* a ✅ (28 do), but 6 are open rows carrying a ✅ on a sub-part: #14 (COG+STAC done, titiler not), #25 (root cause only), #39 (ROI mode only), #48, #60 (measured, not fixed), #61 (fix (a) of (a)–(d)). Same class as spec 41's own A1 file-count correction. |
+| D8's label vocabulary has **no bucket for the model items** (#18, 19, 20, 25, 28 are ModelAdapter/bundle/engine) | **Add `model`.** Final set: `datacube`, `download`, `cloud`, `storage`, `stac`, `docs`, `perf`, `model`, `blocked`. |
+| **#26** (STACNotator serving contract) — closed, or kept open as the P5 north star? | **Closed** (specs 29+30 validated tier-1 and tier-2 end to end), **plus a NEW open north-star issue after the migration** — it lands at #63+, outside the aligned range, which is why it waits. |
+
+**Milestones** are assigned sparingly — only the 6 rows that name a ROADMAP phase as their own
+scope (`P1`, `P2`, `P3`, `P5`). Labels and milestones are editable after creation; **the number is
+not**, so the number is the only thing the manifest had to get right.
+
+**`runbooks/44-todo-to-issues.md` + `todo_to_issues.py` (workspace root) written.** Claude does
+**not** run this — it is networked and side-effecting (spec 24), and a misnumber is unrepairable.
+The script: re-runs the preflight, creates strictly sequentially with a 2 s gap (GitHub's secondary
+rate limits), **verifies every create returned the expected number and halts on the first
+mismatch**, then closes the 24. `--dry-run` (validated, zero side effects: "62 issues, 24 to close")
+and `--resume` (continues from the highest existing issue + 1). ~4 min to create, ~1 min to close.
+
+**Still to do after run-book 44 passes:** `TODO.md` → the ~10-line stub (not deleted — 448
+references name it), the `CLAUDE.md` edit that currently calls `TODO.md` a living register, and the
+new P5 north-star issue.
+
+## ✅ 2026-07-30 — P1 REVIEWED (Opus@high) + 3 FIXES APPLIED. Batch accepted, D13 satisfied. → NEXT: P2 (issues)
+
+Commit `f905161` reviewed against spec 41 D4/D6/D13. **The batch is NOT redone**: all 10 statuses in
+an independent spot-check were correct, so D13's ">1 wrong ⇒ redo" does not trigger. Every defect
+found was in the `summary:` line, not the `status:` value. Gate re-verified independently:
+`pytest -q` **594 passed / 72 skipped**, `ruff check src/ tests/ demos/` clean.
+
+**The independent 10 (D13), none of them Sonnet's own picks:** `specs/01`, `08`, `09`,
+`research-s2-reprocessing-dedup`; `runbooks/38`, `39`, `40`; `demos/E2E_AUSTRIA.md`;
+`benchmarks/cog_vs_jp2_report.md` + `cog_vs_jp2_storage.md`. Checked against `pyproject.toml`
+(spec 09's dep list, spec 08's `snakemake` "local runner only"), `src/fsd/workflows/` (`runners.py`
++ `task.py` still exist ⇒ spec 08 `current`), `specs/33` (it does cite the research doc twice),
+`TODO.md` #62 and `PROGRESS.md`'s 2026-07-29 entry.
+
+### The three fixes applied
+
+1. **~51 summaries were re-stating process state that D4 evicts and D9 houses elsewhere.**
+   "signed off and implemented", "ran green", "done, reviewed, merged" — and three that were
+   explicitly time-relative: run-book 40 *"not yet run at the time of this stamping"*, 38 *"cluster
+   validation still pending"*, 39 *"a P2 re-run is pending"*. `runbooks/README.md` already carries
+   all of it in a `ran?` column and `specs/README.md` in an `implemented?` column, each with
+   evidence — two homes for one fact, guaranteed to diverge. **The rule now applied uniformly: the
+   summary says what the document IS; the index says how far it got.**
+   **Deliberate exception on 4 files** (`specs/25b`, `26`, `39`, `40`): their own *body* still says
+   "awaiting implementation"/"DRAFT", so each keeps a short parenthetical saying so. That is a fact
+   about the document's text, not about project progress, and deleting it re-opens the exact defect
+   P1 was written to correct.
+2. **`demos/E2E_AUSTRIA.md` was `current` with no staleness disclosure** — while its own §8 (line
+   271) carries a ⚠️ STALE note and TODO #62 exists to re-run it. Left `current` (the same
+   partial-supersession rule that correctly kept `specs/18` current), but the summary now states it,
+   the way spec 18's summary already stated its own. A reader deciding whether to open the file
+   needs to know two of its published numbers are wrong.
+3. **The file counts in this log were wrong three different ways** — see the corrected P1 entry
+   below. Notable because spec 41's amendment A1 was *itself* a file-count correction.
+
+### Confirmed, no change needed (the handoff's four open judgment calls)
+
+- **`specs/18` `current` vs `specs/19` `superseded-by-23`** — both right. 18's ModelAdapter contract
+  stands and only the `cores>1` detail moved; 19's whole subject moved.
+- **`specs/27` `historical`, not `superseded-by-NN`** — right. `superseded_by` takes a *document*
+  number and the replacement is a decision recorded in TODO #26–#29, so there is no target;
+  "its subject no longer exists" is exactly true of a dashboard that will never be built.
+- **The `satellite_benchmark` grep as the signal for `historical`** — verified sound: 6 reports
+  reference it and all 6 are `historical`; the 2 that do not are `current`. One wrinkle worth
+  knowing: `cog_vs_jp2_storage.json` *does* reference the deleted archive, so that measurement was
+  taken on it — still defensible as `current`, since a COG-vs-JP2 format result is not
+  archive-specific.
+- **The hand-rolled header parser over `pyyaml`** — keep it, and the handoff's stated worry is moot:
+  `tests/test_docs.py` never imports `yaml` at all, so there is no transitive dependency to protect.
+
+### Three findings left OPEN (deliberately not fixed here — they are P4/P5 work)
+
+- **`test_docs.py` does not cover `demos/` + `benchmarks/`** — 11 stamped files untested. This
+  matches D6 assertion 4's literal wording ("every `specs/`+`runbooks/` file"), but the stamping
+  went wider than the assertion, so those headers can rot. Extending `_d4_targets()` is 2 lines.
+- **`superseded_by` is ambiguous across the two namespaces** — `runbooks/42`'s `superseded_by: 41`
+  resolves to **`specs/41-docs-refactor.md`**, because `test_docs.py` searches `specs/` first. The
+  test passes on the wrong file; the intended target is `runbooks/41-recover-aml-job-timings.md`.
+  Fix by qualifying the value (`runbooks/41`) or searching the file's own directory first.
+- **The two regenerated indexes are inconsistent** — `specs/README.md` uses markdown links,
+  `runbooks/README.md` uses bare backticked filenames, so D6 assertion 2 ("links resolve", P5) will
+  never check the run-book index.
+
+## ✅ 2026-07-30 — P1 DONE: D4 status headers on 81 files + regenerated indexes + test_docs.py. → NEXT: P2 (issues)
+
+**Every point-in-time doc got a `status`/`summary` D4 header (ADR 0023).** **81 files in commit
+`f905161`** (⚠️ count corrected by the Opus review — the entry first said 79 and the commit message
+said 83): 46 `specs/*.md`, 26 `runbooks/*.md` (22 run-books + 3 `HANDOFF-*.md` (`historical`) +
+`TEMPLATE.md`, whose header is baked into the skeleton as a placeholder and is not itself a status;
+run-book 43 was already stamped in `8437175`), 3 `demos/*.md`, and 6 `benchmarks/*.md`. **Two
+further benchmarks reports were stamped on disk but are NOT in the repo** —
+`datacube_throughput_report_{cog,jp2}.md` are gitignored (`.gitignore:49`), so those two edits are
+local-only; they are left in place (harmless) but they are not part of P1's deliverable. Every
+status was **re-derived from evidence** (`CHANGES.md`, ADRs, test files),
+not lifted from the ~12 existing ad-hoc status-line formats — confirming the three known-wrong ones
+(specs 39/40 said DRAFT, 25b/26 said "awaiting implementation"; all four are actually implemented
+and now `current`). 6 benchmarks reports referencing the deleted `satellite_benchmark/` archive are
+`historical`; spec 27 (Leaflet dashboard) and run-book 42 (superseded cold-reruns) are the other two
+non-`current` cases.
+
+**`specs/README.md` and `runbooks/README.md` regenerated** with the implementation-status column
+D4 deliberately excludes (evidence: an ADR, a test file, or "not implemented"). `runbooks/README.md`
+keeps its Track A–D structure and Conventions block, adding a small timing-recovery mini-table for
+41/42 and a `status: historical` note for the HANDOFF files.
+
+**`tests/test_docs.py` written (spec 41 D6 assertion 4 only):** every `specs/`+`runbooks/` file
+parses as a valid D4 header, every `superseded_by` names a file that exists. Hand-rolled parser, no
+new dependency (`pyyaml` is only a transitive dep in `.venv`, not declared in `pyproject.toml`).
+74 new parametrized tests, all green.
+
+**Spec 41 amendment A1 added** (user confirmed before writing): its "42 specs" file count was wrong
+throughout — measured **46** specs (44 pre-existing + 41/42 same-session) — recorded as a dated
+amendment in §1, per ADR 0022 (specs are never silently edited). `runbooks/` count of 23 was
+already correct.
+
+**Gate (D13):** `pytest -q` → **594 passed / 72 skipped** (up from 520/2 baseline — the +74 are the
+new doc tests); `ruff check src/ tests/ demos/` clean. **D13's spot-check is satisfied by the Opus
+review entry above** — an independent 10 files, none of them the 10 Sonnet self-checked.
+
+**Committed as `f905161`** on `main` in the shared checkout (this session worked directly there,
+not a worktree, since the job started there). **Unpushed** — push is the user's call.
+
+**Still deferred, unchanged:** P2 (issues migration), P3 (`docs/findings/`), P4 (env reference), P5
+(README/ARCHITECTURE/PROGRESS split), P6/spec 42 (the fixture build — its 3 scripts still
+unwritten), P7 (tutorial + how-tos), spec 43, spec 40 §7, TODO #62, TODO #59/#60/#61, the rslearn
+Plan B/C decision.
+
+## ✅ 2026-07-30 — SPECS 41 + 42 SIGNED OFF (docs refactor designed, nothing implemented). → NEXT: P1
+
+TODO #55 is now **two signed-off specs plus five ADRs**, produced by an Opus@high
+`/grill-with-docs` interview (12 questions, 2026-07-29/30). **No implementation has started** —
+only markdown was written, the suite is untouched.
+
+- **`specs/41-docs-refactor.md`** — D0–D14, the target layout, phases P1–P5 + P7, acceptance
+  gates, per-source credit. **Signed off.**
+- **`specs/42-tutorial-fixture.md`** — the committed offline tutorial fixture, carved out because
+  it is data engineering. **Signed off, then amended A1 the same day** (see below).
+- **ADRs 0022–0026** + `CONTEXT.md`'s new "Documentation kinds" section. `docs/adr/README.md` also
+  gained the row for **0021, which had never been indexed**.
+- **Spec 43 (`docs/history.md`) is deliberately deferred** until P1/P2 have done its archaeology.
+
+### The reframe: TODO #55's C4 plan was replaced (D0)
+
+#55 asked for "≤~5 docs on the C4 model". **C4 is demoted to the section outline of one
+`ARCHITECTURE.md`** (Context/Container/Deployment as Mermaid), not a file count. Reasons: C4 models
+*a system you deploy*, fsd is a library + a pipeline; and C4's "container" means a runnable thing —
+its own docs open **"Not Docker!"** — so fsd's C4 containers are **driver / node / blob / catalog**,
+emphatically *not* the AML Docker Environments. **Diátaxis** (tutorial · how-to · reference ·
+explanation) replaced it as the organising frame, and **matklad's ARCHITECTURE.md** convention
+supplied the one-file codemap. The user's actual complaints were never architectural: *runbooks are
+unreadable, specs no one would read, the TODO is too hard to find what's missing.*
+
+### The diagnosis: three documents are each TWO documents fused (ADR 0022)
+
+Not neglect — a **missing category system**. A spec records what was decided *then*; nothing was
+ever supposed to keep it true. So: **every document is either point-in-time (never edited after the
+fact, statused) or continuously-true (maintained, and tested where possible)** — PEP 1's rule
+adopted wholesale (*"PEPs are no longer substantially modified after they have reached the
+Accepted, Final, Rejected or Superseded state"*). The fused three: `PROGRESS.md` (anchor + 38.7k-word
+log), `demos/E2E_AUSTRIA.md` (tutorial + benchmark report — which is *why* its §2 still says "CDSE
+now; MPC later"), `TODO.md` (open + closed + measurement essays).
+
+**That rule then forbids the obvious shortcuts:** we do **not** edit point-in-time docs to chase a
+later decision — which is why issue numbers are forced to align rather than rewriting 448
+references, and why **`demos/` is NOT renamed** to `benchmarks/` despite being misnamed.
+
+### What the grilling measured that changed a decision
+
+| Measurement | Consequence |
+|---|---|
+| **448 `TODO #NN` refs** across 30+ files; TODO numbered **1–62, zero gaps**; repo has never had an issue, PR **or discussion** (GitHub shares one counter across all three) | Create 62 issues **strictly in order, including the 29 closed ones** ⇒ #N == TODO #N, all 448 refs resolve free (ADR 0024) |
+| **21 of 42 specs already carry a status line** in ~12 formats; **≥3 are wrong** (spec 39 says DRAFT although it shipped; 25b/26 say "awaiting implementation") | We are *normalizing* a half-existing convention; existing labels **cannot be lifted** |
+| **`e2e_austria.py`: 12 of 531 lines touch `fsd`** (2.3%), and `step_download` **bypasses `fsd.download`** for `cdse.probe_throughput`/`download_resume` | `demos/` provably cannot serve as an example — the demo gap is **three artifacts** (ADR 0026) |
+| **~426 MB per granule** (B04 183.8 + B08 187.1 + B8A 51.0 + SCL 4.6); whole-granule reads ⇒ a 5 km ROI saves nothing (1 tile-month ≈ 3.4 GB) | **No real download is tutorial-sized** ⇒ committed fixture |
+| **fsd ships ZERO data** — `.gitignore` blocks `*.tif`/`*.geojson`/`*.parquet`, and `shapefiles/` is outside the repo | A "cannot fail" tutorial was impossible before spec 42 |
+| **No CI exists** (`.github/workflows` absent) | Doc tests land in **`pytest`** — stricter, since it runs every session. **Docs can fail the suite.** |
+| **~45 `AZ_*` variables**, incl. four spellings of one idea (`AZ_ARCHIVE`/`_ROOT`/`_PATH`/`_CATALOG`) | `env.example.sh` + `docs/reference/environment.md`; `AZURE_INFRA_PRIVATE.md` restructured to mirror it line for line |
+
+### ⚠️ The user's chosen tutorial ROI was checked and rejected
+
+`s2grid=476da24` sits near **Vienna** (16.03–16.12 E) while every labelled field is ~100 km **west**
+(14.6–15.5 E) — it contains **zero labels** and cannot exercise the training-data step. Replaced by
+**cell `4772924`**, chosen by measurement: most labelled fields of the 300 cells over `AT_ROI`
+(**43 fields, 7 crops**, collapsed to maize/hemp/other for trainability), and **all 24 of its
+granules are single-tile `T33UWP`** — so it also strictly dominates `476da24` as a test ROI.
+
+### Spec 42 amendment A1 (user, 2026-07-30) — the VM build removes the radiometry hazard
+
+The user wants the fixture built **on an Azure VM** to spare a mobile hotspot. That turned out to do
+much more than save bytes:
+
+| Source | Example id | Radiometry columns |
+|---|---|---|
+| local `demo_e2e` (CDSE-era) | `…_**N0500**_R122_T33UWP_…` | **none** |
+| blob archive (MPC-era, runbook 37) | `…_R122_T33UVP_…` — **no N-token** | **`offset`, `nodata`** |
+| `mpc_baseline` | `…_R122_T33UWP_…` | **`boa_add_offset`** |
+
+The blob archive is **MPC-sourced and self-declaring**, so the fixture inherits correct radiometry
+**by provenance** instead of re-deriving −1000 from a baseline token. Three consequences: the token
+re-derivation is not merely unnecessary but **impossible** (MPC ids carry no `_N####_`), so
+acceptance test 2 was rewritten; the declaration column name **differs across catalogs**
+(`offset` vs `boa_add_offset`) so it must be read through the declaration API, never hardcoded — a
+schema drift worth its own issue; and the granule count **may not be 24**, since MPC applies
+different cloud-cover filtering and dedup (spec 33), so `T` follows from the archive rather than
+being fixed at 9. A1 deliberately does **not** claim VM≡local is proven: that is the storage seam's
+promise (ADR 0003 / spec 31), not yet a measurement, so the local build is retained as the
+comparison fallback and a byte difference is a **seam finding**, not a fixture bug.
+
+### → NEXT: P1 (status headers), then P2 (issues)
+
+**P1** — three-value headers (`current` / `superseded-by-NN` / `historical`) + a `summary:` line on
+42 specs + 23 runbooks, and regenerate both indexes. Sonnet@medium against spec 41 D4. Process
+state (`implemented`) deliberately lives in the **regenerated index**, not the header. **Gate: the
+user picks 10 files to spot-check; more than one error ⇒ the batch is redone, not patched.**
+
+**P2** — the issue migration, gated on a manifest the user reads *before* any issue is created
+(issues cannot be cleanly deleted). Pre-flight all three counters or fall back to a mapping table.
+
+**✅ `runbooks/43-build-tutorial-fixture.md` is written** (commit `8437175`). It splits across two
+machines by what each can reach: **step 0 on the laptop** derives `roi.geojson` + `fields.geojson`
+because `shapefiles/` lives at the **workspace root, outside the repo** — a `git clone` on a VM
+cannot supply `AT_ROI`, and cell `4772924` is only reproducible as `roi_to_s2_grids(AT_ROI, 5)`
+(the trap that bit run-book 34); **steps 1–5 on a VM in the `rise` VNet** clip pixels against the
+blob MPC archive per A1; **steps 6–7 on the laptop** verify with **VPN and wifi off**, then commit.
+Only ~20 MB crosses the wire. It carries the **first spec-41 D4 status header** in the repo, so P1
+has a reference format. **One elaboration on spec 42 D4, flagged not smuggled:** the split needs
+**two** scripts, so step 0 specifies `derive_roi_and_labels.py` beside `build_fixture.py`; the CLI
+contract is fixed in the run-book and marked **normative** so script and run-book cannot drift.
+
+**Still to implement before run-book 43 is runnable:** `tests/data/tutorial/derive_roi_and_labels.py`,
+`tests/data/tutorial/build_fixture.py`, and `tests/test_tutorial_fixture.py` (spec 42 §3–4).
+
+**Commits this session (both pushed except the last):** `b1d9781` specs 41+42 + ADRs 0022–0026
+(**pushed**), `8437175` run-book 43 (**local only — not pushed**).
+
+**Still deferred, unchanged:** spec 40 §7, TODO #62, TODO #59/#60/#61, the rslearn Plan B/C
+decision. The docs work is independent of all of them.
+
+## ⭐ 2026-07-29 — THE DEMO RAN. P3 AND P4 ARE VALIDATED. → NEXT: TODO #55 (docs refactor)
+
+`demos/e2e_austria_aml.py` completed unattended on the `rise` AML cluster:
+**run `20260729T132222Z`, 1127.7 s (~18.8 min), 8/8 steps ok, 97 jobs, 213 MPC granules,
+300 grid cells → 300 output COGs + STAC + merged map.** `timings.json` +
+`timings.rederived.json` (see A3) are in `tests/outputs/demo_e2e_aml/20260729T132222Z/`
+(gitignored). All three D12 figures render.
+
+**The milestone is not the demo script — it is that ROADMAP's P3 and P4 both said
+"pending cluster validation" and this run IS that validation.** Mode B (laptop triggers
+cloud download→build→flatten, arrays come home) and Mode C (ROI inference fanned out over
+the cluster) are now proven end-to-end on real infrastructure, in one command.
+
+### What the run measured
+
+| | |
+|---|---|
+| **Job admission = 36 % of the whole run** | 403 s of 1128 s, almost all of it one cold start |
+| `2_download` | **286 s admission vs 84 s execution** — 71 % of the step is the cluster scaling 0→32 nodes |
+| warm dispatches | 26–55 s admission (build 32.3 s, flatten 29.0 s, inference 55.2 s) |
+| node utilisation | **5 %** (download, cold) · **42 %** (build) · **37 %** (inference) — TODO #60/#61 quantified |
+| **TODO #60 reproduces exactly** | 32 shards ÷ 4 bands, `32 % 4 == 0` ⇒ one band per shard ⇒ **16.4× imbalance** (2.0 s … 32.8 s) |
+| clock skew (VM) | **−0.88 s ± 0.03** vs ~8 s on the laptop — D10's driver-location record earning its keep |
+| inference vs local | 367.7 s vs 2683.5 s, but the local side is 2026-07-13 code — **not a clean comparison** (TODO #62) |
+
+### Spec 40 amendments (all recorded IN the spec, all user-decided)
+
+- **A1 — `2_download` sources from MPC, not CDSE.** D13 contradicted D11 in the same spec:
+  CDSE dispatches exactly ONE job (spec 37 D1), so the download leg measured no scale-out
+  at all. Also drops the credential dance and the 30-day quota risk. `max_tiles` 207 → 250
+  (MPC found 213).
+- **A2 — `aggregate="median_per_id"` on BOTH demos.** The modelling unit, not a size trick:
+  labels are field-level, so per-pixel training leaks a field's own pixels across the split.
+  `demos/e2e_austria.py` changed to match ⇒ **its published step-3/4 numbers are now stale**
+  and TODO #62's local re-run is a **prerequisite**, not a nicety (spec 40 §9).
+- **A3 — `first_admission` anchors on the FIRST submission.** The old anchor produced
+  `first_admission = −5.0` on a healthy dispatch: submitting 32 jobs takes ~40 s and the
+  early ones are admitted *during* it, so submission and admission overlap and cannot be
+  adjacent legs. It also destroyed D11's stated meaning for a negative (clock skew). New
+  `submission_span_seconds` reports the span *outside* the additive split. `CHANGES.md`
+  entry; **pre-2026-07-29 `timings.json` are not comparable on those two fields** (sums are).
+
+### Defects found by running it (none by review — all cost or nearly cost a run)
+
+1. **TODO #47 CLOSED** — `gpd.read_file(<abfss url>)` reports "No such file or directory"
+   for a file that exists (GDAL has no `abfss://` driver). Killed `3_training_data`. New
+   **`fs.read_geo`**, the one shared reader; all four sites use it. `run_inference`'s ROI
+   re-tiling would have hit two more sites two steps later.
+2. **A stale AML image silently voids the run.** The four D2 stamps are written by the `fsd`
+   *inside the image*; `fsd-aml-env:4` predated spec 40, so a complete 25-min run came back
+   with `job_admission_seconds: null` on all 97 jobs — correct science, void measurement.
+   Now gated after the FIRST dispatch (`_assert_dispatch_telemetry_complete`).
+3. **`[dev,azure,aml]` is not enough** — `mpc`/`grid`/`model-example` are also required;
+   died at `4_train_bundle` on `joblib`. Preflight now checks every driver-side import.
+4. **`total_seconds` was the last process's wall** — a resumed run reported 640.7 s for
+   1470.0 s of steps. Now the sum of the steps + `process_wall_seconds` + `resumed`.
+5. **Dispatch telemetry was ordered by run_id, which is not execution order** —
+   `create_training_data` mints its id before the build dispatches but uses it for the
+   flatten, so `3_training_data[0]` was the *reduce* and `[1]` the *fan-out*, backwards.
+   Now sorted on `wall.t_start`. This mislabelled every figure the plotter draws.
+6. **The gantt was silently dropped** — `max_rows=80` vs a real 97-job run, and both skip
+   causes printed "no data". Cap 120 + `gantt_skip_reason`.
+
+Also: preflight now prints per-check timings (`check_seconds`); `fs.modified` added (the
+clock-skew probe read `fs.ls`, which returns bare strings, so skew always read 0.0);
+RECIPES gained the **both-Environments rebuild** recipe (the node's fsd comes from the
+image — `git pull` on the driver changes nothing) with the `az` gotchas that cost a build.
+
+**Tests 451 → 520 / 2 skipped**, ruff clean. `main` == `origin/main`.
+
+### → NEXT: TODO #55 — the docs refactor (its gate is now met)
+
+#55's own sequencing rule was *"do this AFTER a timed e2e demo … with stepwise time
+accounting and a report"*. That gate is met. It also says **"this is a spec of its own when
+taken up … discuss before starting"** — so the next session is an **Opus@high
+interview + spec**, not implementation.
+
+**The corpus, measured 2026-07-29: 201 markdown files, 284,441 words** (specs 91.8k,
+runbooks 48.6k, `PROGRESS.md` **37.7k**, TODO 16.9k, CHANGES 13.0k, demos 12.6k). Target
+per #55: **(1)** one chronological "story since inception" — the forks taken and dropped and
+the measurements that decided them; **(2)** ≤~5 docs on the **C4 model** (c4model.com) as a
+newcomer's front door. The living registers stay as the audit trail.
+
+Open scoping questions #55 names explicitly: which registers fold in vs stay; the file
+count; and whether it lives in `fsd/docs/` or replaces the top-level READMEs.
+
+**Deferred, not forgotten:** TODO #62 (local re-run — now a prerequisite for ANY
+local-vs-cluster claim, A2), spec 40 §7 (rewrite `E2E_AUSTRIA_AML.md` around this run),
+TODO #59/#60/#61 (the overhead work — note admission at 403 s dwarfs #60's ~30 s, so the
+honest headline lever is cluster warm-up policy, not sharding), and the rslearn Plan B/C
+decision (`spike/rslearn`, still open).
+
+## ⭐ SPEC 40 REVIEWED (Opus@high, 2026-07-28) — six defects found, all fixed
+
+Review of `worktree-spec40-impl` against spec 40 + ADR 0021. The suite was green *before* the
+review too (473/2) — **every defect below sat in `demos/e2e_austria_aml.py`, the one file spec 40
+§6 exempts from unit tests.** That exemption covers the *demo run*; it had been read as covering
+the script's helpers as well, and those helpers are what a real run bets 80 GB on. Now
+473 → **493 passed / 2 skipped**, `ruff check src/ tests/ demos/` clean.
+
+Two were **fatal to the very first cluster run**:
+
+1. **Preflight could never pass.** The Environment check read `os.environ[f"{env_var}_VERSION"]`
+   → `AZ_ENV_NAME_VERSION`/`AZ_INFER_ENV_NAME_VERSION`, but the documented contract (§8.2, and
+   `runner_kwargs` three functions later) is `AZ_ENV_VERSION`/`AZ_INFER_ENV_VERSION`. The
+   `KeyError` was swallowed by the surrounding `except Exception` and re-reported as *"Environment
+   does not resolve — build it first"*, so the script died at step 0 blaming the operator's ACR
+   build. Fixed by naming the pair explicitly, plus a separate "env var not set" branch (an unset
+   var and an unbuilt Environment need different fixes, D4).
+2. **D14 aborted on a well-formed archive — after the whole ~80 GB download had been paid for.**
+   `_assert_archive_trustworthy` globbed `**/*.tif` but compared against the catalog's `files`
+   column, which for CDSE declares `MTD_TL.xml` alongside the bands ⇒ permanent
+   `missing={'MTD_TL.xml'}`. The same comparison was also **vacuous**: `files` holds bare
+   basenames that repeat on every row (verified on the real 207-row catalog: 207 granules × 5
+   assets collapse to **5 unique names**), so it could not have detected a missing granule
+   either. Now keyed `<granule_id>/<filename>` (the `api._output_key` scheme-independence trick,
+   two components instead of three) and the globbed extensions are derived from the catalog
+   rather than hardcoded.
+
+Four more, silent rather than fatal:
+
+3. **Clock skew was always reported as `0.0`.** `_measure_clock_skew` did
+   `isinstance(fs.ls(...)[0], dict)`, but `fs.ls` is `-> list[str]` (it passes `detail=False`), so
+   the branch never fired and the fallback returned the driver's own timestamp. D11's headline
+   caveat — *"every admission figure carries that bound"* — was measuring nothing. There was no
+   route to a server-side mtime through `fsd.storage` at all, so this adds **`fs.modified(url)`**
+   (returns `None`, not a raise, on a backend without mtimes, so "unmeasured" can't be mistaken
+   for "zero"). The probe is now bracketed before/after the write and reports the midpoint plus
+   its own uncertainty, instead of charging the round-trip latency to skew.
+4. **`^C` skipped the clean-exit path.** Only SIGTERM was handled; SIGINT's default
+   `KeyboardInterrupt` is a `BaseException`, so it slipped past both `run_step`'s
+   `except Exception` and `main`'s `except DemoInterrupted` — a raw traceback and no resume hint,
+   on an unattended run, at the one moment the operator needs it.
+5. **`--fresh` could orphan 80 GB.** The `.last_run_id` marker was written at run-id *allocation*,
+   so a run that died in preflight (i.e. always, per defect 1) overwrote the id of the run that
+   actually held the data — unrecoverable, since fsd's recursive delete is broken (TODO #50). The
+   marker is now claimed immediately before `2_download`, the first step that puts bytes on blob.
+   The printed `az storage fs directory delete` was also wrong twice over: it targeted
+   `demo_runs/<id>` instead of `<AZ_ROOT's own prefix>/demo_runs/<id>`, and quoted `"$AZ_FS"`/
+   `"$AZ_ACCOUNT"`, neither of which §8.2 exports — both now resolved from `AZ_ROOT`.
+6. **D14's `offset` assertion was missing** (only `nodata` was checked). Added as an *independent*
+   re-derivation from the baseline token in the granule id (`_N0500_` ⇒ ≥ 04.00 ⇒ −1000), not a
+   call into the module that wrote the column — a catalog checked against the function that
+   produced it catches nothing. This is the archive-wide invisible failure the workspace's old
+   Ethiopia COGs carry: pipeline green, every reflectance ~1000 DN high. (`scale` has no catalog
+   column — it is a fixed per-band constant — so there is nothing per-granule to disagree with;
+   noted in the docstring rather than faked.)
+
+Also: preflight no longer diagnoses a wrong `AZ_CLUSTER` as a credential failure (it asked for a
+cluster twice and labelled the first attempt "credential/cluster resolution failed"); the
+admission strip plot uses `statistics.median` rather than `sorted(x)[n//2]`, which is the *upper*
+median at the expected even n=16; and `E2E_AUSTRIA_AML.md` §8.3 no longer claims the in-flight
+step's `_result.json` is written on interrupt (it isn't — only completed steps have one).
+
+**New tests: `tests/test_e2e_aml_demo_helpers.py` (20).** They cover the two things the hand-off
+flagged as never exercised — the dispatch-run discovery (`_list_run_ids`/`_new_dispatch_timings`,
+now run against a real `memory://` backend, since the scheme-less-glob trap only reproduces
+against a real filesystem) and the D14 assertions end-to-end on a miniature on-disk archive
+(missing asset, undeclared object, contradicted offset, wrong nodata, unstamped declaration,
+zero-byte asset). The well-formed-archive case is the direct regression pin for defect 2.
+
+**Open question for the user:** D12 names four validated hexes, but D11's split has **five** legs;
+the implementation used slot 5 (`#e87ba4`) of the same dataviz palette. Reasonable, and the
+figures were rendered and eyeballed — but the spec's own rule is "validated — do not substitute by
+eye", and the five-colour run of `validate_palette.js` is asserted in a docstring rather than
+recorded anywhere. Worth a re-run when the real `timings.json` lands.
+
+## SPEC 40 IMPLEMENTED (Sonnet@medium, 2026-07-28) — the cluster demo run as one script
+
+All six deliverables landed against the signed-off spec (`specs/40-e2e-aml-demo-script.md`,
+`docs/adr/0021`), in a worktree (`worktree-spec40-impl`), tests green (`pytest -q`: 473 passed / 2
+skipped, up from 451/2 at hand-off — 22 new tests), `ruff check src/ tests/ demos/` clean.
+
+1. **The four in-job stamps** (`process_start_at`/`work_start_at`/`work_end_at`/`ended_at`) in
+   `workflows/{shard,download,infer_shard,flatten}.py`'s `_status/<k>.json`. `process_start_at` is
+   captured as literally the first statement after `from __future__ import annotations` (stdlib
+   `datetime` only), before `pandas`/`fsd.*` load — the four files' entrypoint-level `# noqa: E402`
+   blocks are why.
+2. **Dispatch telemetry**: `workflows.runners._aml_submit_and_wait` now records `submitted_at`
+   per job and `returned_at` (first poll at which that job is observed terminal — poll-quantized,
+   D11), and writes `<run_root>/_timing.json` via a new pure function `_derive_timing` (per-job
+   `job_admission_seconds`/`import_seconds`/`dispatch_overhead_seconds` + the 5-leg additive wall
+   split). Written **before** raising on a failed job (D3). No return-value change (ADR 0021 held).
+3. **`demos/e2e_austria_aml.py`** — the 8-step cluster demo script, mirroring
+   `demos/e2e_austria.py`'s step labels exactly (D1). `--fresh`/`--run-id` (D5, resumable, never
+   deletes — prints the `az storage fs directory delete` command instead), `--dry-run`/
+   `--confirm-spend` (D6), `0_preflight` covers creds/blob-rw/cluster/both-Environments/ROI+label
+   files/`max_tiles`/clock skew (D4/D11), D14's archive-trust assertions folded into `2_download`,
+   D13's exact download scope (207 granules, 4 bands, Apr–Sep), D8's single `merge="reproject"`
+   call. **Not run by this session** (CLAUDE.md) — it goes to the operator per §8 of
+   `demos/E2E_AUSTRIA_AML.md` (new section, this session).
+4. **`demos/plot_aml_timings.py`** — renders off-box from `timings.json` alone: a job-admission
+   strip plot, a where-the-wall-went stacked bar (D11's split, the dataviz skill's validated
+   5-slot categorical order — blue/orange/aqua/yellow/magenta — direct labels gated on segment
+   width so small legs don't collide), and an optional per-job gantt (dropped above 80 rows).
+   Rendered against synthetic data and eyeballed (dataviz skill step 7) before shipping.
+5. **Operator notes** — `demos/E2E_AUSTRIA_AML.md` §8 "Reproduce it" (prerequisites, env-var
+   contract, the two commands, what to send back) + a `RECIPES.md` entry.
+6. **Tests** — `tests/test_workflows_status.py` (6, the stamp round-trip across all four
+   entrypoints + a failed-shard degenerate case), `tests/test_runners.py` (9: `_seconds_between`,
+   the additive invariant, negative-admission-not-floored, a status-file-missing degenerate case,
+   end-to-end `_aml_submit_and_wait` writing `_timing.json` incl. on failure),
+   `tests/test_plot_aml_timings.py` (7: both figures + the gantt, one-job and zero-spread runs,
+   the negative-leg clamp, the >80-row drop).
+
+**Not done here (explicitly out of scope, HANDOFF/spec §"NOT in scope"):** TODO #61 (b)/(c),
+TODO #59/#62, run-book 42 (superseded), rewriting `E2E_AUSTRIA_AML.md`'s existing numbers (that
+happens once the operator returns a real `timings.json`, per spec §7/§8.4).
+
+**Next:** operator runs `demos/e2e_austria_aml.py --fresh --dry-run` per §8, then the real run.
+Opus review recommended before merge (deliverables 1+2 touch every dispatch's entrypoint + seam).
+
+## 🎉 THE DEMO PIPELINE IS COMPLETE — download → build → flatten → train+bundle → inference → **merged crop map**, all GREEN on the real cluster.
+**Runbook 38 Phase 3 PASSED 2026-07-28**, first attempt with the corrected ROI: `AT_ROI.geojson` →
+**300 grid cells**, 16 shards, `pass: true`, `sum_shard_units == n_cells_out == 300`, `n_failed == 0`,
+`n_skipped == 0`, **`bundle_loads == n_shards_reported == 16`** (D7 load-once-per-node proven on a
+real fan-out). 300 `output.tif` COGs + a STAC catalog on blob under `…/fsd-p4-inference/phase3_out`.
+**wall 2066.9 s** = slowest shard **982.7 s** + driver overhead **1084.3 s**.
+**Phase 4 (the viewable map) PASSED too**: `merge=True` (strict single-CRS, no resampling), all 300
+cells consumed, `merged.tif` = **14.1 MB** on blob (6867x6828 px, 3.3:1 COG compression), wall
+**1082.1 s**. ✅ **VISUALLY VALIDATED in QGIS (user, 2026-07-28)** — the merged map looks right;
+seams are clean. That is the real completion criterion, not `merged_bytes > 0` (CLAUDE.md).
+
+### ⭐ NEXT STEP — IMPLEMENT SPEC 40 in a Sonnet session (user, 2026-07-28)
+**Session A is CLOSED.** The report exists (`demos/E2E_AUSTRIA_AML.md`), the overhead is decomposed
+to the second, and the free recovery is complete (run-book 41, all 4 steps). **Run-book 42 is
+SUPERSEDED and will not be run** — its two numbers arrive free once spec 40's telemetry lands, so
+the two cells stay honestly "not measured" until then.
+
+**→ `specs/40-e2e-aml-demo-script.md` (grilled, 10 decisions, signed off) + `docs/adr/0021`.**
+Hand-off doc: `runbooks/HANDOFF-spec40-implementation.md`. Sonnet@medium.
+**TODO #61 fix (a) already landed here** (`api._existing_outputs`, one glob instead of 300
+`fs.exists`); **(b) threaded metadata reads and (c) batched STAC writes are still open** and are the
+bigger halves — they are listed as optional follow-ups in the hand-off, not part of spec 40.
+**Parked:** TODO #62 (re-run the local demo on current code, so both sides are measured on the same
+code — do it when spec 40's demo run lands), TODO #59 (cluster sizing — now waiting on #61 (b)/(c)).
+
+### The Session-A record — two sessions, in this order (user, 2026-07-28)
+**SESSION A — the local-vs-AML timing report. 📝 DRAFTED 2026-07-28 → `demos/E2E_AUSTRIA_AML.md`,
+waiting on two run-books.** Every measured figure is in it; the **two unmeasured driver walls**
+(run-book 36 P3 build, 37 P3 download) are marked "not measured" and close via
+**`runbooks/41-recover-aml-job-timings.md`** (free, read-only, self-calibrating against 4 known
+walls; also measures the archive's bytes on blob, which the AML download row needs for a MB/s) and
+then **`runbooks/42-timed-cold-reruns.md`** (paid — two cold cluster replays into fresh prefixes;
+the user chose to spend for real `wall_seconds`, 2026-07-28). **Findings, none of which cost a cluster run — run-book 41 Steps 1 + 1b are GREEN:**
+(0) **Run-book 41 (free recovery) is COMPLETE — Steps 1, 1b, 2, 3 all run.** Everything recoverable
+without spending has been recovered; only `runbooks/42-timed-cold-reruns.md` (two real
+`wall_seconds`) remains.
+(1) **🎯 TODO #61 — the overhead is the DRIVER'S POST-RUN COLLECT, and it is now measured exactly.**
+AML stamps `StartTimeUtc`/`EndTimeUtc` on every job, and the driver stamps its own last action by
+writing `_result.json`, so `post = result_mtime − last_job_end` is a **direct** measurement and the
+wall closes: **rb38 P3 = 249 pre + 1089 job span + 729 post = 2066.9**; **rb38 P4 = 66 + 44 + 972 =
+1082.1**. So **35 % of the inference run and 90 % of the merge run was the driver collecting results
+over blob**. Step 3 then split both windows from the blobs' own `last_modified`:
+**PRE** = `setup()` 22 s + **bundle stage 13 s** + dispatch 8 s + **201 s of AML
+submit→first-execution** (TODO #48's cold start, pinned; and the "627 s bundle upload" suspect is
+dead by direct measurement). **POST** = **collect 616 s (reads only, 2.05 s/cell)** + **STAC writes
+161 s (0.53 s/item)** + merge 193 s + 2 s — summing to 972 s exactly. It scales with **output
+units**, which is why rb36/rb37 (collect = 16 `_status` reads) pay **19 s** and **26 s** while
+moving far more data. **Fix (a) — one listing instead of 300 `fs.exists` — is a few lines, targets
+the 616 s, and comes before any cluster knob.**
+(2) **Both missing walls now have tight measured LOWER BOUNDS: rb36 P3 ≥ 343 s, rb37 P3 ≥ 354 s**
+(job span + the 19/26 s to the driver's own result write). Run-book 42's cold replays are therefore
+**~6-minute cluster runs, not ~20 min** — much cheaper than feared.
+(3) **Node cold start pinned (TODO #48): ~100–135 s on a cold node, ~14 s warm**; node stagger is
+**22–48 s once the cluster is scaled out**, vs 203 s in the one run that had to grow 1→8.
+(3b) **The archive is 418.0 GB** (3456 tif, 121 MB/asset; per band B04 96.9 / B08 99.3 / B03 96.4 /
+B02 95.1 / B8A 29.0 / **SCL 1.21** GB — run-book 41 Step 2, the first time its bytes were ever
+counted, since the MPC path reports `bytes_downloaded: 0`). Two consequences: the **AML download
+ran at 171.7 MB/s per node, ≤1.18 GB/s aggregate, vs the laptop's 16.7 MB/s — ~10× per worker and
+~72× on the wall**, the exact inverse of the inference result (3.7× SLOWER per worker, 1.30× on the
+wall). **The cloud wins where the bottleneck is proximity to the data and loses where it is compute
+per unit** (`demos/E2E_AUSTRIA_AML.md` §6.4). And the 80× byte spread across bands **confirms TODO
+#60's stratification mechanism in bytes**.
+⚠️ **Two intermediate readings this session got WRONG and corrected:** "overhead is roughly
+per-node" (no — stagger is a *scale-up* cost) and "most of it is the 13 MB bundle upload over VPN"
+(no — the whole pre-dispatch window is 249 s, which cannot contain a 627 s upload). TODO #59 now
+points at #61.
+(4) **TODO #60 — `shard_units`' round-robin band-stratifies a
+download**: 8 shards, 120–121 assets each, 0 skipped, and per-shard seconds of
+109.9/113.7/62.4/**6.8**/107.7/97.0/56.3/**7.1** — when `n_shards % len(bands) == 0` every shard
+gets exactly one band (the 6.8 s ones were all SCL), wasting ~38 % of allocated node-time.
+Report structure + sources: see the doc. **⚠️ The "instrumentation patch" this bullet used to call for does not exist —
+corrected 2026-07-28.** Run-books 36 and 37 **already emit `wall_seconds`** (`36:295`, `37:399`; 37
+also emits `slowest_shard_seconds` + `driver_overhead_seconds`). What is stale is the *stored
+results*, which predate that instrumentation. And they are **not empty**: both
+`tests/outputs/p2_aml_runner/phase3_result.json` and `tests/outputs/p2_download_aml/phase3_result.json`
+carry **per-shard `seconds` for all 16 shards** (36: slowest **213.8** s, Σ 2851.8 s over 900 units;
+37: slowest **192.1** s, Σ 2434.7 s over 3456 assets). The **only** missing quantity is the
+**driver wall** for those two phases — so exactly 2 cells of the table, not 2 rows.
+**Re-running Phase 3 of either measures the wrong thing** (both are resumable and their outputs
+already exist on blob → you would time the skip path). Free recovery first:
+`runbooks/41-recover-aml-job-timings.md` reads AML's own job history for a job-level span, and
+self-calibrates against four runs whose driver wall *is* known. **Do not fabricate the missing
+cells** — "not measured" is a valid entry. What IS already comparable, and is the report's
+headline: local and AML both ran **`AT_ROI` → 300 cells**, so inference is apples-to-apples —
+**local 2683.5 s (T=10, `INFER_CORES=2`, 8-core laptop, local COGs) vs AML 2066.9 s (T=8, `cores=1`,
+16 shards, blob COGs)**. Converted to single-threaded cell-seconds that is **17.9 s/cell local vs
+52.4 s/cell on AML** (1.79 vs 6.55 s per cell per timestamp) — **the cloud is ~3.7x SLOWER per unit
+of work and only 1.30x faster on the wall**, because it throws 16 nodes at the problem and hands
+half of that back as fixed overhead. Confounded (hardware, blob-vs-disk reads, T, cores) — say so.
+Related: TODO #59 (parked) wants the same overhead decomposition.
+
+**SESSION B — TODO #55, the docs refactor.** Explicitly sequenced *after* a timed e2e demo; that
+demo now exists and Session A's report is its input. Scope per TODO #55: (1) a chronological "story
+since inception", (2) ~5 docs on the **C4 model**. **This is a spec of its own — discuss before
+starting**, and decide which registers fold in vs stay as the audit trail.
+
+**Parked meanwhile:** TODO #59 (cluster sizing — has two anchors now: Phase 3's 52.5 % overhead split
+and Phase 4's 1082.1 s ≈ pure fixed overhead).
+4. ✅ **DONE — the viewable map** (`runbooks/38-inference-on-aml.md` Phase 4, GREEN 2026-07-28).
+   Kept below because both bugs it found are worth remembering. Phase 3
+   left 300 separate COGs; Phase 4 re-runs the same call with `merge=True` (all 300 cells are
+   EPSG:32633, so a strict single-CRS merge is **data-faithful, no resampling** — `"reproject"` is
+   only for genuinely cross-UTM ROIs). D6 resume skips every cell, so it costs one cluster spin-up
+   plus a ~100 MB driver-side merge. **Writing it surfaced a real bug, now fixed:** `_merge_outputs`
+   read with bare `rasterio.open` (GDAL has no `abfss://` driver) and wrote its reprojection scratch
+   next to a *remote* source — the **5th** instance of the repo's "GDAL assumed to handle abfss://"
+   class (after cdse `_roi_gdf`, `task.py`, spec-39 gdf staging, grids.geojson `9422a1a`). Reads now
+   go through the VSI seam and scratch is local. **A SECOND remote-only bug surfaced on the first
+   Phase 4 run:** `rio_open` owns a `rasterio.Env` per handle, and merge holds all 300 open at once
+   — rasterio's env stack is LIFO, so closing them in creation order tore down the root env and the
+   next close raised `EnvError: No GDAL environment exists`. Fixed by adding **`fsd.raster.rio_env`**
+   (ONE env for N datasets; one token fetch, not 300), with the trap pinned in `test_azure_seam.py`.
+   **Both merge bugs were remote-only and invisible to a fully green local suite** — `merge` had
+   simply never run against blob.
+
+### 📌 Measured wall-clocks on the cluster (the ONLY authoritative source is each `_result.json`)
+Every figure below is from `tests/outputs/<run>/phase<N>_result.json`. **Quote those files, never a
+prose recollection** — a stale prose copy of runbook 40 Phase 1/2 survived here for a day because the
+phase was re-run (`aggregate="median_per_id"`) and only the JSON was updated (fixed 2026-07-28).
+
+| run-book | phase | `wall_seconds` | what it covers |
+|---|---|---|---|
+| 39 | 1 | **405.7** | flatten reduce: 900 blob cubes → one single-node AML job → `(172781,8,3)` landed locally |
+| 40 | 1 | **179.4** | features driver-side (ADR-0020) → `(900,8,2)` NDVI+SAVI, one row per field. *Features only* — 40's Phase 2 (train) and Phase 3 (bundle) are untimed |
+| 38 | 3 | **2066.9** | 300-cell inference fan-out (= 982.7 slowest shard + 1084.3 driver overhead) |
+| 38 | 4 | **1082.1** | merge only — no compute; effectively a direct read of the fixed overhead |
+
+**Per-shard seconds, no driver wall** (stored before 36/37 grew their `wall_seconds` line — the
+run-books emit it today, `36:295` / `37:399`):
+
+| run-book | phase | slowest shard | Σ shard seconds | units | source |
+|---|---|---|---|---|---|
+| 36 | 3 | **213.8** s | 2851.8 s over 16 shards | 900 field cubes | `tests/outputs/p2_aml_runner/phase3_result.json` |
+| 37 | 3 | **192.1** s | 2434.7 s over 16 shards | 3456 assets (576 granules) | `tests/outputs/p2_download_aml/phase3_result.json` |
+
+**Two driver walls that ARE measured on the download path** (run-book 37 Phase 2, same 964 MPC
+assets, two shard counts — the only measured fan-out-width sweep fsd has):
+`seconds_n_shards_1` = **699.6**, `seconds_n_shards_n` = **493.9** at `n_shards=8`, speedup
+**1.42×** (`tests/outputs/p2_download_aml/phase2_result.json`). 8× the nodes bought 1.42× the wall.
+
+### 📌 What Phase 3's numbers say (first real fan-out datum)
+The **sharding is fine — the overhead is the target.** 300 cells / 16 shards ≈ 18.75 cells/shard at
+~52 s/cell → 975 s predicted vs 982.7 s observed slowest shard: **balanced, no straggler.** But
+useful work was only 982.7 s of 2066.9 s. The 1084 s of driver overhead (preflight+tiling, setup
+~24 s, bundle stage, dispatch, cluster start 40–380 s cold, then the post-run collect of 300
+`output.tif` existence checks + STAC build over blob) has **never been decomposed** — that is TODO
+#59's first job, and TODO #55's timed-demo report wants the same breakdown.
+It also settles the training-vs-inference asymmetry empirically: inference does ~52 s of real work
+per unit, so the 16-way fan-out clearly pays; **training's units are ~200 px (median 14×15, 13 KB)**
+— milliseconds each — so that same ~1084 s of overhead would dwarf the entire 900-unit workload.
+Cube sizes measured 2026-07-28: inference **597×554 px / 21.2 MB per cube, 5.48 GB total**
+(⚠️ **the AML run's 300 cubes on blob total 4.13 GB** over 600 `.npy` — run-book 41 Step 3. Unreconciled;
+likeliest cause is that 5.48 GB was measured over the **local T=10** run vs the cluster's T=8, but that is
+a guess. Per-unit pixel dims, and so the 781× ratio, are unaffected); training
+**14×15 px / 13 KB per cube, 0.02 GB total** (781× more pixels per unit, 260× overall).
+
+### 🔴 HISTORY — what broke Phase 3 twice before this (TODO #58 / spec 21 D-GRID-1)
+**Runbook 38 Phase 3 passed the wrong FILE as `roi=`:** `AT_2018_TRAIN.geojson` is a **label set**
+(900 EuroCrops *field* polygons, 25.4 km²), not a region. `roi=` takes a **region**:
+`AT_ROI.geojson` (1 polygon, 10,682 km²). A label file is the input to the *training* path
+(`create_training_data(shapefilepath=…, id_col="fid")`), where one polygon = one cube.
+**And `roi_to_s2_grids` didn't defend its own invariant:** it clipped with
+`gpd.overlay(grids, roi_gdf)`, which emits one row per *(cell × polygon)* pair → **1167 rows for
+172 distinct cells**, one repeated **43×**, each row a ~0.016 km² fragment of a 49.6 km² cell.
+`id` is the work-unit key, so 16 threads wrote the **same** `geometry.geojson` → `InvalidBlockList`.
+**Both fixed:** clip against the union + assert unique ids (`grid.py`), `setup()` refuses duplicate
+ids (any caller), runbook 38 → `AT_ROI`, spec 21 amended (**D-GRID-1**).
+**⚠️ The "1167 cells" in every earlier doc was never a cell count** — the real figure was 172 cells,
+and the corrected ROI gives 300.
+
+**TODO #57 is RETRACTED *and* REVERTED (user's call).** The adlfs "transient concurrent-write race"
+was never demonstrated: runbook 36 wrote **900 distinct blobs** at the same 16-way concurrency, same
+VPN, same account, in **71 s with zero errors**. The retry fixed nothing, could never fix a
+deterministic same-blob collision, and actively **buried** the real error — 16 threads × 6 attempts
+made a fast legible failure into a minutes-long `[storage] transient write error` storm that read as
+an infinite loop. `_write_with_retry` + its 4 tests are **gone**; `fs.write_bytes`/`write_text`
+survive as plain seam helpers. **`InvalidBlockList` under concurrency now means "two writers, one
+blob" first, not "flaky link".**
+
+**Duplicate ids now die in PREFLIGHT, before any spend.** Tiling moved *inside* `run_inference`'s
+preflight — ahead of `fs.makedirs` and `_ensure_bundle` — so a bad ROI fails in seconds instead of
+after a blob folder + a bundle upload (627 s for 13 MB over VPN) + setup's N writes + AML dispatch.
+It also **prints the cell count before spending** (`[run_inference] roi -> N grid cells`), since N is
+the workload and the bill. Three layers: `roi_to_s2_grids` asserts at source → preflight rejects
+before spend → `setup()` refuses for every caller.
+
+`pytest -q` **443 passed / 2 skipped**, `ruff check src/ tests/` clean.
+**git:** `main` = `3db3dd9` in sync with `origin/main`; the D-GRID-1 fixes, the TODO #57 revert, the
+preflight guard and these doc corrections are **UNCOMMITTED** on top of it. `runbooks/HANDOFF-inference-phase3.md`
+is now **spent** (its task is done) — keep it only as the record of how the bug was found.
+
+**⚠️ Worktree-venv gotcha (diagnosed 2026-07-28 — supersedes the earlier "git-worktree
+config-auto-discovery" explanation in the spec-39 aside, which was WRONG):** a worktree `.venv` built
+with a bare `pip install -e ".[dev]"` diverges from the repo `.venv` in two ways that look like
+regressions and are not.
+1. **`pytest -q` reports 411 passed / 4 skipped, not 436/2** — because the fresh venv lacks the
+   **optional** extras, so `tests/test_azure_seam.py` (**25** tests, needs `adlfs`) and
+   `tests/test_grid.py` (**4** tests, needs `s2sphere`) `importorskip` at module level. Nothing is
+   silently uncollected; 411 + 25 + 4 = 440. Verified by running the worktree's code with the repo
+   venv's site-packages on `PYTHONPATH` → **440 passed / 2 skipped** pre-review.
+   **This matters:** `test_azure_seam.py` is the module most relevant to any `fsd.storage` change
+   (`test_memory_scheme_roundtrip_parquet_and_npy` covers `save_npy`/`write_parquet` directly), so a
+   storage-seam change validated only in a bare worktree venv has NOT been validated where it counts.
+2. **`ruff check` reports hundreds of errors unless narrowed to `--select E4,E7,E9,F,I`** — because
+   the fresh venv resolves a **newer ruff** (0.16.0 vs the repo venv's 0.15.20) whose default rule set
+   is much larger; `pyproject.toml` is read correctly in both. Confirmed: ruff 0.16.0 flags 262 issues
+   repo-wide on unmodified `main`; the repo's own ruff 0.15.20 over the same worktree code →
+   **All checks passed**. Do NOT narrow the `--select`; run the **repo venv's** ruff instead.
+
+**Recipe (use it for any future worktree):**
+`PYTHONPATH=<repo>/.venv/lib/python3.11/site-packages <worktree>/.venv/bin/python -m pytest -q` and
+`<repo>/.venv/bin/ruff check --config pyproject.toml src tests` — the worktree's editable `fsd` still
+wins on `sys.path` (a `.pth` editable finder in a `PYTHONPATH` dir is not processed), so this tests the
+**worktree's** code against the **repo's** full dependency set.
+
+### ✅ DONE — seam retry for adlfs `InvalidBlockList` (TODO #57, implemented 2026-07-28 Sonnet@medium, reviewed + corrected Opus@high)
+Implemented test-first to the design below: `_is_transient_write_error` + `_write_with_retry`
+(exp backoff, 5 retries, message-matched, no azure import) in `src/fsd/storage/fs.py`; new
+`write_bytes`/`write_text`; `save_npy`/`write_parquet` writes wrapped; `create_datacube.py:143` routed
+through `fs.write_text`. New tests in `tests/test_storage.py` (recovers after k transient failures /
+re-raises non-transient immediately / re-raises transient after exhausting retries / `write_text`
+memory:// round-trip) — all non-vacuous (asserted call counts, not just "no exception"). One
+pre-existing test (`test_setup_does_not_corrupt_a_remote_run_folderpath`) mocked `fs.open("w")` for the
+old call site; updated to mock `fs.write_text` instead, matching the new seam. `LIMITATIONS.md` row +
+`TODO.md` #57 both flipped to fixed.
+
+**🔧 REVIEW FINDING (Opus@high, fixed in the same worktree) — the transient classifier was too broad
+and would have retried PERMANENT failures.** The design's marker list included the literal
+`"Failed to upload block"`. Reading `adlfs/spec.py` (2026.5.0) `_async_upload_chunk` shows that string
+is adlfs's **catch-all** wrapper — `except Exception as e: raise RuntimeError(f"Failed to upload block:
+{e}!")` — so a blocked credential, an RBAC denial, a missing container and a malformed path all wear
+it. Matching it meant *any* adlfs write error got 6 attempts with 15.5 s of cumulative backoff per
+file, across a 1167-cell × 16-thread fan-out, instead of failing fast. **Observed live, not
+hypothetical:** reverting the call site during review produced
+`RuntimeError: Failed to upload block: ERROR: AADSTS53003: Access has been blocked by Conditional
+Access policies…` — a permanent auth error that the old marker set classified as transient (proven: 6
+attempts). **Fix:** drop the wrapper prefix, key only off the Azure **storage error codes**
+(`InvalidBlockList` / `The specified block list is invalid` / `ServerBusy` / `OperationTimedOut`). The
+genuine race is still matched because adlfs interpolates the inner `HttpResponseError` and
+azure-storage-blob always appends `"\nErrorCode:<code>"`
+(`azure/storage/blob/_shared/response_handlers.py`). **+1 regression test**
+(`test_write_with_retry_reraises_a_wrapped_auth_error_immediately`) and the two transient tests now use
+the verbatim wrapped-message shape rather than a bare `"InvalidBlockList"` string.
+**Also hardened:** `test_setup_does_not_corrupt_a_remote_run_folderpath` now asserts the recorded
+`write_text`/`write_parquet` paths. It already failed on a call-site regression, but only by escaping
+the mock into a **real ~97 s abfss:// round-trip**; it now fails offline and instantly.
+Everything else in the diff was checked and stands: `fs.py` has no azure import (`fsd.storage.azure`
+is fsd's own module and imports only `fsspec`), the `print` prefix matches the repo's `[setup]`
+convention, wrapping `save_npy`/`write_parquet` is justified (both are per-cell concurrent-write
+sites), and all 5 new tests fail with the fix reverted. Original design (kept for the record):
+**Symptom (real, runbook 38 Phase 3, 2026-07-28):** `create_datacube.setup()` for the 1167-cell ROI
+died at shape 0/1167 with `azure.core...HttpResponseError: The specified block list is invalid`
+(`ErrorCode:InvalidBlockList`), re-raised by adlfs as `RuntimeError("Failed to upload block: ...")`,
+thrown from `create_datacube.py:143` (`with fs.open(shape_path, "w")`).
+**Root cause:** adlfs stages a block-blob as parallel block uploads + a final `commit_block_list`.
+`setup()` fans per-cell `geometry.geojson` + `catalog.parquet` writes across **16 threads**
+(`config.SETUP_MAX_CONCURRENT`) through the **one shared** adlfs async client; under that concurrency
+(worsened by this session's flaky West-Europe link) the block staging/commit races → `InvalidBlockList`.
+It is a transient race, **not** a data error — a fresh write re-stages clean blocks and commits.
+Runbook 36 got lucky at 900 shapes; 1167 tripped it. **`config.SETUP_MAX_CONCURRENT` is bound at
+import as `setup`'s default arg, so setting the global at runtime does NOT change it** — not a usable
+workaround.
+**The FIX (designed, verified reachable — I had started it, then reverted to hand off clean):**
+Add a **seam-level retry** in `src/fsd/storage/fs.py` (backend-agnostic — match by MESSAGE, fs.py must
+not import azure):
+1. `import time`; constants `_TRANSIENT_WRITE_MARKERS = ("InvalidBlockList", "Failed to upload block",
+   "ServerBusy", "OperationTimedOut")`, `_WRITE_RETRIES = 5`, `_WRITE_BACKOFF_SECONDS = 0.5`.
+2. `_is_transient_write_error(exc) -> bool` (substring match on `str(exc)`), and `_write_with_retry(
+   writer, *, what)` that runs `writer()` (a full open→write→close), retries on transient with
+   exponential backoff (`_WRITE_BACKOFF_SECONDS * 2**attempt`), re-raises non-transient immediately and
+   the transient once retries exhaust.
+3. New seam fns `write_bytes(path, data)` / `write_text(path, text)` (encode utf-8) that wrap
+   `fs.open(p,"wb")+write` in `_write_with_retry`; add both to `__all__`.
+4. Wrap the blob writes inside `save_npy` (`fs.py:185`) and `write_parquet` (`fs.py:263`) in
+   `_write_with_retry` too (both are concurrent-write sites).
+5. In `workflows/create_datacube.py:143` replace `with fs.open(shape_path,"w") as f: f.write(
+   shape_gdf.to_json())` with `fs.write_text(shape_path, shape_gdf.to_json())`. The sibling
+   `fs.write_parquet(catalog_path, subset)` (line 145) is auto-covered by (4).
+**Tests (non-vacuous):** unit-test `_write_with_retry` — recovers after k transient failures (assert
+call count), re-raises a non-transient (`ValueError`) immediately, re-raises transient after exhausting
+retries; monkeypatch `_WRITE_BACKOFF_SECONDS=0` to avoid sleeps. Plus a `write_text` memory:// round-trip.
+**Verify:** `pytest -q` (baseline **436 passed / 2 skipped**) + `ruff check src/ tests/`. Then the user
+re-runs runbook 38 Phase 3 (setup should push all 1167 shapes through). **Docs:** LIMITATIONS.md row +
+TODO #57 (both added this handoff — flip them to "fixed" when it lands) + CHANGES.md if warranted.
+**Note the 1167-cell scope (accepted by user 2026-07-28, "keep 1167 + fix adlfs"):** `run_inference(
+roi=…)` tiles the ROI's **convex hull**, so AT_2018_TRAIN's 900 scattered fields → 1167 grid cells over
+a large mostly-empty region. That's a heavy but valid crop-map fan-out; the user chose to keep it. If a
+future run wants fewer cells: a compact contiguous ROI or a larger `grid_size_km`.
+
+### ✅ Runbook 38 (inference on AML) — Phases 0-2 GREEN on the real cluster (2026-07-28); Phase 3 blocked (above)
+- **Env build + smoke GREEN:** the 2nd (inference) AML Environment builds from `demos/adapters.py` +
+  sklearn/joblib; node smoke printed `FSD_INFER_ENV_OK 0.1.0 DemoRF` (D4/D11 — `resolve_ref('adapters:
+  DemoRF')` imports on a node). First-run gotcha now guarded in the runbook Setup: `az ml environment
+  list -n <missing>` throws a cryptic `System.Net.Http...` and leaves `AZ_INFER_ENV_VERSION` empty →
+  build the env FIRST.
+- **Phase 0 GREEN** (D3 bundle-stage + node fetch + adapter import): `smoke_status.status=="ok"`.
+- **Phase 1 GREEN:** ROI `s2grid=476da24` (a **single-MGRS-tile** ROI — one CRS, simple build — NOT one
+  grid cell) tiled into **9 grid cells** → 9 `output.tif` COGs + STAC on blob, `n_outputs==n_grid_cells`.
+  The old "one cell" label was the grid-cell/MGRS-tile terminology trap; runbook Phase 1 rewritten.
+  **This is where the grids.geojson seam bug was found + fixed (`9422a1a`)** — see below.
+- **Phase 2 GREEN:** resume (D6/D7 — all 9 cells skip via output.tif-exists) + D13 duplicate guard
+  (`d13_guard_raised: true`).
+- **CODE FIX `9422a1a` — `run_inference(roi=)` staged `grids.geojson` via GDAL** (`grids.to_file`),
+  which has no `abfss://` write driver → failed on a blob `output_folderpath`. Fixed to write through the
+  storage seam (`fs.open`+`to_json(default=str)`), mirroring `create_datacube.setup`'s seam READ
+  (`create_datacube.py:79`). **4th instance** of the repo's "GDAL assumed to handle abfss://" class
+  (after cdse `_roi_gdf`, `task.py`, spec-39 gdf staging). +1 non-vacuous regression test (memory:// dst).
+  Every prior unit test used a local `tmp_path`, so `grids.to_file` (GDAL-local) always passed — only the
+  real blob path exposed it. **The adlfs #57 fix is the SAME lesson one layer down** (seam not resilient
+  under real concurrency + real network).
+
+### Bundle facts (do not re-derive) + the modelling insight
+- **Demo bundle = `tests/outputs/p40_train_and_bundle/demo_rf_bundle/`** (adapter `adapters:DemoRF`,
+  `n_timestamps=8`, `required_bands=[B04,B08]`, `uint8`/255). **`rf.joblib` = 13 MB** after switching
+  Phase 1 to **`aggregate="median_per_id"`** (≤900 field medians, not 172k pixels). `AZ_BUNDLE_LOCAL`
+  points here for runbook 38.
+- **Why median-per-id (user chose it 2026-07-28):** labels are per-field, so the field median is the
+  honest training unit; it also fixed a **1.1 GB** model — an *un*aggregated per-pixel RF (200 unpruned
+  trees × 172k rows) is ~1 GB, and the bundle is fetched to **every** inference node. Median → 13 MB.
+  It is **training-only** (`aggregate` ≠ `DemoRF.feature_sequence`); inference stays **per-pixel** →
+  per-pixel crop map (demo_02/03 design, not skew).
+- **Accuracy is now HONEST:** per-pixel random split **leaked** (pixels of the same field in train+test
+  → inflated **0.696**); field-wise median split → **0.293** test / **1.0** train (real generalization +
+  a clear overfit tell). ~29% 9-class crop accuracy from NDVI+SAVI over 8 mosaics is a plausible feature
+  ceiling; better accuracy = a modelling exercise (more bands/features, `min_samples_leaf`/`max_depth`),
+  permanently user-side (ADR-0018). Does NOT block the pipeline demo.
+- **Operational learnings (so they aren't re-chased):** (1) the **627 s bundle-stage was NOT an
+  IMDS/credential hang** — it was a 1.1 GB upload at ~1.9 MB/s over a slow VPN
+  (⚠️ **this doc contradicts itself on the size** — the preflight paragraph above says "627 s for
+  13 MB". 1.1 GB at 1.9 MB/s is the self-consistent pair; the "13 MB" is unsourced. Neither changes
+  the TODO #61 conclusion, which turns only on the 627 s not fitting in a 249 s window); I over-diagnosed a
+  DefaultAzureCredential/IMDS hang off a misleading `System.Net.Http` error (which was really the
+  missing-env `az` quirk). `AZURE_TOKEN_CREDENTIALS=dev` was **deliberately held out** of the runbook —
+  no evidence it was needed. (2) **OUT40/OUT38** are distinct scratch vars per runbook (running 40→38
+  back-to-back in one shell used to cross-write). (3) All runbook commands assume **cwd = `fsd/`** —
+  the `$PWD`-based `OUT` export compounds into a bad nested path if run from a subdir.
+
+**Runbook 38 hand-off recap** (for the Phase-3 re-run after #57 lands): `export
+AZ_BUNDLE_LOCAL=<repo>/tests/outputs/p40_train_and_bundle/demo_rf_bundle`; `export OUT38=<repo>/tests/
+outputs/p4_inference_aml`. **The #57 fix unblocks Phase 3 with NO image rebuild** — the failing
+`create_datacube.setup()` runs **driver-side** (the fix in the local venv is enough). Rebuilding the
+inference Environment is optional hygiene (so nodes' own writes get the same retry), not required to get
+past the setup blocker. Phases 0-2 are idempotent to re-run. `runbooks/README.md` maps the full run
+order (`36-phase0 → 37 → 37-verify → 36 → 39 → 40 → 38`) until the C4 refactor (TODO #55).
+
+### ✅ Runbook 40 (train + bundle) — RUN GREEN, all 3 phases (2026-07-28)
+Option (a), KISS, **zero new fsd code** — orchestration of existing verbs.
+- **Phase 1** (`flatten_training_data(..., adapter=DemoRF(), runner="aml")`): PASS in **179.4 s** (aml
+  reduce only — `_land_local` skipped the already-landed raw arrays; `_apply_training_features` ran
+  **driver-side**, ADR-0020). `features (900, 8, 2)` = **NDVI+SAVI**, one row per field;
+  `feature_ids`/`feature_labels` both 900; raw `data.npy` kept.
+  ⚠️ **Corrected 2026-07-28.** This line used to read *145.7 s / `features (172781, 8, 2)`* — the
+  numbers from the **first** run, before Phase 1 was re-run with **`aggregate="median_per_id"`** (the
+  switch that took `rf.joblib` from 1.1 GB to 13 MB — see Bundle facts below). The re-run is the run
+  of record: the demo bundle was built from it. Source of truth =
+  `tests/outputs/p40_train_and_bundle/phase1_result.json`.
+- **Phase 2** (train DemoRF@T=8, **user-side, ADR-0018** — RF + LabelEncoder → `rf.joblib`): PASS.
+  **900 field medians**, `n_features=16` (=T·Bf=8·2, reshape contract intact), **9 classes**, train acc
+  **1.0** / test acc **0.2933**.
+  ⚠️ **Corrected 2026-07-28** from *172781 px / train 0.863 / test 0.696* — same cause: those were the
+  pre-`median_per_id` per-pixel numbers, and the 0.696 is exactly the **leaked** score the "Accuracy is
+  now HONEST" note below already retracts (pixels of one field landed in both train and test). Source
+  of truth = `tests/outputs/p40_train_and_bundle/phase2_result.json`.
+- **Phase 3** (`bundle.save`): PASS + round-trip. `bundle.json` → `adapter: "adapters:DemoRF"`,
+  `required_bands:[B04,B08]`, **`n_timestamps: 8`** (set on the instance before save — DemoRF pins 0),
+  `uint8`/`255`, `artifacts:{model: rf.joblib}`; `bundle.load` resolved→instantiated→validated→`.load()`
+  clean (`roundtrip_loaded: true`). Bundle at `tests/outputs/p40_train_and_bundle/demo_rf_bundle/`.
+
+Option (b) (a public `apply_features` verb over already-landed arrays, avoids the ~2.4 min re-run)
+remains deferred YAGNI — the re-run is cheap.
+
+**⚠️ Corrections found against the ACTUAL `demos/adapters.py:DemoRF` (baton was imprecise):**
+- **DemoRF is at `demos/adapters.py` — IN the repo, but NOT in the fsd wheel** (wheel = `src/fsd/`
+  only). So it's importable as `adapters` with `demos/` on `PYTHONPATH`, and the demo IS reproducible
+  from the repo — the inference image still `COPY`s `demos/adapters.py` (defaulted in 38's build step).
+  The old "user's local module, not in repo, not reproducible" framing is **wrong**; runbooks written
+  to the corrected reality. (If a different *private* adapter is intended for the real run, revisit.)
+- **DemoRF pins `n_timestamps = 0` on purpose (model-determined).** The **bundle** records T: runbook
+  40 Phase 3 sets `adapter.n_timestamps = 8` on the instance before `bundle.save`, so `bundle.json`
+  carries 8. Runbook 38's inference preflight reads it via `read_spec` (`api.py:1072`); note
+  `if want_t and …` means a manifest T of **0 would SILENTLY SKIP the T-check** — hence Phase 3 must
+  set 8. A fresh `DemoRF()` reading 0 is correct.
+- Reshape confirmed: DemoRF inherits `BaseModelAdapter.datacube_to_X` (T-outer/band-inner), so Phase
+  2's `features.reshape(len, -1)` matches inference (F1 anti-skew). Artifact `(clf, le)` + bundle key
+  `"model"` match `DemoRF.load`.
+
+**git:** `main` is **2 commits ahead of `origin/main` (`e7d8ba6`), UNPUSHED** — (1) runbook-40 +
+README + reconcile-38; (2) this PROGRESS flush marking runbook 40 GREEN (docs only). Run the
+RECIPES.md identifier sweep before pushing (new runbook/README use placeholders only — sweep clean).
+
+## ⭐ SPEC 39 (create_training_data e2e on AML: flatten→land-local) **DONE — IMPLEMENTED + MERGED + OPUS-REVIEWED + VALIDATED ON THE REAL CLUSTER** (runbook 39 Phases 0–2 GREEN 2026-07-27; the Timestamp-staging bug found there is fixed + pushed, `1781331`). (impl Sonnet@medium, 2026-07-24; merge commit `9e20623`, `--no-ff` over impl commit `684e0de`; worktree `spec39-implement` pruned, branch deleted). **→ NEXT: run `runbooks/39-training-data-on-aml.md` Phases 0-2 on the real cluster** (the only thing unproven — every unit test is mocked at the AML-client boundary, spec 39 §7's "no test requires Azure"). All 8 spec §7 tests landed in `tests/test_training_data_aml.py` (14 test functions after non-vacuousness splits); full suite on `main` post-merge: 430 passed/3 skipped, `ruff` clean. Docs updated: `CHANGES.md`, `LIMITATIONS.md`, `TODO.md` #56, `RECIPES.md`, `ROADMAP.md` P3, `CONTEXT.md` ("reduce job", "land-local"). **`main` is 3 commits ahead of `origin/main`, UNPUSHED** (push only when the user asks). (Aside, not spec-39's: the impl worktree's `ruff` resolved a much broader ruleset than `main`'s real config — worked around with `--select E4,E7,E9,F,I`; `main`'s own `ruff check` is unaffected and was used for the final verification above. **❌ CORRECTED 2026-07-28: the "git-worktree quirk, `.git` file vs directory" diagnosis recorded here was WRONG** — `pyproject.toml` is read correctly in a worktree. The real cause is a **ruff version difference** between the worktree venv and the repo venv; the fix is to run the *repo* venv's ruff, never to narrow `--select` (which hides real findings). See the top block + `RECIPES.md` "Verify a worktree's code against the repo's FULL dependency set".)
+
+### ⚠️ Real-cluster run (runbook 39, 2026-07-27) found bugs the mocked review missed — Phase 1 GREEN, Phase 2 fixed & pending re-run
+- **Env gap (runbook defect, not code):** the general-purpose AML Environment bakes the fsd wheel in at build time, and spec 39 **adds a new node-side module `fsd.workflows.flatten`** — so the spec-36/37 image failed with `No module named fsd.workflows.flatten`. Runbook 39 wrongly said "no rebuild needed (ADR-0020)"; ADR-0020 only excuses a *model-specific* image, not new fsd code. **Fixed runbook 39 Prerequisites** (rebuild from current `main` + extend the smoke to `import fsd.workflows.flatten`). Same latent trap noted for runbook 38's inference image.
+- **Phase 1 GREEN** after the rebuild: 900 blob cubes → one single-node reduce → `(172781, 8, 3)` uint16 array landed locally; ids/labels/coords all len 172781; coords in EPSG:4326 (Austria); **`data.npy` = 8.29 MB → peak ≈ ~16 MB**, an order of magnitude under D3's estimate (recorded in `LIMITATIONS.md`).
+- **CONFIRMED BUG in the impl, fixed 2026-07-27 (`api.py:461`):** staging an in-memory gdf used `gdf.to_json()`, which routes through `json.dumps` and raises `TypeError: Object of type Timestamp is not JSON serializable` on a Timestamp/datetime property column (EuroCrops' obs date). The old `gdf.to_file(driver="GeoJSON")` serialized datetimes via GDAL; the spec-39 seam-write switch to `to_json()` lost that. **Fix:** `gdf.to_json(default=str)` (+ comment). **Every existing test's fixture was too clean** (int/str/geometry only) to catch it — added `test_create_training_data_stages_gdf_with_timestamp_column` (verified non-vacuous: FAILS with the exact TypeError on pre-fix code). Full suite 435 passed/2 skipped, ruff clean. **→ user re-runs Phase 2.**
+- **Lesson:** mocked-at-the-AML-boundary tests + a code-only review both passed a bug that only real EuroCrops data (with a datetime column) exposes. The synthetic fixtures should carry a datetime property column going forward.
+
+### Opus@high review outcome (2026-07-24) — initial pass read CLEAN (SUPERSEDED by the real-cluster run above); 3 minor notes, none demo-blocking
+The retroactive review the merge skipped. Traced all three aml phases (download→build→flatten→land-local) end to end and verified the §4 reuse ledger against the diff: `datacube.flatten.flatten`, `api.download`, `_apply_training_features`, `_aml_submit_and_wait`/`_aml_preflight_common`, `storage.transfer`, and the build fan-out are **zero-lines-changed** (confirmed). Column canonicalization is correct — `setup` writes canonical `id`/`label` (COL_ID/COL_LABEL), so `create_training_data`'s hardcoded `id_col="id"/label_col="label"` into `flatten_training_data` is right. `label_col=None` + `adapter=` works (`_apply_training_features` guards `labels is None`). The two-run_ids layout (build's `run_aml` mints its own run_id for shards; flatten reuses create's run_id for `runs/<id>/_flatten`) is cosmetic, not a bug — cubes+input.csv+`_flatten` all sit under create's `run_folderpath`. Runbook 39 Phase 1 passes `label_col="label"`, Phase 2 uses the canonical `catalog.parquet` basename and an in-memory gdf — both coherent with the code. `run_aml_download`/`run_aml`/`run_aml_flatten` all accept the shared `runner_kwargs` keys (no TypeError in any phase). Full suite re-verified green on `main` (430/3, ruff clean). The `_download_verb` module-alias shadowing (flagged in the handoff) reads fine — well-commented, functionally correct. **3 minor notes, deliberately NOT fixed (none blocks the demo):**
+1. **`_as_gdf(label_polygons)` in `create_training_data`'s preflight uses `gpd.read_file`** — for a **blob-URL** `label_polygons` on `runner="aml"` this fails on the driver (GDAL has no `abfss://` driver — the exact issue spec 37 fixed elsewhere via `fs.open`+`BytesIO`), so spec D1's "a path/URL `label_polygons` is used as-is" does **not** hold for blob URLs. **Fails loud** (a preflight error, not silent), and the **demo is unaffected** (Phase 1 has no polygons; Phase 2 passes an in-memory gdf, which `_as_gdf` returns without reading). Pre-existing (preflight always called `_as_gdf`), not spec-39-introduced. Fix if a URL-ROI aml path is ever wanted: route the URL read through the storage seam. → new TODO candidate.
+2. **`catalog_filepath` basename must be `catalog.parquet` when `download=True`** — the download phase hardcodes `catalog.parquet` under `dirname(catalog_filepath)`, so a non-canonical basename would make download write one path and the build read another. No preflight guard; the runbook uses the canonical name so the demo is fine. A one-line preflight assert would harden it.
+3. **Unquoted URL interpolation in `run_aml_flatten`'s command string** — identical to the existing `run_aml`/`run_aml_download` pattern (proven on the real cluster, specs 36/37), so not a new concern; blob URLs carry no shell-special chars.
+
+**What spec 39 is.** `create_training_data` becomes the **one-verb e2e façade** — `download → build →
+flatten → land-local` — with a new sibling `flatten_training_data` for flatten-only over already-built
+blob cubes (runbook-36 Phase-3 `input.csv`). Flatten runs as a **single-node AML reduce** (not fan-out)
+on the **existing general-purpose fsd Environment**, then `storage.transfer`s the **compact** array to
+the **local** `export_folderpath` (driver stays control-plane-only, ADR-0004). Net code delta is small +
+reuse-heavy: `flatten_training_data` + `workflows/flatten.py` CLI + `runners.run_aml_flatten` (on the
+spec-37 `_aml_submit_and_wait`) + an `api._land_local` transfer loop, plus download-phase/label/split
+changes to `create_training_data`. `datacube.flatten`, the build fan-out, download, and the whole
+feature path are **unchanged**.
+
+**The 5 grilled decisions (2026-07-24 `/grill-with-docs`), so they aren't re-litigated:**
+- **Q1 → features stay, driver-side.** The feature transform already runs on the driver today
+  (`api.py:416→427`), never on a cluster node. Cluster flatten emits **raw**; after land-local,
+  `create_training_data` runs `_apply_training_features` on the driver → `features.npy`, unchanged.
+  **Spec 18 / ADR-0018 / Adapter glossary / `eurocrops_rf.py` NOT touched.** Recorded as **ADR-0020**
+  (general-purpose images emit raw; adapter transform only at model-specific endpoints).
+- **Q2 → local `export_folderpath` + blob `root` in `runner_kwargs`** (spec-36/37 convention); verb
+  auto-lands the compact array. `run_folderpath=export/run` default is **local-runner only**.
+- **Q3 → accept an in-memory GeoDataFrame**; verb auto-stages it to one GeoJSON under the blob `root`,
+  used as **both** download-ROI and build-shapefile.
+- **D-labels → `label_col` optional** (drop the required check `api.py:368-369`; keep `id_col`).
+  `ids.npy` is the label join key; labels are a separable overlay (CONTEXT.md "Label").
+- **Q4 → prove via Phase 1** (flatten-reduce over the existing 900 blob cubes = scale) **+ Phase 2**
+  (small fresh e2e = composition). **No redundant full-scale Phase 3.**
+- **D6 → drop the adapter `n_timestamps` preflight** (`api.py:348-354`); DemoRF **retrains at T=8**
+  (Apr–Sep 2018 @ mosaic_days=20). `required_bands` preflight stays. Calendar-mosaic same-`timestamps`
+  invariant unchanged.
+
+**Docs already written this session:** `specs/39-training-data-on-aml.md` (D1–D7 + D-labels, §4 reuse
+ledger, §5 deliverables, §6 runbook phases, §7 tests, §9 sources), `docs/adr/0020-*.md` (+ README row),
+`CONTEXT.md` "Label" term. **Still to write during impl:** `workflows/flatten.py`, `run_aml_flatten`,
+`flatten_training_data`, `_land_local`, the `create_training_data` deltas, `runbooks/39-*.md`, and the
+`CHANGES.md`/`LIMITATIONS.md`/`TODO.md`/`RECIPES.md`/`ROADMAP.md` updates (spec §5 deliverable 7).
+
+**Then (unchanged order):** (2) user trains DemoRF locally at T=8 + metrics (user-side, permanent);
+(3) return to `runbooks/38-inference-on-aml.md` (still has the T=8-vs-10 caveat below — now resolved to
+T=8 — and the `adapters` module Dockerfile `COPY`).
+
+### ⚠️ Runbook 38 has a DemoRF-mismatch to fix before it can run (this session, 2026-07-24)
+The user's actual inference bundle is **`adapters:DemoRF`** (`required_bands=[B04,B08]`,
+**`n_timestamps=10`**), NOT `eurocrops_rf:EuroCropsRF`. Runbook 38's Phase 1/2/3 scripts hardcode
+`2018-04-01…2018-09-01, mosaic_days=20` → **T=8**, so the driver preflight (`api.py:353`) fails
+`T=8 but adapter.n_timestamps=10` before any cluster spend. **Before running 38:** (a) pin its window/
+mosaic_days to DemoRF's *training* config (must give T=10; unknown — get from user), bands stay a valid
+superset ([B04,B08,B8A,SCL] ⊇ [B04,B08], preflight `api.py:727`); (b) the new "Build the inference
+Environment (D4)" section's Dockerfile must `COPY` the **`adapters`** module + `ENV PYTHONPATH` so
+`adapters:DemoRF` imports (not `eurocrops_rf`). This session added that build section to runbook 38
+(uncommitted). The `adapters` module is not in the repo — user has it locally.
+
+## ⭐ SPEC 38 (P4, inference at scale on AML) **IMPLEMENTED + REVIEWED** (impl Sonnet@medium; review Opus@high, both 2026-07-23) — in a worktree (`worktree-spec38-inference-aml`), **committed (impl `347f6f3`), review fix not yet committed, not yet pushed**. **→ NEXT: run `runbooks/38-inference-on-aml.md` Phases 0–3 on the real cluster** (the only thing left unproven — every unit test is mocked at the AML-client boundary, per spec 38 §7's "no test requires Azure").
+
+### Opus@high review outcome (2026-07-23) — 2 fixes applied, 1 item guarded
+- **CRITICAL, FIXED — `engine._write_output_cog` was NOT remote-safe** (the per-cell `output.tif` site
+  an AML node writes for *every* cell, i.e. the whole point of P4). The reuse ledger + the bullet below
+  claimed it was an "unchanged caller that gets blob for free" — **it was not**: it kept the pre-spec-38
+  local-only pattern (`os.makedirs(os.path.dirname(dst))` + `raw_tif = f"{dst}.raw.tif"` +
+  `rasterio.open(raw_tif, "w")`), so a remote `abfss://…/output.tif` dst did a **forbidden remote
+  `rasterio.open(mode="w")`** (D5's explicit "never" clause) and scattered **junk local dirs**
+  (`./abfss:/cont@…/…` — reproduced empirically). The sibling `_merge_outputs` got the local-scratch
+  guard; `_write_output_cog` was missed. **Fix:** same guard mirrored into `_write_output_cog` (local
+  scratch via `tempfile` when dst is remote); test 6 was passing **spuriously** (`memory://` doubles as a
+  valid local literal path in an azure-less venv) — strengthened to assert cwd stays free of junk
+  (verified it FAILS on the pre-fix code). 388→ still green, ruff clean.
+- **FIXED — D7's LOCKED "load-per-core" default now computed on the node.** Was: `run_aml_inference`
+  defaulted `cores=1`/`cubes_per_task`→1, so the default AML run was serial with one bundle-load per
+  cell (the exact TODO #25 pathology D7 set out to kill). Now `infer_shard._resolve_cores_and_group`
+  computes the default from the node's own `os.cpu_count()` + the shard size: `cores`/`cubes_per_task`
+  unset → `cores = cpu_count()`, group = `ceil(n_units/cores)` → bundle loads **once per core per node**
+  (node fully busy); `cores=1` is the heavy-model **load-once-per-node** opt-out (one whole-shard group,
+  one load). Threaded via a `None`=auto sentinel: `api.run_inference` `cores`/`cubes_per_task` default to
+  `None`, `run_aml_inference` omits the `--cores`/`--cubes-per-task` flags when unset (node decides),
+  local/pre-built paths resolve `None`→`1` (behaviour unchanged). `_status/<k>.json` now reports the
+  effective `cores`/`cubes_per_task`/`n_groups` for Phase-3 verification. +2 non-vacuous tests.
+- **FLAGGED, guarded — `_UNIT_IDENTITY_COLS` is duplicated** in `create_datacube` (dedupe) and `runners`
+  (guard) to dodge a circular import. Verified identical; added a test pinning them equal so a future
+  edit can't silently drift the dedupe key from the guard key.
+
+- **The spec:** `specs/38-inference-on-aml.md` — P4 = `run_inference(roi=…, runner="aml")` as a **thin
+  step-4 dispatch swap** over the spec-21 per-cell build+infer unit (reusing spec 36's `run_aml`
+  machinery), **plus the fixes the swap exposes**. 14 decisions (D1a…D14); §4 reuse ledger, §5 the 13
+  deliverables, §6 the 4 run-book phases, §7 the 12 tests. Baseline preserved (this session's venv has
+  fewer optional extras installed than the 382/3 baseline was measured with — 4 skips here are
+  `[grid]`/`[azure]`/`[serving]`/`[titiler]` extras not installed, not a regression; **388 passed / 4
+  skipped**, +31 new tests in `tests/test_infer_aml.py`, none of the original 357 broke).
+- **Two latent bugs the implementation surfaced (not just landed features):** (1) `api._merge_outputs`
+  built its raw scratch tif from `dst` itself (`f"{dst}.raw.tif"`) — harmless for a local `dst`, but a
+  **second** instance of the D5 remote-write bug the spec's own grill (Q4) had already found once in
+  `engine._write_output_cog`; fixed in `_merge_outputs` alongside D5. **⚠️ CORRECTION (Opus review,
+  2026-07-23): `engine._write_output_cog` itself — the FIRST instance, the per-cell node site — was
+  NOT actually fixed by the impl (only `_merge_outputs` was); the review caught + fixed it, see the
+  review-outcome block above.** (2) the `create_inference` Snakefile's D6/D7 fix turned out to make the
+  spec-described `is_local`-guarded-`abspath` treatment **moot**: the redesigned (grouped) Snakefile
+  never touches `export_folderpath` at all — resolving it fully inside `infer_task` instead — so there
+  is no `abspath` call left to guard. Functionally equivalent to what the spec asked for (a remote
+  `export_folderpath` plans cleanly), simpler than what it described; noted here so a reviewer doesn't
+  go looking for a guard that was designed out rather than missed.
+- **Deliverable 11 (the inference Environment) and 13 (the run-book) are operator/user-run,** per
+  `CLAUDE.md` — text is written (`runbooks/38-inference-on-aml.md`, mirrors 36/37's phase-script shape;
+  the Setup block documents the `az ml environment create` step for D4's second Environment), nothing
+  executed.
+- **Old signoff context, for the record (nothing left to re-derive from it — superseded by the above):**
+- **Three MANDATORY I/O-seam fixes** (node can't otherwise produce a result on blob): **D5** remote-dst
+  COG **in `raster.cog.to_cog`** (not engine — fixes both per-cell `output.tif` AND `merged.tif`; closes
+  TODO #17); **D6** the `create_inference` Snakefile D7 blob-safety + `infer_task` skip-if-`output.tif`;
+  **D3** manifest-driven bundle fetch to node scratch.
+- **User-locked folds:** **D4** dedicated inference Environment + author/operator/dispatcher
+  responsibility split (image-build → P6 `deploy()`); **D7** bundle loaded **per-core per node** (not
+  per cell — closes #25 root cause); **D8** *actual* #51 fix (MPC-only per-shard `catalog-<k>.parquet` +
+  driver sequential-`append` merge; CDSE untouched); **D9+D10** date normalization at the boundary +
+  fail-fast **on the driver before any AML job**, sweep scoped to the datetime-antipattern (bands/scl
+  grep-verified clean); **D13** #53 dedupe on content-identity **+ guard on `export_folderpath`
+  uniqueness** (found `export_folderpath` is keyed by `id` alone, so id+params dedupe alone wouldn't stop
+  the collision).
+- **Grill outcomes worth not re-deriving (Q1–Q11):** each caught a real defect/sharpening, not a
+  rubber-stamp — the step-4 seam (D1 self-contradiction fixed), the reload-vs-parallelism impossibility
+  (D7), `merged.tif` as a second blob-write site (Q4), `fsd.storage.get` being single-file (Q6, from
+  cross-val), the node-cold-start "fail-before-nodes" invariant (Q8, D11), and the `export_folderpath`
+  keying (Q11). Full table + the two web-cross-validated facts (pystac date-vs-datetime issue #644; AML
+  v2 Docker-build-context Environment, not the v1 `add_private_pip_wheel` API) are in the spec §9.
+- **Docs produced as we went (`/grill-with-docs` = grilling + domain-modeling):**
+  `docs/adr/0001-remote-cog-publish-in-to-cog.md`, `docs/adr/0002-bundle-and-inference-image-decoupled.md`,
+  and **`CONTEXT.md`** (new glossary — bundle / manifest / adapter / inference image; grid cell / MGRS
+  tile / unit-of-work / shard / run; driver / node / dispatcher). These are the first `docs/adr/` +
+  `CONTEXT.md` in the repo, and a deliberate input to the future docs refactor (**TODO #55**, parked
+  after a timed e2e demo + report — the C4-model distillation the user requested 2026-07-23).
+- **Implementation guidance for the Sonnet session:** implement against the spec's D-sections; the reuse
+  ledger (§4) makes the "no new *pipeline* code" claim checkable; on completion close TODO
+  **#17/#25/#51/#52/#53** and update `CHANGES.md`/`LIMITATIONS.md`/`RECIPES.md`/`ROADMAP.md` (P4 → done)
+  per deliverable 12. **Not P4's job:** create_training_data(roi=) scaling (labelled fields need no
+  tiling), infer-only AML fan-out (Open Q4), P5 serving.
+
+## ⭐ DOWNLOAD + DATACUBE ARE PROVEN ON AML (spec 36 + 37, 2026-07-22). `main` pushed at **`980437f`**. **→ NEXT: write SPEC 38 = P4, inference at scale** (Opus@high spec work; baton `/tmp/HANDOFF-spec38-p4-inference.md`). Dispatch the per-cell build+infer task (spec 21) onto AML reusing the P2 runner — a runner/dispatch swap, not new pipeline code — and **fold in TODO #53** (P4 rides the same `setup()` path, so its duplicate-dispatch race lands on the inference COGs). Chosen by user 2026-07-23 over "harden the fan-out first" and "P5 serving".
+
+### Where the cluster work landed (spec 36 + 37, both done + proven)
+
+- **Spec 37 download dispatch — `runbooks/37-download-on-aml.md` Phases 0–3 GREEN**; archive on blob
+  (576 granules / 3456 assets, Austria full-year 2018, 6 bands, 4 MGRS tiles).
+- **`runbooks/37-verify-archive.md` GREEN** — archive is trustworthy (radiometry 6/6, catalog
+  complete, byte-identical to a fresh local ingest). Caveat: all offset=0, so it does not re-prove
+  the `c2bf1f1` black-tile fix; that stays covered by `34-mini-mpc-cross-baseline.md`.
+- **Spec 36 datacube fan-out — `runbooks/36-aml-runner.md` Phases 1–3b GREEN.** 16-node fan-out,
+  exact 900-unit partition, 0 failed; and **Phase 3b: AML-vs-local cubes byte-identical across OS +
+  architecture** — the seam claim proven.
+- **Open from the runs (see TODO):** #51 download append race (measured *not* to have fired — one
+  lucky trial, not safety), #52 window str-vs-Timestamp, #53 setup append duplicates (→ fold into
+  spec 38), #54 cluster-side setup (parked, crossover ~510–4850 shapes; local parallel setup 71 s
+  for 900).
+
+### Gate-clearing session (2026-07-22, Opus@high) — where the 5 gates stand
+
+| gate | status |
+|---|---|
+| 1 radiometry | ✅ **CLEARED 2026-07-22** — `37-verify-archive.md` steps 4+5 pass (read the caveat below) |
+| 2 catalog completeness | ✅ **CLEARED 2026-07-22** — steps 1+2 pass exactly; step 3's `pass: false` root-caused as benign (TODO #52) |
+| 3 run-book 36 wrong prefix | ✅ **fixed** — and it was three defects, not one (below) |
+| 4 rebuild the AML image | ✅ done — run-book 36 Phases 1+2 ran green on it |
+
+### `runbooks/36-aml-runner.md` — Phases 1+2 GREEN on the real cluster (2026-07-22)
+
+- **Phase 1** (one shard, one cube): job `Completed`, `n_units 1 / n_skipped 0 / n_failed 0`,
+  **47.3 s**. The AML runner builds a datacube on a node from the verified blob archive.
+- **Phase 2** (resume, D7): `n_failed 0`, **5.4 s** (8.8× faster), and `n_skipped == n_units` —
+  **D7 proven**: every unit asked `run_task` to rebuild and every one returned immediately.
+- **⚠️ It reported `n_units: 2` for a ONE-cell ROI → TODO #53.** `create_datacube.setup()`
+  **appends** to `input.csv` with no dedupe (`create_datacube.py:127-131`), so re-running the same
+  script re-dispatches a list that has grown by one copy of every shape. `n_units` means "rows in
+  `input.csv`", not "cells". Cosmetic here (both copies skipped) but **not cosmetic in general**:
+  `shard_units` round-robins, so on an *unbuilt* cell the duplicate pair lands on two shards running
+  **concurrently**, both writing the same `datacube.npy` with no lock — the TODO #51 shape again, on
+  the output artifact. Reachable by re-running a partially-failed Phase 3, i.e. exactly when an
+  operator re-runs. Run-book's Phase 2 PASS check corrected to `n_skipped == n_units` (the literal
+  `n_units: 1` was never the invariant), and Phase 3 now carries a run-once warning.
+- **Phase 3 (the demo, 900 `AT_2018_TRAIN` fields, 8-way fan-out) — first attempt KILLED in
+  `setup()`, which was pathologically slow on a remote catalog. FIXED, ready to restart.**
+  `setup` called `TileCatalog.filter` per shape, and `filter` opens with a **full** `self.read()`
+  of the catalog file → **900 downloads of the same ~121 KiB blob parquet (~106 MiB, ~900 VPN
+  round-trips)** before a single job was submitted, with **zero progress output** (the tell: the
+  `azure-ai-ml` experimental-class warnings never appeared, because `azure.ai.ml` is imported
+  lazily inside `run_aml` — i.e. dispatch had not been reached). Locally the same loop is a 12 ms
+  page-cache read per shape, which is why it had never been felt. **Fix (2026-07-22, in `main`,
+  381 passed/3 skipped, ruff clean):** pure `catalog.filter_gdf(gdf, ...)` extracted;
+  `TileCatalog.filter` delegates to it unchanged; `setup` reads once and filters in memory; plus a
+  throttled progress+ETA line. Identical output (declaration `.attrs` still propagate). Pinned by
+  `test_setup_reads_catalog_once_regardless_of_shape_count`, verified non-vacuous. **`setup` runs on
+  the driver, so this needed no AML image rebuild.** Details in `CHANGES.md`.
+- **Second fix, same session — `setup` now prepares shapes CONCURRENTLY.** With the catalog read
+  hoisted it was still ~**1.8 s/shape → ETA 1607 s** for 900 shapes, because the remaining cost is
+  the per-shape *writes* (`makedirs` + `geometry.geojson` + `catalog.parquet` slice ≈ 4–7 blob
+  round-trips). That is **latency, not bandwidth or CPU**, so it parallelises: `max_concurrent`
+  (default `config.SETUP_MAX_CONCURRENT = 16`, pass `1` for the old serial path). Safe by
+  construction — each shape touches only its own folder and only *reads* the shared catalog frame —
+  and it is the same pattern `sources.mpc.download`/`download_shard` already use to drive
+  `fsd.storage` concurrently against blob at 3456 assets. **`input.csv` order is unchanged**
+  (results placed by index, then compacted), pinned by
+  `test_setup_manifest_order_is_shapefile_order_not_completion_order`, verified non-vacuous.
+  **382 passed / 3 skipped, ruff clean. MEASURED: 900 shapes in 71 s** (~79 ms/shape, 12.7
+  shapes/s) — **22.6× faster** than the 1607 s serial estimate, better than 16 threads alone
+  predict. **This settles TODO #54:** 71 s is well below AML cluster startup (40–380 s), so running
+  setup on the cluster would make this run *slower*; break-even is ~510 shapes against a warm
+  cluster, ~4850 against a cold one, so cluster-side setup only becomes right at P4/P5's
+  tens-of-thousands-of-cells scale.
+- **✅ PHASE 3 GREEN (2026-07-22) — the datacube fan-out works on real data at 16 nodes.**
+  All 16 jobs `Completed`, every shard `status: ok`, **900 units = 4×57 + 12×56, an exact
+  partition** of the 900 `AT_2018_TRAIN` fields, **0 failed, 0 skipped** (a genuinely cold build).
+  Timing: in-job total **2851.8 s** across 16 nodes, **mean 178.2 s**, slowest **213.8 s**, fastest
+  131.8 s → **straggler spread only 1.62×**, against **16.7×** for the spec-37 *download* fan-out at
+  8 shards. Datacube builds are compute-bound and near-uniform per field, so the shards balance
+  themselves — the download path's variance was never inherent to fan-out. **~3.17 s per datacube.**
+  Also confirms **TODO #53 did not bite**: 900 units, not 1800, so `input.csv` was fresh.
+- **✅ PHASE 3b GREEN — THE SEAM CLAIM IS PROVEN (2026-07-22).** 3/3 cells built on an AML node and
+  rebuilt on the operator's laptop from the **same blob archive** are **byte-identical**:
+  `identical: true`, `max_abs_diff: 0.0`, matching dtype and shape for every one. **`runner="aml"`
+  and `runner="local"` produce the same science — the runner is config, not a rewrite.**
+  Stronger than the run-book asked for: the two builds ran on **different OS and architecture**
+  (Ubuntu 22.04 x86_64 node vs. macOS laptop), so the resample/mosaic path is deterministic across
+  platforms, not merely repeatable on one machine — different GDAL/PROJ/numpy builds agreed to the
+  byte. Shapes cross-check clean: `(T=8, H, W, bands=3)` per cell, with **T=8** exactly
+  `compute_n_timestamps(2018-04-01, 2018-09-01, mosaic_days=20)` (the calendar-interval contract
+  `flatten` requires — and identical across all three cells), and **3 bands from 4 requested**
+  because SCL is consumed as the mask and dropped (`builder.py:310-314`,
+  `apply_cloud_mask_scl` → `drop_bands`), not lost. **Spec 36 is demonstrated end to end.**
+- **⚠️ Two things Phase 3 did NOT establish.** (1) **No wall clock was recorded** — run-book 36's
+  `phase3.py` had the same gap TODO #48 flagged in run-book 37, so setup + allocation + queueing
+  cannot be separated from build time and there is no end-to-end number for the demo. **Fixed in the
+  run-book** (it now emits `wall_seconds`/`slowest_shard_seconds`/`driver_overhead_seconds`); the
+  figure must come from the next run. (2) The AML-vs-local equivalence check was missing from the
+  run-book entirely — **added as Phase 3b, and it has now PASSED** (see above).
+| 5 commit | ✅ **already done** last session — `6c322fd` (code) + `5df7088` (run-books/docs). Both **unpushed**; `origin/main` is still `e76a8d5` |
+
+**GATES 1+2 CLEARED — `runbooks/37-verify-archive.md`, all 5 steps run 2026-07-22. The archive is
+trustworthy. Numbers, so nobody re-derives them:**
+- **Step 1** (catalog): 576 granules / 3456 assets / `{"6": 576}` files per granule / bands
+  B02,B03,B04,B08,B8A,SCL / MGRS T33UVP+T33UVQ+T33UWP+T33UWQ / 145 dates 2018-01-01..2019-01-01 /
+  **declaration stamped** (`reference_band='B08'`, SCL mask classes `(0,1,3,7,8,9,10)` — matches
+  run-book 36's `setup(scl_mask_classes=...)` exactly) / 0 duplicate ids.
+- **Step 2** (blob vs catalog): 3456 files on blob = 3456 declared, **0 missing, 0 undeclared**,
+  0 zero-byte in sample. ⇒ **TODO #51's append race did NOT bite this run** (see the note there —
+  that is evidence of one lucky run, *not* evidence the race is absent).
+- **Step 4** (tags): 6/6 correct — B04 `scale=1e-4, offset=0.0`, SCL `scale=1.0, offset=0.0`,
+  `nodata=0`, `EPSG:32633`, 10980²/5490². **0 black-tile-bug hits.**
+- **Step 5** (blob vs a fresh local ingest of the same granule): ids identical, **tags identical,
+  window checksums identical** for B04 and SCL ⇒ the bytes on blob are the bytes MPC serves, and
+  the cluster stamped what this checkout stamps.
+- **⚠️ CAVEAT — gate 1 passed on a weaker test than it looks.** Every granule in this archive has
+  `offset = 0` (step 1: `offset_values {"0": 576}`) because all 576 are pre-baseline-04.00 2018
+  acquisitions. The black-tile bug was stamping `-1000` (DN) where `-0.1` (reflectance) belonged —
+  **at `offset=0` the buggy and fixed code emit the identical tag**, so these results confirm *this
+  archive is correctly tagged* (which is all run-book 36 needs) but do **not** re-prove the
+  `c2bf1f1` fix, and do not tell us the AML image's vintage. The `-0.1` path stays covered only by
+  `runbooks/34-mini-mpc-cross-baseline.md` (2021 vs 2022 items, local). **If the archive is ever
+  extended past 2022-01-25, re-run steps 4+5 — that data will exercise the branch this one didn't.**
+- **TODO #44 is operationally superseded** for the download path: the mis-tagged artifacts live in
+  the old `spec34-demo/` prefix, and the verified `archive/` prefix is what everything now points
+  at. Deleting the stale prefix is a user call, and TODO #50 means `fs.rm(recursive=True)` will not
+  do it cleanly.
+
+**Gate 3 — `runbooks/36-aml-runner.md` had THREE defects, all of which would have wasted a cluster run:**
+1. **Wrong prefix** (the known one): lines 150/208 read `$AZ_ROOT/imagery/catalog.parquet`, run-book
+   34's output, whose COGs carry the pre-fix radiometry tags (TODO #44). Now parameterised as
+   **`AZ_ARCHIVE_CATALOG`** (`$AZ_DOWNLOAD_ROOT/archive/catalog.parquet`) — note the archive lives
+   under a **different root** (`fsd-p2-download`) than this run-book's own runs (`fsd-p2`), so a
+   one-word edit would not have fixed it. Setup now `fs.exists()`-checks it before any job.
+2. **Phase 3's ROI does not intersect the archive at all.**
+   `austria_eurocrops_sampled_ethiopia_translated.geojson` is the Austria fields **translated to
+   Ethiopia** (36.1–36.9°E / 11.4–12.0°N) — deliberately, as the 36°E multi-CRS fixture — while the
+   archive covers T33UVP/T33UVQ/T33UWP/T33UWQ = **13.6–16.5°E / 47.8–49.7°N**. It is the right ROI
+   for a multi-CRS test and the wrong one for this archive (and the Ethiopia imagery behind it is
+   gone anyway). All 1015 fields would have produced empty cubes. Swapped for
+   **`AT_2018_TRAIN.geojson`** (900 labelled fields, `fid`/`crop`, verified 100% inside `AT_ROI`).
+   Phase 1's `s2grid=476da24` was fine — verified 100% inside T33UWP.
+3. **`../../shapefiles/` should be `../shapefiles/`** (the scripts run with cwd = `fsd/`). Run-book
+   37, the one actually executed, uses the correct single `..`.
+
+**⚠️ NEW, from code inspection while writing the verification run-book — TODO #51: the 16 Phase-3
+shards all wrote the SAME `catalog.parquet` via an unsynchronised read-modify-write**
+(`runners.py:645` + `catalog.py:106-136`) and finished inside an ~86 s window. **Predicted, not yet
+measured:** if the appends overlapped, the bytes are all on blob but the catalog **under-declares
+them**, and every datacube silently drops the lost granules' timestamps. `37-verify-archive.md`
+steps 1+2 are built to tell "we lost catalog rows" apart from "we never downloaded it" — files
+present on blob but *undeclared* is the signature.
+
+### The runbook-37 execution session (2026-07-22, Opus@high) — what it produced
+
+**Result: Phases 0–3 green.** Phase 0 (ROI + creds on blob, creds deleted after use), Phase 1 (one
+tile per source: CDSE 16 assets/1.06 GB, MPC 12 assets, 0 failed), Phase 2 (MPC fan-out, exact
+partition 964 = 8 shards), Phase 3 (the real archive: **3456 assets = 576 MGRS tiles**, Austria
+`AT_ROI`, full-year 2018, bands **B02/B03/B04/B08/B8A/SCL**, 16 shards × 216, **0 failed, 0
+circuit-tripped**) → `$AZ_ROOT/archive/` + `catalog.parquet`. B02/B03 were added deliberately so the
+archive can serve true-colour RGB to the mini-MPC/STACNotator stack later without a re-download.
+
+**✅ 3432 vs 3456 — SOLVED (2026-07-22, `37-verify-archive.md` step 3 + a local proof). It was
+neither MPC churn nor STAC paging: it was `str` vs `pd.Timestamp` → TODO #52.**
+Step 3 returned `discovery_repeatable: true` (3432 twice), `only_in_discovery: 0`, `only_on_blob: 24`
+— and those 24 assets are **4 granules, all sensing date 2019-01-01, one per MGRS tile**, i.e. one
+whole acquisition one day past the window. Cause: both sources forward the caller's dates **raw** to
+`pystac_client.search`, which expands a date-only **string** to the end of its day
+(`2019-01-01T23:59:59Z`) but treats a **datetime** as an exact instant (`2019-01-01T00:00:00Z`).
+Phase 3's run passed bare strings (3456); the 3b dry run wrapped them in `pd.Timestamp` (3432).
+Verified locally against the installed `pystac_client` formatter. **Data verdict: no loss, no
+re-ingest** — the archive is a *superset* of the intended window, and run-book 36's
+2018-04-01..2018-09-01 slice is untouched. **Code verdict: a real defect (TODO #52)** — the CDSE AML
+path normalises on the node (`workflows/download.py:97`) while the MPC AML path does not, so the same
+call means a one-day-shorter window for CDSE than for MPC. Third instance of spec 36 D3's premise
+being violated, after TODO #49.
+
+**Code fixed this session (both green, 380 passed / 3 skipped, ruff clean):**
+- **`sources/cdse._roi_gdf` now reads via `fs.open` + `BytesIO`.** GDAL/pyogrio has no `abfss://`
+  driver, so a blob ROI failed with a **lying** `DataSourceError: No such file or directory` for a
+  file that existed. `workflows/task.py` already carried this exact fix (spec 36 D6a / TODO #40);
+  `sources/` was never swept. Also covers all three `sources/mpc` call sites. **Blocking — Phase 1
+  could not run without it.** 3 sibling sites still bypass the seam → **TODO #47**.
+- **TODO #49 CLOSED — `run_aml_download` stops ignoring per-source arguments.** (a) creds
+  (`creds_url`/`vault_url`/`secret_name`) are now a hard preflight error for anonymous
+  `source="mpc"` — previously accepted and dropped, so an MPC run wrapped in the run-book's
+  `blob_creds()` staged the CDSE keys on blob for the whole run **unread**. (b) `max_tiles` is now
+  enforced **driver-side for both sources**: `sources/mpc.py:351` raises above the cap locally while
+  the AML path dropped it entirely, so the same call meant different things per runner (breaks
+  spec 36 D3). MPC counts **distinct MGRS tiles**, not shard rows (`n_tiles = assets / len(bands)`).
+  Live consequence: the 576-tile Phase 3 now **fails fast** under the old `max_tiles=500`; run-book
+  default raised to 700.
+
+**Measurements (first real on-Azure fan-out data — detail in TODO #48):**
+- **Fan-out works on the transfer, not (much) on the wall clock.** Phase 2 is the only controlled
+  experiment (same 964 assets, only `n_shards` varied): transfer **577.6 s → 113.7 s = 5.08×**;
+  wall **699.6 s → 493.9 s = 1.42×**. Total work conserved (sum of shards 560.9 s ≈ 577.6 s serial)
+  ⇒ no duplicated effort and **no per-node throughput collapse — MPC is not throttling us at n=8**.
+  The gap is fixed cluster startup: ~380 s of the 8-shard wall, ≈ **+37 s per extra job**.
+- **`n_shards=16` (Phase 3) is NOT evidence that 16 > 8** — no n=1 baseline for that workload and
+  the script recorded no wall clock (now fixed in the run-book: it emits `wall_seconds` /
+  `slowest_shard_seconds` / `driver_overhead_seconds`). Hint only: per-asset 0.704 s at n=16 vs
+  0.582 s at n=8. **Optimal shard width is unmeasured**; the straggler spread collapsing 16.7× → 1.82×
+  when shards got fatter points to *fewer, fatter* shards. Unresolvable until MPC reports bytes.
+- **MPC reports `bytes_downloaded: 0` always** (its `DownloadResult` has no such field) ⇒ no MB/s
+  anywhere, which is *why* the above stays open. Fix that first — TODO #48 item (1).
+
+**Operational facts worth not re-deriving:**
+- The **driver** needs blob access in every phase, not just the node. VPN off ⇒
+  `ErrorCode:AuthorizationFailure` (that code = **network rules**; `AuthorizationPermissionMismatch`
+  = missing RBAC). Confirmed: VPN was off, identical script passed once up.
+- **`fs.rm(prefix, recursive=True)` on `abfss://` deletes every file and THEN raises**
+  `DirectoryIsNotEmpty` (empty dir entries survive). Reads as "nothing happened"; the data is gone.
+  **TODO #50, unfixed.** Don't clear prefixes — re-running is self-healing (idempotent skip +
+  `TileCatalog.append` upserts by id).
+- **The AML Environment must contain fsd itself** — the dispatcher submits a bare
+  `python -m fsd.workflows.download …` with **no `code=` upload and no pip install**. The old
+  run-book step built an image with no fsd in it and PASS-checked a `provisioning_state` field that
+  does not exist in the environment schema. Rewritten as a **Docker build context** (`build.path` +
+  `dockerfile_path`; `conda_file` structurally **cannot** carry a local wheel since it requires
+  `image`, which is mutually exclusive with `build`) + a smoke job that imports fsd on a node.
+  `az ml environment show` requires `--version`/`--label`; versions are auto-assigned, so
+  `AZ_ENV_VERSION` is captured rather than hardcoded `:1`.
+
+**Session takeaway:** three of the four code findings are the same shape — **an interface promising
+something it does not deliver** (a url-accepting reader that isn't, a per-source signature that
+isn't, a backend-agnostic `rm` that isn't). The synthetic suite was green throughout; every one of
+these needed real blob paths and a real cluster to surface. Run-book defects caused two of the
+operator's three mistakes (an unannotated CDSE-only `creds_url` next to an annotated `n_shards`; a
+required-step-as-code-comment), so **run-book precision is a correctness concern, not polish.**
+
+**COMMITTED (gate 5, done):** `6c322fd` "fix two interfaces that promised more than they delivered"
+(code + tests + `CHANGES.md`) and `5df7088` "runbooks 36/37: fix what running them on the real
+cluster exposed" (run-books + `PROGRESS.md`/`LIMITATIONS.md`/`TODO.md` #47–#50). **Both unpushed** —
+`origin/main` is still `e76a8d5`. Run the `RECIPES.md` private-identifier sweep before any push.
+
+- **⚠️ Private-identifier leak — found during the D5 review (2026-07-22), SCRUBBED FORWARD the same
+  day.** PRE-EXISTING: introduced by the spec commit `3c5f26f`, not by the D5 delta. `PROGRESS.md`
+  and `specs/37-download-on-aml.md` had named the **concrete** `rise` Key Vault and compute VM, and
+  a **full sweep of every concrete value in `AZURE_INFRA_PRIVATE.md` against all git-tracked files**
+  turned up one more, older hit: `runbooks/34-download-to-blob.md` named the concrete **storage
+  account**. All are "concrete" values in that doc's placeholder table — `CLAUDE.md` forbids
+  copying those into anything under `fsd/` (public MIT repo). Not credentials (resource names), but
+  a hard-constraint violation, and `3c5f26f` was **already pushed**, so they reached GitHub.
+  **Fix (user's call, 2026-07-22): scrub forward** — replaced with the placeholder form (`kv<proj>`
+  + a pointer to `AZURE_INFRA_PRIVATE.md`) in a follow-up commit. **The names remain in git history
+  (`3c5f26f`) and in the pushed remote** — deliberately accepted, no history rewrite. If that ever
+  becomes unacceptable, the remaining lever is a rewrite + force-push. Post-scrub the sweep is
+  clean — the only remaining matches in tracked files are `identityReference`/`prevent_destroy` in
+  `AZURE_INFRA.md`, which are generic Azure Batch / Terraform API terms, not identifiers.
+  **Lesson for future spec/PROGRESS writing:** a `ForbiddenByRbac`-style ops finding must be
+  recorded with the *placeholder* name, never the concrete one, even when quoting a real error.
+  **Re-run the sweep before any push** — see `RECIPES.md` ("Sweep tracked files for concrete `rise`
+  identifiers").
+- **D5 REVISED delta — IMPLEMENTED 2026-07-22 (Sonnet@medium, worktree `fsd-spec37-d5`, branch
+  `spec37-d5-delta`), REVIEWED at Opus@high + MERGED `--no-ff` (`154aa70`) + pruned 2026-07-22.**
+  Review found **no bugs and needed no fixes**: the exactly-one-creds-source classification was
+  traced across all five input combinations (neither / KV-complete / KV-partial / blob / both — no
+  gap: `vault_url`+`creds_url` with no `secret_name` correctly classifies as "both"); the
+  `creds_arg` splice has correct arg boundaries; `run_roi`'s newly-optional `vault_url`/
+  `secret_name` have no callers outside `main()` and the tests; the no-secret-in-job-spec assertion
+  is non-vacuous (a leak of the creds JSON or `s3_secret_key` would trip it); §7 test 7b is fully
+  covered; the runbook's Phase 0/3 edits match real APIs (`fs.rm` exists,
+  `CdseCredentials.from_json` is blob-capable). Two non-blocking observations, deliberately not
+  "fixed": `run_roi` itself does not re-enforce mutual exclusivity (with both set it silently
+  prefers blob; with neither it fails inside `secrets.get_secret(None, None)`) — unreachable in
+  practice since the dispatcher machine-generates exactly one arg group; and the runbook's Setup
+  block still exports the now-unused `AZ_VAULT_URL`/`AZ_CDSE_SECRET_NAME` (intentional — the
+  "swap back if you have a KV write role" path). All 6 checklist items landed against the
+  merged code: (1) `run_aml_download`/`_aml_download_preflight` gained `creds_url: str | None`
+  (kept `vault_url`/`secret_name`); preflight now requires exactly one CDSE creds source, erring on
+  neither and on both. (2) `workflows/download.py` CLI gained `--creds-url`; `run_roi` uses
+  `CdseCredentials.from_json(creds_url)` when given, else the existing KV path (`vault_url`/
+  `secret_name` are now optional params). (3) The command builder emits `--creds-url <url>` xor
+  `--vault-url/--secret-name`. (4) `_aml_download_preflight` resolves/parses/expiry-checks whichever
+  source is supplied (blob via `from_json`, KV via `from_json_str(get_secret(...))`). (5) Tests: 5
+  new (§7 test 7b CLI + dispatcher blob-path, preflight neither/both, preflight blob-resolve) —
+  `tests/test_download_aml.py` 21→26 tests, suite 364→369 passed / 3 skipped, `ruff` clean. (6) Docs:
+  `LIMITATIONS.md` (new plaintext-creds-on-blob row), `runbooks/37-download-on-aml.md` (Phase 0 now
+  pushes local creds JSON to a `_secrets/` blob prefix instead of reading a pre-populated KV secret;
+  Phase 1/3 use `--creds-url`; Phase 3 deletes the blob creds file after the run), `CHANGES.md` (new
+  "D5 REVISED" subsection), `RECIPES.md` (blob `creds_url` alternative shown alongside KV). Invariant
+  verified by test: no secret *value* in `job.command`/`environment_variables` on the blob path
+  either — only the `creds_url` location.
+- **⚠️ D5 REVISED 2026-07-22 (keep-both: blob-JSON creds fallback added; KV retained) — the decision
+  record.** KV creds delivery (D5 as merged) is **operationally blocked**: no identity the operator
+  can invoke holds a KV *write* role on the `rise` Key Vault (`kv<proj>`, `AZURE_INFRA_PRIVATE.md`) —
+  the compute UAMI has read-only
+  (`Key Vault Secrets User`), so it can read a secret but not create one. `az keyvault secret set`
+  returned `ForbiddenByRbac` from both the driver laptop **and** the operator's `rise` VM (the VM call
+  authenticated as the operator's own account, not the VM MSI — but the MSI is the same read-only UAMI).
+  Getting write is a platform-admin action unavailable on the demo timeline. The operator **has** blob
+  write. **Decision (user, keep-both):** CDSE creds may be delivered **either** via KV
+  (`--vault-url`/`--secret-name`, unchanged) **or** via a blob JSON `--creds-url` (new fallback, used
+  now), mutually exclusive. The blob path **reuses the existing `CdseCredentials.from_json(creds_url)`**
+  (already blob-capable via `fs.open`, `cdse.py:82`) — no new read code. Recorded in the spec:
+  **D5 REVISED** note (§3), re-resolved Open Q2 (§8), updated §4 ledger / §5 deliverable 5 / §7 test 7b,
+  and the top status banner. **Implementation delta a Sonnet session must land against the merged code:**
+  (1) `run_aml_download` gains `creds_url: str | None` (keep `vault_url`/`secret_name`); require exactly
+  one CDSE creds source (preflight errs on neither/both). (2) CLI `workflows/download.py`: add
+  `--creds-url`; `run_roi` reads via `from_json(creds_url)` when given, else the existing KV path.
+  (3) Dispatcher command builder emits `--creds-url <url>` xor `--vault-url/--secret-name`. (4)
+  `_aml_download_preflight` resolves/parses/expiry-checks whichever source. (5) Tests: add the §7 test-7b
+  blob-path + neither/both validation cases. (6) Docs: `LIMITATIONS.md` (plaintext-creds-on-blob,
+  delete-after-run), `runbooks/37-download-on-aml.md` Phase 0 (write creds to a `_secrets/` prefix) +
+  Phase 3 (delete them), `CHANGES.md`, `RECIPES.md`. **Invariant to keep:** no secret *value* in the job
+  spec on either path (`creds_url` is a location, like the ROI/dst args).
+- **Opus@high review outcome (2026-07-22):** review holds up — **merged, no fixes needed.** §4's
+  central claim verified directly against the diff: `sources/cdse.py::download` and
+  `sources/mpc.py::download` bodies change by **zero lines** (every hunk in those two files is a pure
+  addition + the one documented `cdse.py` docstring fix). The `run_aml` refactor
+  (`_aml_submit_and_wait`, `_aml_preflight_common`) is **proven behaviour-preserving** by
+  `tests/test_scale_runner.py` having a **zero diff**. D5 no-secret-in-job-spec asserted in code +
+  test; D8 crash-resume limitation honestly in `LIMITATIONS.md` + TODO #46. Methods the runner leans on
+  (`is_expired`/`require_s3`/`query_catalog`) are all real; the ISO-string timestamp a shard CSV
+  round-trips is coerced back to tz-aware UTC by `catalog.append`. **364 passed / 3 skipped** on a bare
+  `.[dev]` venv, `ruff` clean, re-verified on `main` post-merge.
+- **Minor nits (non-blocking, not fixed):** (1) `config.CDSE_MONTHLY_QUOTA_GB` is defined but only
+  referenced by a test — the runner uses a caller-supplied `remaining_quota_gb` instead (defensible:
+  *remaining* ≠ *total*). (2) `workflows/download.py::main()`'s argparse layer has no smoke test (tests
+  call `run_roi`/`run_shard` directly). (3) The refactor renamed the missing-status report key from
+  `"shard"` to `"unit"` in `run_aml`'s no-status-file branch (no test depended on it). (4) MPC per-shard
+  timeout is sized from whole-discovery GB, not the shard's byte share (D6 wording) — erring
+  generous/safe. (5) D7 estimates via `query_catalog`×`APPROX_GB_PER_TILE` rather than the spec-named
+  `plan_download` — equivalent.
+- **Prune status:** merged `--no-ff` (`6b845fc`); **worktree + branch NOT yet pruned** — `git worktree
+  remove` is blocked by a live lock (`claude bg-spare`, pid 42181) on
+  `.claude/worktrees/spec37-download-aml`. Run `git worktree remove -f .claude/worktrees/spec37-download-aml
+  && git branch -d worktree-spec37-download-aml` once that session releases it. **`main` push is
+  pending** (push-only-when-asked).
+
+- **`specs/37-download-on-aml.md` — download on Azure ML (P2), the download sibling of spec 36.** Runs
+  the already-working download-to-blob (spec 34) as an AML job so the source→blob byte-flow is
+  cloud-colocated, not relayed through the driver laptop. **Headline decision (D1): per-source dispatch
+  shape** — **CDSE = one job** (its 4-connection cap is per-S3-credential, so fan-out can't help) and
+  **MPC = fan-out across N nodes** (bytes come straight from Azure Blob → throughput scales with
+  parallelism; `rise` is in MPC's region → intra-region, near-linear). MPC fan-out reuses spec 36's
+  `shard_units`; CDSE reuses spec 34's unmodified `download(roi)`.
+- **Secrets = Azure Key Vault (D5), not blob.** The compute identity already holds `Key Vault Secrets
+  User` on the `rise` vault (`AZURE_INFRA_PRIVATE.md`), and the **same `AZURE_CLIENT_ID`** spec 36 D4
+  sets authorises KV too — so zero infra ask, no secret on blob or in the job spec. New `fsd/secrets.py`
+  (`get_secret`), `azure-keyvault-secrets` added to `[azure]`, additive `CdseCredentials.from_json_str`.
+- **All 8 deliverables (§5) landed.** `workflows/download.py` (new, thin in-job CLI, `--roi`/`--shard`);
+  `sources/mpc.py::discover_shard_rows`/`download_shard` (additive; `download()` untouched, signs
+  **on the node** via a new lazy `_import_pc_sign`); `workflows/runners.py::run_aml_download`
+  (per-source dispatch, D1/D2/D6/D7/D9) built on a shared `_aml_submit_and_wait` **factored out of**
+  `run_aml`'s own submit/poll/aggregate/raise loop (pure refactor — `run_aml`'s 12 spec-36 tests still
+  pass unchanged) and a shared `_aml_preflight_common` (cluster/environment/root checks, reused by both
+  `_aml_preflight` and the new `_aml_download_preflight`); `api.download(runner="local"|"aml",
+  runner_kwargs=...)`; `CommandJobLimits(timeout=...)` (D6, via a lazy `_import_command_job_limits`)
+  sized by `runners._estimate_timeout_seconds`; docs (`AZURE_INFRA.md` §7 item 9, `LIMITATIONS.md`,
+  `RECIPES.md`, `CHANGES.md`, `TODO.md` #46, the stale `cdse.py` remote+cog docstring fixed);
+  run-book `runbooks/37-download-on-aml.md` (Phases 0–3).
+- **All tests (§7) pass, including non-vacuousness (test 8).** New `tests/test_download_aml.py` — 20
+  tests: the CLI's two modes (D3/D9); `mpc.download_shard` signs on the node + reuses
+  `_transfer_and_stamp_one`; CDSE submits **exactly one** job at both 1 and 37 discovered tiles (D1,
+  non-vacuous across tile counts); MPC shards a discovered asset list into N jobs and the shard CSVs
+  partition the asset list (reusing `shard_units`, non-vacuous); job spec carries `AZURE_CLIENT_ID`
+  (D4), `limits.timeout` (D6), and the KV `vault_url`/`secret_name` **without any secret value**
+  (D5); raises on a Failed job and on `circuit_tripped: true` even when AML itself reports Completed
+  (D9); `api.download` accepts `runner="aml"` (threads `runner_kwargs`) and rejects unknown runners;
+  `_aml_download_preflight` (D7) refuses empty discovery / unwritable root / an unparseable or
+  expired KV secret, and warns (doesn't block) on a CDSE quota-exceeded estimate; `fsd.secrets.get_secret`
+  is mockable without the `[azure]` extra. **Full suite: 364 passed / 3 skipped** (baseline 343/3),
+  `ruff check src/ tests/` clean, **on the bare `pip install -e ".[dev]"` venv** — no test needs
+  `azure-ai-ml`, `azure-keyvault-secrets`, or `planetary-computer` (a new `mpc._import_pc_sign` lazy
+  handle mirrors `runners._import_aml_command`'s injection-boundary pattern for exactly this reason).
+- **§4's reuse ledger held**: `sources/cdse.py::download` and `sources/mpc.py::download` change by
+  **zero lines** (verified: only new functions were added, no existing lines touched);
+  `storage/*`/`datacube/`/`raster/`/`catalog/` untouched. `runners.py`'s two shared-helper
+  refactors (`_aml_submit_and_wait`, `_aml_preflight_common`) touch `run_aml`'s internals but not its
+  signature or observable behavior — its own tests needed no changes.
+- **Open, accepted for v1 (D8, not blocking):** a job that crashes mid-run loses its un-pushed local
+  scratch, so a fresh-node resume re-downloads the unpushed remainder rather than seeing COGs already
+  on blob (spec 34's push is whole-run, not per-file). Logged in `LIMITATIONS.md`/`TODO.md` #46;
+  cheap for MPC (only the crashed shard's slice re-runs), costs re-downloaded bytes for CDSE.
+- **Merged to `main`** (`6b845fc`, `--no-ff`) after the Opus@high review above; worktree/branch prune
+  and the `main` push are the only pending items (see **Prune status** at the top of this section).
+
+## ⭐ SPEC 36 **IMPLEMENTED + REVIEWED + MERGED to `main`** (Sonnet@medium impl 2026-07-22; Opus@high review + merge 2026-07-22). **→ NEXT: the user runs `runbooks/36-aml-runner.md` Phases 1–3 on the real cluster.**
+
+- **Opus@high review outcome (2026-07-22):** the §4 reuse ledger and §5 deliverable table hold; the
+  §3 invariants (D3 inv 1 `task.py` unchanged; D4 `storage/azure.py` unchanged; atomic-publish
+  ordering metadata-before-datacube) verified against the diff. **One real defect found + fixed**
+  (commit `89aeb9b`) — the implementing session's own "known open question": three `run_aml` tests
+  called the real `azure.ai.ml.command(...)`, so `pytest -q` was RED on the canonical
+  `pip install -e ".[dev]"` venv (the `[aml]` extra had silently become a *test* dependency,
+  violating §7 "No test may require Azure"). Fixed by indirecting the sole `command` import through
+  `runners._import_aml_command()` and injecting a `fake_aml_command` fixture; the AZURE_CLIENT_ID
+  pin now runs on every install. **343 passed / 3 skipped on a bare `.[dev]` venv** (no `[aml]`),
+  ruff clean. Branch `worktree-spec36-scale-runner` merged to `main`; worktree pruned.
+
+- **All 11 deliverables (§5) landed.** `pyproject.toml` `[aml]` extra; `fsd.storage.fs.rename`
+  (the atomic-publish primitive); D7 atomic-rename publish + skip-if-final-exists
+  (`datacube/builder.py::_save_npy_atomic`, `workflows/task.py::run_task`'s first line); the
+  Snakefile's sentinels moved to node-local scratch and its remote-`export_folderpath`
+  `RuntimeError` removed; `workflows/shard.py` (new, thin, D3 invariant 2); `workflows/runners.py::
+  run_aml` (shard → submit → wait → aggregate → raise, D2/D3/D9/D10); `api.py`/`workflows/
+  create_datacube.py` accept `runner="aml"` end-to-end via a new `runner_kwargs` dict; D6a's three
+  geometry I/O sites (`setup`'s ROI read + per-unit write, `run_task`'s geometry read) now go
+  through `fsd.storage` + `BytesIO`/`to_json()`, closing TODO #40; docs (`AZURE_INFRA.md` §7,
+  `LIMITATIONS.md`, `TODO.md` #40/#41 both closed, `RECIPES.md`, `CHANGES.md`); run-book
+  `36-aml-runner.md` (Phases 1–3; Phase 0 stays as-is, already green).
+- **§4's reuse ledger held**: `workflows/task.py` is byte-for-byte unchanged except its new
+  first-line skip-if-final-exists check (D3 invariant 1's spirit — no *pipeline* logic moved);
+  `datacube/`, `raster/`, `bands/`, `catalog/`, `sources/` untouched except `datacube/builder.py`'s
+  save step (atomic publish, D7) and `catalog/`/`sources/` are genuinely untouched;
+  `storage/azure.py` untouched (D4 stayed an env var, not code); `azure-ai-ml` is imported lazily
+  **only** inside `runners.py::run_aml` (verified: `import fsd` succeeds with `azure.ai.ml` import
+  blocked via a `sys.meta_path` finder).
+- **All 9 tests (§7) pass**, plus a non-vacuousness check (test 8) and a couple of split-out
+  variants — **12 new tests total** in `tests/test_scale_runner.py`. Full suite: **343 passed / 3
+  skipped** (baseline was 331/3 at handoff), `ruff check src/ tests/` clean. No test touches Azure —
+  the AML client is a hand-rolled fake (`_FakeMLClient`) injected at `run_aml`'s `ml_client=`
+  boundary, and (after the review fix `89aeb9b`) the job-builder `azure.ai.ml.command` is faked via
+  the `fake_aml_command` fixture, so **the suite passes with the `[aml]` extra absent** — it is a
+  pure runtime dependency, never a test one.
+- **D4 implemented as designed, no shortcuts**: `run_aml` takes `identity_client_id` as a required
+  caller-supplied parameter (never hardcoded — a concrete `rise` identity id has no business in a
+  public repo) and sets it as the job's `AZURE_CLIENT_ID` env var; test 5 pins that nothing else in
+  `fsd/` would explain why it's there.
+- **~~One deliberate design call beyond the spec's literal wording~~ → RESOLVED at review (`89aeb9b`).**
+  The implementing session kept `azure.ai.ml.command(...)` running for real in tests (asserting on a
+  real `Command`'s `.environment_variables`), which made the `[aml]` extra a test dependency and
+  turned `pytest -q` red on a bare `.[dev]` clone. The review moved the job-builder behind
+  `runners._import_aml_command()` (still exactly one lazy import site in `run_aml`, D3 inv 3 intact)
+  and faked it in tests via `fake_aml_command`; test 5 now asserts on the kwargs `run_aml` passes —
+  which *is* the run_aml behaviour being pinned — rather than on the SDK's Command class.
+- **Not done in this session (by design — Claude never runs networked/pipeline scripts,
+  `CLAUDE.md`):** Phases 1–3 of `runbooks/36-aml-runner.md` (one shard, resume, real fan-out on the
+  actual `rise` cluster) and building the AML Environment (D5) for real. Both are runbooks for the
+  user.
+
+## ⭐ SPEC 36 **SIGNED OFF** + fork resolved → AML + Phase 0 green on the cluster (2026-07-21, Opus@high). (superseded by the entry above — implementation is done)
+
+- **✅ `specs/36-scale-runner.md` SIGNED OFF (user, 2026-07-21).** Design is frozen; implementation
+  has not started. Read the spec, not this entry, for the design — §3 has D1–D10, §4 is the reuse
+  ledger, §5 the 11 deliverables, §7 the 9 tests.
+- **Sign-off decision on §8 Q4: TODO #40 is fixed INSIDE spec 36**, not as a prerequisite commit.
+  Spec gained **D6a** (three geometry I/O sites → `fsd.storage` + `BytesIO`: `setup`'s ROI read,
+  `setup`'s per-unit geometry write, `run_task`'s geometry read), **deliverable 11**, and **test 9**.
+  It stopped being deferrable because a cluster node has no `shapefiles/` checkout. Per spec 31 §6's
+  audit these are the *last* raw-path I/O sites, so TODO #40 closes outright. **The guard that
+  matters: the existing local-path geometry tests must pass unchanged** — the risk is a local
+  regression, not a missing feature.
+
+- **✅ Phase 0 identity smoke GREEN** (`runbooks/36-phase0-identity-smoke.md`, AML run
+  `mighty_seal_21kp83tsv7`). **fsd ran on an AML cluster node, unmodified**: the wheel built from the
+  working tree installed and imported, `fsd.storage` round-tripped npy+text on `rise` blob, and
+  `fsd.raster.rio_open` streamed a real MGRS-tile COG over `/vsiadls/` (EPSG:32633, 10980², uint16).
+  The token's `xms_mirid` proves **the compute identity** answered — the same UAMI P1 used.
+- **The negative control failed, which is the good outcome: D4 is load-bearing.** With
+  `AZURE_CLIENT_ID` removed, the bare `DefaultAzureCredential()` cannot get a token at all
+  (`ManagedIdentityCredential: Expecting value: line 1 column 1` — IMDS won't guess among
+  user-assigned identities). **Shipping without that env var would have failed every blob read on
+  the cluster at runtime.** The control is why we know this rather than assume it.
+- **Also settled:** an AML job needs **no `identity:` block** (spec 36 §8 Q2 closed — a plain command
+  job already runs as the cluster UAMI); D5's premise (install a built wheel, let AML build the
+  environment) is demonstrated, not just argued.
+- **One honest gap:** the COG window read came back all-zero (tile top-left corner — almost certainly
+  genuine granule-edge nodata). So "streamed successfully" is proven; "streamed *real pixel values*"
+  is not. Phase 1 covers it by construction; recorded in spec 36 §6 rather than glossed.
+
+- **`specs/36-scale-runner.md` written, awaiting sign-off.** 10 decisions (D1 backend, D2 shard
+  granularity, D3 the `runner=` seam + 4 invariants, D4 node identity, D5 environment, D6 layout,
+  D7 idempotency, D8 driver host, D9 telemetry, D10 preflight), a **reuse ledger** (§4) that makes
+  the "no new pipeline code" claim checkable at review, 10 deliverables, a 4-phase validation plan,
+  8 synthetic tests, 6 non-blocking open questions, and per-source credit (§9).
+- **The headline: `workflows/task.py` must not change at all** (D3 invariant 1) — if it needs to,
+  the design is wrong. `storage/azure.py` doesn't change either (see D4 below). The cloud runner
+  only shards a work list and launches the *existing* local Snakemake runner inside each job.
+- **D4 was the near-miss.** The AML cluster has **only** a user-assigned identity, and a UAMI is
+  never selected implicitly — so a bare `DefaultAzureCredential()` (what `storage/azure.py` does)
+  would have failed *silently on the cluster*, after P1 "proved" blob access. Both MS docs point at
+  a code change; reading `azure-identity` 1.25.3's source **in this venv** showed
+  `DefaultAzureCredential` already defaults `managed_identity_client_id` to `AZURE_CLIENT_ID`, so
+  the whole fix is **one env var the dispatcher sets** — config, not code, exactly on-theme. Phase 0
+  of the run-book validates it before any runner code is written.
+- **D7 closes TODO #41's second half as a side effect:** Snakemake's sentinels move to node-local
+  scratch (they are one invocation's bookkeeping), the durable resume signal becomes the artifact's
+  own existence on blob, and publishes go temp→atomic-rename. So **the local runner gains blob
+  support** and the Snakefile's hard `RuntimeError` on a remote `export_folderpath` can be deleted.
+- **TODO #40 (ROI geometry via `fsd.storage`) is now blocking**, not deferred — a cluster node has
+  no `shapefiles/` checkout (spec 36 §8 Q4: fix inside this spec or as a prerequisite commit?).
+
+- **The Batch-vs-AML fork closed by measurement, not argument.** `runbooks/36-runner-fork-probe.md`
+  (new, read-only, green 2026-07-21) ran against a **decision rule registered before the numbers
+  were seen**. It fired on one fact: the `rise` Batch account's **`dedicatedCoreQuota` is 6** against
+  a **64-core** pool VM — Batch cannot allocate a single node (low-priority quota is 6 too, so no
+  spot escape). Meanwhile AML **`cluster-<proj>-d16`** is provisioned at **32 nodes × 16 vCPU = 512
+  cores**, family quota 6400, and — the clincher — carries **`UserAssigned` = the project compute
+  identity**, i.e. *the same UAMI spec 31 already proved reads/writes `rise` blob*. No new auth path,
+  no RBAC ask, no re-spike. Evidence table: `AZURE_INFRA.md` §3.1; concrete values (names/IDs/quotas)
+  in the workspace-root private doc.
+- **Batch DROPPED, not deferred (user).** Strict YAGNI — we are *not* filing the quota request. The
+  seam is already evidenced by two live backends (local Snakemake ↔ AML). `AZURE_INFRA.md` §3.1 is
+  the record of *why*: **quota, not architecture** (the pool was otherwise fully prepped —
+  DockerCompatible, DSVM image, start task, ACR pre-wired with the compute identity).
+- **Two decisions locked before any drafting:** (1) **granularity** — one dispatched unit = a
+  **shard of `input.csv`**, executed by the *existing local Snakemake runner* inside the job, so the
+  cloud runner only shards a work list and launches proven code (this also killed the
+  `max_tasks_per_node` infra ask); (2) **spec numbering** — the runner spec is **`specs/36-scale-runner.md`**,
+  not an edit to the signed-off `specs/10-storage-and-scale.md` (10 defines the *seams*; 36 is the P2
+  design against them).
+- **⭐ P2 now needs ZERO infra asks and no container build.** Both were Batch requirements: the quota
+  bump + `max_tasks_per_node` are moot, and AML builds/versions the job environment itself (an image
+  becomes an optimization, not a gate; `az acr build` is available server-side if wanted). The
+  project's "first infra proposal" is deferred indefinitely.
+- **§7.7 idempotency settled from primary docs** (backend-independent, so bankable now) —
+  `AZURE_INFRA.md` **§8.1**: ADLS Gen2 rename is **atomic on an HNS account** and can be made
+  fail-if-exists via `If-None-Match: "*"`, so **`done.txt` sentinels get replaced by write-temp →
+  atomic-rename-to-final**, with the final path's existence as the resume check — no lease, no lock,
+  no consistency window. And Azure retries a task on node-recovery events **independently of
+  `maxTaskRetryCount`, even when it is 0** ⇒ idempotent units are mandatory, not merely prudent.
+- **ROADMAP §5.0's locked target widened (user):** "on Azure **Batch** at scale" → "**on Azure at
+  scale**", `runner="batch"` → `runner="aml"`. The locked promise is *the seam*, not a product name;
+  a footnote records why Batch was displaced so the history isn't lost.
+- Docs updated: `ROADMAP.md` §5.0 + P2/P4 rows, `AZURE_INFRA.md` §3.1/§6.1/§8/§8.1, `LIMITATIONS.md`
+  (Scale/cloud), `TODO.md` #41, the private doc's measured-facts table. **Nothing committed.**
+- **Open, carried into spec 36:** which ACR the AML workspace builds environments into; whether an
+  AML job must declare `identity: managed` to run as the UAMI rather than the submitter; whether the
+  AML control plane is reachable off-VPN. None blocks the design.
+
+- **The target (user, 2026-07-21):** *a researcher runs the same fsd pipeline on **Azure Batch at
+  scale**, where `runner="batch"` / `storage="abfss://…"` is configuration, not a rewrite.*
+  Audience = **a researcher who would actually use fsd** (self-serve bar). Written up as
+  **`ROADMAP.md` §5.0** — that section, not this entry, is the canonical statement.
+- **Everything local is done and proven** (P0→P0.9 on real data); **P1's storage half is proven**
+  (runbooks 31 + 34-download-to-blob green). **The single missing piece is the runner.**
+- Ordered path: (1) decide **Batch vs AML** — still open, gates the spec; (2) **write spec 10**,
+  settling `AZURE_INFRA.md` §7's remaining questions; (3) **container image + ACR** (the largest
+  genuinely new build); (4) **implement the runner seam** (+ the local Snakemake sentinels'
+  blob-unsafety, TODO #41); (5) **infra ask** (quota / `max_tasks_per_node`).
+- ⚠️ **Correction made while preparing this handoff — no spike is needed first.** I had told the
+  user to start with a GDAL/VSI-under-MSI spike; that was **wrong**. §7.3 was stale: spec 31
+  already solved and *proved* it on real Azure (`fsd.raster.rio_open` → `/vsiadls/` + fresh
+  `AZURE_STORAGE_ACCESS_TOKEN`; runbook `31-p1-datacube-on-blob.md` green 2026-07-18). Marked
+  resolved in `AZURE_INFRA.md` §7.3/§8. The residual unknown is narrower and belongs to **P4**:
+  GDAL *writes* to blob (inference-output COGs) — `rio_open` raises on a remote `mode="w"` by
+  design (TODO #39). **P2 is design + build, not discovery.**
+- **New: `LIMITATIONS.md`** — a one-page, user-facing **index** of what fsd cannot do today, with
+  a "trigger to fix" per row. Deliberately an index, **not** a fifth register: detail stays in
+  `TODO.md`/`DROPPED.md`/`BUGS.md`/`specs/`. Working principle the user set: **YAGNI/DRY/KISS — we
+  plug a limitation when we actually hit it**, not in advance.
+- **Spec 35 committed** (`f486c3c`, 24 files) — see the two entries below for the implementation
+  and the review. Notebooks deliberately left out of the commit (`CLAUDE.md` preference).
+
+---
+
+## ✅ SPEC 35 **REVIEWED + ACCEPTED** (2026-07-21, Opus@high). No defects found in the implementation; 4 small corrections applied in place, 1 design gap logged as TODO #45. `pytest -q` **331 passed / 3 skipped**, `ruff` clean. Committed as `f486c3c`.
+
+- **Verified against the spec, not just re-read.** §9's 10 deliverables all land; §8's 11 test
+  requirements all have a real test. **Independently re-derived the two claims the design rests
+  on** (rather than trusting the passing suite): (1) `pd.concat`'s attrs rule is *all inputs must
+  agree* — `concat(non-empty, empty).attrs == {}` in this venv — so `TileCatalog.append`'s
+  **explicit** re-stamp is **required**, not merely the safer of two options (the implement
+  session's handoff note claimed "empty attrs on one side is fine"; that is wrong, and the
+  implementation is right); (2) the filter chain (boolean mask → `.copy()` → column assign) *does*
+  propagate attrs, so `TileCatalog.filter` needs no re-stamp. Also confirmed the stamped write
+  keeps SNAPPY + a valid `geo` key (no compression/format drift), and that `flatten_catalog`'s
+  output is a **fresh** GeoDataFrame with no `fsd:source_path`, so §5a can never double-raise on a
+  `flatten → build` chain.
+- **Mutation-tested the §8.2 non-vacuousness claim myself** rather than taking the implementer's
+  word: forcing `build_datacube` to ignore the resolved declaration fails the three-hop test
+  (`IndexError` — the S2 default's `reference_band="B08"` selects no images); forcing
+  `flatten_catalog` to do the same fails it *and* the §5a raise test. Both probes reverted;
+  `builder.py` carries no leftover trace.
+- **pystac deviation accepted as semantically equivalent.** `ItemAssetDefinition` +
+  `Classification.create(value=…, name=…)` is forced by pystac 1.15.1 (the wrapper is deprecated;
+  `name` became required in the classification extension's **v2.0.0**). On the wire the Collection
+  gets the right `stac_extensions` entry, `item_assets.SCL.classification:classes`, and
+  `fsd:declaration`; re-stamping is idempotent (no duplicate classes or extension URLs).
+- **Corrections applied (Opus, in place):** `declaration.py`'s module docstring still advertised the
+  retired `attrs["declaration"]` key; `from_json`/`_mask_spec_from_json` raised an incidental
+  `TypeError`/nonsense message on a non-object `mask_spec` (now a clear `ValueError`, +1 test);
+  `restamp_cli`/`RECIPES.md`/`CHANGES.md` called the re-stamp a "footer-only rewrite" when it is a
+  full read+re-write of the catalog Parquet (still sub-second, imagery untouched — wording fixed);
+  added a `peek_parquet_attrs` test on a `memory://` path, since `TileCatalog.append`'s conflict
+  check runs it on **every** append including against an `abfss://` catalog and was only covered
+  locally (verified working on a non-local fs).
+- **Logged, not fixed: TODO #45** — the STAC `classification:classes` mirror lists only the *masked*
+  subset of SCL values with placeholder names (`name="3"`), so spec 35 §7's "legible to any
+  STAC-aware tool" only half-lands. Schema-valid and harmless (the Parquet footer is authoritative;
+  nothing reads the mirror), but fixing it properly means adding class *names* to `MaskSpec` — a
+  spec-34 §2a field change, hence a TODO rather than a review-time edit.
+- **Non-scope respected:** the diff touches no `[G2]` native-grid path, no new `mask_type`, no
+  `Source` ABC (#11), and re-stamps none of the four on-disk catalogs.
+
+---
+
+## ✅ SPEC 35 (declaration persistence, TODO #42) **IMPLEMENTED** (2026-07-21, Sonnet@medium), against the signed-off spec's §9 deliverable table. Reviewed + accepted by Opus@high the same day — see the entry above. Tree left dirty, nothing committed (`CLAUDE.md`: commit only when asked).
+
+- **All 10 deliverables done:** `declaration.py` gained `to_json`/`from_json`/`to_attrs`/
+  `from_attrs` + `FSD_DECLARATION_VERSION`/`ATTRS_KEY`; `storage/fs.py`'s `write_parquet`/
+  `read_parquet` gained generic `.attrs` <-> `PANDAS_ATTRS` footer preservation (+
+  `peek_parquet_attrs` for a footer-only read) and `SOURCE_PATH_ATTRS_KEY` stamping/stripping;
+  `catalog.py`'s `TileCatalog` gained `declaration=`/`.declaration`/the append conflict rule;
+  `cdse.py`/`mpc.py` now stamp `S2_L2A_DECLARATION` at their one `catalog.append` call each;
+  `datacube/builder.py` resolves via a shared `_resolve_declaration` helper (used by both
+  `flatten_catalog` and `build_datacube`) that implements the §5a raise, and no longer puts the
+  typed dataclass in `.attrs`; `catalog/stac.py` gained the Collection mirror
+  (`classification:classes` + `fsd:declaration`) and `collection_to_declaration`; two new CLIs,
+  `python -m fsd.catalog.restamp_cli` / `fsd.catalog.inspect_cli` (spec 35 §6).
+- **Tests: 329 passed / 3 skipped** (baseline 294; net +35 — the TODO-#42 pin deleted, ~36 new
+  tests across `tests/test_declaration.py` (new), `test_storage.py`, `test_catalog.py`,
+  `test_datacube_builder.py`, `test_catalog_stac.py`, `test_restamp_cli.py` (new)). `ruff check
+  src/ tests/` clean. The §8.2 three-hop end-to-end test was verified non-vacuous by temporarily
+  forcing `build_datacube` to ignore the resolved declaration and confirming the test fails
+  (`IndexError` — the wrong reference band has no images) before reverting.
+- **Two existing tests needed fixing, not the code** (the handoff's predicted case): `_make_catalog`
+  in `tests/test_workflows.py` wrote catalogs via `fs.write_parquet` with no stamp, which now
+  correctly raises per §5a once read back through `run_task`'s `flatten_catalog` call — fixed by
+  stamping `S2_L2A_DECLARATION` in the fixture, since those catalogs are S2-shaped.
+- **No ambiguity required a spec re-interpretation.** One environment-only surprise not anticipated
+  by the spec: pystac 1.15.1 deprecates the `ItemAssetsExtension` wrapper (top-level
+  `Collection.item_assets` instead) and requires `Classification.create(value=..., name=...)`
+  (`name` became required in the extension's v2.0.0) — used the current, non-deprecated API; no
+  design decision was affected.
+- Docs updated: `docs/adding-a-source.md` (the ingest step now documents stamping as required, and
+  the resolution-order section points at §5a), `CHANGES.md`, `TODO.md` #42 closed, `RECIPES.md`
+  (the two new CLIs), `specs/34-ingest-normalization-contract.md` status block.
+
+---
+
+## ✅ SPEC 35 (declaration persistence, TODO #42) WRITTEN + **SIGNED OFF** (2026-07-21, Opus@high). `specs/35-declaration-persistence.md`. Implemented same day, see the entry above.
+
+**§5a locked as recommended (user, 2026-07-21): an unstamped catalog file RAISES**; a hand-built
+GeoDataFrame keeps the S2 default. Consequence accepted eyes-open: the four known on-disk catalogs
+(demo_e2e, mpc_baseline, the `rise` blob catalog, old per-cell slices) raise until re-stamped — a
+millisecond footer rewrite, folded into TODO #44's re-ingest. The spec forbids the softeners
+(grace period, env-var escape, "`satellite` looks like S2" heuristic) by name, since each recreates
+the silent fallback being removed.
+
+**⚠️ The gap is bigger than TODO #42 recorded — it is NOT latent on the production path.** TODO #42
+called the missing declaration round-trip "latent today (both shipped sources *are* S2 L2A, so the
+fallback is coincidentally correct)". True of the *value*, wrong about the *location*. There are
+**three** write→read hops between ingest and the builder, and hop 2/3 is the **per-cell unit of
+work**: setup writes a slice with `fs.write_parquet` (`workflows/create_datacube.py:88`), and
+`run_task` reads it back in a **separate process** with `fs.read_parquet` (`workflows/task.py:59`)
+before calling `flatten_catalog` (`task.py:60`). In-memory `.attrs` cannot bridge a process
+boundary even in principle. So **`run_task` — the one production caller of `build_datacube`, the
+task Snakemake runs and Batch will dispatch — uses `S2_L2A_DECLARATION` unconditionally today, no
+matter what ingest declared.** Spec 34's declaration-driven builder is, on the path that actually
+runs, still hardcoded to S2. (Also found: *nothing* in the ingest path stamps a declaration at all —
+hop 1 never writes one.)
+
+**The spec's shape (7 decisions):** authority = the **catalog GeoParquet footer** (single artifact,
+cannot separate from its data; same file-level key/value area GeoParquet's own `geo` key uses) —
+sidecar JSON, STAC-as-authoritative, and a source registry all rejected with reasons; mechanism =
+**generic `.attrs` preservation in the storage seam** (`fs.write_parquet`/`read_parquet`), because
+that is the one choke point all three hops already pass through; versioned JSON schema; ingest
+stamps + one-catalog-one-declaration conflict rule; **unstamped file ⇒ raise** (the §5a sign-off
+fork, aligned with spec 34 `[G4]`) while hand-built gdfs keep the S2 default; a millisecond
+**footer-rewrite migration** (`fsd-restamp-catalog`) so demo_e2e/mpc_baseline/the `rise` blob
+catalog need no re-download; and an **additive STAC Collection mirror** using the standard
+`classification:classes`.
+
+**Two findings from cross-validation that changed the design:** (1) geopandas **PR #3597 merged
+2025-10-30** — a future geopandas *will* serialize `.attrs`, under **`PANDAS_ATTRS`**, so fsd uses
+that same key/encoding to converge with upstream rather than fork a second convention; (2)
+consequently **a dataclass must never sit in `.attrs`** — verified locally that JSON-encoding attrs
+containing a `SourceDeclaration` emits "Could not serialize … defaulting to empty attributes" **and**
+raises `TypeError`, i.e. a routine `pip install -U geopandas` would break fsd's write path under the
+current design. Blast radius of the change is small: `build_datacube`/`flatten_catalog` have exactly
+**one** production call site each (`workflows/task.py`) plus `tests/test_datacube_builder.py`.
+
+**→ NEXT: Sonnet@medium implements** against `specs/35` §9's deliverable table, baton
+`runbooks/HANDOFF-spec35-implement.md` (in the **repo**, not `/tmp` — see the lesson below), then
+Opus@high review. No runbook needed — nothing credentialed, networked, or visual; the §6 migration
+folds into TODO #44's re-ingest.
+
+**🧭 Process lesson (2026-07-21): a `/tmp` handoff baton did not survive.** This session was pointed
+at `/tmp/fsd-handoff-todo42-declaration-spec.md`, which did not exist anywhere on disk. State was
+reconstructed from `PROGRESS.md` + `TODO.md` #42 with no loss — **because both were current**, which
+is the spec-24 D6 design working as intended (durable state in `PROGRESS.md`/`TODO.md`/`specs/`; the
+baton is ephemeral). Still: **write batons into `fsd/runbooks/HANDOFF-*.md`, not `/tmp`.**
+
+## ✅ SPEC 34 FULLY VALIDATED — BOTH RUNBOOKS PASS (2026-07-21, Opus@high). **→ NEXT: spec 34 is closeable; TODO #38 done. Remaining follow-ups: TODO #42 (declaration round-trip, needs a spec amendment), TODO #43 (CDSE discovery retry), TODO #44 (re-ingest the pre-fix blob COGs).**
+
+**Runbook `34-mini-mpc-cross-baseline` PASSED — §1e cross-baseline serving proof done, and it
+found + fixed a real correctness bug.** Registering two datetime-filtered searches (2021-only /
+2022-only) in the mini-MPC stack and viewing all four `{year}×{unscale}` XYZ layers in QGIS:
+**`unscale=true` matches across the 2022-01-25 baseline cutover** (harmonized), **`unscale=false`
+shows the raw seam** (2022 ~33% brighter). Plus the numerical proof: each item's stamped offset is
+conditional per baseline (2021 → `0.0`, 2022 → `-0.1`). §1e's claim — fsd's ingest fills the offset
+gap MPC can't, and the serving path applies it — is established three ways (serving render, per-item
+tags, spec-32's end-to-end numerics).
+
+**🐛 THE BLACK-TILE BUG (found by running the runbook; fixed + pushed `c2bf1f1`).** `unscale=true`
+first rendered **every tile pure black**. Root cause = a viewer-tag **unit mismatch**: spec 34 §1a
+mandates `scale=1/10000` (so `unscale` yields physical reflectance), but ingest stamped the offset in
+**DN units** (`-1000`) alongside that reflectance scale. A viewer computes `DN*scale + offset =
+DN/10000 - 1000 ≈ -1000` for every pixel → clamped to 0 → black. **The datacube science path was never
+affected** (it reads raw DN and applies the offset itself from the DN-unit catalog column); only the
+viewer/`unscale` path (§1b/§1e) was wrong. **Fix:** stamp the offset in reflectance units
+(`offset * S2_REFLECTANCE_SCALE = -0.1`) to match the scale — in the GDAL tag (`mpc.py`, `cdse.py`)
+and STAC `raster:bands` (`stac.py`); `items_to_rows` divides the scale back out so the catalog's
+DN-unit column round-trips as `-1000` (else a datacube from a re-imported catalog would be ~1000 DN
+high — regression of #10/#30). **2 new regression tests** the old suite structurally could not catch:
+one asserts the actual `unscale` arithmetic (`DN*scale+offset == reflectance`, `0≤x≤1`) — the prior
+"GDAL tag ↔ STAC agree" test passed because **both carried the same wrong value** (an agreement test
+can't catch a shared error); one pins the DN round-trip. 3 existing tests that hard-coded the DN offset
+on the tag were corrected. **294 passed / 3 skipped, ruff clean.**
+
+**This is the third consecutive time running a runbook found the defect, not code review** — spec 32,
+the review pass, now this. And this one was caught **only by eyeballing a render in QGIS** (the user's
+"visual validation is essential" principle earning its keep); two `code-review` passes, spec
+cross-validation, and both prior runbooks all missed it because nothing executed `unscale` on a real tile.
+
+**Runbook 2 had SIX documented defects, all found by running it** — now fixed by a **full rewrite**
+(`runbooks/34-mini-mpc-cross-baseline.md` is self-contained, no more runbook-30 delegation): (1) cost/time
+understated (~10 GB shown as "a handful of small COGs" — the full-tile-asset error spec 32's v1 also made);
+(2) `max_tiles` guidance pointed at the expensive knob (raise cap vs narrow window — the window was
+narrowed to 5-day, in `34_mixed_baseline_slice.py`); (3) step-2 stac-geoparquet export is a dead-end
+(not consumed by the loader, needs a different venv); (4) the compose `/data` mount defaults to the
+spec-30 Austria data and must be repointed **and the container recreated**; (5) `register_and_url.py` is
+a categorical crop-map URL builder that structurally cannot render RGB `unscale` — the tile URL must be
+built directly against titiler; (6) example `rescale` wrong for the data. Also **rewrote
+`demos/mini_mpc/README.md`** from demo_e2e-specific to dataset-agnostic, with an operations cookbook
+(swap dataset, register/filter searches, hand-built RGB tile URLs, smoke-test, inspect, delete
+collection/searches, wipe/reset).
+
+**⚠️ Consequence for runbook 1's blob artifacts → TODO #44.** The `rise` blob COGs from
+`34-download-to-blob` were ingested **before** `c2bf1f1`, so they carry the wrong offset tag and would
+render black under `unscale`. Runbook 1's PASS still holds for what it verified (bytes/tag-present/abfss);
+only the tag *value* is wrong. Latent (nothing serves them); re-ingest before ever serving.
+
+## ✅ RUNBOOK 34-download-to-blob PASSED, BOTH SOURCES (2026-07-20, Opus@high) — found + fixed a real spec defect (A1) on the way.
+
+**Both legs PASS on the `rise` blob, verified on metrics (not the `pass` flag).** All six
+`expected` booleans true for each source; the flag's own computation was checked and genuinely
+ANDs all six + `catalog_rows > 0`, each derived from a real blob-side read — it *can* fail,
+unlike spec 32's runbook v1.
+
+| leg | files | catalog_rows | stac_items | verdict |
+|---|---|---|---|---|
+| **MPC** | 16 (B04+SCL × 8) | 8 | 8 | ✅ PASS |
+| **CDSE** | 24 (B04+SCL+`MTD_TL.xml` × 8) | 8 | 8 | ✅ PASS |
+
+Both sources independently agree on 8 granules for the same window/tile. The 16-vs-24 file
+difference is by design — `_select_item_files` adds `MTD_TL.xml` per granule for CDSE; MPC has
+no such asset. `gdal_offset_or_scale_tag_present: true` on the **CDSE** leg is the load-bearing
+result: these are baseline-05.10 products, so the tag can only be there if the offset resolved
+to −1000. **TODO #30/#10 is now closed for the CDSE path, proven against real data.**
+
+**⚠️ The CDSE leg first hard-failed — a factual error in the signed-off spec, now Amendment A1
+(`specs/34` §3a), implemented + pushed as `9eccc44`.** `_s2_radiometry.py` asserted that "CDSE's
+STAC items carry the same `s2:processing_baseline` property, per the S2 STAC extension both
+providers implement." **False for the endpoint fsd queries.** `config.CDSE_STAC_URL` is
+`stac.dataspace.copernicus.eu/v1/`, and CDSE's v1 catalogue (Feb 2025) *removed the
+satellite-specific `s2:` extensions in favour of a generic metadata model*. A live probe of 8
+items: **no `s2:` keys at all**; baseline is in the STAC Processing extension's
+**`processing:version` = `"05.10"`**, matching `N0510` in the product id. The extension defines
+that field as *"the version of the primary processing software … for example, this could be the
+processing baseline for the Sentinel missions"* — its documented purpose, not a coincidence.
+Fix = `_BASELINE_PROPS` ordered lookup (`s2:processing_baseline` → `processing:version`), first
+hit wins, hard-fail preserved when neither is present. Implemented Sonnet@medium in a parallel
+session against `runbooks/HANDOFF-spec34-A1-implement.md`; merged + verified here (**289 → 292
+passed / 3 skipped**, ruff clean). **The code was never wrong — it faithfully implemented a spec
+that stated an unverified external fact.** Notably the CDSE docs do *not* publish item property
+schemas, so a docs-only cross-validation could not have caught this; the live probe was
+necessary. That methodology point is recorded in §3a's per-source credit.
+
+**Runbook 1 had five step-0 defects, all found by running it** (fixed in `9eccc44`): the
+`shapefiles/` ROI resolves to a *sibling of the repo* so `git clone` cannot supply it; SSH clone
+URL on a VM with no deploy key; `[dev,azure]` missing the `mpc` extra; a stale `catalog_rows: 3`
+example readable as a criterion (it is context — only the six booleans are criteria); and
+`_verify_on_blob` calling `pystac.Catalog.from_file` **without** `_StorageStacIO` — the only
+call site in the repo bypassing the storage seam, which broke verification against `abfss://`
+hrefs. Common cause: step 0 was written assuming the author's laptop. The runbook now also
+documents the **AML compute instance** path (SSH from the public internet is disabled on this
+tenant; an AML compute instance is inside the VNet and reaches the firewalled storage), the
+credential-upload warning (**not** `~/cloudfiles` — that is the shared workspace file share),
+and the transient CDSE discovery error.
+
+**New: TODO #43** — `_search_items` has no retry/backoff while the download layer right below it
+has a full retry ladder; one transient `ConnectionDoesNotExistError` mid-pagination killed a run
+before any download. Re-running worked. Low priority, contained fix, matters more for unattended
+Batch runs.
+
+**Workspace:** worktree `spec34-a1` merged file-by-file (verified byte-identical), removed, its
+branch deleted — **one checkout again**. Stale merged branches `spec32-mpc-implement` /
+`specs-28-29-impl` still exist; cosmetic.
+
+**⚠️ A1 is drafted + implemented but NOT user-signed-off.** It was written and merged inside one
+session under time pressure of a live runbook. The decisions worth a second look: resolution via
+`processing:version`, `s2:` winning a tie, and *no* product-id regex fallback despite `N0510`
+always being present.
+
+## ✅ SPEC 34 REVIEWED + FIXED (2026-07-20, Opus@high) — review pass closed.
+
+**Workspace consolidated + SHIPPED:** the spec-34 work was living in the git worktree
+`.claude/worktrees/spec34-ingest-normalization`. It has been **merged into `main`'s working
+tree and the worktree + its branch removed** — there is now **one** checkout — then
+**committed and pushed to `origin/main` as `0dd5e5a`** (2026-07-20, at the user's request;
+only the kept-out notebooks remain uncommitted). A fresh `git clone` on a VM therefore has
+spec 34 with no checkout step, which is why `runbooks/34-download-to-blob.md` step 0 no
+longer names a branch. The `PYTHONPATH` gotcha from the previous handoff is **gone**:
+`fsd/.venv`'s editable install points at `main`'s `src/`, which is now the only `src/`.
+Plain `.venv/bin/python -m pytest -q` works.
+
+**Verified independently this pass** (not taken on trust from the implement session):
+- `pytest -q` → **289 passed / 3 skipped**, `ruff check src/ tests/` clean.
+- All of spec 34 §5's deliverables are present and the implementation is sound — the
+  earlier two-axis `code-review` found **no implementation defects**, and this pass found
+  none either. The gaps were 2 style violations + §4 test coverage.
+
+**Fixes applied:**
+- **Standards (2 hard violations):** `catalog/stac.py::tile_catalog_to_items` had
+  `from fsd import config` mid-function → hoisted to module top (verified no circular
+  import: `config.py` imports only `os`). `sources/cdse.py::_push_scratch_to_remote` had
+  `import glob as _glob` / `import shutil as _shutil` despite `shutil` already being a
+  top-level import → now uses the top-level `shutil` + an unaliased local `import glob`
+  (matching the file's existing pattern for rarely-used stdlib modules).
+- **Standards (nits, done):** `stac.py::_media_type_and_roles` roles expression hoisted
+  once instead of duplicated per extension; `stac.py::items_to_rows` moved the
+  item-level `RasterExtension.has_extension` check out of the per-asset loop.
+- **Standards (nits, deliberately skipped):** `raster/cog.py::stamp_or_reencode`'s
+  duplicated `stamp_gdal_tags(...)` call (the duplication is load-bearing for
+  readability of the try/fallback split) and `sources/mpc.py::download`'s 5-tuple `work`
+  list (a real cleanup, but it touches the concurrency path — not worth the blast radius
+  in a fix-up pass).
+- **Spec §4 (+10 tests, 279 → 289):** low-DN survival on disk (parametrized 1/500/999/1000,
+  `test_raster.py`); GDAL tag ↔ STAC `raster:bands` agreement driven through the *real*
+  ingest + export path (`test_mpc.py`); plain-read-returns-raw-DN "no double-application"
+  pin; nodata set-only-when-missing (both branches); the `[G1]` uint16 clip pinned as
+  intended-not-a-bug with a §1f comment; and a `reference_band`-from-declaration test that
+  proves the declaration is load-bearing by *grid shape* (10 m vs 20 m reference band →
+  4×4 vs 2×2 cube) rather than by introspection.
+
+**⚠️ One real gap found and logged — TODO #42 (the handoff underestimated this one).**
+Spec 34 §2a's table puts the **mask spec** in "catalog/collection metadata" and §4 asks
+that mask classes "survive write→read". They do **not**: the collection-level
+`SourceDeclaration` rides on `GeoDataFrame.attrs["declaration"]`, and GeoParquet does not
+persist `.attrs` — **verified**, a write→read returns `attrs == {}`, after which
+`build_datacube` silently falls back to `S2_L2A_DECLARATION`. Per-row `offset`/`nodata` DO
+round-trip (real columns), and roles are re-derived on every STAC export, so those parts of
+§4 are genuinely satisfied. This is **latent today** (both shipped sources *are* S2 L2A, so
+the fallback is coincidentally correct) but **silently wrong for the first non-S2 source** —
+exactly the failure mode spec 34 exists to prevent. Not fixed here: closing it means
+deciding *which artifact is authoritative* (STAC Collection vs. a sidecar), which needs a
+spec-34 amendment, not a patch. Pinned meanwhile by
+`tests/test_catalog.py::test_declaration_does_not_survive_catalog_roundtrip_todo_42`, which
+fails loudly if the behavior changes in either direction.
+
+**Verdict: shipped (`0dd5e5a` on `origin/main`) and ready for the runbooks.** TODO #42 does
+not block either runbook (both are S2-only paths).
+
+## ✅ SPEC 34 IMPLEMENTED (2026-07-20, Sonnet@medium) — ingest/normalization contract shipped.
+
+Implemented to the signed-off spec (`specs/34-ingest-normalization-contract.md` §5). **`pytest -q` → 279 passed / 3 skipped, ruff clean** (up from 274 pre-spec-34; the fixtures that carried the retired `boa_add_offset` schema were migrated, not shimmed, per `[G4]`).
+
+**What shipped:**
+- **`fsd/catalog/declaration.py` (new)** — `SourceDeclaration`/`MaskSpec`/`S2_L2A_DECLARATION`. `build_datacube` resolves its declaration from an explicit `declaration=` kwarg, else `catalog_subset.attrs["declaration"]` (set by `flatten_catalog`), else the S2 default — every existing caller (`workflows/task.py`, `api.py`, `create_datacube.py`) is unchanged.
+- **`fsd/datacube/builder.py`** — declaration-driven op-assembly (§2b): the mask/drop step runs only when the declared mask band is in the requested `bands` (closes **#35** — `bands=["B04"]` no longer raises); `mask_type≠"categorical_classes"` or `native_grid=True` raise `NotImplementedError` (`[G2]`/`[G3]`); nodata read from the catalog's `nodata` column, not `config.NODATA`; `_apply_boa_offsets`→`_apply_offsets` (reads `offset`, generic name).
+- **`fsd/catalog/catalog.py`** — `boa_add_offset` column retired; `offset`+`nodata` replace it. **No back-compat**: `TileCatalog.read()` does not backfill a legacy catalog missing them (`[G4]`).
+- **`fsd/catalog/stac.py`** — every raster asset gets `raster:bands` (offset/scale/nodata, pystac raster extension) + a role tag (`reflectance`/`mask`/`reference`) alongside `"data"`.
+- **`fsd/raster/cog.py`** — new `stamp_gdal_tags`/`stamp_or_reencode` (the "cheap header-tag edit, GDAL-COG-reencode fallback" spec 34 §1a promised; needed `IGNORE_COG_LAYOUT_BREAK=YES` to actually stamp in place — GDAL refuses by default even for a header-only edit).
+- **`fsd/sources/_s2_radiometry.py` (new, shared)** — `offset_for_item` (baseline→offset), used by both CDSE and MPC — closes **#30/#10** for CDSE.
+- **`fsd/sources/cdse.py`** — `_convert_one` now stamps the GDAL tag after `to_cog` (free — it already re-encodes); the local-only guard is lifted via a local-scratch-then-batch-push strategy (`_push_scratch_to_remote`) reusing the entire existing local pipeline unchanged — **known limitation, documented**: not per-file-resumable against a remote root (TODO #31 still covers true streaming).
+- **`fsd/sources/mpc.py`** — `_transfer_one`→`_transfer_and_stamp_one`: stamps tags after `fs.transfer`; local-only guard lifted via per-file local-scratch-then-`fs.put` (resumable, unlike CDSE's batch push).
+- **`fsd/docs/adding-a-source.md` (new)** — the ingest/builder contract + field table + a CHIRPS-like worked example.
+- **`fsd/runbooks/34-download-to-blob.md`** + `runbooks/scripts/34_download_to_blob.py` — cloud-VM-first, tmux cheat-sheet, git-clone (`[G5]`/`[G7]`); **`fsd/runbooks/34-mini-mpc-cross-baseline.md`** + `runbooks/scripts/34_mixed_baseline_slice.py` — local-copies §1e acceptance (`[G6]`), reusing spec 30's mini-MPC stack.
+- **Living docs**: `TODO.md` (#10/#30/#35/#37 closed, #38 implemented), `CHANGES.md` (new spec-34 entry).
+
+**Design choices made during implementation (not re-opening the spec, filling in mechanism):** offset/nodata are per-catalog-row (genuinely per-tile); role/mask-spec/reference-band/mosaic-method live in the collection-level `SourceDeclaration` object (attached to the flattened catalog via `.attrs`, not a parquet column) — matches the spec's §2a "catalog/collection metadata" wording for those fields vs. "catalog row" for offset/nodata. `ops.apply_cloud_mask_scl` gained a `mask_band="SCL"` parameter (default preserves old behavior) rather than a rename, to minimize blast radius on its existing direct tests.
+
+**Not yet done (deliberately, per the handoff):** the two runbooks are written but **not run** — the user runs them and pastes back `_result.json`. A CDSE-to-blob run against a large slice inherits the batch-push limitation above; fine for the runbook's small slice.
+
+## ✅ SPEC 34 (ingest / normalization contract) WRITTEN + SIGNED OFF (2026-07-20, Opus@high) — `specs/34-ingest-normalization-contract.md`. **→ NEXT: Sonnet@medium implements** (handoff `/tmp/fsd-handoff-spec34-implement.md`).
+
+Promotes **TODO #38** (this is spec **34**). Re-opens **download-to-blob for all sources** (`stage → normalize → put` per source), standing on the proven P1 storage seam (spec 31). Interviewed → drafted → cross-validated (standing permission) → **grilled** (7 resolutions) → user sign-off, all in one Opus@high session. **No code written** (spec-first; implementation is a later Sonnet@medium session).
+
+**The two locked decisions:**
+- **Radiometry/encoding/nodata (§1).** Ingest stores **raw-DN COGs (lossless archive)** + declares the S2 processing-baseline BOA offset as **metadata in BOTH places**: the COG's **GDAL scale/offset tag** (required for the viewer — cross-validated that titiler/rio-tiler `unscale` honors **only** the internal GDAL tag, **not** STAC `raster:bands`; maintainer disc. #803) **and** STAC `raster:bands` (for the builder + interchange). **Not baked** (baking = permanent silent clip of real reflectance in (0,1000] + kills MPC's byte-copy). Payoff: a **single titiler-pgstac XYZ URL with `unscale=true` renders a mixed-baseline mosaic with no seam** — the driving requirement (MPC itself *can't* do this — it exposes no per-item offset, §1e). nodata guaranteed = 0 (MPC COGs sometimes omit it). **Retires the bespoke `boa_add_offset` column** → closes #10/#30. **⚠️ Honest scope (`[G1]`):** the **science datacube still clips** (uint16, offset applied before the median) — but consciously + recoverably (true DN on disk); `int16`/`float32` deferred to TODO #13.
+- **Builder generalization / #35 (§2).** `build_datacube` becomes **declaration-driven** (option B — the artifact self-describes band roles / mask / reference / nodata / offset; no product registry, no `if source==`). Mask is **opt-out** behind a growable `mask_type` (categorical-classes only for now) → **closes #35**. Grid-topology for non-tiled sources (ERA5/CHIRPS) is **deferred to the ERA5 spec**, `NotImplementedError`-guarded (`[G2]`). Ships a **`docs/adding-a-source.md`** guide + a docstring DoD so a library user can add a source themselves.
+
+**Grilling resolutions folded in (`[G1]`–`[G7]` tagged in the spec):** [G1] cube-clip honesty; [G2] grid-topology deferred; [G3] `mask_type` seam; [G4] **no legacy/back-compat — 74 GB Austria archive is disposable, data re-ingested under the new contract**; [G5] **cloud-VM-first runbook + tmux/detach-safety + Azure-noob hand-holding** (the "download-on-cloud, no hotspot" property comes from *running on a cloud VM*, not from writing-to-blob — Batch auto-dispatch is still P2); [G6] cross-baseline acceptance runs on **local copies** (titiler-serves-blob deferred to P5); [G7] code onto VM via **git-clone** (Batch dress rehearsal), rsync for debug.
+
+**Scope:** Contract + **MPC** (copy + GDAL-tag stamp) + **CDSE** (jp2→COG + declare) implemented; **ERA5** designed-for, built later. **Living docs updated on sign-off:** `TODO.md` (#38 signed off; #35 closed; #37/#30/#10 folded), `PROGRESS.md`, memory `[[fsd-status]]`. **`CHANGES.md` deferred to implementation** (it records shipped behavior; nothing's built yet).
+
+## 🎉 P1 STORAGE SEAM PROVEN END TO END (2026-07-18) — `runbooks/31-p1-datacube-on-blob.md` ran GREEN (`"pass": true`). Spec 31 DONE.
+
+The fsd core pipeline (build + flatten) ran with **every byte on the `rise` Azure blob**, switched on by config alone (`storage="azure"` / `FSSPEC_ABFSS_ANON=false`; account from the URL). `_result.json` all-green, verified against the corrected criteria (independently, not the `pass` flag):
+- **Build 1** (`python -m fsd.workflows.task` as a real subprocess, remote `--export-folderpath`): wrote `datacube.npy`/`metadata.pickle.npy` to `abfss://` (D1/§3), streamed blob COGs via GDAL `/vsiadls/` + fresh token (D2/§4), and — inheriting `os.environ` unmodified — proved `FSSPEC_ABFSS_ANON` crosses the subprocess boundary (D4). Cube `[3,550,606,1]` uint16 (**T=3**, 1 band = B08 after SCL mask→drop); `task_slice_rows=9`.
+- **Build 2** (`create_training_data(storage="azure")` via the real Snakemake runner, blob catalog, local export): T=3, `n_pixels=216583` — the normal entrypoint against a blob catalog.
+
+Only stderr = a benign "time gaps (10 days)" S2-revisit warning. **This is the P1 exit criterion — spec 10 Seam 1 (storage = config, not code) realized on real Azure.** **→ NEXT: the ingest/normalization contract spec (TODO #38 — §5-ARCHIVE + the `clip(DN−1000,0)` vs `NODATA=0` encoding question + TODO #35), which re-opens download-to-blob for all sources.**
+
+## 🧹 CONSOLIDATED TO `main` (2026-07-18) — all spec-31 worktrees merged + removed; **work from the `fsd/` checkout now, no more worktrees.**
+
+Spec-31 work is now on **`main`** (`b24e6a2`, 3 commits: `6f3435f` compute seam + review, `1583ced` ROI-locate fix, `b24e6a2` build-1 filtered-slice fix), ahead of `origin/main` by 3 (**unpushed** — push only on request). Both worktrees (`spec31-p1-azure-compute-seam`, the stale `spec33-docs-update`) were removed; their content was verified fully present on `main` before removal (notebooks preserved as WIP; a `git stash` on `main` — "main-wip-pre-spec31-merge" — still holds the pre-merge state as a safety net, droppable with `git stash drop`). Two orphan branch refs remain (`worktree-spec31-p1-azure-compute-seam`, `worktree-spec33-docs-update`) — harmless; delete with `git branch -D` when convenient. Suite from `fsd/.venv`: **269 passed / 3 skipped, ruff clean** (venv has `[dev,azure]`). Two demo bugs fixed post-review while debugging the user's run: (1) the ROI path assumed a non-worktree layout; (2) build 1 fed `workflows.task` the raw catalog instead of a `TileCatalog.filter` slice → `KeyError: 'area_contribution'`. **→ NEXT: user re-runs `runbooks/31-p1-datacube-on-blob.md` from `fsd/`, pastes back `_result.json`.**
+
+## ✅ Opus@high REVIEW (2026-07-17): **PASS with one fixed bug** — spec 31 P1 compute-seam implementation is sound; the demo script's success criterion was wrong (`EXPECTED_T=2` vs the real `3`), fixed here. Tree left uncommitted. **→ NEXT: user runs `runbooks/31-p1-datacube-on-blob.md`.**
+
+**Reviewed** code-vs-spec + independent re-verification + 2 mutation tests (spec 24 D5 / spec 33 precedent), from **inside the worktree** `spec31-p1-azure-compute-seam` against its own `[dev,azure]` `.venv`. **Verdict: PASS.** The compute seam (`azure.py`/`rio_open`/`configure_storage`/the §6 abspath fix) matches the pivoted spec (§1–4/§6/§7); §5 correctly untouched (`git diff --stat` on `sources/mpc.py`+`cdse.py` = empty, verified, not taken on report); scope discipline clean.
+
+**Verified independently, reproduced not trusted:**
+- `pytest -q` → **269 passed / 3 skipped**; `ruff check src/ tests/` clean.
+- Degrades cleanly without the `[azure]` extra: uninstalled `adlfs`/`azure-identity`/`azure-core`/`azure-storage-blob` → **244 passed / 4 skipped** (25 azure-seam tests skip via module-level `importorskip`), then reinstalled → back to 269/3.
+- **Mutation A** (implementer's, re-run not trusted): reverted the `fs.is_local` guard in `create_datacube.setup()` → `os.path.abspath` unconditional → `test_setup_does_not_corrupt_a_remote_run_folderpath` fails, showing the exact corruption (`<cwd>/abfss:/data@acct.../s1`). Guard is load-bearing.
+- **Mutation B** (my own choosing): dropped the `storage == "local"` no-op arm in `configure_storage` → `test_configure_storage_local_string_is_noop` fails (wrongly raises). The "third thing" (local-as-noop) is genuinely pinned. `storage=object()` still correctly raises (regression intact).
+
+**Finding R1 (FIXED here) — demo success criterion was wrong (would false-fail a green run).** `runbooks/scripts/31_datacube_on_blob.py` asserted `EXPECTED_T = 2` and `runbooks/31-p1-datacube-on-blob.md` listed `timestamps_len == 2`. Calendar windows tile `[startdate, enddate)` in `mosaic_days` steps anchored at startdate, so 2018-07-01..2018-09-01 (62 days) at `mosaic_days=30` = **`ceil(62/30)=3`** windows, **not 2** — verified against `fsd.datacube.ops._calendar_windows` and `api.compute_n_timestamps` (both return 3). The spec's own "T=2 at mosaic_days=30" prose is an arithmetic slip that propagated into the implementer's PROGRESS entry (below) and the script. A perfectly successful demo run would have reported `"pass": false`. **Fixed** the script (`EXPECTED_T=3` + a comment explaining the data-independent count) and the run-book table (`3`, with a note). Count is deterministic regardless of granule dates (the calendar scheme emits every window, empty trailing one as an all-mask slice). **Also patched the two "T=2" references in the spec body (`specs/31`, §The demo slice-rationale + step 2) to "T=3" with a dated correction note (user-approved 2026-07-17); the upload run-book has no T claim to fix.**
+
+**Finding R2 (ACCEPT — no new spec needed) — the Snakemake-sentinel gap (implementer's finding #2 / TODO #41).** The two-build demo workaround **adequately proves spec 31's intent.** Build 1 (`python -m fsd.workflows.task` as a real subprocess, remote `--export-folderpath`) proves the whole compute seam *including the write side* — D1 (`abfss://` artifacts), D2/§4 (GDAL `/vsiadls/` streaming reads), §3 (`fs.save_npy` writes to blob), D4 (`FSSPEC_*` inherited across the subprocess boundary — this *is* the exact CLI the Snakemake runner shells out to). Build 2 (`create_training_data(storage="azure")` through the real Snakemake runner, blob catalog, local export) proves the normal entrypoint reads blob through the child subprocess. The uncovered piece — Snakemake's own `start.txt`/`done.txt` bookkeeping can't live on blob — is a **runner-seam (spec 10 Seam 2) concern, which spec 31 explicitly scopes OUT** (P1 = local runner + blob storage). Making it fail-loud (`RuntimeError`) instead of silent-corrupt + logging TODO #41 (folded into the Batch-runner redesign) is the correct handling. **P1 is genuinely "done" for what it claims; this does not block sign-off.**
+
+**Also spot-checked:** `rio_open` keeps the `rasterio.Env` alive for the dataset lifetime + tears it down on `close()` (correct — GDAL range-reads after open); `configure_storage` sets both `os.environ` and `fsspec.config.conf` (the import-time-vs-runtime hazard); `_check_local_seams(storage_allowed=False)` on `run_inference`/`deploy` keeps inference local. Band list `['B08','SCL']` correct per TODO #35 (SCL mandatory via `build_datacube`'s hardcoded mask→drop; B08 = `config.REFERENCE_BAND`).
+
+## PRIOR (2026-07-17, implementation) — ✅ **spec 31 P1 Azure COMPUTE SEAM IMPLEMENTED (Sonnet@medium)** — 269 passed/3 skipped, ruff clean. **→ Opus@high review** (done above), then the user runs the datacube-on-blob demo.
+
+**Implemented to the pivoted spec** (`specs/31-p1-azure-storage-seam.md` §1–4/§6/§7; **§5 NOT
+implemented**, as instructed — download-to-blob stays suspended). Deliverables: `fsd/storage/
+azure.py` (new — `to_vsi`, `account_from_url`, `storage_token` off a single module-cached
+`DefaultAzureCredential`, `configure_storage`); `fsd/storage/fs.py` re-exports `to_vsi` + gained
+`is_local` (see finding below); `fsd/raster/__init__.py` gained `rio_open` (local passthrough;
+`abfss://`/`az://` → GDAL `/vsiadls/` under a fresh-token `rasterio.Env` kept alive for the
+dataset's lifetime; `mode="w"` on remote raises), swapped into the 3 pixel-read sites
+(`raster/images.py`, `raster/cog.py`, `catalog/stac.py`); `api.py`'s `_check_local_seams` gained
+`storage_allowed` (default True; `download`/`create_training_data` accept `storage="azure"` +
+call the new `configure_storage`; `run_inference`/`deploy` pass `storage_allowed=False` — stay
+local, per §Scope); `pyproject.toml` gained `azure-identity` in `[azure]`. 27 new tests
+(`tests/test_azure_seam.py` + 2 in `test_workflows.py`), all mutation-tested non-vacuous (mutated
+`to_vsi`, `rio_open`, the `os.path.abspath` guard, and the Snakefile guard — each mutation broke
+exactly the test meant to catch it). `[dev,azure]` installed into this session's `.venv` so the
+adlfs-introspection tests (pinning the installed `adlfs 2026.5.0`/`fsspec 2026.6.0` facts §1
+cites) actually run rather than skip; also verified the suite degrades cleanly to **244
+passed/4 skipped** with `adlfs`/`azure-identity` **uninstalled** (the `[dev]`-only baseline a
+fresh clone would actually have), then reinstalled.
+
+**Also caught by re-tracing the spec's own §Tests wording (not just "does the function exist"):
+`storage="local"` was being REJECTED, not treated as a no-op like `None`.** The spec's Tests
+section says explicitly `storage="local"`/`None` leaves `FSSPEC_ABFSS_*` unset — my first pass of
+`_check_local_seams`/`configure_storage` only special-cased `None`, so `storage="local"` fell
+through to "not 'azure' → raise". Fixed (`storage != "local"` added to both guards); a test now
+pins it (`storage=object()` still correctly raises, confirmed unaffected).
+
+**⚠️ New finding beyond the spec's own §6 grep head-start (which only checked `os.path.exists`/
+`os.makedirs`/bare `open(` and missed both of these):**
+1. **`workflows/create_datacube.py`'s `setup()` + its Snakefile both called `os.path.abspath()`
+   on `export_folderpath` unconditionally.** `os.path.isabs("abfss://...")` is `False`, so
+   `abspath` silently prepended the local cwd and mangled the scheme into `abfss:/` — a real
+   **silent corruption bug**, not a style nit, that would have broken the datacube-on-blob demo
+   at the first URL it touched. **Fixed** with a new `fsd.storage.fs.is_local(path)` guard at
+   both sites (mirrors `sources/cdse._is_local_path`'s existing `fsspec.utils.get_protocol`
+   pattern) — zero behavior change for local paths (mutation-tested).
+2. **Deeper, NOT fixed: the local Snakemake runner's own `start.txt`/`done.txt` resumability
+   sentinels (`Snakefile`'s `touch()`) are plain `os.makedirs`/`open`, not `fsd.storage`-routed.**
+   Even with (1) fixed, a remote `export_folderpath` would make Snakemake's own DAG tracking
+   silently create a garbage **local** sentinel directory (a valid-if-bizarre local relative path
+   like `./abfss:/data@acct.dfs.core.windows.net/.../done.txt`) rather than crash — worse than a
+   raise. This is a genuine limitation of the local runner (where does Snakemake's own bookkeeping
+   live when artifacts are remote?), not something a "swap bare `rasterio.open`" pass can fix, and
+   not in spec 31's stated scope. **Made it fail loud instead of silently corrupting**: the
+   Snakefile now raises a clear `RuntimeError` for a remote `export_folderpath`. Logged as
+   **TODO #41** (folded into the Batch-runner item — a real fix likely arrives with that redesign).
+
+**Spec-section → implementation trace** (the spec-32 lesson: check the call chain, not just
+that functions exist):
+- **§1 config seam** → `storage/azure.py::configure_storage` sets both `os.environ` and
+  `fsspec.config.conf["abfss"]["anon"]`; `test_configure_storage_azure_string_sets_env_and_conf`
+  + the `[dev,azure]`-only adlfs-introspection tests pin the exact library facts (`protocol`
+  tuple, `apply_config`, `_get_kwargs_from_urls`) §1 cites, against the *installed* versions, not
+  assumed ones.
+- **§2 `to_vsi`** → `storage/azure.py::to_vsi`/`account_from_url`; traced against
+  `31_upload_slice.py`'s own `_to_vsi` (the pre-existing, real-data-proven reference) —
+  same regex shape, same translation. `os.path.join` URL-safety pinned by a direct unit test.
+- **§3 adlfs reads/writes** → "no new code" per the spec; confirmed true — `fs.*`'s 94 call
+  sites are untouched (`git diff` on `storage/fs.py` shows only the `to_vsi`/`is_local`
+  additions, no edits to `_fs_and_path` or any existing function body).
+- **§4 `rio_open` + token** → `raster/__init__.py::rio_open`/`storage/azure.py::storage_token`;
+  traced call-by-call against the 3 named sites (`raster/images.py` 7 call sites,
+  `raster/cog.py` 2, `catalog/stac.py` 2 — every bare `rasterio.open(` in those files, confirmed
+  by `grep`, none left). Local-passthrough + remote-Env-with-parsed-account + write-guard each
+  have a dedicated mutation-tested unit test.
+- **§5** → not implemented, confirmed by `git diff` showing zero changes to `sources/mpc.py`/
+  `sources/cdse.py`.
+- **§6 audit** → confirmed the reviewer's grep head-start (builder.py/workflows/*.py clean of
+  `os.path.exists`/`os.makedirs`/bare `open(`) AND found what it missed (`os.path.abspath`,
+  finding 1 above — a different grep pattern than the one the head-start ran). The remaining
+  `rasterio.open(` sites (`api.py`'s inference-merge, `model/engine.py`'s inference write) are
+  confirmed out-of-P1-scope by tracing `_check_local_seams(..., storage_allowed=False)` on both
+  `run_inference` and `deploy`.
+- **§7 packaging** → `azure-identity` added to `[azure]`; confirmed importable + functional by
+  actually installing `[dev,azure]` into `.venv` and running the full suite against it (not just
+  reading the toml).
+- **Deliverables' Tests list** → every named test scenario has a corresponding test in
+  `tests/test_azure_seam.py`/`test_workflows.py`, cross-checked line-by-line against the spec's
+  §Tests bullet list while writing them (not written from memory of the summary above).
+
+**Consequence for the demo run-book** (`runbooks/31-p1-datacube-on-blob.md` +
+`runbooks/scripts/31_datacube_on_blob.py`, written, **not yet run** — that's the user's next
+step): it proves every claim spec 31's demo cares about via **two builds** instead of the
+spec's literal "run one cell through the Snakemake runner writing to blob" — (1) `python -m
+fsd.workflows.task` invoked **directly as a real subprocess** with a remote
+`export_folderpath` (this *is* the exact CLI unit-of-work Snakemake shells out to, so it still
+proves D4's env-inheritance-across-subprocess claim, plus D1/D2/§3/§4 on the write side); (2)
+`create_training_data(storage="azure")` through the **real** Snakemake runner, catalog on blob
+but the per-cell working directory kept local (proves the same D2/D4 claims through the normal
+entrypoint, avoiding finding #2 above). Both builds assert `timestamps` axis length `== 3`
+(**corrected from `== 2` by the Opus review — R1 above; `ceil(62/30)=3` for the Jul 1–Sep 1 window**)
+— the `mosaic_days=30` calendar-mosaic contract, a criterion that can actually fail, not the
+degenerate T=1 runbook 32 v1 tripped on. Band list `['B08','SCL']` per TODO #35 (unchanged).
+
+**Traced against the spec's own de-risking, not re-derived:** the upload run-book (below) already
+proved D1 (catalog paths `abfss://`) and D2/§4 (GDAL `/vsiadls/` read of an uploaded COG) on real
+blob data before this session started — this implementation's job was the *code*, not
+re-verifying those claims, so `rio_open`/`to_vsi`/`storage_token` are a faithful port of
+`31_upload_slice.py`'s own `_to_vsi` + `rasterio.Env(...)` block (same shape, same library facts).
+
+**Living docs updated:** `CHANGES.md` (the seam + the two §6 findings), `TODO.md` (#38 ingest
+spec, #39 inference/serving-on-blob, #40 ROI-geometry-on-blob, #41 Batch runner + the sentinel
+finding), `RECIPES.md` (a `storage="azure"` recipe), `specs/10-storage-and-scale.md` (pointers to
+spec 31 realizing Seam 1). Tree left **uncommitted** (commit only when asked).
+
+**→ NEXT:** the user runs `/handoff` → a fresh **Opus@high** session reviews (code-vs-spec +
+independent re-verification + a mutation test, per spec 33's review precedent — this session
+already ran the mutation tests inline, but an independent pass should re-check them, not take
+the report on faith) — **and should look hard at finding #2 above**, since it's a real,
+newly-discovered scope question (does the demo's two-build workaround adequately prove the
+spec's intent, or does the Snakemake-sentinel gap need its own follow-up spec before P1 is truly
+"done"?). Then the user runs `runbooks/31-p1-datacube-on-blob.md` (not yet run) and pastes back
+its `_result.json`. Then Opus writes the **ingest/normalization contract spec** (TODO #38 —
+§5-ARCHIVE + the `clip(DN-1000,0)` vs `NODATA=0` encoding question + TODO #35 are its inputs).
+
+---
+
+## PRIOR (2026-07-17, later) — 🔄 **ROADMAP PIVOT (user): the DOWNLOADER should normalize, not the datacube builder.** Spec 31's seam survives; its §5 + download-demo are SUSPENDED into a new ingest-contract spec. **Run-book `31-p1-upload-slice.md` is written and ready for the user to run NOW (on wifi).**
+
+**The user's argument, and it is correct** (verified against the code, not accepted on assertion):
+`build_datacube`'s chain is
+`load_images → _apply_boa_offsets → dst_crs → reference(B08) → resample → stack →
+apply_cloud_mask_scl → drop_bands(["SCL"]) → median_mosaic`
+— steps 2, 7, 8 are **Sentinel-2 semantics hardcoded into the generic builder**, plus
+`REFERENCE_BAND="B08"`. It is an S2 L2A builder wearing a generic name, so every new source must
+either cosplay as S2 or force a builder rewrite. **We already logged the consequence without seeing
+the pattern: TODO #35 (CHIRPS/ERA5 have no SCL) is this same issue, filed as a one-off.**
+
+**The sharpest version, from our own history:** spec 31's original §5 was `stage-local → convert →
+put-to-blob`. The MPC pivot **deleted** it ("MPC is already COG, no conversion needed") — but MPC
+didn't remove normalization, it **moved** it from *format* (jp2→COG) to *radiometry* (baseline
+offset), and we put the radiometry in the **builder** instead of keeping §5's shape. So §5's shape
+was right and deleting it was the error. The user's "intermediate process" = generalize it:
+`stage → normalize → put`, per source (CDSE=format, MPC=radiometry, ERA5=netCDF→COG).
+
+**Direction agreed:** ship the seam (architecture-neutral — it's about *where bytes live*, not what
+they contain, and the user's own "pull → process → upload to Azure" **requires** it), suspend §5 +
+the download demo into a new **ingest/normalization contract spec**, and prove the seam against
+**data we upload by hand** rather than a download. Open design questions for that spec, **not
+settled**: bake-at-ingest vs a per-source read adapter (baking kills MPC's byte-copy advantage);
+the normalized **encoding** (`clip(DN-1000,0,65535)` vs `NODATA=0` **eats real pixels in (0,1000]**
+— baking makes that permanent and silent); absorbing TODO #35. Note **normalize-at-ingest forecloses
+TODO #31's `/vsicurl` stream arm — but ERA5 forecloses it anyway** (you cannot stream a netCDF as a
+COG), which strengthens the case rather than weakening it.
+
+**⚠️ Governance note:** the 2026-07-15 diagnostic found this project keeps working *around* P1. A
+well-argued "redesign ingest first" is exactly that pattern's shape. **Guard: the seam still ships.**
+This is not the avoidance pattern *provided* the upload + seam land before the ingest spec.
+
+### ⚠️ `satellite_benchmark/` IS GONE — docs were stale, and a session planned against it
+
+Discovered when sizing the upload: **`satellite_benchmark/` does not exist on any mounted volume**
+(no external drives). Deleted deliberately for disk pressure (it was 159 GiB; disk is at **96%, 36
+GiB free**), and **CLAUDE.md + memory both still described it as the test set** — so this session
+built a plan on data that wasn't there. **Now corrected in CLAUDE.md + RECIPES.md.**
+
+**What survives** (`fsd/tests/outputs/`, 83 GB, gitignored):
+- **`demo_e2e/imagery/` = the real-data test set now** — Austria e2e: **207 granules, 74 GB**,
+  Apr–Sep 2018, 4 MGRS tiles (T33UVP 54 / T33UWP 52 / T33UVQ 52 / T33UWQ 49), B04/B08/B8A/SCL,
+  already COG, with `catalog.parquet`.
+- `mpc_baseline/imagery/` — 1.7 GB, 9 granules, 33UWP, B04+SCL (runbook 32's over-fetch).
+- **Verified geometry:** `s2grid=476da24` is **100% inside T33UWP**; `AT_ROI` straddles all four
+  tiles ~evenly (32.7/32.7/32.7/32.6%) → **AT_ROI is now the multi-tile/multi-CRS case**, since
+  Ethiopia's `s2grid=165bca4` has **no imagery behind it any more**.
+- Per-band totals across 207 granules: B08 34.2 GB (avg 165 MB), B04 31.7 GB, B8A 9.2 GB,
+  **SCL 0.54 GB (avg 2.6 MB)**.
+
+### ⚠️ NEW FINDING — our Austria archive is radiometrically WRONG (#10/#30, live)
+
+**Every granule is baseline `N0500`** (05.00 ≥ 04.00 → ESA `BOA_ADD_OFFSET = -1000`), but
+`sources/cdse.py:514` writes **`boa_add_offset = 0`** for every CDSE row (TODO #30 open), and this
+catalog **predates the column entirely** so `TileCatalog.read` fills 0. **So every datacube ever
+built from the Austria archive is ~1000 DN too high** — including the 300-cell e2e crop map. Not a
+seam problem (harmless for P1, whose PASS criteria are all seam properties), but it is **correctness
+debt #10 sitting live in our own test data**, and it is the single best exhibit for the pivot above:
+the downloader didn't normalize, the wrongness got baked into an artifact, and the catalog asserts
+it needs no fix.
+
+### → The thing to run NOW (user, on wifi): `runbooks/31-p1-upload-slice.md`
+
+Uploads **T33UWP × Jul–Aug 2018 × [B08, SCL] = 20 granules / 40 files / 2.27 GB** to the `rise`
+blob and writes a `catalog.parquet` **on blob with every band path an `abfss://` URL**. Chosen
+because 476da24 is 100% inside T33UWP and two months gives a real **T=2** mosaic axis at
+`mosaic_days=30` (not a degenerate T=1 — the trap runbook 32 v1 fell into).
+
+- **Needs NO spec-31 code:** `fs.put`/`fs.write_parquet` already route fsspec→adlfs; only
+  `azure-identity` + **`FSSPEC_ABFSS_ANON=false`** are required (the account is parsed from the URL).
+- Script `runbooks/scripts/31_upload_slice.py` follows the committed-script pattern (no
+  `export`+heredoc), is **idempotent/resumable**, prints live MB/s + ETA ([[long-process-progress]]),
+  and writes `_result.json` **unconditionally**. **Verified offline:** ruff clean; `--dry-run`
+  reports exactly 20/40/2.27 GB; the missing-`FSSPEC_ABFSS_ANON` guard and the bad-URL guard both
+  fire and still write `_result.json`; `_to_vsi` translates correctly.
+- **It also proves spec 31 D2/§4 before any code is written for it** — reads our own uploaded COG
+  through `/vsiadls/` + a fresh `AZURE_STORAGE_ACCESS_TOKEN` (`gdal_vsiadls_read_ok` +
+  `gdal_sample_nonzero` are the load-bearing PASS keys).
+- **A seam finding the spec got wrong:** the catalog column is **`local_folderpath`** (name becomes a
+  lie on blob) and `builder.py:72` joins it with `files` to make each band path. **Spec 31 §2 claims a
+  catalog `filepath` column — there is none**; `filepath` is derived in `flatten_catalog`. The upload
+  script rewrites `local_folderpath` → the blob folder and narrows `files` to `B08.tif,SCL.tif` so the
+  blob catalog is self-consistent.
+
+**✅ UPLOAD RAN GREEN (user, 2026-07-17): `"pass": true`.** 20 granules / 40 files / **2.27 GB** on
+`rise` at `data@…/fsd-tests/p1-demo/imagery/`, ~13.4 MB/s over VPN (170 s). All 20 catalog rows on
+blob carry `abfss://` paths (`every_catalog_path_is_abfss: true`); **GDAL read our uploaded COG via
+`/vsiadls/`** and got real uint16 256×256 pixels (`gdal_vsiadls_read_ok` + `gdal_sample_nonzero`).
+So **D1 + D2/§4 — the spec's riskiest claims — are proven on real data before any seam code exists.**
+(One untested path: `files_skipped_already_present: 0`, so idempotent-resume never fired in the wild.)
+
+**✅ Spec 31 rewritten end-to-end for the pivot (same session).** The spec was signed off with §5 =
+MPC-copy-to-blob + a download demo; the pivot suspends both. Now consistent throughout: a **⚠️ pivot
+banner** at the top of the status block (download-to-blob OUT → ingest spec; this is a *compute-seam*
+spec); **D3 marked obsolete**; **§5 SUSPENDED** with the MPC-copy design preserved as **§5-ARCHIVE**
+for the ingest spec; **Scope, Tests, the demo, and Deliverables** all rewritten to "build over
+hand-staged blob data, no download" (`mpc.py`/`cdse.py` **not touched**, both guards stay); the demo
+gained an explicit **D4 subprocess-safety** step (run one cell through the Snakemake runner). Also
+fixed a real spec error the upload surfaced: **there is no catalog `filepath` column** — it's
+`local_folderpath` (joined at `builder.py:72`); `filepath` is only `flatten_catalog`'s transient
+output. Suite still 242/3, ruff clean.
+
+**→ NEXT:** **Sonnet@medium implements the spec-31 compute seam** (§1 config, §2 `to_vsi`, §3 adlfs,
+§4 `rio_open`/`/vsiadls/`, §6 audit, §7 packaging — **not** §5) against the uploaded blob data → then
+the user runs the datacube-on-blob demo run-book → then **Opus writes the ingest/normalization
+contract spec** (§5-ARCHIVE + the encoding/`(0,1000]`-clip question + TODO #35 are its inputs).
+Nothing committed (no ask).
+
+---
+
+## PRIOR (2026-07-17) — ✅ **spec 31 (P1 Azure storage seam) REVIEWED, REWRITTEN, SIGNED OFF** (Opus@high, independent of the draft's author) → NEXT = **Sonnet@medium implements**. ⚠️ **Also found: concrete `rise` values leaked into the PUBLIC repo — user decision needed.**
+
+**Sign-off is real this time and independently checked:** the draft was Opus (`030f6ac`, trailer
+verified `Claude Opus 4.8` — not a repeat of spec 33's F1); this review was a **separate** Opus@high
+session that did not write it. Draft → **revised** → signed off.
+
+**The review caught the spec-32 failure mode recurring verbatim: the demo was structurally impossible
+against our own code.** Spec 31's exit demo downloads to blob, but **both** sources hard-refuse a
+remote dst today — `mpc.py:294` raises *"MPC source is local-only in Phase 1"*, and `cdse.py:645`
+raises on remote + `cog=True`. Meanwhile the one section that would have fixed it (**§5**) had been
+marked **DELETED** by the 2026-07-16 retarget banner and **never rewritten** ("a future session's
+job"). So the spec deleted its own download-to-blob design and still depended on it — and its Scope /
+Tests / Demo / Deliverables all still encoded the deleted CDSE design. Handed to Sonnet (which
+implements to the letter, as 32 and 33 both did) it would have implemented the deleted §5.
+
+**Two user decisions taken (2026-07-17), both as recommended:**
+1. **Demo copies MPC → `rise` blob, then streams back via `/vsiadls/`.** Streaming MPC in place via
+   `/vsicurl` would be smaller but would **never exercise `/vsiadls/`** — i.e. would not test D2/§4
+   at all. TODO #31's *production* stream-vs-copy question stays **"measure, don't argue"**; this
+   just builds the copy arm so the later measurement has a comparison.
+2. **CDSE download-to-blob dropped from P1** → new TODO (next to #30). MPC is already-COG, so the
+   jp2→COG dance the MPC pivot removed is not reimported. `sources/cdse.py` is not to be touched.
+
+**What the rewrite changed:** §5 is now **"MPC copy straight to blob — pure byte-copy"**, written
+against the actual guard it must lift (delete `mpc.py:294`; everything else in that path — `fs.makedirs`,
+`_select_item_files`'s `os.path.join`, `_transfer_one`'s already-cross-backend, `.part`-atomic
+`fs.transfer` — is already URL-safe, traced claim by claim). §1/§3's "registry + credential object"
+language removed. **Demo band list pinned to `['B08','SCL']`** — TODO #35 (hardcoded SCL mask/drop)
+is still open and `config.REFERENCE_BAND == 'B08'`, so any other list reproduces runbook 32 v1's
+crash. Byte budget stated honestly (~0.5–1 GB, full-tile COGs) rather than v1's false "a few MB".
+
+**All 5 open items RESOLVED at sign-off** — none left for the implementer. The two fsspec ones were
+closed by **direct introspection of the installed libraries** (`fsspec 2026.6.0`, `adlfs 2026.5.0`),
+now a "Verified against the installed libraries" section in the spec with per-fact credit:
+- **`AzureBlobFileSystem.protocol == ('abfs','az','abfss')`** and `apply_config` keys on the **class's**
+  protocol tuple, not the URL scheme → **set exactly one key, `FSSPEC_ABFSS_ANON=false`**. Setting
+  several is a *hazard* (last proto silently wins), not thoroughness.
+- **`_get_kwargs_from_urls('abfss://data@acct.dfs.core.windows.net/…') == {'account_name': 'acct'}`**
+  → **D1 confirmed**; the account rides in the URL and beats conf, so `FSSPEC_ABFSS_ACCOUNT_NAME` is
+  redundant. **D1–D4 all survive independent review** (D2's token handling and D3's "GDAL never
+  writes `/vsiadls/`" both hold — with MPC, GDAL is never on the write path at all).
+- Scratch-dir question **moot** (no staging without conversion); atomicity question **resolved** by
+  `fs.transfer` already doing `.part`+rename (the residual — is adlfs's `mv` atomic on HNS — is a
+  runbook *observation*, step 2's "no `.part` leftovers").
+
+### ⚠️ LEAK — concrete `rise` values are in the PUBLIC repo (`git@github.com:nikhilsrajan/fsd.git`)
+
+Found while auditing spec 31 for placeholder discipline. **The handoff's claim that spec 31 was
+verified clean was wrong** — and `PROGRESS.md` was worse:
+- `specs/31…md` §1 named the **storage account**. → **scrubbed** to a pointer.
+- `PROGRESS.md` (this file, 2026-07-15 entry) named the **storage account, the user's identity
+  (`…@raapid.org`), the subscription name AND its GUID, and the resource group**. → **scrubbed** to
+  pointers at `../P1_AZURE_SETUP.md`.
+- **Introduced by `030f6ac`, which is an ancestor of `origin/main` → already on GitHub.** Scrubbing
+  the working copy does **not** remove it from history; `git show 030f6ac:PROGRESS.md` still has it.
+
+**Severity, stated honestly: no credential leaked.** Account keys are disabled (Entra-only), storage
+is RBAC-gated and VPN/firewalled, and subscription/RG/account names are identifiers, not secrets. The
+most sensitive item is the **identity email** — a valid Entra username is a phishing/spray target. So
+this is a genuine **hard-constraint violation** to decide on deliberately, not an emergency.
+**Open for the user:** leave history as-is (scrub going forward), or rewrite history / rotate the repo.
+Claude did not touch git history — that is destructive and the repo is public/shared.
+
+**Also corrected:** the handoff said "3 unpushed commits, nothing has been pushed." **False** —
+`origin/main` is at `14781c1`; all three spec-33 commits are pushed.
+
+**Nothing committed** (no ask). Working tree still carries the deliberate `TODO.md` #26-reflow WIP +
+the two notebooks, untouched.
+
+**→ NEXT:** `/handoff` → **Sonnet@medium** implements `specs/31-p1-azure-storage-seam.md` against the
+signed-off text (§Deliverables is the checklist; the runbook must follow the **committed-script**
+pattern of `runbooks/scripts/33_probe_dedup.py`, not v1's `export`+heredoc that silently produced
+nothing). Then Opus review, then the **user runs** `runbooks/31-p1-datacube-on-blob.md` (VPN on,
+~0.5–1 GB). **Decide the leak question** at some point before the next push.
+
+---
+
+## PRIOR (2026-07-16) — ✅ spec 32 DONE: runbook v2 FULLY VALIDATED on real MPC data. **Correctness debt #10 is fixed for MPC and proven end to end.**
+
+**All three steps PASS.** Verified independently from the artifacts on disk (not from the `pass`
+flag — v1 proved that flag could lie):
+
+- **The cutover boundary was hit exactly.** Real items: `20220107` baseline **`03.00`** → offset
+  `0`; `20220127` baseline **`04.00`** → offset `−1000`. `04.00` is the *first* offset baseline, so
+  this exercises `_baseline_tuple(...) >= (4, 0)` **precisely on the boundary** — `>` instead of
+  `>=` would have silently returned 0. Real data landed on the one value that tells them apart.
+- **Step 3 A/B vs unharmonized control** (cube `(2, 550, 606, 1)`): `pre_identical_to_control =
+  true`; post slice equals the control **exactly −1000** across **202 831** non-clipping pixels
+  (`np.array_equal`, no tolerance); **zero** pixels in `(0, 1000]` → nothing clipped → mean delta
+  exactly **1000.0**.
+- **The science:** pre-vs-post gap **2187.1 DN** unharmonized → **1187.1 DN** harmonized. The fix
+  removed exactly the 1000 DN artifact; the 1187 remainder is real January scene change. That *is*
+  #10: a mosaic spanning both dates would have blended 400 with 2587 where the truth is 400/1587.
+- **Both open items resolved:** `s2:processing_baseline` + `s2:mgrs_tile` confirmed live;
+  `storage.transfer` streamed signed MPC HTTPS cleanly — **no `aiohttp` fallback needed**.
+
+**Getting here took a runbook v2** — v1's steps 2–3 were defective, and the fault was **spec 32's
+Tests section (mine), not the implementation**: it prescribed "band B04 only" *and* "build a
+2-timestamp datacube", which are mutually impossible since `build_datacube` hardcodes
+`apply_cloud_mask_scl` → `drop_bands(["SCL"])`. That survived sign-off, cross-validation,
+implementation **and the Opus code review** (which checked code-vs-spec but never traced the runbook
+against the builder's op chain — the guard test's own B04+SCL was the tell). **Lesson: cross-
+validating *external* facts doesn't catch inconsistency with our *own* code.** v1's other three
+defects: it over-fetched **9 items / 1.7 GB** (downloaded the whole range *between* pre and post);
+claimed "a few MB / no full-tile download" when **MPC assets are full-tile COGs (one B04 = 96–272
+MB)**; and had PASS criteria that couldn't fail (`pass` only checked `failed_count`;
+`mosaic_days=120` over 120 days gives **T=1**, not the 2 it compared). v2 fixed all four and
+replaced the vague check with the A/B above.
+
+**Follow-ons logged (none blocking):**
+- **#34 — MPC serves duplicate reprocessed acquisitions.** `20220301T100029` came back **twice**
+  (processed `20220303` *and* reprocessed `20240604`) — same sensing time + tile, different item
+  ids, so the id-uniqueness check passes. Both downloaded (224+272 MB), both catalogued;
+  `_stack_datacube` merges two copies of one scene with an arbitrary tie-break. **Not
+  radiometrically wrong** — spec 32 offsets each processing on its own baseline before the merge
+  (the design earning its keep) — but wasted bytes + a silent arbitrary pick.
+- **#35 — `build_datacube` requires SCL even when masking isn't wanted** (root of the v1 crash).
+  Own spec needed: it changes a core contract, and TODO #11's non-optical sources (CHIRPS/ERA5) have
+  **no SCL at all**, so they're blocked on it.
+- **#36 — CDSE-vs-MPC speed: PARKED by the user.** Recorded with confounds so they aren't
+  re-derived: VPN × 9-items-not-2 × a duplicate × **full-tile copy for a 0.18 % ROI** (21.5 km² read
+  from a 12 100 km² tile). TODO #24 already establishes the local result is link-bound and **doesn't
+  generalize to Azure**; the dominant lever is plausibly windowed `/vsicurl` vs full-tile copy
+  (TODO #31), not the source choice.
+- **Pin `planetary-computer`** — the spec's open item; the resolved version is now observable from
+  the runbook's install.
+
+**All committed + pushed** — `main` @ `8d91510`, in sync with `origin`. Spec 32's last open item
+closed too: **`planetary-computer>=1,<2`** pinned (the runbook's install resolved **1.0.0**, so the
+bound came from a verified fact, not a guess; verified it accepts 1.0.0/1.x and rejects 0.9.0/2.0.0).
+Uncommitted WIP, deliberately untouched: the `TODO.md` item-#26 reflow + the two notebooks.
+
+---
+
+## PRIOR (2026-07-17) — ✅ spec 33 (MPC reprocessing dedup, TODO #34) CLOSED: implemented (Sonnet@medium) + Opus@high review PASS + **runbook 33 VALIDATED on live MPC data** (`"pass": true`, duplicate still live upstream so the test was real). NEXT = spec 31 (P1 Azure seam)
+
+**Implemented to the letter of `specs/33-mpc-reprocessing-dedup.md`** — no redesign, no forks
+reopened. `sources/mpc.py`: new `_generation_time(item) -> str` (reads `s2:generation_time`,
+raises with the item id + property name if missing) and `_dedupe_reprocessed_items(items) -> list`
+(groups by `(item.datetime, _mgrs_tile_from_item(item))`, `max` by `_generation_time` breaks ties,
+singleton groups pass through untouched). Wired in as `items = _dedupe_reprocessed_items(items)`
+immediately after each of the two existing `_search_items(...)` calls, in both `query_catalog`
+(before `_items_to_gdf`) and `download` (before `_finalize_catalog_gdf`) — so a duplicate is never
+even queued for transfer, which is the actual byte-saving TODO #34 asked for.
+
+**Tests** — 8 new cases in `tests/test_mpc.py` (existing `_FakeItem`/`_fake_item` fixtures
+extended with an optional `generation_time` kwarg, no new fixture style): no-duplicates no-op,
+duplicate-pair latest-wins (+ order-independence), three-way group, missing-`s2:generation_time`
+on a duplicate group raises, singleton missing the property does *not* raise, key falls back to
+`item.id` when `s2:mgrs_tile` is absent, and two integration tests (`query_catalog` and `download`)
+using the real spec-32 runbook duplicate pair (`S2B_MSIL2A_20220301T100029_R122_T33UWP_...`,
+fabricated `s2:generation_time`s matching the real `20220303`/`20240604` ordering) plus a distinct
+control item — asserting exactly 2 rows survive (never 3) and the loser's asset href is never
+passed to `fs.transfer`. Followed the process guard from the handoff: duplicate-group fake items
+share one identical `datetime` object per group (not just close), so the dedup path is genuinely
+exercised, not silently skipped by a spurious microsecond mismatch.
+
+**Verification:** `pytest -q` → **242 passed, 3 skipped** (was 234 passed/3 skipped before this
+spec; +8 new tests, zero regressions). `ruff check src/ tests/` → clean. No runbook needed (pure
+in-memory filter, no new network behavior) — matches the spec's own "why safe without a runbook"
+note.
+
+**Untouched, as the spec required:** `pyproject.toml`, `catalog.COLUMNS` (no new `mgrs_tile`
+column), `datacube/builder.py`, `sources/cdse.py`. `_items_to_gdf`/`_finalize_catalog_gdf` unaware
+of the dedup step — they simply never see a loser item now.
+
+**Living docs updated:** `CHANGES.md` (new entry), `TODO.md` #34 → DONE (pointing at the spec + the
+8-test count), this `PROGRESS.md` entry. Work done in worktree `spec33-docs-update`; **not
+committed** (user asked to implement, not to commit — per CLAUDE.md's "commit only when asked").
+
+## ✅ Opus@high REVIEW (2026-07-16): **PASS** — merged to `main`, 4 findings (none blocking)
+
+**Reviewed** code-vs-spec + independent correctness, per spec 24 D5. **Verdict: PASS.** The
+implementation matches the spec's pseudocode essentially verbatim; scope discipline is clean
+(`pyproject.toml`, `catalog/`, `datacube/builder.py`, `sources/cdse.py` all untouched, verified by
+diff); dedup provably runs before `_items_to_gdf`/`_finalize_catalog_gdf` at **both** call sites.
+
+**Verified independently, not taken on report:** `pytest -q` → **242 passed / 3 skipped** and
+`ruff` clean, reproduced from the worktree with `PYTHONPATH=src` (confirmed the loaded `mpc.py` was
+the worktree's, not `main`'s — the trap noted in the spec-32 review). **Mutation test:** disabling
+both dedup call sites fails exactly the two integration tests (`assert 3 == 2`) → the guard tests
+are non-vacuous, not merely passing.
+
+**Findings:**
+- **F1 (fixed)** — `PROGRESS.md` claimed this spec was "SIGNED OFF (Opus@high)"; the commit trailer
+  says **Sonnet 5**. Sonnet wrote, self-signed-off, and implemented its own spec. Corrected in the
+  entry below; this review is the compensating control.
+- **F2 (fixed)** — the dedup key silently dropped `relative_orbit`, which the spec's **own**
+  research doc recommends. The narrowing is correct (orbit is determined by sensing instant + tile)
+  but was undocumented; now recorded in spec 33 Fork 2.
+- **F3 (open, non-blocking)** — the tie-break compares `s2:generation_time` as **strings**
+  (lexicographic). Safe for the observed uniform format (`2024-06-08T13:16:56.674469Z`), would
+  misorder if MPC ever mixed `+00:00`/`Z` or precision. `runbooks/33-mpc-dedup-live.md` now checks
+  format uniformity empirically on live items; parse-to-datetime is the cheap hardening if it ever
+  varies.
+- **F4 (open, non-blocking, unreachable today)** — a `None` `item.datetime` would collapse every
+  such item on one tile into a single group and dedup them wrongly. MPC S2 L2A always populates
+  `datetime`, so it is not reachable; noted rather than guarded.
+
+**New: `runbooks/33-mpc-dedup-live.md`** — the spec said "no runbook needed" and is right that
+pytest covers the *logic*, but pytest **cannot** prove `s2:generation_time` is populated on the
+**live** duplicate pair, because the fake items only have it since we put it there. The runbook
+closes that gap: **discovery-only, zero imagery bytes**, seconds. Validated offline before handoff —
+it **passes** against the fixed code (3 raw → 2 catalog, loser gone) and **fails** against
+simulated pre-fix code (`loser_present=True`), so it is non-vacuous. Reports `inconclusive` (not a
+false pass) if MPC has since cleaned the duplicate upstream.
+
+**Merged to `main`** at the review (was uncommitted in worktree `spec33-docs-update`): the 4 code/doc
+files applied as a 3-way patch; `TODO.md` #34 swapped by hand so `main`'s uncommitted item-#26
+reflow WIP survived. Runbook rewritten to run from `main` + the normal `.venv` (no `PYTHONPATH`).
+**Still uncommitted** — awaiting the user's ask.
+
+## ✅ runbook 33 VALIDATED on live MPC data (2026-07-17) — dedup proven end to end
+
+**`runbooks/33-mpc-dedup-live.md` ran green: `"pass": true`, every criterion met.** Discovery-only,
+zero imagery bytes. The result is **not** the `inconclusive` fallback — **the duplicate is still
+live upstream**, so this genuinely exercised the fix rather than passing vacuously:
+
+- **`duplicate_groups_upstream: 1`** — MPC still serves both `..._20220303T182540` (original) and
+  `..._20240604T180322` (2024 reprocessing) for sensing instant `2022-03-01 10:00:29.024+00:00` on
+  tile `33UWP`. (So MPC's cleanup per discussion #275 did **not** remove this pair — the spec's
+  premise still holds on live data today.)
+- **`raw_item_count: 2` → `catalog_row_count: 1`** — dedup collapsed the pair; `catalog_ids` equals
+  `independently_expected_ids` (recomputed by the probe, not taken from fsd's own answer).
+  `known_winner_present: true`, `known_loser_present: false` — the 2024 reprocessing won, the
+  original's ~224 MB is never queued.
+- **Finding F3 empirically resolved (for this data):** `generation_time_format_shapes` = exactly
+  one shape, `NNNN-NN-NNTNN:NN:NN.NNNNNNZ`. Live values are uniform RFC-3339 with microseconds +
+  `Z`, so the string tie-break is sound — and it's a real ordering test, since the winner's
+  `.000000Z` vs the loser's `.834434Z` differ in precision-of-content while sharing a format.
+  Caveat: n=2. F3 stays noted (not reopened) as "verified on the only live pair we have".
+- **Guard confirmed:** `mpc_module_loaded_from` = `.../fsd/src/fsd/sources/mpc.py` — `main`'s code,
+  not a worktree's.
+
+**New real-data fact (no action needed, recorded so nobody re-derives it):** live MPC's
+`s2:mgrs_tile` is **`"33UWP"` — no `T` prefix** (the `T` lives only in the item id). This is
+**consistent with fsd's own convention**: both `catalog.stac._parse_mgrs` and
+`datacube.builder._mgrs_tile` also yield `33UWP` (verified directly). So there is **no mismatch and
+no latent bug** — the three representations agree. The one wart is that `tests/test_mpc.py`'s
+fixtures use the *unrealistic* `"T33UWP"`; harmless (dedup only needs the key self-consistent within
+a run, and the tests still exercise the real path), but a reader could wrongly infer live MPC
+returns a `T` prefix. Fixture-realism nit only — **not** a defect, logged here rather than as a TODO.
+
+**→ NEXT:** **spec 31** (`specs/31-p1-azure-storage-seam.md`, DRAFT awaiting sign-off) — the P1
+Azure storage seam. This is the critical path the 2026-07-15 diagnostic named (the project keeps
+finishing work *around* P1); spec 33 was its last legitimate prerequisite, and it is now closed.
+**Opus@high reviews/signs off spec 31 → then Sonnet@medium implements.** Given F1, verify the model
+from the commit trailer, not the heading.
+
+---
+
+## PRIOR (2026-07-16) — ✅ spec 33 (MPC reprocessing dedup, TODO #34) SIGNED OFF (⚠️ **Sonnet@medium, not Opus — process deviation, see below**) — implemented same-day
+
+> ⚠️ **CORRECTED 2026-07-16 at the Opus review (finding F1).** This entry originally read
+> "SIGNED OFF (Opus@high)". **That was false.** Commit `e5d3e6c`'s trailer is
+> `Co-Authored-By: Claude Sonnet 5` — a **Sonnet** session ran the interview → grill →
+> cross-validate → spec → sign-off flow that spec 24 D3/D5 reserves for Opus, recorded the
+> sign-off as Opus@high, and then implemented against its own spec. The prior handoff
+> (`9ec060d`) was explicit: *"Opus@high writes spec 33 → sign-off → Sonnet@medium implements"*.
+> Every other spec sign-off on record (`030f6ac`, `50749e8`, `6e1e9f0`, `4a81cd9`, `96d02b0`) is
+> genuinely Opus; this is the one deviation.
+> **Likely cause:** the model switch at `/handoff` (D6) is a manual step with nothing enforcing
+> it — a session started at `/model sonnet` picks up the handoff doc and proceeds regardless.
+> **Compensating control:** a full Opus@high review was run after the fact (see the LATEST entry) —
+> code-vs-spec, independent re-verification, and a mutation test. **Verdict: PASS**, so the
+> *outcome* was sound; the *process* was not, and the record now says so.
+> **Lesson (new, alongside spec 32's "cross-validating external facts doesn't catch inconsistency
+> with our own code"):** a self-signed-off spec has no independent check — the session that owns
+> the design blind spots is the one grading them. Neither the spec text nor `PROGRESS.md` can be
+> trusted to report which model actually did the work; **the commit trailer is the only ground
+> truth.** Check it, don't read the heading.
+
+**`specs/33-mpc-reprocessing-dedup.md` SIGNED OFF.** Interview → grill → cross-validate (standing
+practice) → spec, per the handoff `/tmp/fsd-handoff-spec33-mpc-dedup.md`. **All 5 design forks
+resolved, no open items blocked sign-off:**
+
+1. **Where dedup lives → MPC-only (`sources/mpc.py`), not shared `cdse._finalize_catalog_gdf`.**
+   Decided by researching Fork 4 first: CDSE has its **own**, structurally different multi-item
+   issue (ESA-confirmed datastrip-split near-duplicates that can carry legitimate different pixel
+   coverage/border artefacts) — a shared dedup rule risked silently dropping real CDSE data, so
+   CDSE stays untouched.
+2. **Key → in-memory `(item.datetime, mgrs_tile)`, no new catalog column.** Dedup runs on the raw
+   STAC item list before any catalog row exists (right after `_search_items`, before
+   `_items_to_gdf`), so `_mgrs_tile_from_item` (spec-32 dead code) gets its first real caller
+   in-memory only — no `catalog.COLUMNS` change, no back-compat migration.
+3. **Winner → latest `s2:generation_time`, NOT the item id's trailing field.** Reverses the
+   handoff's suspected id-string-parsing approach: a live MPC STAC query confirmed
+   `s2:generation_time` is a real, populated RFC-3339 property, while ESA's own SentiWiki
+   naming-convention page explicitly declines to guarantee the id's trailing "Product
+   Discriminator" field is monotonically increasing.
+4. **Does CDSE have the same duplication? Yes, but differently** (see #1) — CDSE's own mechanism
+   is catalogue-level deletion of old-baseline products, not a queryable "pick latest" property;
+   confirms the two providers' problems aren't the same fix.
+5. **Applied at discovery time** (both `query_catalog` and `download`, right after
+   `_search_items`) — the loser is never even queued for transfer, which is the actual byte
+   savings TODO #34 asked for. Existing test artifacts with a stale duplicate (e.g.
+   `tests/outputs/mpc_baseline/catalog.parquet`) are **not migrated** — discovery-time fix only,
+   explicitly out of scope.
+
+**Cross-validation** — full detail + per-source credit in the spec's own §"Best-practice
+alignment" + supporting file `specs/research-s2-reprocessing-dedup.md`: live MPC STAC item query,
+`stac-extensions/sentinel-2` + `stac-extensions/processing`, the CDSE community forum
+duplicate-products thread, CDSE's old-baseline-deletion notices, SentiWiki's S2 Products page,
+`stactools-packages/sentinel2` issues #130/#5, and `microsoft/PlanetaryComputer` discussion #275.
+
+**No runbook needed** — pure in-memory filter over STAC search results, fully synthetic-testable
+(duck-typed fake items matching `tests/test_mpc.py`'s existing fixtures); no new network behavior.
+
+**→ NEXT:** hand to a **Sonnet@medium** session to implement `specs/33-mpc-reprocessing-dedup.md`
+(new `_generation_time` + `_dedupe_reprocessed_items` in `sources/mpc.py`, one call-site edit each
+in `query_catalog`/`download`, tests per its §Tests, living-doc updates per its §Deliverables).
+Then Opus review, then **spec 31** (Phase 2, Azure at scale) — the task after this one (unchanged
+from the prior entry below). `TODO.md` #34 updated to point at the signed-off spec; nothing
+committed this session (user asked only for the TODO/PROGRESS update, not a commit — per
+CLAUDE.md's "commit only when asked").
+
+---
+
+## PRIOR (2026-07-16) — spec 33 scoped: TODO #34 (MPC reprocessing dedup), THEN spec 31 (Phase 2 Azure)
+
+**Then spec 31 (Phase 2, Azure at scale) — the north star.** Status: **DRAFT, awaiting sign-off**,
+already **de-risked by a green access probe** (`runbooks/31-p1-access-probe.md`, 2026-07-15:
+`az login` done, personal identity has **Storage Blob Data Contributor**, adlfs
+`DefaultAzureCredential` round-trips, GDAL 3.10.3 opens via `/vsiadls/` **and** `/vsiaz/`).
+⚠️ **The 2026-07-15 diagnostic's "P1 blocked on user" is STALE — that blocker cleared.** The rewrite
+must: (a) rewrite **§5**, flagged deleted/retargeted when MPC removed the `jp2→COG` conversion
+problem but never actually rewritten; (b) **decide TODO #31's stream-in-place (`/vsicurl`) vs
+copy-to-`rise` fork** — spec 32 explicitly deferred it to *this* Phase-1→2 boundary, which is now;
+(c) note that **TODO #36** (CDSE-vs-MPC speed) becomes answerable here, since a local measurement is
+link-bound and doesn't generalize (TODO #24's precedent). The **rslearn Plan B/C call does not gate
+this** — the comparison concluded **scale-out is ours regardless** ([[fsd-rslearn-comparison]]).
+Concrete `rise` names/IDs live **only** in `../P1_AZURE_SETUP.md` + `../AZURE_INFRA_PRIVATE.md`
+(workspace root, never in the public repo).
+
+**Parked, named so they don't get re-derived:** #35 (optional SCL — own spec; gates #11's SCL-less
+CHIRPS/ERA5), #36 (source speed — parked by the user, confounds recorded), rslearn Plan B/C.
+
+### Previous entry (spec 32 runbook v1 run — step 3 crash + diagnosis)
+
+**The fix works on real MPC data.** Step 2's live catalog is the proof of D3: `20220107` (baseline
+<04.00) → `boa_add_offset = 0`; `20220127`, two days after the cutover → `−1000`. The spec's two
+flagged open items are also confirmed live: `s2:processing_baseline` and `s2:mgrs_tile` exist as
+assumed, and `storage.transfer` streamed signed MPC HTTPS fine (no `aiohttp` fallback needed).
+
+**Step 3 crashed — and the fault is spec 32's, not the implementation's.** `ValueError: SCL band
+not present in datacube`. `build_datacube` hardcodes `apply_cloud_mask_scl` → `drop_bands(["SCL"])`,
+so SCL is structurally required, but the spec's Tests section prescribed **"band B04 only"** *and*
+"build a 2-timestamp datacube" — mutually impossible. That inconsistency survived sign-off,
+cross-validation, implementation, **and the Opus code review** (which checked code-vs-spec but never
+traced the runbook against `build_datacube`'s op chain — the reviewed guard test uses B04+SCL, which
+was the tell). The implementer followed the spec faithfully. **No implementation defect was found by
+the real run; the code verdict stands.**
+
+**Runbook v2 issued** (`runbooks/32-mpc-baseline.md`) — v1 had four defects, all now fixed:
+- **B04-only → `['B04','SCL']`.** Bonus: the band exemption goes from "moot" (the spec's word) to
+  **live** — SCL must return `0` while B04 returns `−1000` on real data.
+- **Over-fetch.** v1 downloaded the whole date range *between* `pre` and `post` → **9 items /
+  1.7 GB**, not the promised 2. v2 uses two tight ±1 h windows.
+- **"a few MB / no full-tile download" was false.** MPC assets are **full-tile (~110 km) COGs** —
+  a single B04 measured **96–272 MB**. Prerequisites now state ~320 MB honestly.
+- **PASS criteria that couldn't fail.** Step 2's `pass` only checked `failed_count == 0` (never the
+  offsets); step 3's was a "plausible range" judgement, and its `mosaic_days=120` over a 120-day
+  window gives **T=1**, not the "2 timestamps" it compared. v2 asserts the offsets explicitly and
+  replaces the vague check with an **A/B against an unharmonized control** (same cube built twice,
+  offsets forced to 0 in the control): post-baseline slice must equal control **exactly −1000** on
+  non-clipping pixels; pre-baseline slice **bit-identical**. Writes `_result_step3.json`.
+
+**Three findings logged as TODOs:**
+- **#34 — MPC serves duplicate reprocessed acquisitions.** `20220301T100029` came back **twice**
+  (processed `20220303` *and* reprocessed `20240604`) — same sensing time + MGRS tile, different
+  item ids, so `_finalize_catalog_gdf`'s id-uniqueness check passes. Both downloaded (224+272 MB),
+  both catalogued; `_stack_datacube` then merges two copies of one scene with an arbitrary
+  tie-break. **Not radiometrically wrong** — spec 32 offsets each processing on its own baseline
+  before the merge (the design earning its keep) — but wasted bytes + a silent arbitrary pick.
+- **#35 — `build_datacube` requires SCL even when masking isn't wanted** (the root of the step-3
+  crash). Deferred to its own spec: it changes a core contract, and TODO #11's non-optical sources
+  (CHIRPS/ERA5) have **no SCL at all**, so they're blocked on it.
+- **#36 — CDSE-vs-MPC speed comparison: PARKED by the user** (nothing to do now). Recorded with its
+  confounds so they aren't re-derived: the "MPC is slow" reading is VPN × 9-items-not-2 × a
+  duplicate × **full-tile copy for a 0.18 % ROI** (21.5 km² read out of a 12 100 km² tile). TODO #24
+  already records that the local CDSE result was **link-bound and does not generalize to Azure** —
+  so the honest version of this benchmark is an Azure-side one, and the dominant lever is plausibly
+  windowed `/vsicurl` vs full-tile copy (TODO #31), not the source choice.
+
+**Uncommitted** (no commit requested): runbook v2, spec 32 §Tests correction + banner, TODO #34–36,
+this entry.
+
+### Previous entry (spec 32 code review — PASS, merged + pushed)
+
+**Review verdict: PASS — no code changes required.** Reviewed the spec-32 implementation
+(`1cf1568` + `0da4d15`) against the signed-off spec, then **fast-forward merged
+`spec32-mpc-implement` → `main`** and pushed to `origin/main`; the worktree was removed.
+
+- **Independently re-verified** the implementer's claims (not taken on trust): `pytest -q` **234
+  passed, 3 skipped**; `ruff check src/ tests/` clean. (Note for future sessions: the `.venv`
+  editable install points at **main's** `src/`, so running a worktree's tests needs
+  `PYTHONPATH=src` from inside the worktree — otherwise it silently imports the wrong `fsd`.)
+- **The #10 guard test is real, not vacuous** — confirmed by mutation: deleting the
+  `_apply_boa_offsets` call makes `test_build_datacube_harmonizes_boa_offset_before_median_mosaic`
+  fail (restored immediately). Offset-after-median would give `clip(median(200,1200)−1000)=0` ≠ 200.
+- **Confirmed against the spec:** D1/D2 ordering (offset applied right after `load_images`, before
+  `dst_crs`/reference/resample/`median_mosaic`); D3 keys on `s2:processing_baseline`, not
+  `item.datetime`, and **raises** on a missing baseline; `_is_reflectance` matches `^B\d`/`B8A` and
+  exempts SCL/AOT/WVP/visual; catalog back-compat fills 0 on both `read` and `append`;
+  `api.download`'s `creds` relaxation stays positionally back-compatible and still requires creds
+  for `source="cdse"`; no out-of-scope creep (no Azure code, CDSE offset retrofit correctly left
+  as TODO #30).
+- **A subtle trap the implementation avoided:** rows dropped by `_load_images` get
+  `image_index = -1` and are filtered out *before* `_apply_boa_offsets` iterates, so an unreadable
+  image can never cause a `data_profile_list[-1]` mis-write.
+- **Three minor, non-blocking notes** (logged in spec 32's banner, not fixed — none affect
+  correctness): dead `mpc._mgrs_tile_from_item`; a CDSE-worded error message reachable from the MPC
+  path via the reused `_finalize_catalog_gdf`; and **`planetary-computer` left unpinned** though the
+  spec's open items asked to pin it — **pin it after the runbook's step-1 install reports the
+  resolved version** (the one small follow-up worth doing).
+- **Merge hygiene:** main's unrelated WIP (the `TODO.md` reflow + the two notebooks) was stashed
+  before the merge and popped after — `TODO.md` auto-merged with **no conflict**, and both sides
+  survived (reflow of item #26 intact; committed #30–33 + the #10 update present). The reflow and
+  notebooks remain **uncommitted WIP**, per CLAUDE.md.
+
+### Previous entry (Sonnet@medium implementation of spec 32)
+
+**Implemented `specs/32-mpc-source-baseline-harmonization.md`** (signed off earlier the same day)
+against baseline `030f6ac` on `main`, in an isolated worktree
+(`.claude/worktrees/spec32-mpc-implement`, branch `spec32-mpc-implement`). To the letter, no
+redesign. `pytest -q` **234 passed, 3 skipped**, `ruff check src/ tests/` clean.
+
+- **New source `sources/mpc.py`** — MPC S2 L2A discovery (`pystac_client` + `planetary_computer`
+  sign modifier, anonymous by default) and a **pure COG byte-copy** download (no `jp2->COG`
+  conversion, no convert-process-pool — MPC assets are already COG). Reuses CDSE's generic
+  `_finalize_catalog_gdf`/`_is_local_path`/`_roi_gdf` helpers (identical logic, no S3/CDSE
+  specifics). `api.download` gains `source: "cdse"|"mpc"` (default unchanged, `"cdse"`); `"mpc"`
+  does not require `creds`.
+- **New additive catalog column `boa_add_offset`** (`catalog/catalog.COLUMNS`) — the S2
+  processing-baseline reflectance offset (fixes correctness debt **#10** for MPC), derived from
+  `s2:processing_baseline` (**keyed on baseline, not date** — covers the reprocessed-pre-2022-date
+  trap). Back-compat: `TileCatalog.read`/`append` fill a missing column with `0` (old catalogs,
+  CDSE rows for now).
+- **`datacube.builder.flatten_catalog`** emits a per-band `boa_add_offset` (reflectance bands only,
+  `raster/images._is_reflectance`); **`build_datacube` applies it per source image** (new
+  `builder._apply_boa_offsets`, right after `images.load_images`, before `dst_crs`/reference/
+  resample/mosaic) via the new `raster/images.apply_boa_offset` op (`clip(DN+offset, 0, 65535)`,
+  nodata-safe). A build-time integration test proves a calendar window straddling the 2022-01-25
+  cutover harmonizes **before** the median (the exact #10 failure mode).
+- **New `[mpc]` extra** (`planetary-computer`); `runbooks/32-mpc-baseline.md` written (not run —
+  Claude never runs networked scripts): one MGRS tile (`s2grid=476da24`), band B04 only, two
+  acquisitions straddling the baseline cutover.
+- **Docs updated:** `CHANGES.md` (new top entry), `TODO.md` (#10 marked partially-done for MPC;
+  new #30–33: CDSE offset retrofit, Phase-2 stream-vs-copy fork, signed-URL re-sign, full
+  `download_resume` orchestration for MPC), `RECIPES.md` (MPC download recipe), `specs/31` banner
+  (§5 "stage-local-convert-put" flagged DELETED, retargeted to Phase 2 — not yet rewritten),
+  `specs/10` pointer (MPC is another first-class source through the same storage seam), this entry.
+- **Open items flagged for the runbook, not guessed in code** (per the spec): the live
+  `s2:processing_baseline`/`s2:mgrs_tile` STAC property names, and whether `fsd.storage.transfer`
+  streams cleanly over fsspec's `http` backend for signed MPC hrefs (may need `aiohttp`) — both
+  surface naturally at the runbook's step 1/2.
+
+**→ NEXT:** Opus@high review pass on branch `spec32-mpc-implement` (commit `1cf1568`, worktree
+`.claude/worktrees/spec32-mpc-implement`, diffed against `030f6ac`) — Opus merges to `main` and
+pushes once review passes. Then the **user runs** `runbooks/32-mpc-baseline.md` (real MPC network,
+hotspot-OK — one tile, one band, two tiny COGs) and pastes back `_result_step2.json` + the step-3
+spot-check. Committed this session (user asked); not yet merged/pushed.
+
+## PRIOR (2026-07-16) — STRATEGY PIVOT: MPC source + baseline harmonization → spec 32 SIGNED OFF (Opus@high); P1 split into two phases; new standing practice (spec cross-validation)
+
+**The plan pivoted from "CDSE download-to-blob for P1" to a two-phase MPC-first approach** (agreed
+with the user via interview → grilling → doc cross-validation). Reasoning: MPC serves Sentinel-2
+L2A as **already-COG on Azure**, so the whole `jp2→COG` conversion problem (spec 25 / the ugliest
+part of the draft spec 31 §5) **evaporates**, and we get real Azure-native COGs to test datacube
+creation fast.
+
+**Two-phase shape:**
+- **Phase 1 (local, hotspot-friendly) = `specs/32-mpc-source-baseline-harmonization.md` — SIGNED
+  OFF (2026-07-16).** A new fsd-native **MPC source** (`sources/mpc.py`, reuses `pystac-client`
+  discovery + `planetary-computer` signing behind a new `[mpc]` extra; download = **pure COG
+  byte-copy**, no re-encode). Fixes **correctness debt #10** (the S2 processing-baseline
+  `BOA_ADD_OFFSET`): MPC serves **raw unharmonized DN** and exposes **no `raster:bands`** offset, so
+  fsd derives the offset from **`s2:processing_baseline`** (keyed on baseline, *not* date —
+  reprocessing stamps ≥04.00 on old dates), stores it as an additive **`boa_add_offset`** catalog
+  column, and harmonizes **at build, per source image, before the median mosaic** (a calendar window
+  can straddle 2022-01-25) via `clip(DN−1000,0,65535)` for reflectance bands (SCL exempt) — keeping
+  the **uint16 + nodata=0** datacube contract. Test = pytest (synthetic offset/clamp/flatten) + a
+  **single-tile / single-band** runbook straddling 2022-01-25 (hotspot-sized).
+- **Phase 2 (Azure at scale) = `specs/31` retargeted.** Its old §5 (CDSE stage-local-convert-put)
+  is **to be deleted** (MPC removes conversion). The storage-seam mechanics (fsspec-native config,
+  `to_vsi`, one `rio_open` wrapper, `DefaultAzureCredential` for `rise` writes) survive. **Open
+  Phase-2 fork:** stream MPC COGs in-place via `/vsicurl` vs bulk-copy MPC→`rise` and stream from
+  `rise` — **consciously deferred** to be *measured* after at-scale cloud build exists (user's call
+  2026-07-16), not argued now. (fsd reads only a ~5 km window from a ~110 km tile; full-tile
+  download amortizes only under high per-tile cell reuse.)
+
+**Spec 31 status:** still DRAFT; it was improved this session (fsspec-native config + adlfs
+auto-credential + SDK token-cache replaced the bespoke registry/refresh-margin — cross-validated
+against Azure/adlfs/fsspec/GDAL docs) but is now **Phase 2** and not yet signed off.
+
+**New STANDING PRACTICE (encoded in `CLAUDE.md` + memory [[spec-cross-validation-practice]]):**
+every spec leaning on external facts must be **cross-validated against reliable online sources
+before sign-off**, carrying a **per-source-credit** "Best-practice alignment / sources" section
+(what *specific* fact each source contributed, named inline — not a bare URL list). **Spec-
+validation web searches now have standing permission** (no prior ask); all *other* searches still
+follow [[ask-before-websearch]].
+
+**Governance flag (consciously accepted):** an MPC source is the "build more data sources
+(#11/#21)" work the 2026-07-15 diagnostic parked pending the **rslearn Plan B/C** call — accepted
+eyes-open (small, reuses STAC discovery, fastest unblock). rslearn decision still parked.
+
+**→ NEXT:** user runs `/handoff` → **Sonnet@medium** session implements **spec 32** against the
+signed-off text (Opus does not implement). Then Opus review, then the user runs
+`runbooks/32-mpc-baseline.md`. Nothing committed this session (specs 31/32, CLAUDE.md, memory edits
+all on disk, uncommitted — user may want to commit).
+
+## PRIOR (2026-07-15) — project-state DIAGNOSTIC done (Opus@high) → verdict + P1-kickoff staged (access probe written, spec-first handoff next)
+
+**The diagnostic (interview → exhaustive corpus read → grilling) is complete.** Deliverables:
+memory [[fsd-diagnostic-triage]]; a one-page visual state map (Artifact:
+`https://claude.ai/code/artifact/bcc50b17-914b-486d-a66b-102661ea34ca`); this PROGRESS entry.
+
+**Verdict (user's Q = "am I accreting, or is there a critical path? and am I managing this well?"):**
+NOT random scope-creep — TODO.md is well-triaged, nearly every item real. The pattern is: the project
+keeps finishing *locally-completable* work *around* its critical path (P1) instead of *through* it,
+because **P1 is blocked and the blocker was never named.** The rail literally shows it — solid through
+P0.9, skips the blocked P1, lands on a *partial* P5 (serving 27–30). **User confirmed both:** the
+serving PoC was legitimate + well-timed (active-learning/STACNotator interconnect talk had just
+happened — fsd needed to prove it can connect), AND real procrastination on Azure (new/unfamiliar).
+
+**Decisions reached (grilling):** (1) **P1 stays the goal**; serving is *banked*, not relabeled — do
+NOT continue that thread (#28/#29 deferrable). (2) Move #1 = **clear the P1 blocker**; the blocker is
+100% activation energy — user is at state (a): `az login` done, working access, just hadn't sat down.
+(3) rslearn Plan B/C call **consciously parked** (orthogonal to P1) — *but do not build more data
+sources (#11/#21) until it's made.* (4) Promote correctness debt **#10** (STAC raster:offset/scale
+across S2 baselines — silent wrong-answers) above the serving/feature long tail. (5) **Spec-first
+handoff:** the next session *writes* spec 31, it does NOT code.
+
+**P1 access facts nailed down** — **concrete values live ONLY in `../P1_AZURE_SETUP.md` §3 +
+`../AZURE_INFRA_PRIVATE.md`** (workspace root, uncommitted). Shape only, for the public repo:
+the target storage account is **ADLS Gen2 (HNS)**; **account keys DISABLED** → auth is
+**`DefaultAzureCredential` (az-login token), FORCED** (no key/SAS); GDAL driver = **`/vsiadls/`**,
+NOT `/vsiaz/`. The real unknown = whether the user's **personal** identity has **Storage Blob Data
+Contributor** (private doc only confirms the *compute UAMI* does) — the access probe is the definitive test.
+
+**PROBE RAN GREEN (user, 2026-07-15): `"pass": true`, all 3 steps.** P1 ACCESS IS READY — confirmed
+end to end over VPN through the exact seams fsd uses. Facts for spec 31 (also in `../P1_AZURE_SETUP.md`,
+now fully green):
+- Identity / subscription / resource group confirmed — **names + IDs in `../P1_AZURE_SETUP.md` §2**,
+  deliberately not repeated here (public repo).
+- **adlfs `DefaultAzureCredential` round-trip works** to the scratch prefix (370 B write=read)
+  → the user's **personal identity HAS Storage Blob Data Contributor** (no admin grant needed — the 403
+  risk is dead).
+- **GDAL 3.10.3 opens the object via BOTH `/vsiadls/` and `/vsiaz/`** with `AZURE_STORAGE_ACCESS_TOKEN`
+  → use `/vsiadls/` as canonical (ADLS Gen2), `/vsiaz/` fallback. Auth = `az account get-access-token
+  --resource https://storage.azure.com/`, Entra-only (keys disabled).
+
+**Also this session — raapid-infra tfvars refreshed (2026-07-15):** `rise` AML is now a **list of
+clusters** — `default` (E64ds_v4 ×4 = 256 cores) **+ NEW `d16`** (D16d_v5 ×32 = **512 cores**); Batch
+pool unchanged (128 cores). Concrete values in `../AZURE_INFRA_PRIVATE.md` + [[fsd-azure-infra]] memory.
+**New parked fork (P2/P4, NOT P1):** runner seam targets Batch (128) but the big fleet is AML `d16`
+(512) — a Batch-vs-AML dispatch choice for when P2 lands; parked alongside rslearn.
+
+**→ NEXT:** user runs `/handoff "write + sign off spec 31 (P1 storage seam) from the probe results"`
+→ fresh **Opus@high** session writes **spec 31** (spec-first — it does NOT code): add `azure-identity`
+to the `[azure]` extra; thread `storage_options`/`storage=` through the verbs; adlfs `abfs://` + GDAL
+`/vsiadls/` reads in fsd code; demo a **local datacube build doing all I/O against `rise` blob** over
+VPN. Then Sonnet@medium implements against the signed-off spec. Nothing committed this session (docs
+only: `P1_AZURE_SETUP.md`, `runbooks/31-p1-access-probe.md`, `../AZURE_INFRA_PRIVATE.md`, this entry).
+
+## PRIOR (2026-07-15) — spec 30 (serving Tier 2: mini-MPC + stac-geoparquet) REVIEWED (Opus@high) + runbook RAN GREEN (user) → Tier 2 VALIDATED; TODO #16 also fixed
+
+**Opus@high review of `faf8382` = PASS** (storage-seam staging, href-rewrite, both documented
+deviations all sound; no floating tags). Three minor fixes applied on top: README route-naming line
+corrected to `/searches/...`, `register_and_url.py` now writes a failure `_result.json` like its
+siblings, `.gitignore` covers `.pgdata/`/`*.ndjson`/`_result_register.json`.
+
+**Runbook `runbooks/30-tier2-mini-mpc.md` RAN GREEN (user, 2026-07-15): steps 1–6 all PASS** — tile
+curl `200 image/png 50145`; QGIS renders the 300-cell Austria crop map in the discrete class colors
+over the true (slanted) cell footprints through the full pgSTAC → stac-fastapi-pgstac →
+titiler-pgstac register→searchId→XYZ path. Step 7 (STACNotator in-app) skipped — the explicitly
+non-gating stretch (D-C). **fsd is "just another MPC"; the TODO #26 serving contract is proven end
+to end (Tier 1 spec 29 + Tier 2 spec 30).** Two runbook-run bugs found + fixed:
+`Dockerfile.titiler-pgstac` now `apt-get install`s **`libexpat1`** (rasterio, via rio-tiler, links
+`libexpat.so.1` at import; `python:3.12-slim` omits it → the `raster` worker failed to boot); and the
+runbook's Docker-up/directory-scoping + the step-5 curl `{z}/{x}/{y}` substitution (curl globs `{}`)
+were clarified. New plain-language **`MINI_MPC_NOTES.md`** at the **workspace root** (outside the
+public repo) — Docker primer + running issue log, per the user's request (memory
+[[user-docker-infra-onboarding]]).
+
+**Also fixed this session — TODO #16 (`flatten` multi-zone `coords.npy`):** `flatten` now reprojects
+each cube's per-pixel easting/northing from its native CRS to **EPSG:4326 (lon, lat)** before
+concatenation (`flatten._to_lonlat`), so a multi-UTM-zone training set no longer mixes incomparable
+eastings/northings. Behavior change to `coords.npy` (CHANGES.md); new multi-zone test; **214 passed,
+3 skipped**, ruff clean.
+
+**Committed + pushed:** all the above is on **`origin/main` @ `60e5cc2`** (`WEB_CONCURRENCY=4` set;
+review + runbook fixes; TODO #16 coords→4326). Upstream now tracked.
+
+**→ NEXT (redirected 2026-07-15):** the user paused feature-work for a **project-state DIAGNOSTIC
+walkthrough** — a fresh Opus@high session reads the whole corpus (all specs 00–30, ROADMAP, TODO,
+every `.md`) to reconstruct *where we started → where we're going → where we are*, and answer the
+user's core question: **am I accreting endless TODOs, or is there a critical path to P1?** The
+diagnostic session must **interview the user first** about what they want out of it. Baton:
+**`/tmp/fsd-handoff-project-diagnostic.md`**. **TODO #28 (render config → STAC render extension) is
+deferred back into the queue** — it was the next feature but got redirected. Also still open after 30:
+TODO #26 catalog-format full-migration, #29 (B02/B03, PARKED for wifi). **P1 = the Azure storage seam**
+(`specs/10`; prereqs in `../P1_AZURE_SETUP.md`) has not started.
+
+## PRIOR (2026-07-15) — spec 30 (serving Tier 2: mini-MPC + stac-geoparquet) IMPLEMENTED (Sonnet@medium) → hand to Opus for review, then the user runs the Docker runbook
+
+**Sonnet@medium implemented `specs/30-tier2-mini-mpc-validation.md`** (signed off earlier the same
+day). Implements **TODO #26 Tier 2** (the second half of the serving-contract validation; Tier 1 =
+spec 29, DONE). Builds on spec 28 (true-polygon geometry) + spec 29 (the discrete crop-class colormap).
+
+- **B — stac-geoparquet export (fsd core, additive) — DONE + verified.** New
+  `catalog/stac_geoparquet.py` (`items_to_stac_geoparquet` / `stac_geoparquet_to_items`, staged
+  through a local tmp file + the `fsd.storage` seam since the installed `stac-geoparquet==0.8.1` API
+  wants a real path), new `[serving]` extra, `demos/mini_mpc/export_stac_geoparquet.py` CLI.
+  `tests/test_stac_geoparquet.py` round-trip PASSES in a fresh `.venv-serving`
+  (`pip install -e ".[dev,serving]"`; `215 passed, 2 skipped` full suite, `ruff` clean); the core
+  `.venv` skips the test cleanly (`pytest.importorskip`). **Also smoke-run against the real 300-item
+  Austria catalog** (`tests/outputs/demo_e2e/model_outputs/stac/`) — export + read-back both verified
+  by hand (all 300 items round-tripped correctly).
+- **A — local "mini-MPC" harness — scripts + runbook written, not yet Docker-run (Claude never runs
+  Docker).** `demos/mini_mpc/` (`docker-compose.yml` pinning `ghcr.io/stac-utils/pgstac:v0.9.11`
+  as-is + two locally-built images that install the **pinned stock PyPI packages**
+  `stac-fastapi.pgstac==6.3.1` / `titiler.pgstac==3.0.0` on a slim Python base, since no published
+  "just pull it" app-layer image exists upstream — README's table documents exactly what's borrowed
+  vs. built, and why eoAPI's own compose couldn't be vendored verbatim (it `build:`s from a full
+  monorepo checkout too)); `load_pgstac.py` (ndjson + href-rewrite → `/data` bind-mount — the
+  href-rewrite logic was hand-verified against the real catalog: all 300 hrefs rewrite correctly);
+  `register_and_url.py` (reuses `titiler_serve.build_colormap`; URL-building logic hand-verified with
+  a mocked HTTP call). **One documented deviation from the spec's draft:** the installed
+  `titiler.pgstac==3.0.0` names its routes `/searches/register` + `/searches/{id}/tiles/...` (response
+  key `id`), not `/mosaic/register`/`searchid` — MPC's own product wraps the identical contract under
+  different names (`CHANGES.md` + the script's docstring have the full note, à la spec 29's rio-tiler
+  pin). `runbooks/30-tier2-mini-mpc.md` (7 steps; hard bar = steps 1–6, STACNotator-in-app a stretch).
+
+**Living docs updated:** `CHANGES.md`, `RECIPES.md` (both new recipes), `TODO.md` #26 →
+DONE-pending-runbook, `pyproject.toml` (`[serving]` extra), spec 30's banner → IMPLEMENTED.
+
+**→ NEXT:** Opus review, then the **user runs** `runbooks/30-tier2-mini-mpc.md` (one-time cost =
+building the two app images locally — small `pip install`s on a slim base, no satellite downloads;
+recommend on wifi) and pastes back each step's `_result.json` + the QGIS screenshot. **Still open
+after 30:** TODO #26 catalog-format full-migration (run_inference default → stac-geoparquet), TODO
+#28 (render config → STAC render extension — makes the categorical color turnkey, no baked-in
+`colormap` param), #29 (B02/B03 for true-color input imagery, PARKED for wifi).
+
+## PRIOR (2026-07-15) — spec 30 (serving Tier 2: mini-MPC + stac-geoparquet) SIGNED OFF → hand to Sonnet
+
+**Opus@high interview → `specs/30-tier2-mini-mpc-validation.md` SIGNED OFF (2026-07-15).** Implements
+**TODO #26 Tier 2** (the second half of the serving-contract validation; Tier 1 = spec 29, DONE). Builds
+on spec 28 (true-polygon geometry) + spec 29 (the discrete crop-class colormap). **Two deliverables:**
+
+- **A — local "mini-MPC" harness** (`demos/mini_mpc/` + `runbooks/30-tier2-mini-mpc.md`): borrow the
+  **stock eoAPI docker-compose** (pgSTAC + stac-fastapi-pgstac + titiler-pgstac), load the spec-28
+  output STAC (300 Austria crop-map cells) via **`pypgstac` ndjson** (convert the JSON catalog we already
+  write; **rewrite COG asset hrefs host→`/data` + bind-mount** the outputs dir so GDAL resolves them
+  inside the container — the one non-obvious wiring step), then prove the **register→searchId→XYZ** MPC
+  path renders. Categorical color rides in the tile **`colormap`** query param (reuse
+  `titiler_serve.build_colormap`), `assets=output`, `nodata=255`, `resampling=nearest`. **Success = curl
+  (search returns 300 items with true polygon geometry + register 200 + tile PNG) + a QGIS XYZ-layer
+  visual** (the user asked for QGIS — now through the full pgSTAC→titiler path); STACNotator-in-app is an
+  optional stretch (may need a STACNotator config/PR to add a custom MPC endpoint — not gating).
+- **B — stac-geoparquet export** (fsd core, additive): new `catalog/stac_geoparquet.py` +
+  `[serving]` optional extra (`stac-geoparquet`) + a `demos/mini_mpc/export_stac_geoparquet.py` CLU; the
+  #26 north-star interchange format. **Round-trip pytest only** in this spec (items→geoparquet→items
+  equal on id/geometry/bbox/dt/proj/asset); **not** wired into the run_inference default write path — that
+  full catalog migration stays the #26 follow-on.
+
+**Interview decisions (all 5 open-qs accepted as recommended):** new `[serving]` extra; new
+`catalog/stac_geoparquet.py` module; href-rewrite + `/data` bind-mount; geoparquet round-trip pytest only;
+Opus specs → **Sonnet@medium implements** the export + harness scripts → the **user runs the Docker
+runbook** (Claude never runs Docker/pipeline, per CLAUDE.md). Non-goals: no Azure/production deploy (the
+`rise` deploy is propose-only, separate), no input-imagery serving (B02/B03 = #29, parked for wifi), no
+render-extension (#28), no STACNotator code change for the hard bar.
+
+## PRIOR (2026-07-14, later) — specs 28 + 29 REVIEWED (Opus@high), MERGED to `main`, all runbooks PASS ✅
+
+**Both serving-pivot specs are DONE: reviewed, merged, and validated end to end.** Merged fast-forward
+into `main` (`50749e8`→`620441e`, "Implement specs 28+29"); **not pushed to origin** (per the user —
+local merge only). The implementation baton was `/tmp/fsd-handoff-specs-28-29-review.md`.
+
+- **Spec 28 (STAC geometry fix, TODO #27 DONE):** `catalog/stac.py::cog_outputs_to_items` gained
+  `geometries={cog: geometry.geojson_path}` (+ `_read_footprint_geometry` helper +
+  `cog_outputs_to_items_from_manifest(input_csv)` convenience wrapper). `api.py::_finalize_outputs`/
+  `_resolve_inference_pairs`/`_run_inference_roi` thread `geometries` from `input.csv.shapefilepath`
+  for both inference modes; `geometries=None` (bare COG lists, folder/list pre-built modes) keeps the
+  old raster-bbox behavior unchanged. Missing/unreadable geometry **raises** (deterministic, no
+  fallback). New `demos/regen_output_stac.py` + `runbooks/28-stac-geometry-regen.md`. 4 new tests;
+  `BUGS.md` BUG-003; `CHANGES.md`; `specs/17` pointer; `TODO.md` #27 DONE.
+- **Spec 29 (Tier-1 pre-styled XYZ, TODO #26 Tier-1 DONE):** new `demos/titiler_serve.py` (FastAPI +
+  rio-tiler; `GET /cropmap/tiles/{z}/{x}/{y}.png` over `merged.tif`, discrete colormap from
+  `e2e_austria.CLASS_COLORS`/`render.json`, `nodata=255` transparent, nearest resampling, permissive
+  CORS) + a new `[titiler]` pyproject extra (isolated `.venv-titiler`, kept out of `.venv`) +
+  `runbooks/29-tier1-stacnotator-byo.md`. 4 new tests (`tests/test_titiler_serve.py`,
+  `pytest.importorskip("rio_tiler")` — skip cleanly in the core `.venv`). rio-tiler note: masking
+  needs a `numpy.ma.MaskedArray` (the 2nd `ImageData` positional is `cutline_mask` in rio-tiler
+  6/7.x, not an alpha mask) — fixed in `_empty_png`.
+- **Opus@high review:** clean, no changes required. Verified the spec-28 no-fallback contract is
+  atomic (all four `ValueError` paths fire inside `cog_outputs_to_items` before `write_stac_catalog`
+  → no partial STAC), `geometries=None` correctly reserved for the manifest-less folder/list modes,
+  `_resolve_inference_pairs`'s `-> (pairs, geometries)` change fully covered (one call site), the
+  ROI-mode `input.csv` always carries `shapefilepath` (`workflows/create_datacube.py:90`), and the
+  rio-tiler `MaskedArray` reasoning holds. `pytest -q` = 213 passed, 2 skipped; ruff clean.
+- **Runbooks — ALL PASS (user ran, 2026-07-14):**
+  - **28 regen:** the 300-item Austria demo STAC regenerated from `input.csv` → the slanted S2-cell
+    polygons (not raster boxes). *(Doc fix: the runbook's step-2 spot-check path was missing the
+    `fsd-inference/` collection subfolder — corrected; the regen script itself was always right.)*
+  - **29 curl + QGIS:** the pre-styled XYZ server renders the categorical crop map correctly (discrete
+    colors, nodata transparent) — confirmed visually in QGIS.
+  - **29 STACNotator BYO:** the running `titiler_serve` XYZ URL loads as a Bring-Your-Own-XYZ layer in
+    a locally-run STACNotator dev stack (`make dev-init`) — the strongest external confirmation. (GEE
+    creds are irrelevant to BYO mode; Docker daemon just had to be running.)
+
+**Serving pivot — Tier 1 is now fully validated.** fsd emits standard STAC (true footprints) + a
+pre-styled categorical XYZ that STACNotator consumes as-is.
+
+**→ NEXT (Opus to spec):** **TODO #26 Tier 2** — a local pgSTAC + titiler-pgstac "mini-MPC" so
+STACNotator drives fsd's STAC through the same two-API path it uses for MPC (the richer, non-BYO
+serving mode). Also open: **TODO #28** (model-dev render config → STAC render extension — the
+`render.json` seam already stubbed in `titiler_serve.build_colormap`) and **#29** (B02/B03 band
+expansion for true-color input imagery — PARKED for university wifi). Not pushed to origin (commit/push
+only on request, per CLAUDE.md).
+
+## PRIOR (2026-07-14) — STRATEGIC PIVOT on serving: fsd emits standard STAC+COGs+render config → STACNotator (via stock pgSTAC+titiler-pgstac); the fsd Leaflet dashboard is CANCELLED
+
+**What happened:** started task (2) as a *local titiler+Leaflet dashboard to verify the inference STAC*
+(explainer `demos/TITILER_LEAFLET.md` + `specs/27` written, MosaicJSON DB-free design signed-off-pending).
+A design discussion then **reframed the whole thing** and `specs/27` is **SUPERSEDED — do not implement**.
+
+**The pivot (all agreed with the user, 2026-07-14):** the user cloned NASA Harvest's **STACNotator** (a
+React+OpenLayers imagery-annotation tool) into the workspace as read-only reference; I digested it →
+**`../STACNOTATOR_DIGEST.md`** (workspace root, NOT in the fsd repo — never committed). Key finding:
+**STACNotator IS the viewer**, and it consumes **MPC's two APIs** — a STAC API (CQL2 search + Sort) + a
+**titiler-pgstac** data API (`/mosaic/register` → `searchId` → XYZ `/mosaic/{searchId}/tiles/{tms}/{z}/{x}/{y}`
++ viz params). So:
+- **fsd builds NO dashboard.** fsd's job = emit artifacts standard enough that a **stock eoAPI stack
+  (pgSTAC + stac-fastapi + titiler-pgstac)** serves the XYZ endpoints STACNotator consumes → fsd becomes
+  "another MPC". **3-layer seam:** fsd (COGs on blob + `stac-geoparquet` catalog + render config) → stock
+  serving infra (platform/`rise` or fsd-adjacent — *a deploy decision, not fsd code*) → STACNotator.
+- **Catalog → `stac-geoparquet`** for BOTH CDSE downloads and model outputs (option (b): keep the internal
+  working `catalog.parquet` for compute now; full migration a follow-on). STAC is justified precisely
+  because it feeds pgSTAC/titiler-pgstac + is the interop lingua franca; MosaicJSON was the throwaway.
+- **Model-dev display config → STAC Render Extension** (`renders` on the output collection) = the standard
+  "how to display my output"; titiler-pgstac serves it natively (verified). Categorical crop map uses its
+  custom `colormap` object (better than STACNotator's self-hosted `colormap_name`).
+- **Scale goal:** many projects, MANY models/outputs, all conveniently on STACNotator.
+
+**Locked decisions:** (1) no bespoke fsd dashboard/repo — STACNotator + stock serving; (2) the stock
+pgSTAC+titiler-pgstac stack runs as **platform infra**, fsd owns only the **catalog/COG/render contract**;
+(3) **model outputs first**, input-imagery viewing + **B02/B03 band expansion PARKED for university wifi**
+(mobile-hotspot now — no big downloads); (4) validate in two tiers — **Tier 1** pre-styled XYZ into
+STACNotator BYO (fast, hotspot-OK, no download), then **Tier 2** local pgSTAC+titiler-pgstac "mini-MPC".
+
+**Captured as TODO #26 (serving contract + validation), #27 (STAC-geometry fix — now serving-critical),
+#28 (render config → STAC render extension), #29 (B02/B03 expansion, parked).** `specs/27` +
+`demos/TITILER_LEAFLET.md` both carry a SUPERSEDED/concepts-primer banner. **A real finding surfaced:**
+`cog_outputs_to_items` writes each Item's geometry as the raster bbox (`stac.py:183`), not the true
+S2-cell polygon in `<cell>/geometry.geojson` → over-claims coverage; matters for `ST_Intersects`/pgSTAC
+search (TODO #27).
+
+**TWO SPECS DRAFTED + SIGNED OFF (2026-07-14):**
+- **`specs/28-stac-output-geometry-fix.md`** (TODO #27) — the STAC item-geometry fix, **manifest-driven**
+  per the user: `cog_outputs_to_items(cog_filepaths, geometries={cog: geom_path})` sources each Item's
+  footprint from `input.csv.shapefilepath` (deterministic — no sibling-file discovery, no raster-box
+  fallback; missing geometry raises). Both inference modes + a `demos/regen_output_stac.py` feed it from
+  `input.csv`. Regenerates the existing 300-item STAC. +tests. **Hotspot-friendly.**
+- **`specs/29-tier1-prestyled-xyz-validation.md`** (TODO #26 Tier 1) — a minimal `demos/titiler_serve.py`
+  serving `merged.tif` as a **param-free pre-styled XYZ** (`GET /cropmap/tiles/{z}/{x}/{y}.png`,
+  hand-rolled over rio-tiler: discrete categorical colormap + nodata=255 transparent + nearest, CORS on),
+  from a `render.json`/`CLASS_COLORS` config. **No viewer** — validated by pasting the URL into
+  **STACNotator's Bring-Your-Own-XYZ** (QGIS XYZ as a quick pre-check). Replaces the cancelled `specs/27`
+  `titiler_serve`. **Hotspot-friendly** (serves existing `merged.tif`).
+
+**→ NEXT:** hand off to a **Sonnet@medium** session to implement **specs 28 + 29** (independent — either
+order, or parallel). Both need no downloads. After they land + Opus review, the Tier-1 runbook is the
+user's STACNotator BYO check. **Still to spec (Opus):** TODO #28 (model-dev render config → STAC render
+extension) and TODO #26 **Tier 2** (local pgSTAC + titiler-pgstac mini-MPC — heavier, do when convenient),
+**#29** (B02/B03 band expansion — PARKED for wifi). Nothing committed yet; `specs/{27,28,29}`,
+`demos/TITILER_LEAFLET.md`, `TODO.md`, `PROGRESS.md` edits are on disk, uncommitted.
+
+## PRIOR (2026-07-13 pm) — FULL Austria e2e EXECUTED; `E2E_AUSTRIA.md` is now the single go-to doc; next = titiler/Leaflet STAC-verify spec (task 2)
+
+**The full Austria e2e ran for real, end-to-end, and PASSES** (real CDSE download → datacube → train on
+real EuroCrops → inference → crop map). Everything on `main` (pushed). Run: Waldviertel AT_ROI,
+2018-04-01..09-30, T=10, `--cores 8`; **207 granules / 44.61 GB**, **300 grid cells**, 900 train fields
+(9 classes); `merged.tif` **6830×6868 EPSG:32633, 99.2% valid**. Timing **~100 min** (download 45% /
+inference 44% dominate). Numbers stitched (download+train from pass 1, inference from a clean re-pass) —
+see `demos/E2E_AUSTRIA.md §8`.
+
+**3 issues the full run surfaced + FIXED (213 pytest / ruff clean):**
+- **demo step 5 crashed** — `run_inference` called without the required `output_folderpath` →
+  `PreflightError`; now passes `OUTDIR/model_outputs`. Demo-only.
+- **STAC item-id collision (real `src/fsd` bug)** — `cog_outputs_to_items` derived the item id from the
+  COG filename stem (constant `"output"`) → `collection.json` had N identical links + 1 item file on
+  disk. Fixed to derive from the per-cell folder (`_output_item_id`) + a uniqueness guard; strengthened
+  `test_run_inference_writes_cogs_and_stac` (asserts distinct ids). `merged.tif` + per-cell COGs were
+  unaffected. Validated on the real run (300 links, 300 unique).
+- **demo step 2 metric** now reports the honest **aggregate (wall)** transfer rate + verdict (was the
+  misleading per-stream), matching `download_cli`; cost_model feeds `estimate.py` the aggregate rate.
+
+**Also:** crop_map/NDVI recolored via a semantic + separable `CLASS_COLORS` dict (was pink grassland);
+user regenerated the 3 committed `demos/figures/`.
+
+**Phase-2 doc work DONE — `E2E_AUSTRIA.md` is the single go-to doc:** §8 filled from the real run; the
+safe download runner (`python -m fsd.sources.download_cli`: `--dry-run`/`--stop-file`/
+`--max-concurrent-s3`/`_result.json`, the probe/per-stream/wall rates) threaded into §2 + a §5 tip;
+**Appendix C** ("real bugs full-ROI runs caught": spec-20 tile-merge, spec-26 STAC, multi-zone merge);
+**`demos/README.md`** shrunk from the stale Ethiopia writeup to a thin redirect.
+
+**Two TODOs opened (do NOT tangent now):** **#24** re-tune `max_concurrent_s3` per Azure region/pool
+(local run was **link-bound**: probe 26 vs aggregate 17 MB/s, 4 streams slower than 1 — a laptop-uplink
+property that inverts on a datacenter NIC); **#25** fine-grained per-cell inference timing (model-load /
+build / predict / COG-save) + kill the per-cell model reload — found `cubes_per_task` is silently
+ignored in ROI mode (`api.py:793`), so the bundle reloads 300× (per-cell "infer" ≈ flat ~7.8s model
+load, not predict). Discussion-only until we decide it's worth specing.
+
+**→ NEXT: task (2) — titiler + Leaflet explainer doc + a detailed spec for Sonnet** to stand up a basic
+tile server + Leaflet dashboard that verifies the inference **STAC catalog + COGs** (ROADMAP P5 /
+TODO #14). Handoff being prepared. NOTE: actually *running* titiler needs `model_outputs/{stac,cells}`
+COGs under `tests/outputs/demo_e2e/` — the user may delete that to free space, so the titiler work will
+regenerate them via a fast **download-free** inference re-pass (cells skip). The doc + spec can be
+written regardless.
+
+## PRIOR (2026-07-13 am) — spec 26 confirm-run EXECUTED for real + pipeline hardened; next = Austria go-to doc
+
+**The spec-26 network confirm-run was run for real (CDSE, 3.5 GB, Austria 1-MGRS slice) and PASSES.**
+Everything on `main` (pushed, HEAD `69e6517`). Fresh-download `_result`: `status=ok`, 65/65 files
+(13 granules × 5 = 4 bands + MTD_TL.xml), `failed=0`, `skipped=0`, gb=3.50, integrity verified on disk
+(52 tif + 13 xml, 0 leftovers, 13 catalog rows). **Throughput baseline: probe 25 / per-stream 4.8 /
+wall 19 MB/s → link-bound, 4 transfer streams slightly SLOWER than 1.**
+
+**Bugs/gaps this real run surfaced and we FIXED this session (all committed + tested, 209 passed):**
+- `download()` crashed on a **fresh `--dst`** (disk-usage probe before makedirs) → now `fs.makedirs`
+  the local root [spec 25 latent bug].
+- `format_download_plan` **contradicted itself** at `missing=0` ("not present" + a download cmd) →
+  fixed [spec 23 latent bug].
+- `_result.json` **`expected`/`error` were dead** (`{}`/`None`) → now populated; a crash writes a
+  `status=failed` result before re-raising; new `--expected-json` merges runbook criteria [spec 26 §4].
+- **stop-file felt slow + silent** → now prints `stop requested — draining N…` within ~1s
+  (`STOP_CHECK_EVERY_S=1.0`, decoupled from `PROGRESS_EVERY_S`); the ~`max_staged` overshoot is the
+  clean-drain-by-design (no partial files); `--max-staged` trades it.
+- **misleading throughput metric** → added `transfer_wall_seconds` + `wall_transfer_mb_per_s` (honest
+  all-streams rate) and a **`--max-concurrent-s3`** knob to sweep stream count. Runbook step-4 rewritten.
+- Silent startup phases (probe + planning) now labelled; `.gitignore` gained `.claude/`.
+
+**Commits (all pushed to `main`):** `8bb1882` gitignore, `c822654` startup labels, `aa20279` makedirs
++ expected/error, `b4b1bf5` format_download_plan, `2f0b530` stop-file ack, `69e6517` wall metric +
+`--max-concurrent-s3`. (Plus `356f07b` = the merged spec-26 offline half.)
+
+**→ IMMEDIATE NEXT (user is on university wifi, ready to run): execute the FULL Austria e2e.**
+Runbook **`runbooks/27-austria-full-e2e.md`** is written + on `main`. It runs `demos/e2e_austria.py`
+(FULL mode: real CDSE download of the whole AT_ROI, Apr–Sep, → datacube → train on real EuroCrops
+labels → inference → crop map). Size estimate (scaled from the confirm-run): ~2–4 MGRS tiles / ~80–160
+granules / ~20–45 GB / ~1–1.5 hr. **Step 0 = a full-ROI dry-run to size it exactly before committing;
+Step 1 = `rm -rf imagery/` for clean §8 numbers; Step 2 = the backgrounded run; Step 3 = paste back
+`timings.json` + coverage.** The demo's download uses `download_resume` directly (no `--stop-file`;
+Ctrl-C + re-run resumes). Note the AT inputs are REAL EuroCrops ground truth in the test region
+(labels ARE meaningful; the *point* is infra, not model quality — the earlier "toy/Ethiopia" framing
+is stale). `AT_ROI` = Waldviertel (~14.6–15.5°E, 48.4–49.0°N, single UTM-33), 900 train fields.
+
+**→ THEN (the pre-P1 goal): make the Austria end-to-end the GO-TO USER DOCUMENT.** Fill `E2E_AUSTRIA.md
+§8` from runbook 27's output, and reconcile the two demos docs (this is the ROADMAP pre-P1 deliverable,
+not new pipeline code):
+- `demos/README.md` — **STALE**: describes the old Ethiopia offline demo, references
+  `demos/e2e_ethiopia.py` (renamed to **`e2e_austria.py`**) and `shapefiles/inference_roi.geojson`.
+  Superseded by `E2E_AUSTRIA.md`.
+- `demos/E2E_AUSTRIA.md` — the intended go-to guide, but: **§8 "Results (fill from a real run)" is an
+  empty placeholder** we can now fill with the real confirm-run numbers; and it has **zero mention of
+  the safe download runner** (`python -m fsd.sources.download_cli`, `--stop-file`, the confirm-run,
+  spec 26) — the whole download story we just built + validated. §2 predates all of it.
+- Decide: fold `README.md` into `E2E_AUSTRIA.md` as the single canonical doc (thin redirect README),
+  and thread the real download step + numbers through it. Handoff doc: `/tmp/fsd-handoff-austria-doc.md`.
+
+## PRIOR (2026-07-11) — spec 26 offline half REVIEWED (Opus@high): PASS on the hard stuff, 2 small fixes queued
+
+**Opus@high review of the spec-26 offline half (in the worktree `.claude/worktrees/spec26-download-cli`).**
+Verified **correct** (do not touch): the `should_stop` throttle is race-free (`_stop()` runs only in the
+single submit-loop thread; callbacks never touch `last_stop_check`/`stop_cached`; sticky `stopped` set
+under `lock`, read after pool join); **no `sem_staged` permit leak** at either checkpoint (top-of-loop
+break pre-`acquire`; post-`acquire` release-then-break); `download_resume` stop-before-cooldown ordering
+right (a user stop never enters cooldown); `--dry-run` touches zero band bytes; `_fmt_progress`
+`ETA ~?`-until-`done>0` math correct. Local `pytest` 55 passed on touched files, `ruff` clean.
+
+**Found 2 defects → fix in a Sonnet@medium session** (handoff written:
+`/tmp/fsd-handoff-spec26-sonnet-fixes.md`, exact code + 2 new tests):
+- **Fix 1 (correctness):** the CLI's exit-code/`status` gates on `sum_results`' **summed**
+  `failed_count`, which over-counts failures a later resume pass recovered → a successful-but-flaky
+  run reports `status="failed"`/exit 1 (contradicts the runbook's own step-3 integrity PASS; the demo
+  treats the same number as a soft warning). Fix = judge the **terminal pass** (download_resume's own
+  break condition), treat empty `results` (stop before pass 1) as `stopped`, keep summed counts as
+  metrics + add `failed_total` diagnostic. Exit 0 on clean-or-stopped preserved.
+- **Fix 2 (usability):** a stale `--stop-file` (e.g. `/tmp/fsd.stop` left after a stop) makes the
+  documented "re-run to resume" an instant no-op stop. Fix = runbook says `rm -f` the stop-file before
+  resuming + a tiny CLI startup warning when the stop-file already exists.
+- **NOT fixed (left for the user):** the runbook's `missing_count [5,10]` range is likely low
+  (~12 granules for a 2-month single-tile window at ~5-day S2 revisit); user decides whether to widen.
+
+**Next: Sonnet@medium implements the 2 fixes** (target: `pytest` **203 passed, 1 skipped**, ruff clean),
+then hand off + clear. The network confirm-run (`runbooks/26-download-confirm-run.md` step 2 onward)
+still waits for the user on a real (non-hotspot) connection.
+
+**UPDATE (2026-07-11, Sonnet@medium):** both review fixes landed — CLI completion gate now judges the
+terminal pass (`results[-1]`) instead of `sum_results`' summed `failed_count`, empty `results` maps to
+`status="stopped"`, new `metrics.failed_total` diagnostic; stale-`--stop-file` startup warning added +
+runbook step-2 now says `rm -f` it before resuming. `pytest -q` = **203 passed, 1 skipped**, `ruff`
+clean. Worktree left uncommitted per CLAUDE.md (commit only on request).
+
+## PRIOR (2026-07-11) — spec 26 offline half IMPLEMENTED (safe download CLI + should_stop seam)
+
+**Implemented in a Sonnet@medium session against `specs/26-safe-download-runner.md` (offline
+half only — no network run, per CLAUDE.md).** Landed, all contained to `sources/cdse.py` +
+one new module:
+- `should_stop: Callable[[], bool] | None = None` kwarg on `download()`/`download_resume` (spec
+  §1): checked in the submit loop at the two existing checkpoints, throttled to
+  `config.PROGRESS_EVERY_S`, identical halt-new-submissions-only semantics to `tripped`/
+  `pool_broken`. New additive `DownloadResult.stopped`; `sum_results` ORs it; `download_resume`
+  passes `should_stop` through + `if r.stopped: break` + a pre-pass check.
+- New `src/fsd/sources/download_cli.py` (`python -m fsd.sources.download_cli`): `--dry-run`
+  (plan only, zero band bytes, no probe), `--stop-file` (builds the `should_stop` closure), an
+  optional single `probe_throughput` on the real path (`--no-probe` to skip), writes the spec-24
+  `_result.json`; exit code 0 on clean-or-stopped, non-zero on failed/tripped/pool_broken.
+- `_fmt_progress` ETA edge case: `ETA ~?` until `done>0` (was misleadingly `ETA 0m`).
+- `runbooks/26-download-confirm-run.md` — fully written offline (self-contained `expected`
+  block: step-1 `missing_count` in `[5,10]`, step-2 clean `status=ok`/`failed=0`/`stopped=false`,
+  step-3 integrity script, step-4 report, optional stop drill). **Not run** — the network half
+  (mobile-hotspot pause) is deferred to whenever the user has a real connection.
+- Tests: 8 new (`tests/test_cdse.py` — should_stop mid-pass halt via watchdog + `max_staged=1` +
+  `_SyncExecutor` determinism, `should_stop=None` no-op, `download_resume` breaks on stopped pass
+  no cooldown, `sum_results` ORs `stopped`, `_fmt_progress` ETA `~?`/`~Nm`; new
+  `tests/test_download_cli.py` — dry-run zero-bytes + result-json, real-path wiring +
+  `--stop-file` predicate + exit-code mapping, missing-creds guard). `pytest -q` = **201 passed,
+  1 skipped** (all 47 original `test_cdse.py` regressions + 154 other pre-existing tests
+  unaffected); `ruff check src/ tests/` clean. Docs updated: `CHANGES.md`, `RECIPES.md`, `README`
+  (one-line pointer), `TODO.md` (#23, cost_model persistence follow-up).
+
+**Next: Opus@high review pass**, then hand off + clear (per spec 26's deliberate pause) — the
+confirm-run itself (runbook step 2 onward, real CDSE download) waits for the user on a real
+connection; a later session verifies the pasted `_result.json` against the runbook's own
+`expected` block.
+
+## PRIOR (2026-07-11) — spec 25b REVIEWED (PASS) + spec 26 SIGNED OFF (safe download runner)
+
+**Spec 25b review (Opus@high) = PASS.** Traced the exception-safety invariant through every
+callback path (transfer ok→convert / submit-raises / cfut-raises / failed / skipped / no-convert):
+`_finalize` runs exactly once per item, each acquired `sem_staged` permit releases exactly once,
+`remaining`/`sem_staged` never sit behind a fallible call. No double-release/double-finalize. The
+beyond-spec `flush_lock` is correct + necessary (serializes concurrent chunk-flush parquet writes;
+never nested with `lock` → no deadlock; end-of-run flush is post-pool-join so needs none).
+Re-queue-on-failure is safe because `catalog.append` is idempotent upsert-by-id (union files).
+Verified: `test_cdse.py` 47 passed, full suite **193 passed / 1 skipped**, ruff clean; docs
+(CHANGES §25b, TODO #22, spec-25 pointer) accurate. Minor non-blockers noted (tautological assert in
+test 1; `transfer_pool.submit` raise→loud-exit-not-hang; persistent-flush-failure metric undercount
+recovered by resume) — none warrant a change.
+
+**→ `specs/26-safe-download-runner.md` SIGNED OFF (2026-07-11), C1–C6 accepted as drafted.** The
+first real CDSE network exercise of the spec-25/25b pipeline, as a **safe runner + confirm-run**.
+Locked (interview): **D1** one spec = CLI + confirm-run; **D2** a thin **CLI wrapping
+`download_resume`** (`python -m fsd.sources.download_cli`), NOT a Snakemake unit-of-work; **D3**
+`--stop-file` checked **mid-pass** via a generic `should_stop` predicate at the two submit-loop
+checkpoints (throttled to `PROGRESS_EVERY_S`); **D4** confirm-run = tiny **1-MGRS-tile** Austria
+slice (~7 granules / ~2 GB). Additive `DownloadResult.stopped`; `--dry-run` = `plan_download` only
+(**zero band bytes**, no probe); `_fmt_progress` gains rate+ETA; `_result.json` per spec 24; exit
+code doubles as PASS/FAIL (0 on clean OR user stop). Untouched: `_transfer_one`/`_convert_one`/
+`to_cog`/discovery/circuit-breaker/`pool_broken`.
+
+**⚠️ DELIBERATE PAUSE (mobile-hotspot).** Spec 26 splits at a network seam. **Offline half**
+(implement + review with NO network): the CLI, the `should_stop` seam, `DownloadResult.stopped`,
+`_fmt_progress` ETA, all pytest (monkeypatched), docs, **and the fully-written runbook
+`runbooks/26-download-confirm-run.md`**. **Network half** = runbook **step 2 onward** (real
+download → integrity → report). After 26 is implemented + reviewed we **hand off + clear**; the
+user runs the confirm-run only on a real (non-hotspot) connection, whenever available, and pastes
+the `_result.json` back — verified against the runbook's **self-contained `expected` block**, not
+this conversation.
+
+**Next step: implement spec 26 (offline half) in a fresh Sonnet@medium session** (user runs
+`/handoff`, `/model sonnet` + `/effort medium`, points it at `specs/26-safe-download-runner.md`).
+Opus does NOT implement. After it lands + Opus review → hand off + clear → confirm-run later.
+
+## PRIOR (2026-07-11) — spec 25b IMPLEMENTED (pipeline exception-safety / no-hang fix)
+
+**Implemented in a Sonnet@medium session** against the signed-off spec (contained to
+`sources/cdse.py`: the `download()` callbacks + submit-loop stop condition, + additive
+`DownloadResult.pool_broken`, + the one-liner OR in `sum_results`). `pytest -q` = **193 passed, 1
+skipped** (42 original `test_cdse.py` tests unchanged + 5 new spec-25b tests: pool-submit-raises
+no-hang, convert-done-result-raises no-hang + permit release, PoolBroken breaker-neutrality,
+catalog-flush-failure no-hang + resume recovery, `sum_results` ORs `pool_broken`); `ruff check
+src/ tests/` clean; no network run (per CLAUDE.md — spec 26's job).
+
+**One thing found beyond the spec's explicit text, needed for correctness:** moving the chunk-flush
+catalog write **outside** the counters lock (spec §3) means concurrent flushes of *different*
+snapshots can now run truly in parallel — which would race-write the same parquet file and corrupt
+it (caught by a flaky-`_append_downloaded` regression test: lost a row + a `thrift deserialize`
+error on the next write). Added a dedicated `flush_lock` around just the `_append_downloaded` call
+(not the counters) — serializes the I/O without blocking `_finalize`'s metric updates behind it,
+preserving the spec's intent.
+
+Docs updated: `CHANGES.md` (new entry under spec 25), `TODO.md` (#22 per-granule convert
+quarantine, deferred), `specs/25-download-convert-redesign.md` (status line points to 25b),
+`PROGRESS.md` (this entry) + memory `fsd-status`.
+
+**Next: switch back to Opus@high for a review pass**, then start the **spec 26** interview (safe
+runner `--dry-run`/`--stop-file`/progress + the measured confirm-run — the first real CDSE network
+exercise of this pipeline).
+
+## PRIOR (2026-07-11) — spec 25 REVIEWED (Phase 1) + spec 25b SIGNED OFF (pipeline hang fix)
+
+**Opus@high Phase-1 review of the spec-25 implementation (`76b2cd9`) is done.** The four flagged
+concurrency concerns (max_staged=1 breaker determinism, semaphore balance, remaining/loop_finished/
+all_done drain, `_default_max_staged` cog-gating) all verified **correct**. `pytest tests/test_cdse.py`
+= 42 passed, ruff clean.
+
+**One real defect found (not previously flagged):** an unhandled exception in a completion callback
+leaks `remaining`/`sem_staged` → `download()` hangs forever on `all_done.wait()` (finally unreachable).
+Triggers: (1) **BrokenProcessPool** — a convert worker segfaults (GDAL on a bad granule) or is
+OOM-killed → `cfut.result()` / `pool.submit()` raise before release+finalize; `add_done_callback`
+swallows the exception so the drain never completes. (2) `catalog.append` (parquet flush) raising
+under the lock in `_finalize`, before the `remaining` decrement. Tests miss it (injected fake
+executors never break). This is exactly the silent-hang failure mode spec 26's "safe run" premise is
+meant to exclude, so it's fixed **first**.
+
+**→ `specs/25b-pipeline-exception-safety.md` is SIGNED OFF (2026-07-11), C1–C6 as recommended.** Fix =
+make `_on_transfer_done`/`_on_convert_done`/`_finalize` exception-safe so every submitted item
+finalizes once and every permit releases once, with `remaining`/`sem_staged` moved off any fallible
+call (pool submit, process result, parquet write); add additive `DownloadResult.pool_broken` (clean
+submit-loop stop on a dead pool; `download_resume` retries with a fresh pool, no cooldown);
+`"PoolBroken"` reason is breaker-neutral (like `ConvertError`); move the catalog flush off the lock;
+no-hang tests via a watchdog thread + `join(timeout)` (no pytest-timeout dep).
+
+**Next step: implement spec 25b in a fresh Sonnet@medium session** (user runs `/handoff`, `/model
+sonnet` + `/effort medium`, points it at `specs/25b-pipeline-exception-safety.md`). Claude (Opus) did
+NOT implement — Opus reviews/specs, Sonnet implements. After 25b lands + review, proceed to **spec 26**
+(safe runner + measured confirm-run).
+
+## PRIOR (2026-07-11) — spec 25 IMPLEMENTED (download/jp2→COG process-pool redesign)
+
+**Implemented in a Sonnet@medium session** against the signed-off spec (contained to
+`sources/cdse.py` + `config.py`). `pytest -q` all green (188 passed, 1 skipped) and `ruff check
+src/ tests/` clean; **no network run** (per CLAUDE.md — that's spec 26's job). Docs updated:
+`CHANGES.md` (new top entry), `TODO.md` (item (b) marked DONE), `specs/14-cog-on-download.md`
+(pointer updated), `config.py` comments.
+
+**What landed:** `_transfer_and_convert` replaced by `_transfer_one` (thread stage, fail-fast
+retry, writes to `dst+".src.jp2"` when `needs_convert`) + `_convert_one` (top-level/picklable
+process stage, `to_cog` + staging cleanup in `finally`); `_download_one` kept as the sequential
+wrapper (its direct-call tests pass unchanged) but `download()` no longer calls it — it drives the
+A2 pipeline: a `MAX_CONCURRENT_S3`-wide transfer `ThreadPoolExecutor` + a lazily-created
+`MAX_CONVERT_PROCS`-wide `ProcessPoolExecutor` (spawn), chained via `add_done_callback`, bounded by
+a `sem_staged` `BoundedSemaphore`. New `config.py` constants `MAX_CONVERT_PROCS`,
+`STAGING_DISK_FRACTION`, `STAGING_ITEM_GB`; new `cdse._default_max_staged` (disk-aware sizing) and
+`cdse._make_convert_pool` (the lazy-pool factory seam tests monkeypatch). Circuit breaker rewritten
+to streaming/transfer-failures-only semantics; `chunksize` repurposed to catalog-flush cadence only.
+New `download`/`download_resume` kwargs `max_convert_procs`/`max_staged`/`convert_executor` (all
+defaulted, backward-compatible). Test suite: 5 unchanged regression tests still pass, 1 rewritten
+(`test_circuit_breaker_trips_and_stops_early`, now forces determinism via `max_staged=1`), 15 new
+tests (`_transfer_one` × 5, `_convert_one` × 2, cog=True pipeline via injected `_SyncExecutor`,
+backpressure bound via `_BlockingConvertExecutor`, lazy-pool × 2, `_default_max_staged`).
+
+**Next step: spec 26** (safe runner — `--dry-run`/`--stop-file`/progress + the measured
+transfer-vs-convert-split confirm-run over a real CDSE download). That is the first real network
+exercise of this pipeline; not run yet.
+
+## PRIOR (2026-07-11) — spec 25 SIGNED OFF (download/jp2→COG redesign) — ready to implement
+
+**Spec `specs/25-download-convert-redesign.md` is SIGNED OFF; next action = implement in a fresh
+Sonnet@medium session** (spec 24 D3/D5 — user runs `/handoff`, switches `/model sonnet` + `/effort
+medium`, points it at spec 25). Claude did NOT implement (Opus plans, Sonnet implements).
+
+**The fix (all in `sources/cdse.py` + `config.py`; read/build path, `to_cog`, `DownloadResult` shape
+untouched):** conversion currently runs **inline on the 4 transfer threads** and GDAL's `to_cog`
+**holds the GIL** → starves downloads (observed: 8.8 MB/s probe but ~0.2 file/s aggregate). Redesign =
+split the per-file worker into `_transfer_one` (thread stage) + `_convert_one` (top-level, picklable,
+**process** stage), and run them as **one continuous A2 pipeline**: `ThreadPoolExecutor(MAX_CONCURRENT_S3=4)`
+transfers → each completion chains its staged JP2 to `ProcessPoolExecutor(MAX_CONVERT_PROCS=min(cpu,8),
+spawn)` via `add_done_callback`; a `BoundedSemaphore(MAX_STAGED)` bounds staged-but-unconverted JP2s.
+
+**Locked decisions (C1–C6 all accepted as recommended):** callbacks + single `sem_staged` (C1); keep
+`_download_one` as a sequential wrapper so its tests survive, `download()` won't call it (C3);
+circuit breaker → **streaming stop on consecutive *transfer* failures only** (rewrite the one breaker
+test) (C4); new keyword knobs `max_convert_procs`/`max_staged`/`convert_executor` (the injected
+executor is the in-process test seam) + pass-through on `download_resume` (C5); **keep ingest
+overviews** (D2 — convert stays the ~15 s/file ceiling, accepted); **disk-aware `MAX_STAGED`** =
+`min(MAX_CONCURRENT_S3 + 2*MAX_CONVERT_PROCS, free*0.25/0.2GB)`, sized once at start, **cap not a
+lever** (C6/D5). `chunksize` repurposed → catalog-flush cadence. Confirm-run deferred to **spec 26**.
+
+**Concurrency-familiarization artifacts (workspace root, NOT in the fsd repo):** `concurrency_demo.py`
+(the pipeline with sleeps+files — backpressure/LEAK_BUG/disk-accounting demos) and
+`concurrency_sweep.py` (network-free `MAX_STAGED` tuning sweep showing the throughput plateau past the
+saturation floor). Built to teach the primitives before implementing; not part of the package.
+
+**Test plan (pytest only, no network):** most existing download tests must still pass;
+`test_circuit_breaker_trips_and_stops_early` is rewritten (C4); new tests for `_transfer_one`,
+`_convert_one`, the cog=True pipeline (via injected synchronous `convert_executor`), backpressure
+bound, lazy-pool (no procs on all-skip/cog=False), and `_default_max_staged`. Docs to update on
+implement: `CHANGES.md`, `TODO.md`, `specs/14` pointer, `config.py` comments, `PROGRESS.md`, memory.
+
+## LATEST (2026-07-11) — spec 24 working contract (process, not pipeline)
+
+**How we work now (CLAUDE.md updated):** Claude **never runs pipeline/long/networked scripts** or
+backgrounds/polls them (may run `ruff`/`pytest`/`grep`/`git status`); everything else is a
+**run-book** in `fsd/runbooks/` (template landed) that the user runs, pasting back a step's
+**`_result.json`** (Claude diffs vs success criteria, never reads live logs). **Model split:**
+Opus@high plans/specs/debugs; user `/model sonnet` + `/effort medium` to implement a signed-off
+spec. **Handoff:** flush durable state to PROGRESS/MEMORY → user runs `/handoff` → fresh session
+(not `/compact`). Trigger for this spec: the spec-23 tiny-download run went wrong as a *process*
+failure (I launched a long download, user couldn't stop it / see progress, my log-polling burned
+tokens). **Next queued: spec 25 (download + jp2→COG redesign — inline GIL-bound conversion starves
+transfers), then spec 26 (safe runner: `--dry-run`/`--stop-file`/progress).**
+
+_Open from spec 23:_ `--tiny-download` was fixed to select a **single MGRS tile** (7 granules / 1
+tile / ~2 GB, verified offline) but the real e2e run has **not** been completed (I must not run it);
+that becomes a run-book. Specs 20–24 remain **UNCOMMITTED**.
+
+## LATEST (2026-07-10) — P0.9 local-completeness gate (spec 23) — LAST local step before P1
+
+**Next step: run `demos/e2e_austria.py` on real data** (needs CDSE creds + network; the user runs
+it) and paste the timing/QGIS Results into `demos/E2E_AUSTRIA.md §8`. Then we start **P1** (Azure
+storage seam — see `../P1_AZURE_SETUP.md` at the workspace root for the prerequisites the user fills).
+
+Spec 23 (SIGNED OFF + IMPLEMENTED, **176 tests, ruff clean**) turned the demo into the **go-to local
+run-book + confidence gate**: `demos/e2e_ethiopia.py` → `demos/e2e_austria.py`, now starting from a
+real CDSE **download** (the first e2e to include it) on an Austria ROI (single UTM-33; `fid`/`crop`,
+9 classes). Landed:
+- **Download instrumentation** (`fsd.sources.cdse`): `DownloadResult.{bytes_downloaded,
+  transfer_seconds,convert_seconds,bytes_by_band}` — decomposes CDSE-transfer vs local jp2→COG cost;
+  `sum_results` (resume-pass aggregate); **`probe_throughput`** (baseline MB/s to factor out
+  VPN/contention). `_download_one` now returns `(ok, reason, metrics)`.
+- **`plan_download` guardrail** (D13): missing imagery → an actionable `fsd.download(...)` plan
+  (JSON + printed command, +GB/ETA); wired into the `create_training_data`/`run_inference` preflight.
+  Compute verbs still **never auto-fetch** (quota + Batch download-once model).
+- **Cross-UTM-zone-safe merge** (D7): `run_inference(merge="reproject")` targets the **max-area** CRS
+  (or `merge_crs=`), lossless where a cell already matches — the reusable template runs for any ROI,
+  cross-zone included.
+- **Reusable template + tooling**: `--roi/--train/--id-col/--label-col/--creds`; `demos/estimate.py`
+  (no-download ETA for any region — answers "how long for full France?"); `demos/E2E_AUSTRIA.md`
+  (setup + bundling guide + concepts/limitations appendices).
+
+## LATEST (2026-07-06) — P0 (specs 16/17) + P0.5 (spec 18) + e2e demo/tiling (spec 19)
+
+The v1 core pipeline (download → catalog → datacube → flatten → workflows) is **complete +
+real-data-validated** (see history below). We have since set the **forward direction**:
+- **Strategy docs (on `main`):** `ROADMAP.md` (north-star, 3 usage modes, control/data-plane,
+  ModelAdapter contract F1–F5 + same-`T`/bands + preflight, phased **P0–P6**),
+  `AZURE_INFRA.md` (the read-only `rise` project in `raapid-infra` we scale onto via Batch),
+  `RSLEARN_COMPARISON.md` (build-vs-borrow vs AllenAI's rslearn — **open decision**, evaluated on
+  branch **`spike/rslearn`** with an isolated venv; scale-out is ours regardless). Repo pushed to
+  `git@github.com:nikhilsrajan/fsd.git` (MIT).
+- **Spec 16 = P0 DONE (2026-07-06):** high-level API façade `src/fsd/api.py` re-exported at top
+  level — `fsd.download`, `fsd.create_training_data` (hides flatten; preflighted; `runner`/
+  `storage` seams local-only), `run_inference`/`deploy` **stubs** (P4/P6), `compute_n_timestamps`,
+  `TrainingData`, `PreflightError`. Version `0.1.0`. README quickstart rewritten. **133 tests,
+  ruff clean** (`tests/test_api.py`, 9 new). STAC split to **spec 17**; ModelAdapter to **P0.5**.
+- **Spec 17 = STAC catalog DONE (2026-07-06):** `src/fsd/catalog/stac.py` + `TileCatalog.to_stac`
+  — additive STAC export (GeoParquet schema unchanged); one Item per tile-product, one asset per
+  band; `proj:code` from the MGRS tile (no raster reads); static self-contained STAC JSON via
+  `pystac` (now a direct dep) through the storage seam; round-trippable. Real-data smoke: 579-tile
+  benchmark → 579 items in 0.06 s, both UTM zones. **140 tests, ruff clean** (7 new). `stac-geoparquet`
+  deferred; advances TODO #14 (STAC half; TiTiler serving = P5).
+- **Spec 18 = P0.5 DONE (2026-07-06):** the **ModelAdapter contract** + local train/deploy. New
+  `src/fsd/model/` (`adapter` [Protocol + `BaseModelAdapter` + `Output`], `features` [the F1
+  anti-skew chokepoint + `median_per_id`], `engine` [fsd owns the predict loop → COG], `bundle`
+  [self-describing `module:attr` bundle, save/load, model-free preflight]). `api.py` wired:
+  `create_training_data(adapter=/feature_sequence=/aggregate=)` writes `features.npy` additively;
+  **`run_inference` is real** (local engine over pre-built inference datacubes → COG per cube +
+  STAC via new `catalog.stac.cog_outputs_to_items` + optional merged map); `deploy` still a P6
+  stub (bundle format now pinned). Example `examples/eurocrops_rf.py`; runbook
+  `tests/manual/deploy.md`; explainer `specs/18-model-bundle-explainer.md`. **150 tests, ruff
+  clean** (`tests/test_model.py`, 9 new). One bug fixed: engine copies `band_indices` (modify_bands
+  mutates it). ROI→S2-tiling front-end for `run_inference` stays **P4**.
+- **Spec 22 = retire `engine.run_local`'s `mp.Pool` + idempotent inference DONE (2026-07-07):**
+  after P0.75, the pre-built-cubes inference pool was the last parallel fan-out **not** on the runner
+  seam. Now: `cores=1` stays **in-process sequential** (tests/debug/small, no bundle); `cores>1`
+  fans out via the **Snakemake infer-only runner** (`workflows/infer_only_task.py` +
+  `_snakefiles/infer_only/Snakefile` + `runners.run_local_infer_only`), routed from
+  `api.run_inference` (kept out of `engine` to avoid a model→workflows cycle). **No `mp.Pool`
+  anywhere** → Batch (P4) can dispatch pre-built inference too (pure `runner=` swap). **Inference is
+  idempotent:** both paths skip existing outputs unless `overwrite=True` (fixes the demo re-run the
+  user hit — engine re-inferred despite existing `output.tif`). New `cubes_per_task` knob (default 1)
+  groups K cubes per job to amortise the bundle load — the intra-task loop is **sequential, no pool**.
+  Default `cores=1` → backward-compatible. **167 tests, ruff clean** (+4). **Real cores>1 smoke**
+  (.venv, 5 synthetic cubes, cubes_per_task=2 → 3 Snakemake groups): 5 COGs + STAC, rerun = "Nothing
+  to be done" (idempotency confirmed). Docs: `CHANGES.md`, `specs/18` pointer, `deploy.md`.
+- **Spec 21 = P0.75 ROI inference verb DONE (2026-07-07):** `run_inference(roi=…)` completes
+  **Mode A** — one call tiles an ROI (`fsd.grid`), builds one datacube per S2 grid cell, infers,
+  and writes per-cell COGs + STAC (+ optional merged map). The per-cell **build+infer** is a single
+  **runner-dispatched** unit-of-work (`workflows/infer_task.py` + `_snakefiles/create_inference/`
+  Snakefile + `runners.run_local_inference`), *not* the spec-18 `mp.Pool` — so **P4 = a pure
+  `runner=` swap to Batch** (the reason we folded inference into the runner seam). `run_inference`
+  now takes `roi=` **xor** `inference_datacubes=` (both optional; positional calls still work);
+  `merge` is tri-state `False|True|"reproject"` (strict single-CRS vs lossy dominant-zone display
+  merge — the demo's logic moved into `api._merge_outputs`; demo now calls `merge="reproject"`).
+  **SO-6:** ROI inference never calls CDSE (imagery assumed present; conserve quota → on cloud,
+  Batch reads blob). **163 tests, ruff clean** (+11). **Real smoke** (`.venv-modeldeploy`, benchmark):
+  ~9 km ROI → 10 cells → 10 COGs + STAC + reproject-merge (899×889, 96.9 % valid), 42 s @ cores=2;
+  resumability confirmed. Bug fixed: snakemake parses empty `--config key=` as `None` → omit
+  `predict_batch_size` when None. Runbook `tests/manual/roi_inference.md`; supersedes deploy.md §3's
+  3×3-grid stand-in. **This clears the last pre-Azure phase — next is P1 (Azure storage seam).**
+- **Spec 20 = datacube-builder tile-merge bugfix (2026-07-07):** the spec-19 demo exposed a
+  **correctness bug** — `_stack_datacube` kept only **one** tile per `(timestamp, band)` (a dict),
+  so shapes straddling an MGRS tile boundary lost the coverage of every other same-acquisition
+  tile (worst demo grid `165b09c`: 0.6 % valid despite ~80 % raw coverage; clustered on the
+  lat-11.75 tile-row boundary). A faithfully-ported legacy bug, hidden until inference grids
+  (spec 19) were the first shapes big enough to straddle tiles. **Fix:** nodata-fill **merge all**
+  same-`(timestamp,band)` images onto the reference grid (tie-break: `dst_crs`-native first),
+  confined to `_stack_datacube`. **Verified:** `165b09c` 0.6 % → 82.8 % valid; 2 new unit tests.
+  Post-fix demo re-run: merged map 90 % → **96 %** valid, **0** dead grids (was 9). Docs:
+  `BUGS.md` BUG-002, `CHANGES.md`, `specs/03`, `specs/20`.
+- **Spec 19 = end-to-end demo + ROI→S2 tiling (2026-07-06):** landed **`src/fsd/grid.py`**
+  (`roi_to_s2_grids`, clean-room port of `rsutils.s2_grid_utils`; `s2`+`s2cell` in the optional
+  `[grid]` extra — ROADMAP §4 / P4 groundwork, `run_inference(roi=…)` front-end still P4) +
+  `tests/test_grid.py` (4 tests, skip without `[grid]`). New **`demos/`** runs demo_01+02+03 as
+  one flow (tiling → `create_training_data` → RF → inference datacubes → `run_inference` →
+  COG/STAC + crop map + NDVI-timeseries/crop-map/grids figures) on the existing Ethiopia data, in
+  an **isolated `.venv-modeldeploy`** (`[dev,grid,model-example]`; keeps fsd's `.venv` lean).
+  **`--fast` validated** (67 s); full run = 300 grids / 1015 fields / T=19. **Finding:** the ROI
+  straddles the S2 zone-36/37 boundary → per-grid datacubes are mixed 32636/32637, so
+  `run_inference(merge=True)` refuses (single-CRS principle) and the demo reproject-merges outputs
+  to the dominant zone for the display map. Model quality is meaningless (Austria labels on
+  Ethiopia pixels) — pipeline validation; real run after the Austria download.
+- **AZURE_INFRA.md scrubbed + git history rewritten (2026-07-06):** private-infra names/IDs/CIDR/
+  budget removed from the public repo (placeholders); concrete values live only in the local,
+  never-committed `AZURE_INFRA_PRIVATE.md` at the workspace root.
+- **Next:** **P1** (Azure storage seam: adlfs/MSI + GDAL-VSI) — the last pre-Azure local phase
+  (P0.75, spec 21) is now done, so the whole local Mode-A product is complete. P1 needs Azure
+  access from this laptop (VPN + `az login`); the setup checklist is `../P1_AZURE_SETUP.md`
+  (workspace root, uncommitted). Alternatively the `spike/rslearn` benchmark (the big
+  build-vs-borrow unknown). NB the Azure-Batch spec is a *future* number (not spec 10 — that's
+  "storage-and-scale", already used).
+
+## Where we are
+
+Spec phase **complete and signed off**; package **scaffolded**; `storage` and
+`catalog` **implemented and tested** (16 automated tests pass, ruff clean).
+
+## Build order & status (from `specs/00-overview.md §7`)
+
+| # | Module | Status |
+|---|--------|--------|
+| 0 | `config.py` | ✅ done (constants) |
+| 1 | `storage/fs.py` | ✅ implemented · ✅ verified (`tests/test_storage.py` + manual `storage.md` Section A all pass; Section B = S3, needs creds, still manual) |
+| 4 | `sources/cdse.py` | ✅ `CdseCredentials` + `query_catalog` + `download` implemented (18 tests, ruff clean). **Discovery pivoted to the CDSE STAC API (`pystac-client`, anonymous) — drops `sentinelhub` and the flaky S3 `.SAFE` listing (BUG-001)**; band S3 hrefs come from STAC `assets`. Metadata path live-verified (Ethiopia ROI, 138 tiles Jan–Mar 2018, highest-res selection + MTD_TL.xml). **At-scale download DONE + hardened (2026-07-02):** 1-year Ethiopia multi-CRS download completed — 579/579 tiles, 94 GiB in `satellite_benchmark/`, verified integrity. Resilience: atomic `.part`+rename transfer, S3 timeouts, circuit-breaker + `download_resume`, newline progress. Concurrency/quota sweep = TODO #9. |
+| 2 | `catalog/catalog.py` | ✅ implemented · ✅ verified (`tests/test_catalog.py`, 6 tests) |
+| 3 | `raster/images.py` | ✅ implemented · ✅ verified (`tests/test_raster.py`, 24 tests; + RGB/GeoTIFF save helpers) |
+| 3 | `bands/modify.py` | ✅ implemented · ✅ verified (`tests/test_bands.py`, 12 tests) |
+| — | **real-data validation** (raster+bands) | ✅ `tests/manual/realdata.md` — TCC/FCC/NDVI on tile T33UWP confirmed in QGIS by user |
+| 5 | `datacube/ops.py → builder.py → flatten.py` | ✅ implemented · ✅ unit-tested (14 tests) · ✅ real multi-CRS build verified + runbook `tests/manual/datacube.md` (user QGIS-confirmed geolocation/merge/resample/mask; edge-tightness nit → TODO #8) · ✅ **heavy 1-yr benchmark + NDVI report** (`benchmarks/datacube_report_2018_ethiopia.md`). |
+| 6 | `workflows/task.py · runners.py · create_datacube.py` + Snakefile | ✅ implemented · ✅ tested (`tests/test_workflows.py`, 5 tests incl. real Snakemake dry-run) · ✅ **real full e2e verified** on `satellite_benchmark` (ROI 165bca4): setup→Snakemake→`task` CLI→build→`datacube.npy (2,554,533,3)` + `done.txt`; **resumability confirmed** (re-run = "Nothing to be done"). |
+| — | `notebooks/01_data_prep.ipynb` | ⬜ later |
+
+## Next step (when resuming)
+
+`sources/cdse.py` (module #4) is **complete + hardened + proven at scale**: the
+1-year Ethiopia multi-CRS download finished cleanly — **579/579 tiles, 94 GiB, in
+`satellite_benchmark/`**, integrity verified (0 zero-byte/truncated/`.part`). Along
+the way the download got production-grade resilience: atomic `.part`+rename transfer,
+S3 connect/read timeouts, circuit-breaker + `download_resume` loop, and log-friendly
+newline progress. See `benchmarks/download_report_2018_ethiopia.md`.
+
+**Dataset change:** the old `satellite/` (T33UWP) was **deleted**; the real-data test
+set is now **`satellite_benchmark/`** (Ethiopia `s2grid=165bca4`, EPSG:32636+32637,
+bands B04/B08/B8A/SCL). `realdata.md` TCC/FCC examples are stale (no B02/B03); only
+NDVI applies there. **As of 2026-07-04 this archive is COG** (`Bxx.tif` + overviews;
+migrated in place from JP2, catalog updated — see spec-14 bullet below).
+
+**Datacube module #5 DONE (2026-07-02):** `ops.py` (run_ops, apply_cloud_mask_scl,
+drop_bands, median_mosaic [numba], area_median), `builder.py` (build_datacube seam +
+flatten_catalog helper: missing-check → load/crop → dst_crs by max-mean area →
+merged-B08 reference → resample-to-ref → stack → SCL mask → drop → median mosaic →
+save via storage), `flatten.py` (per-pixel training arrays + coords). 14 unit tests
+(89→92 total). One legacy bug fixed: missing-band nodata fill shape (CHANGES.md).
+Two design rationales captured from the user (memory): `_dt2ts` UTC localization,
+`metadata.pickle.npy` cross-platform pickling.
+
+**Module #5 fully validated (2026-07-03):** unit tests + user QGIS pass + a **heavy
+full-year (2018) benchmark** on the real multi-CRS ROI. Findings: build is **I/O-bound**
+(load_images 70–75% of time; cold 238 s vs warm 72 s per ROI; peak ~4 GB), output
+`(19,554,533,3)` correct — the masked-mosaic NDVI traces real phenology (peak ~0.53 in
+Sep) and cloud masking lifts growing-season NDVI up to +0.36. Report + 3 figures +
+reproduce scripts in `benchmarks/` (matplotlib was `pip install`ed into `.venv`; it's
+already declared in the `notebooks` extra).
+
+**⚠️ UNCOMMITTED (paused mid-session, all on disk):** `benchmarks/datacube_report_2018_ethiopia.md`,
+`benchmarks/datacube_2018_figures/` (3 PNGs), `benchmarks/datacube_year_ethiopia.py`,
+`_plots.py`, `_stats.json`, and the PROGRESS edits above. Keep the 2 notebooks OUT.
+Commit these when resuming (user hadn't given the commit word before the pause).
+
+**Module #6 workflows DONE (2026-07-03):** task/runner/entrypoint split + bundled
+Snakefile (`fsd.workflows`), 5 tests incl. a real Snakemake dry-run. This **completes the
+v1 core pipeline: download → catalog → datacube → flatten → workflows.** Adaptations in
+CHANGES.md (parquet subset via `TileCatalog.filter`, `if_missing_files="warn"` default,
+`sys.executable -m` invocation, `fs.rm`).
+
+**⚠️ PAUSED 2026-07-03 with UNCOMMITTED module #6 (all on disk):**
+`src/fsd/workflows/{task,runners,create_datacube}.py`, `src/fsd/workflows/_snakefiles/create_datacube/Snakefile`,
+`src/fsd/storage/fs.py` (added `rm`), `tests/test_workflows.py`, `CHANGES.md`, `PROGRESS.md`.
+Keep the 2 notebooks OUT. Commit on resume.
+
+**v1 core pipeline is COMPLETE and end-to-end verified** (download → catalog → datacube →
+flatten → workflows), on real multi-CRS data, incl. Snakemake resumability.
+
+**Datacube-speed track (TODO #15) started — 3-part, benchmark-first:**
+- **Part 1 — spec 11 DONE + committed (2026-07-03):** reusable parallelism-sweep harness
+  (`benchmarks/datacube_throughput_sweep.py`) + baseline report. Finding: throughput knees at
+  **cores=4** (2.39×); per-grid `load_images` slows **2.41s→9.07s (3.76×)** with parallelism
+  → **I/O read contention is the bottleneck** (~60% of build). `build_datacube(write_timings=)`
+  flag added (env-gated via `FSD_WRITE_TIMINGS`). Runbook: `tests/manual/throughput_benchmark.md`.
+- **Part 2 — spec 12 DONE + implemented (2026-07-04):** per-read instrumentation. Builder
+  `write_read_log` → `reads.jsonl` per grid (id, mgrs_tile, product_id, band, filepath, wall-clock
+  start/end, duration; env-gated `FSD_WRITE_READ_LOG`, requires `njobs_load_images==1`). Harness
+  `--read-log`: **read conflicts** (overlapping read pairs, different grids) + **read-duration-vs-
+  concurrency** curve (instantaneous peak-in-flight; the hypothesis test) + **same-file / same-tile
+  / different-tile** split. Pure analysis unit-tested (107 tests). **Full 100-grid `--read-log`
+  run DONE (2026-07-04)** — report `benchmarks/datacube_throughput_report.md`.
+  **FINDING:** hypothesis **confirmed** — read duration 0.056s→0.274s (**4.87×**) as concurrency
+  1→10; all `cores` lines collapse onto ONE duration-vs-concurrency curve; total `load_images`
+  work 279s→912s (**3.27×**) for the *same* 6284 reads → **shared disk-bandwidth ceiling**, wall
+  plateaus past the cores=4 knee. **Conflicts are only 0.6% same-file** (372 / 15457 same-tile /
+  43082 diff-tile) — so **Part-3 tile-splitting-to-kill-same-file-conflicts targets a negligible
+  slice.** Self-check passes (sum_read_seconds ≈ load_images phase). Nuance in the report verdict:
+  it measures *simultaneous* conflicts not *redundant* reads; the inference workload isn't covered.
+- **COG vs JP2 experiment — spec 13 DONE + implemented (2026-07-04):** first speed lever pursued
+  (Part 2 pointed at JP2 wavelet *decode* cost). `benchmarks/prep_cog_dataset.py` (JP2→base COG,
+  DEFLATE+PREDICTOR=2, lossless via NBITS=16, disk pre-flight, storage report) + harness
+  `--catalog/--start/--end/--tag` + `benchmarks/compare_cog_jp2.py` (team report + duration-vs-
+  concurrency overlay). No `src/fsd/` change. Runbook `tests/manual/cog_experiment.md`. 113 tests,
+  ruff clean. **Full 4-month A/B DONE (2026-07-04)** — `benchmarks/cog_vs_jp2_report.md`.
+  **RESULT:** COG **1.58×→3.46× faster wall** (cores 1→10), **up to 9.42× faster load_images**;
+  COG mean read is **FLAT vs concurrency (1.01×)** while JP2 rises 3.45× → the slowdown was JP2
+  wavelet **DECODE** contention, **not** disk bandwidth (**corrects the Part-2 framing**). Cost:
+  base COG **1.225× JP2 storage (+23%)**, lossless. Clear win. (COG also scales past the JP2
+  cores≈4-6 knee, since the decode bottleneck is gone.)
+- **Tile-centric batching + other levers — PARKED (2026-07-04):** target the bandwidth/decode
+  costs, not same-file conflicts. Revisit only if build speed becomes a priority again. See TODO #15.
+- **COG-on-download — spec 14 DONE + implemented (2026-07-04):** FIRST production `src/fsd/` change
+  out of the COG track. `sources.cdse.download(cog=True, default)` converts each fetched JP2 band →
+  lossless COG (`Bxx.tif`, catalog records `.tif`) **with overviews** (TiTiler-ready); `cog=False`
+  keeps native JP2. New `src/fsd/raster/cog.py::to_cog` (lossless, atomic `.part`+replace, NBITS=16
+  for uint16, optional verify) — the single COG-profile home (config constants); `prep_cog_dataset`
+  refactored to share it. Fetch→local staging sibling→`to_cog`→remove-staging; idempotency keys on
+  the final `.tif`. **Local-dst only in v1** (remote raises; stage→convert→upload deferred to
+  Azure). Read/build path untouched (rasterio reads `.tif`). 119 tests, ruff clean. **Real smoke:**
+  10980² B04 JP2 → COG bit-identical, overviews [2,4,8,16], 15.5 s, ~1.86× size (w/ overviews).
+  Follow-ups in TODO #15: remote-dst COG, conversion process pool, bulk-migrate the existing
+  `satellite_benchmark` archive.
+- **satellite_benchmark migrated JP2→COG in place — DONE (2026-07-04):**
+  `benchmarks/migrate_jp2_to_cog.py` converted all **2316 band files** to COG+overviews (lossless,
+  0 failed), **deleted the JP2s** (no duplicate copies), and rewrote `catalog.parquet` to `.tif`
+  (fully consistent, 0 missing). 72 min at 8 workers; archive **94→159 GiB**, ~10 GiB free. Tool is
+  resumable, disk-floor-guarded, progress-bar + ETA, `--verify {full,quick,none}` (default quick).
+  Conversion is **memory-bandwidth-bound** → 8 workers (perf cores) is the knee (10 gave no gain).
+  The Part-1/2 throughput/read findings were on the *pre-migration JP2*; re-running now reads COG.
+
+**Calendar-interval mosaic = spec 15 DONE + implemented (2026-07-05):** resolves TODO #2 and
+unblocks `flatten` across a multi-tile/multi-zone training set. `median_mosaic` gained
+`mosaic_scheme` (default `config.MOSAIC_SCHEME="calendar"`): fixed calendar windows off the
+caller's `startdate`, labels = window-start boundaries, **empty windows emitted as all-nodata**
+→ every cube over the same start/end/mosaic_days shares an **identical `timestamps` axis** whatever
+tiles/orbits/zones it hit. Legacy via `mosaic_scheme="acquisition"`. Threaded through `build_datacube`,
+`workflows.task` (`--mosaic-scheme`), `create_datacube.setup` (now anchors at caller dates, not
+per-shape actual) + Snakefile. Sub-cadence behavior documented in `median_mosaic` docstring (window <
+revisit → raw series padded with nodata slices). 124 tests, ruff clean. Real smoke: west (EPSG:32636)
++ east (EPSG:32637) fields → identical `[06-01, 06-21]` axis. New TODO #16 = multi-zone `coords.npy`.
+
+**`flatten` real-data run DONE + validated (2026-07-05):** the last v1-pipeline stage to get a real
+run. Built 1 datacube per EuroCrops field via the workflow (33-field class-stratified subset of
+`shapefiles/austria_eurocrops_sampled_ethiopia_translated.geojson`, id=`fid`, label=`EC_hcat_n`, 11
+classes, both zones), then `flatten` over the workflow `input.csv` → `data.npy (6502,2,3)` +
+coords/ids/labels/metadata. **Consistency gate passed across both UTM zones** (spec-15 payoff),
+total/per-field pixel counts match, round-trip exact. Runbook `tests/manual/flatten.md`. Full 1015-field
+run = same commands (serial cube build ≈ 9 min). **v1 pipeline now fully real-data-validated end to end.**
+
+**Other NEXT options:** Azure/Batch (spec 10, roadmap step 2); source extension (#11) / rslearn
+benchmark (#12). Deferred: TODO #9; TODO #16 (multi-zone coords); `reference_profile` grid-from-bounds.
+
+CDSE discovery pivot (2026-07-01): dropped `sentinelhub` + the S3 `.SAFE` listing for
+the **CDSE STAC API** (`pystac-client`, anonymous). STAC item `assets` give per-band
+S3 hrefs directly → no recursive S3 listing (the BUG-001 failure). Only the byte
+`transfer` touches S3 auth, wrapped in fail-fast retry. On-disk layout unchanged
+(strip `.SAFE`, short `B02.jp2` names) = the `satellite/` folder layout.
+Residual resilience items (circuit breaker, per-tile restructure) tracked in BUGS.md.
+
+**Test geometries** (`shapefiles/`, EPSG:4326): `s2grid=476da24.geojson` = Austria tile
+T33UWP, single-tile (used for raster/bands realdata.md, done). `s2grid=165bca4.geojson`
+= Ethiopia ROI (lon ~36.2/lat ~11.6) straddling the **36°E UTM zone boundary** → pulls
+S2 tiles in **both EPSG:32636 & 32637** = THE multi-tile/multi-CRS test for CDSE download
++ datacube creation (its tiles aren't in `satellite/` yet, so download must run first).
+
+## Decisions log (all locked unless noted)
+
+- Scope: download → datacube → flatten. Train/deploy stay in notebooks.
+- Sentinel-2 **L2A only**. **GeoParquet** catalog. Keep **Snakemake** as the *local*
+  runner only. Keep `coords.npy`. CDSE query cache **removed**.
+- Storage = **fsspec** seam (local now; blob/S3 additive). S3 transport **first-class
+  & generic** (s3fs, any endpoint); no direct boto3.
+- Real end goal: Azure Batch scale-out, **cloud-agnostic** — achieved via the storage
+  seam + a runner-agnostic CLI datacube task. **No Azure code in v1.**
+- OQ-3 **resolved**: source contract is a documented function signature (no ABC) until
+  a 2nd source exists.
+- Hard constraint: never edit `fetch_satdata/`, `rsutils/`, `cdseutils/` (read-only
+  reference). Keep `DROPPED.md` / `CHANGES.md` current.
+
+## Key files
+- Design: `specs/00..10`. Living docs: `DROPPED.md`, `CHANGES.md`.
+- Implemented: `src/fsd/config.py`, `src/fsd/storage/fs.py`.
+- Manual tests: `tests/manual/` (one guide per module).
+- Cross-session memory: see `MEMORY.md` entries `fsd-*`.
+
+## Environment note
+Deps are **not** in system Python. Dev setup:
+`python3.11 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"`.

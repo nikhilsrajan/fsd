@@ -1,3 +1,8 @@
+---
+status: historical
+summary: Datacube throughput parallelism-sweep baseline against the satellite_benchmark/ archive, which no longer exists (deleted 2026-07-17, CLAUDE.md).
+---
+
 # Datacube throughput benchmark — Part 1 (parallelism sweep)
 _Spec 11 · generated 2026-07-04T07:20:47.619952Z_
 **Reusable baseline** — re-run `python -m benchmarks.datacube_throughput_sweep` after any speedup and diff against `datacube_throughput_stats.json`.

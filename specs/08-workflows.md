@@ -1,3 +1,8 @@
+---
+status: current
+summary: Task/runner seam for batch datacube builds (Snakemake locally); still the structure in use.
+---
+
 # Spec 08 — Batch datacube workflow (Snakemake)
 
 Folds in: `workflows/create_datacube.py`, `datacube/setup_datacube_run.py`,

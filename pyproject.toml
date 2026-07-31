@@ -1,13 +1,13 @@
 [project]
 name = "fsd"
-version = "0.0.1"
+version = "0.1.0"
 description = "Fetch satellite tiles and build datacubes (clean rewrite). Sentinel-2 L2A via CDSE; cloud-agnostic by design."
 authors = [{ name = "Nikhil Sasi Rajan", email = "nsasiraj@umd.edu" }]
 readme = "README.md"
 requires-python = ">=3.11"
 
 # Core deps only. Plotting/sklearn live in the [notebooks] extra; Azure backends
-# live in the [azure] extra (Phase 2). See specs/09-notebooks.md.
+# live in the [azure] extra (spec 31, P1). See specs/09-notebooks.md.
 dependencies = [
     "numpy",
     "pandas",
@@ -17,6 +17,7 @@ dependencies = [
     "pyarrow",        # GeoParquet catalog
     "fsspec",         # storage seam (specs/10)
     "s3fs",           # S3-compatible transport (any endpoint: AWS, CDSE EODATA, MinIO)
+    "pystac",         # STAC export view of the tile catalog (specs/17)
     "pystac-client",  # CDSE STAC catalog discovery (anonymous; replaces sentinelhub)
     "numba",          # median-mosaic kernel
     "snakemake",      # local runner only (specs/08)
@@ -31,8 +32,42 @@ notebooks = [
     "scikit-learn",
     "joblib",
 ]
-azure = [          # Phase 2, not used in v1 code
-    "adlfs",       # fsspec Azure Blob backend
+model-example = [  # for examples/eurocrops_rf.py + tests/manual/deploy.md + demos/ (not fsd core)
+    "scikit-learn",
+    "joblib",
+    "matplotlib",
+    "seaborn",
+]
+grid = [           # ROI → S2-grid tiling (fsd.grid); optional so core stays lean (spec 19)
+    "s2",
+    "s2cell",
+]
+azure = [               # P1 compute seam (spec 31), opt-in — core stays lean
+    "adlfs",            # fsspec Azure Blob backend
+    "azure-identity",   # DefaultAzureCredential (adlfs auto-resolves it; GDAL VSI token needs it directly)
+    "azure-keyvault-secrets",  # spec 37 D5: read CDSE creds / PC_SDK_SUBSCRIPTION_KEY from Key Vault
+]
+aml = [            # P2 compute seam (spec 36): the Azure ML scale runner, opt-in
+    "azure-ai-ml",  # AML SDK v2 -- command jobs, environments, compute (runner="aml" only)
+]
+mpc = [            # MPC source (spec 32): Microsoft Planetary Computer signing
+    # Official signing package. We call `pc.sign_inplace` (sources/mpc.py) as the
+    # pystac_client Client modifier — spec 32 D4. Pinned to the major we validated
+    # against real MPC traffic (1.0.0, runbook 32 v2, 2026-07-16); <2 guards the next
+    # major, which is where that API is allowed to break. Same discipline as
+    # rio-tiler>=6,<8 below. Unbounded, this breaks on a FRESH install (new dev, CI,
+    # an Azure Batch node) long after the change that caused it — never on a machine
+    # that already has it.
+    "planetary-computer>=1,<2",
+]
+titiler = [        # P5 serving validation (spec 29 Tier 1; grows for Tier 2). NOT fsd core.
+    "rio-tiler>=6,<8",       # the COG tile read + render (the pre-styled route)
+    "fastapi",               # the app
+    "uvicorn[standard]",     # ASGI server
+    # titiler.core / titiler.mosaic are added in Tier 2 (pgSTAC); Tier 1 needs only rio-tiler.
+]
+serving = [        # P5 serving Tier 2 (spec 30): stac-geoparquet export. NOT fsd core.
+    "stac-geoparquet",
 ]
 dev = [
     "ruff",
