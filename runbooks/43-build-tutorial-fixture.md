@@ -168,8 +168,9 @@ export AZ_ARCHIVE_ROOT="abfss://<fs>@<account>.dfs.core.windows.net/<prefix>"
 echo "AZ_ARCHIVE_ROOT=[$AZ_ARCHIVE_ROOT]"
 python -c "
 import os
-from fsd import storage as fs
-root = os.environ['AZ_ARCHIVE_ROOT']
+from fsd.storage import fs          # NOT 'from fsd import storage as fs' --
+root = os.environ['AZ_ARCHIVE_ROOT'] # fsd.storage is a PACKAGE; the functions
+                                     # live in fsd.storage.fs
 assert root.startswith('abfss://'), f'not a blob url: {root!r}'
 print('catalog exists:', fs.exists(root + '/archive/catalog.parquet'))
 "
@@ -289,16 +290,22 @@ python tests/data/tutorial/build_fixture.py \
 
 ## Step 5 — VM → laptop: land it home (~20 MB, hotspot-safe)
 
-The fixture is the only thing that crosses the WAN. Easiest path off a compute instance, which has
-no `scp`:
+The fixture is the only thing that crosses the WAN. A compute instance has no `scp`, so it goes
+via blob — **as a single tar object**, because `fs.put`/`fs.get` are deliberately **file-only**
+(`put_file`/`put_file`; they take no `recursive`, and a directory argument fails). One object is
+also the more reliable transfer.
 
 ```bash
-# On the VM: stage the fixture to blob under your own scratch prefix.
+# On the VM: tar the fixture, then stage the ONE object to your own scratch prefix.
+tar czf /tmp/tutorial_fixture.tgz -C . tests/data/tutorial
+ls -lh /tmp/tutorial_fixture.tgz          # sanity: tens of MB, not hundreds
+
 python -c "
 import os
-from fsd import storage as fs
-fs.put('tests/data/tutorial', os.environ['AZ_ARCHIVE_ROOT'] + '/scratch/tutorial_fixture', recursive=True)
-print('staged')
+from fsd.storage import fs
+dst = os.environ['AZ_ARCHIVE_ROOT'] + '/scratch/tutorial_fixture.tgz'
+fs.put('/tmp/tutorial_fixture.tgz', dst)
+print('staged ->', dst)
 "
 ```
 
@@ -307,19 +314,20 @@ print('staged')
 cd ~/NASA-Harvest/project/fetch_satdata_claude/fsd && source .venv/bin/activate
 python -c "
 import os
-from fsd import storage as fs
-fs.get(os.environ['AZ_ARCHIVE_ROOT'] + '/scratch/tutorial_fixture', 'tests/data/tutorial', recursive=True)
+from fsd.storage import fs
+src = os.environ['AZ_ARCHIVE_ROOT'] + '/scratch/tutorial_fixture.tgz'
+fs.get(src, '/tmp/tutorial_fixture.tgz')
 print('landed')
 "
+tar xzf /tmp/tutorial_fixture.tgz         # restores tests/data/tutorial/ in place
 du -sh tests/data/tutorial
 ```
 
 - **Expect:** `du` shows **≤ 30 MB**.
 - **PASS if:** the size matches step 4's reported total (±1 MB for filesystem overhead).
-
-> Alternative if `fs.put/get` are not both available for directories: zip on the VM
-> (`tar czf tutorial.tgz tests/data/tutorial`), stage the single archive, land it, untar. One object
-> is also the more reliable transfer.
+- **The untar overwrites `roi.geojson`/`fields.geojson`** with the copies the VM used — the same
+  bytes Step 0a committed, so `git status` should show no change to them. If it does, the VM built
+  against a different ROI than you committed.
 
 ---
 
