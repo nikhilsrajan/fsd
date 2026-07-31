@@ -202,36 +202,105 @@ between rslearn's `period_duration` and fsd's `T = ceil(span / mosaic_days)`.
 - **If it errors on import or signature:** rslearn's API moved between 0.1.13 and whatever
   installed. Paste the traceback; the probe is pinned to the version in Step 1 for this reason.
 
-### Step 3 — can rslearn write to Azure blob under managed identity? *(not yet written)*
+### Step 3 — can rslearn read and write Azure blob under managed identity, and how fast?
 
-**Gated on Step 2.** This is the highest-risk question in the spike
-(`RSLEARN_READ_2026-07-31.md` §3: **zero** azure/adlfs/abfs references in 54,850 LOC, and
-`fsspec[gcs, s3]` declares no azure backend), but its *shape* depends on whether a shim is
-needed, so the probe is written after Step 2 comes back.
+**Written 2026-07-31, after Step 2 landed.** This was billed as the spike's highest-risk
+question. **It is now a smaller question than that, and the reason is worth reading before you
+run it** — see report §4.1.1.
 
-What it will have to establish, recorded now so the design is not re-derived:
+The source read argued rslearn "inherits" fsd's GDAL/VSI-auth problem because it reads pixels
+through rasterio. **It does not.** `rslearn/utils/fsspec.py:157-214` shows that for any
+*non-local* path — both the reader and the writer — rslearn opens an fsspec **file object** and
+hands *that* to `rasterio.open`. GDAL never receives a remote URL, so GDAL's credential
+machinery is bypassed and `adlfs` + `DefaultAzureCredential` does all the work. The only
+`rasterio.Env(session=…)` in 54,850 LOC is one AWS-specific source (`nasa_hls.py:244`).
 
-1. Does `UPath("abfss://…")` resolve at all in the spike venv, and does it need `adlfs` added by
-   hand (upstream does not declare it)?
-2. Can `rslearn.tile_stores.default` **write** a tile there under `DefaultAzureCredential`?
-3. Does rasterio/GDAL *inside* rslearn read that path under MSI — or does it hit the same wall
-   fsd solved separately in spec 31 with `/vsiadls/` + a fresh token? fsd's answer is not
-   portable into rslearn without patching it, and patching a read-only reference is not allowed.
+So the question is no longer *"can it authenticate?"* but **"what does it give up by not using
+`/vsiadls/`?"** — i.e. throughput.
 
-### Step 4 — pixel equivalence against the tutorial fixture *(not yet written)*
+#### Step 3a — local smoke first (5 seconds, no Azure, no credentials)
 
-**Gated on Steps 2 and 3.** Acquire the same cell/window/bands rslearn-side and diff against the
-committed fixture: grid cell `4772924`, T33UWP, 2018-04-01 → 2018-09-28, B04/B08/SCL,
-`mosaic_days=20`. fsd's published numbers over exactly this corpus are the comparison baseline.
+The probe calls four real rslearn APIs whose signatures were read from source but never
+executed. Probes 01 and 02 each cost a VM round-trip to a wrong assumption. `UPath` on a local
+path takes the `LocalFileSystem` branch, so this exercises **every rslearn call in the probe**
+with zero Azure involvement:
 
-Two things to watch, both from the read:
+```bash
+cd fsd && source .venv-rslearn/bin/activate
+python spike/probes/probe_03_azure.py \
+    --out /tmp/rslearn_spike_smoke \
+    --dst-prefix /tmp/rslearn_spike_smoke/local
+```
 
-- rslearn's harmonization is **opt-in** (`harmonize: bool = False`, `copernicus.py:680`) and
-  **hard-asserts `offset == -1000`** (`copernicus.py:73`). This fixture's products correctly
-  declare `0`, so **rslearn is predicted to `AssertionError`** if harmonization is switched on
-  against this archive. That is a genuine finding about rslearn, worth capturing precisely.
-- Any `T` mismatch from Step 2 must be reconciled *before* a pixel diff means anything —
-  comparing a 9-deep stack to a 10-deep one is not a comparison.
+- **PASS if:** `q2_raster_format` and `q3_tile_store` both report `"ok": true` and
+  `"roundtrip_identical": true`. `q1_upath` will report `adlfs_installed` and a
+  `LocalFileSystem` class — that is expected here and is not the real Q1.
+- **If a signature is wrong**, it fails here in seconds with a `TypeError`/`AttributeError`
+  naming the call. Paste it; do not proceed to 3b.
+
+#### Step 3b — the real thing, on the VM
+
+```bash
+az login                       # or rely on the VM's managed identity
+source env.local.sh            # AZ_ROOT, AZ_SCRATCH_PREFIX -- see env.example.sh
+
+pip install adlfs              # NOT declared by rslearn -- installing it by hand IS the finding
+python spike/probes/probe_03_azure.py \
+    --out tests/outputs/rslearn_spike \
+    --dst-prefix "$AZ_ROOT/$AZ_SCRATCH_PREFIX/rslearn_spike"
+```
+
+- **Moves ~12 MB total** (two 6 MB rasters), writes only under the scratch prefix, and deletes
+  what it wrote unless you pass `--keep`.
+- **PASS if:** `_result_probe03.json` has `"status": "ok"` and
+  `metrics.write_read_works == true`.
+- **The numbers that matter:** `q2_raster_format.read_mb_per_s` and
+  `q3_tile_store.read_mb_per_s`. Compare them against fsd's `/vsiadls/` throughput on the same
+  VM — that comparison is what §4.1.1 leaves open.
+- **If `adlfs_installed` is false and Q1 fails:** that is the expected shape of the finding, not
+  a mistake. Record it and install `adlfs`.
+- **If Q2/Q3 fail with an auth error:** paste it. That would mean fsspec's Azure path needs more
+  than `DefaultAzureCredential` on this VM, which is a real cost line for Options A and B.
+
+> 🔒 **The result file records the URL's *shape*, never the URL** (`_redact` in the probe:
+> `abfss://<fs>@<account>/<N path segments>`). Paste the JSON freely; do not paste your
+> `--dst-prefix`. This branch is a public MIT repo.
+
+### Step 4 — pixel equivalence against the tutorial fixture *(optional; deliberately deferred)*
+
+**Recommendation: do not run this yet, and possibly not at all.** Stating the reasoning rather
+than quietly dropping the step.
+
+Step 4 was designed to answer *"does rslearn reproduce fsd's datacube?"* Probe 02 established
+that it **cannot**, for three independent reasons that all sit upstream of any pixel comparison:
+
+1. **`T` differs** — 9 vs fsd's 10 on the tutorial window, 7 vs 9 once a period has no scene.
+2. **Phase differs** — rslearn's first period starts 2018-04-02, not 04-01 (end-anchoring).
+3. **The composite differs in kind** — `period_duration` + `MOSAIC` returns **one
+   first-coverage scene per period** (`utils.py:438-442,464-468`), where fsd takes a per-pixel
+   **median over every scene in the window**.
+
+To make a pixel diff meaningful you must first write the re-alignment shim *and* find a
+compositor combination that reproduces a median. **At that point the diff measures our shim, not
+rslearn** — it answers "did I write the adapter correctly?", which is a useful test for an
+adapter that exists, and not evidence for a decision about whether to build one.
+
+**What to run instead, if Option B stays live** — the one cheap question §6.2 identifies as
+load-bearing and nobody has asked:
+
+> Take one source fsd lacks and genuinely wants (**ERA5-Land** is the best candidate — issue #11
+> names it, and rslearn has three variants). Time-box an afternoon. Get it into an fsd-shaped
+> array two ways: through rslearn, and by writing it directly against fsd's `Source` seam.
+> Compare the LOC, the dependency cost, and how much of rslearn's model you had to learn.
+
+That measures the hybrid's actual value — the *marginal* cost of one more source — which is what
+Option B rests on. A pixel diff does not.
+
+**If you do run Step 4 anyway**, one finding is worth capturing precisely: rslearn's
+harmonization is opt-in (`harmonize: bool = False`, `copernicus.py:680`) and **hard-asserts
+`offset == -1000`** (`copernicus.py:73`). The fixture's pre-Collection-1 products correctly
+declare `0`, so **rslearn is predicted to `AssertionError`** against this archive with
+harmonization on. That is a genuine, quotable fact about rslearn regardless of the pixel diff.
 
 ---
 

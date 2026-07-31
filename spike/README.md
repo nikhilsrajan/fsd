@@ -14,7 +14,7 @@
 | rslearn under evaluation | **v0.1.13** @ `a5c50c63` (2026-07-28), read-only at the workspace root |
 | Static analysis | ✅ done — [`RSLEARN_READ_2026-07-31.md`](RSLEARN_READ_2026-07-31.md) |
 | Probes written | ✅ 01 (install weight) + 02 (the `T` contract) — `probes/` |
-| Probes run | ✅ **01 + 02 ran on the VM 2026-07-31**; Steps 3-4 (Azure, equivalence) not yet written or run |
+| Probes run | ✅ **01 + 02 ran on the VM 2026-07-31**. **Step 3 (Azure) is now written** — `probes/probe_03_azure.py`, with a local smoke first. **Step 4 (pixel equivalence) is deliberately deferred** — probe 02 showed a diff would measure our shim, not rslearn |
 | Report | 🟢 **complete for the offline half** — [`RSLEARN_SPIKE_REPORT.md`](RSLEARN_SPIKE_REPORT.md). §1-§7 written; only the Azure/equivalence rows are ⬜ |
 | Verdict | **stay on Plan B; hybrid deferred, not rejected** (§6.4). The one live condition that could change it is run-book Step 3 — can rslearn write to Azure blob under MSI without patching |
 

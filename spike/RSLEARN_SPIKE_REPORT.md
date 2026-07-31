@@ -398,16 +398,52 @@ PR rather than an architectural change. The Azure gap is a gap in coverage and t
 structural refusal.
 
 rslearn is built on UPath + fsspec (`rslearn/utils/fsspec.py`), so `abfss://` *should* work with
-`adlfs` installed. But fsd's own experience is that fsspec was never the hard part — **GDAL/VSI
-auth under managed identity** was, and fsd solved it separately in spec 31 (`/vsiadls/` + a fresh
-token). rslearn reads pixels through rasterio too (`rslearn/utils/raster_format.py`), so it
-inherits that problem with no known upstream solution. **fsd's fix is not portable into rslearn
-without patching rslearn**, and patching a read-only upstream is a finding against Plan C, not a
-task.
+`adlfs` installed.
 
-⬜ **Pending run-book Step 3** — the three sub-questions (does `UPath("abfss://…")` resolve; can
-`rslearn.tile_stores.default` write under `DefaultAzureCredential`; does GDAL inside rslearn read
-it under MSI). This is the highest-risk unknown in the spike.
+#### 4.1.1 Correction: the GDAL-auth objection does not apply. rslearn sidesteps it by design.
+
+**The source read got this wrong and it needs saying plainly.** `RSLEARN_READ_2026-07-31.md` §3
+argued that because rslearn reads pixels through rasterio, it "inherits exactly that problem" —
+GDAL/VSI auth under managed identity, the thing fsd had to solve separately in spec 31 with an
+`abfss://` → `/vsiadls/` translation plus a refreshed `AZURE_STORAGE_ACCESS_TOKEN`
+(`src/fsd/storage/azure.py:62-80`, `src/fsd/raster/__init__.py:50,80`).
+
+Reading `rslearn/utils/fsspec.py:157-214` shows it does not:
+
+```python
+if isinstance(path.fs, LocalFileSystem):
+    with rasterio.open(path.path, **kwargs) as raster:   # local: a real filename
+        yield raster
+else:
+    with path.open("rb") as f:                           # remote: an fsspec FILE OBJECT
+        with rasterio.open(f, **kwargs) as raster:
+            yield raster
+```
+
+**GDAL is never handed a remote URL.** For any non-local path — reader (`fsspec.py:157-179`) and
+writer (`fsspec.py:182-214`) alike — rslearn opens an fsspec file object and passes *that* to
+rasterio. Credentials are therefore resolved entirely by fsspec/`adlfs`
+(`DefaultAzureCredential`), and GDAL's VSI credential machinery is bypassed. A repo-wide grep
+confirms it: the only `rasterio.Env(...)` with a credential session anywhere in 54,850 LOC is
+`nasa_hls.py:244`, one AWS-specific source.
+
+**This is a genuinely good design and it is arguably cleaner than fsd's.** One storage abstraction
+covers every backend; there is no per-cloud URL translation to maintain and no token-refresh
+window to get wrong. fsd carries `/vsiadls/` translation code *because* it hands GDAL URLs.
+
+**What it costs instead — the real open question.** Reading a COG through a Python file object
+gives up GDAL's own remote optimizations (its range-request cache, `/vsi` overview handling,
+`GDAL_DISABLE_READDIR_ON_OPEN` and friends). fsd chose the VSI path for throughput. So the Azure
+question is **not "does it work?" but "how much slower is it?"** — an empirical question, and a
+much less threatening one than "it cannot authenticate."
+
+**Net effect on the decision:** the largest cost line in both Options A and B is smaller than the
+source read priced it. §6.4 is updated accordingly.
+
+⬜ **Still pending run-book Step 3**, now with sharper questions: does `UPath("abfss://…")` resolve
+once `adlfs` is installed by hand (upstream declares no Azure backend); can rslearn's raster format
+and tile store round-trip a tile there under `DefaultAzureCredential`; and what is the read
+throughput versus fsd's `/vsiadls/` path on the same object.
 
 ### 4.2 Install weight — heavy, with categorically no lite path
 
@@ -694,7 +730,7 @@ the probes precisely so this could not be reverse-engineered:
 |---|---|
 | *If probe 02 shows `T` matches → the strongest objection collapses, Option B gets materially more attractive* | **It did not match.** 9 vs 10, and 7 vs 9 with empty periods. The objection stands, and the probe added a second one (first-coverage vs median). |
 | *If probe 01 shows a modest install → the Mode-A objection weakens* | **It did not.** 5.3 GB, 2.9 GB downloaded, and the stock install does not import. |
-| *If Step 3 shows rslearn writes to Azure under MSI without patching → the largest cost of A and B drops, and A stops being unreasonable* | **Still unrun.** This is the one live condition. |
+| *If Step 3 shows rslearn writes to Azure under MSI without patching → the largest cost of A and B drops, and A stops being unreasonable* | **Still unrun — but the source now says the objection was overstated** (§4.1.1). rslearn never hands GDAL a remote URL, so the GDAL-auth wall fsd hit does not apply. The live question narrows from *"can it authenticate?"* to *"how much throughput does the fsspec-file-object path give up?"* |
 | *If the team turns toward foundation-model fine-tuning → that can outweigh every infrastructure argument* | **Unchanged and unanswered — it is a question for you and the team, not for this report.** |
 
 **Why "deferred" and not "rejected" for the hybrid.** Nothing measured rules Option B out. What
@@ -711,9 +747,19 @@ crop mapping moves to fine-tuned foundation models, or if the project acquires a
 support many sensors rather than Sentinel-2 L2A well, the calculus inverts — because then fsd
 would be rebuilding §3.2 and §3.1 from scratch, which is far more work than a shim.
 
-**What would make this report wrong:** if Step 3 shows rslearn writing to Azure blob under managed
-identity with no patching, the single largest cost line in both A and B disappears, and the hybrid
-deserves a fresh look rather than a deferral. That step is worth running for that reason alone.
+**What would make this report wrong:** if Step 3 shows rslearn writing to and reading from Azure
+blob under managed identity at throughput comparable to fsd's `/vsiadls/` path, the single largest
+cost line in both A and B disappears and the hybrid deserves a fresh look rather than a deferral.
+§4.1.1 already moved that line down on source evidence alone; Step 3 decides how far.
+
+**Two honest notes on how this recommendation was reached.** First, the Azure objection — the one
+the source read called "the single highest-risk question in the spike" — turned out to be
+substantially weaker than written, and that was found while designing the probe meant to confirm
+it. The verdict survives on the `T` contract, the compositing gap and install weight, not on the
+Azure argument. Second, none of the measurements touched §3's advantages: the breadth and the
+model zoo were never in doubt and are not diminished by anything here. **If the team's answer to
+"where is our work heading?" is foundation models, this recommendation is the wrong one** — and
+that question is not this report's to answer.
 
 ---
 
