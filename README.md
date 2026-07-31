@@ -79,6 +79,8 @@ registry lands in P6.
 
 | you want | read |
 |---|---|
+| a guaranteed-to-succeed first run, offline, no credentials | [`docs/tutorial.md`](docs/tutorial.md) |
+| your own region, real imagery, a cluster, your own model, or a map viewer | [`docs/howto/`](docs/howto/) |
 | a readable script to copy | [`examples/`](examples/) — `eurocrops_rf.py`, a complete `ModelAdapter` |
 | how the code is laid out, and what must stay true | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | where fsd is heading | [`ROADMAP.md`](ROADMAP.md) |
@@ -91,9 +93,8 @@ registry lands in P6.
 | operating procedures for real runs | [`runbooks/`](runbooks/) |
 | open work | `gh issue list` — issues #1–#62 |
 
-A guaranteed-to-succeed offline tutorial (`docs/tutorial.md`) is being built on a committed
-micro-fixture. Until it lands, [`demos/E2E_AUSTRIA.md`](demos/E2E_AUSTRIA.md) is the fullest worked
-example — read it as a benchmark report, not as instructions.
+[`demos/E2E_AUSTRIA.md`](demos/E2E_AUSTRIA.md) is a full benchmark report of a real 300-cell run —
+read it as measurements, not as instructions; the instructions are the tutorial + how-tos above.
 
 ## Contributing
 
