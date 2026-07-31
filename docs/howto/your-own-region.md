@@ -23,6 +23,9 @@ below before running.
 Three inputs, same call shapes:
 
 ```python
+import fsd
+from fsd.sources.cdse import CdseCredentials
+
 catalog = fsd.download(
     roi="your_roi.geojson",
     startdate=..., enddate=..., bands=["B04", "B08", "B8A", "SCL"],

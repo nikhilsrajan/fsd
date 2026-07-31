@@ -41,6 +41,10 @@ values are handed to you privately (`AZURE_INFRA_PRIVATE.md`, never public), not
 ## The same three calls, one keyword different
 
 ```python
+import os
+
+import fsd
+
 runner_kwargs = {
     "cluster": os.environ["AZ_CLUSTER"],
     "environment": os.environ["AZ_ENV_NAME"],

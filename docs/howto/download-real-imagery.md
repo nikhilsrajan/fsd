@@ -16,11 +16,17 @@ picks *which* granules intersect it — a 5 km ROI and a 100 km ROI inside the s
 **same granule**, byte for byte. **Shrinking the ROI does not shrink the download**; only shrinking
 the date window or the band list does.
 
-| Config | Granules | Download |
-|---|---|---|
-| 1 MGRS tile, Apr–Sep, 4 bands | ~52 | ~18 GB |
-| 1 MGRS tile, 1 month, B04+B08+SCL | ~9 | ~3.4 GB |
-| 1 MGRS tile, 2 weeks, B04+B08+SCL | ~4 | ~1.7 GB |
+| Config | Granules | Download | where the number comes from |
+|---|---|---|---|
+| 1 MGRS tile, Apr–Sep, 4 bands | ~52 | ~18 GB | **measured** — the 2018 Austria archive, 207 granules / 4 tiles = 74 GB / 4 |
+| 1 MGRS tile, 1 month, B04+B08+SCL | ~9 | ~3.4 GB | estimated, 426 MB × ¾ |
+| 1 MGRS tile, 2 weeks, B04+B08+SCL | ~4 | ~1.5 GB | estimated, 426 MB × ¾ |
+
+**Estimates run high, on purpose.** 426 MB is the sum of four band files at their measured sizes;
+averaged over a whole real archive it works out nearer **~357 MB/granule** (74 GB ÷ 207), because
+these are compressed rasters and compression varies with scene content. So the multiplier gives you
+a ceiling and row 1 (measured over 207 real granules) is what an actual season cost. Budget with
+426 MB; expect to land under it.
 
 This is exactly why the tutorial ships a **committed micro-fixture** instead of a "small" live
 download (spec 41 D11) — there is no real-download configuration that is tutorial-sized.
@@ -47,6 +53,9 @@ by ~426 MB × (bands you're keeping ÷ 4) for a byte estimate.
 ## `max_tiles` is a required, not optional, guardrail
 
 ```python
+import fsd
+from fsd.sources.cdse import CdseCredentials
+
 catalog = fsd.download(
     roi="your_roi.geojson",
     startdate=..., enddate=...,

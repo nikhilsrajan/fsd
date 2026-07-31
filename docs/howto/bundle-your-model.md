@@ -25,13 +25,21 @@ output_nodata = 255
 output_band_names = ["crop_class"]       # 1 name -> categorical map; N -> probabilities/regression
 ```
 
-fsd checks `bands ⊇ required_bands` and `T == n_timestamps` (unless `0`) **before building a single
-datacube** — a mismatched model fails fast, not after an expensive build.
+`run_inference`'s preflight checks `bands ⊇ required_bands` and `T == n_timestamps` (unless `0`)
+**before building a single datacube** — a mismatched model fails fast, not after an expensive build.
+(`create_training_data` checks `required_bands` too, but not `n_timestamps`: there, `T` is the
+caller's window to choose.)
 
 ### 2. Endpoint ① — datacube → model input (your feature transform)
 
 Declared **once**, run by fsd at **both** training and inference — the anti-skew guarantee: train
 and serve see identical features, by construction, not by discipline.
+
+**That guarantee only holds if you hand the adapter to the training call too:**
+`fsd.create_training_data(..., adapter=my_adapter)`. Without it, `create_training_data` writes the
+**raw bands** and your transform runs at inference only — which is exactly the train/serve skew this
+section claims to rule out. (There is also a raw `feature_sequence=` argument for adapter-less
+exploration; pass one or the other, never both.)
 
 ```python
 from fsd.bands import modify
