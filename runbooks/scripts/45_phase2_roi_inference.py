@@ -120,11 +120,32 @@ try:
 
     env_ref = f"{os.environ['AZ_INFER_ENV_NAME']}:{os.environ['AZ_INFER_ENV_VERSION']}"
     result["metrics"]["environment"] = env_ref
+
+    # `run_aml_inference` requires cluster/environment/root/identity_client_id, and needs either an
+    # `ml_client` or the subscription/rg/workspace triple. Build the client here, exactly as
+    # `demos/e2e_austria_aml.py::step_inference` does -- that is the proven shape.
+    from azure.ai.ml import MLClient
+    from azure.identity import DefaultAzureCredential
+
+    ml_client = MLClient(
+        DefaultAzureCredential(),
+        os.environ["AZ_SUBSCRIPTION_ID"], os.environ["AZ_RG"], os.environ["AZ_ML_WORKSPACE"],
+    )
+    runner_kwargs = {
+        "cluster": os.environ["AZ_CLUSTER"],
+        "environment": env_ref,
+        "root": os.environ["AZ_ROOT"],
+        "identity_client_id": os.environ["AZ_UAMI_CLIENT_ID"],
+        "ml_client": ml_client,
+        "poll_interval_seconds": 10,
+    }
+
     print(f"ROI      : {roi}")
     print(f"window   : {STARTDATE:%Y-%m-%d}..{ENDDATE:%Y-%m-%d} @ {MOSAIC_DAYS}d -> T={want_t}")
     print(f"image    : {env_ref}   (no adapter baked in -- that is the point)")
     print(f"output   : {out_url}")
-    print("dispatching; a cold cluster adds 40-380 s before anything appears.\n")
+    print("calling run_inference; fsd's OWN preflight runs first, then dispatch.")
+    print("a cold cluster adds 40-380 s before anything appears.\n")
 
     t0 = datetime.datetime.now(datetime.UTC)
     inference = fsd.run_inference(
@@ -136,14 +157,14 @@ try:
         enddate=ENDDATE,
         mosaic_days=MOSAIC_DAYS,
         bands=BANDS,
-        merge=bool(os.environ.get("AZ_MERGE")),
+        # "reproject" is the multi-CRS-safe value the demo uses; harmless for a single-tile ROI.
+        merge="reproject" if os.environ.get("AZ_MERGE") else False,
         runner="aml",
-        runner_kwargs={
-            "cluster": os.environ["AZ_CLUSTER"],
-            "environment": env_ref,
-            "identity_client_id": os.environ["AZ_UAMI_CLIENT_ID"],
-        },
-        storage=os.environ["AZ_ROOT"],
+        runner_kwargs=runner_kwargs,
+        # `storage` is a BACKEND NAME, not a URL -- the URLs are output_folderpath and
+        # catalog_filepath. Passing an abfss:// here fails preflight with
+        # "storage backend '...' not supported (only 'azure' in P1)".
+        storage="azure",
         progress=True,
     )
     elapsed = (datetime.datetime.now(datetime.UTC) - t0).total_seconds()
@@ -165,10 +186,15 @@ except SystemExit as exc:
     result["status"] = "fail"
     result["pass"] = False
     result["error"] = str(exc)
-except Exception:  # noqa: BLE001 - spec 24: ALWAYS write _result.json, never a bare traceback
+except Exception as exc:  # noqa: BLE001 - spec 24: ALWAYS write _result.json, never a traceback
     result["status"] = "fail"
     result["pass"] = False
-    result["error"] = traceback.format_exc()[-2000:]
+    # fsd's own PreflightError already says exactly what is wrong in one line; a traceback only
+    # buries it. Everything else keeps the traceback, which is where its diagnosis lives.
+    result["error"] = (
+        str(exc) if type(exc).__name__ == "PreflightError"
+        else traceback.format_exc()[-2000:]
+    )
 
 OUT.mkdir(parents=True, exist_ok=True)
 with open(OUT / "_result_phase2.json", "w") as f:
