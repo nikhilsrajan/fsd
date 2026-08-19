@@ -53,12 +53,13 @@ all fixed — see the entry below); the rest is in the archive. P6/P7 remain.
 > but it drops empty periods, floors the span and end-anchors, so rslearn's `T` is data-dependent.
 > Nothing about the spike belongs in `main` until the Plan-B/C decision.
 
-**Next up (2026-08-19):** spec 44 **phase 1 is merged to `main` and PROVEN on the cluster** —
-the adapter-import smoke returned `ok` on **`fsd-infer-sklearn:3`, an image with no adapter source
-in it** (`runbooks/45-verify-bundle-carried-code.md` Phases 0–1). Remaining: **Phase 2** of that
-run-book (a real ROI inference run on the generic image), then **spec 44 phase 2** (`deploy`
-registration, D7/D8) which is specified but **not signed off** — §8 questions 5 and 7 are open
-(blob store vs MLflow-via-AML-workspace).
+**Next up (2026-08-19):** spec 44 **phase 1 is merged to `main` and FULLY VALIDATED on the
+cluster** — `runbooks/45-verify-bundle-carried-code.md` Phases 0–2 all green on
+**`fsd-infer-sklearn:3`, an image with no adapter source in it**: the adapter-import smoke returned
+`ok`, and a real ROI run produced **9/9 per-cell COGs + STAC in 8.2 min**. Remaining: the **QGIS
+eyeball** of those outputs (a run that "succeeds" with a nonsense map is still a failure —
+`CLAUDE.md`), and **spec 44 phase 2** (`deploy` registration, D7/D8), which is specified but **not
+signed off** — §8 questions 5 and 7 are open (blob store vs MLflow-via-AML-workspace).
 
 **Also next:** the spec 41 **P7 D13 cold-start gate** — the user, on a fresh clone and fresh venv,
 follows `docs/tutorial.md` *literally* and reports the first instruction that doesn't work (a
@@ -100,6 +101,16 @@ would have recurred:
 
 **Generalisable lesson for any future image-carried change:** stripping a `COPY` from a Dockerfile
 is necessary but not sufficient — the wheel baked into the image is the thing that has to move.
+
+**Phase 2 followed the same day and is green:** a real ROI run over `s2grid=476da24` (single MGRS
+tile T33UWP, Apr–Sep 2018 @ 20 d → T=10) on that same adapter-less image produced **9/9 per-cell
+`output.tif` + a STAC catalog in 494.9 s**, run `spec44-phase2-20260819T143617Z`. Two further
+authoring bugs were caught there, both in the run-book script and both by fsd's own guards rather
+than by the cluster: `storage=` takes a **backend name** (`"azure"`), not a URL — the URLs are
+`output_folderpath`/`catalog_filepath`; and `run_aml_inference` needs
+`cluster`/`environment`/**`root`**/`identity_client_id` **plus** an `ml_client`. The proven shape
+was in `demos/e2e_austria_aml.py::step_inference` the whole time — **check the working caller before
+writing a new one** is the lesson, and it would have saved two round trips.
 
 
 ## 2026-08-19 — spec 44 written, signed off, and **phase 1 implemented**: the bundle now carries the adapter's source
