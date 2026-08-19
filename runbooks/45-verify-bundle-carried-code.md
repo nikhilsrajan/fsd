@@ -179,6 +179,36 @@ export AZ_BUNDLE_LOCAL=./demo_bundle          # the v2 bundle you just re-saved
 
 It writes `tests/outputs/spec44_verify/_result_phase1.json`. Paste that back.
 
+#### If the job fails, read `smoke_error` — not the driver traceback
+
+`_aml_submit_and_wait` raises `RuntimeError: job(s)/shard(s) failed: ['smoke']`. That is the
+**driver's** wrapper and it says nothing useful. The real error is what the node wrote, which the
+script now always reads back into `metrics.smoke_error`. If you need it by hand:
+
+```bash
+.venv/bin/python -c "
+import json, os
+from fsd.storage import fs
+url = os.environ['AZ_ROOT'] + '/_status/spec44_smoke.json'
+print('exists:', fs.exists(url))
+if fs.exists(url):
+    with fs.open(url) as f: print(json.dumps(json.load(f), indent=2))
+"
+```
+
+| `smoke_error` says | Meaning | Fix |
+|---|---|---|
+| `...does not satisfy the bundle's declared requirements: scikit-learn>=1.5: not installed` | **D5 working.** The image lacks a dep the bundle declares. Not a spec-44 failure. | Add it to the Dockerfile's `pip install` line, rebuild, re-run |
+| `ModuleNotFoundError: my_adapter` | The staged bundle carries no usable `code/`, or the ref names a module the bundle does not provide | Check `metrics.code_files` vs `metrics.adapter_ref` — the ref's module must match a file in `code/`. Re-save (step 1c) |
+| `No module named 'fsd'` | The **image** is broken — the fsd wheel did not install | Rebuild; check the `pip install` line found the wheel inside `build.path` |
+| **no status file written** | The job died before the entrypoint ran | Image or node auth. AML studio → the job → Outputs+logs → `user_logs/std_log.txt` |
+
+> **A note on what a `COPY`-less image changes.** Removing the adapter from the image also removes
+> anything that adapter's *module-level imports* pulled in. If `my_adapter.py` does
+> `from sklearn.ensemble import RandomForestClassifier` at import time, the image still needs
+> sklearn — spec 44 moved the **code**, not the **deps**. That is exactly what the `requirements`
+> list is for, and why the smoke checks it first.
+
 ---
 
 ## Phase 2 — a real ROI inference run on the generic image

@@ -126,16 +126,39 @@ try:
     )
     print(f"submitting the smoke into {env_ref} on {os.environ['AZ_CLUSTER']} ...")
     print("a cold node takes 40-380 s; this blocks until the job finishes.")
-    runners._aml_submit_and_wait(
-        ml_client, {"smoke": job}, os.environ["AZ_ROOT"], "spec44-smoke",
-    )
+    submit_error = None
+    try:
+        runners._aml_submit_and_wait(
+            ml_client, {"smoke": job}, os.environ["AZ_ROOT"], "spec44-smoke",
+        )
+    except Exception as exc:  # noqa: BLE001 - a failed job is an EXPECTED outcome here
+        # `_aml_submit_and_wait` raises when the job fails, but the useful error is the one the
+        # NODE wrote to `status_url` -- naming the missing dependency or the un-importable module.
+        # Never let the driver's "job(s) failed" wrapper hide it: that is a dead-end message.
+        submit_error = str(exc)
 
-    with fs.open(status_url, "r") as f:
-        smoke = json.load(f)
-    result["metrics"]["smoke_status"] = smoke.get("status")
-    result["metrics"]["smoke_error"] = smoke.get("error")
+    result["metrics"]["status_url"] = status_url
+    if fs.exists(status_url):
+        with fs.open(status_url, "r") as f:
+            smoke = json.load(f)
+        result["metrics"]["smoke_status"] = smoke.get("status")
+        result["metrics"]["smoke_error"] = smoke.get("error")
+    else:
+        # No status file => the job died BEFORE the entrypoint ran (bad image, fsd not installed,
+        # blob auth). adapter_smoke always writes its status before exiting, so its absence is
+        # itself the diagnosis.
+        result["metrics"]["smoke_status"] = "no status file written"
+        result["metrics"]["smoke_error"] = (
+            "the job failed before `python -m fsd.workflows.adapter_smoke` could write its status. "
+            "That points at the IMAGE or node auth, not at the adapter: fsd not installed in the "
+            "environment, a broken entrypoint, or the node failing to reach blob (check "
+            "AZURE_CLIENT_ID / the compute identity's RBAC). Open the job in AML studio -> "
+            "Outputs+logs -> user_logs/std_log.txt for the node's traceback."
+        )
+    if submit_error:
+        result["metrics"]["driver_error"] = submit_error
 
-    result["pass"] = smoke.get("status") == "ok" and version == 2
+    result["pass"] = result["metrics"]["smoke_status"] == "ok" and version == 2
     result["status"] = "ok" if result["pass"] else "fail"
 
 except SystemExit as exc:
