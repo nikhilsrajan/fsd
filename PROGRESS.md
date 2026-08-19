@@ -4,7 +4,7 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-19 (**spec 44 phase 1 implemented** — the bundle carries the adapter's source, killing the per-adapter inference image; see the entry below. Previously: 2026-07-31, **spec 41 P7 drafted and reviewed** — `docs/tutorial.md` + `docs/howto/*`
+_Last updated: 2026-08-19 (**spec 44 phase 1 implemented AND proven on the cluster** — the bundle carries the adapter's source, killing the per-adapter inference image; see the entry below. Previously: 2026-07-31, **spec 41 P7 drafted and reviewed** — `docs/tutorial.md` + `docs/howto/*`
 (5 pages + an index) + `examples/`, 4 review findings fixed, merged to `main`; awaiting the P7
 cold-start gate. Same day: the **project-state diagnostic was re-run** — the locked demo target was
 hit 2026-07-29 and has no successor named; and the **rslearn spike opened** on `spike/rslearn`.)_
@@ -53,10 +53,12 @@ all fixed — see the entry below); the rest is in the archive. P6/P7 remain.
 > but it drops empty periods, floors the span and end-anchors, so rslearn's `T` is data-dependent.
 > Nothing about the spike belongs in `main` until the Plan-B/C decision.
 
-**Next up (2026-08-19):** spec 44 **phase 1 is implemented** on `worktree-spec-44` and needs a
-review + the real-cluster gate (§4 criterion 12): rebuild the inference Environment **without** the
-adapter baked in and re-run the demo. Then **phase 2** (`deploy` registration, D7/D8) is specified
-but **not signed off** — §8 questions 5 and 7 are open (blob store vs MLflow-via-AML-workspace).
+**Next up (2026-08-19):** spec 44 **phase 1 is merged to `main` and PROVEN on the cluster** —
+the adapter-import smoke returned `ok` on **`fsd-infer-sklearn:3`, an image with no adapter source
+in it** (`runbooks/45-verify-bundle-carried-code.md` Phases 0–1). Remaining: **Phase 2** of that
+run-book (a real ROI inference run on the generic image), then **spec 44 phase 2** (`deploy`
+registration, D7/D8) which is specified but **not signed off** — §8 questions 5 and 7 are open
+(blob store vs MLflow-via-AML-workspace).
 
 **Also next:** the spec 41 **P7 D13 cold-start gate** — the user, on a fresh clone and fresh venv,
 follows `docs/tutorial.md` *literally* and reports the first instruction that doesn't work (a
@@ -68,6 +70,37 @@ items are the rslearn Plan B/C decision and spec 43 (`docs/history.md`, deferred
 ---
 
 ## Most recent entry
+
+## 2026-08-19 (later) — spec 44 phase 1 **proven on the cluster**; three run-book defects fixed on the way
+
+`runbooks/45-verify-bundle-carried-code.md` Phases 0–1 are **green**. The D11 adapter-import smoke
+returned `{"status": "ok"}` on **`fsd-infer-sklearn:3` — an image built with no adapter source in
+it** — with `my_adapter:CropRF` resolved purely from the bundle's `code/`. Acceptance criterion 12
+is met. The notebook's cell-18 procedure (4 hand-written files + `pip wheel` + `az ml environment
+create` + a smoke job, repeated on every adapter edit) is **obsolete**.
+
+Getting there exposed three defects **in the run-book, not in fsd** — worth recording because each
+would have recurred:
+
+1. **The smoke was documented as a local command.** It would have passed trivially on the driver
+   (which has the adapter on `sys.path` and its deps installed) while proving nothing about the
+   image (ADR 0002). It is now submitted as an AML job, like run-book 38 Phase 0. It also never
+   staged the bundle.
+2. **The driver's `RuntimeError: job(s)/shard(s) failed` hid the node's real error.**
+   `_aml_submit_and_wait` raises before the status file can be read. The script now always reads
+   `_status/*.json` back into `metrics.smoke_error`, and treats a *missing* status file as its own
+   diagnosis (the job died before the entrypoint → image or node auth).
+3. **The image's fsd *wheel* must be rebuilt, not just the Dockerfile.** This was the actual
+   failure: a pre-spec-44 wheel has no `manifest_code_files` and no `_activate_bundle_code`, so the
+   node never fetches `code/` and never puts it on `sys.path` — `ModuleNotFoundError` however good
+   the bundle is. **The node cannot self-diagnose this** (an fsd old enough to cause it contains
+   none of the code that would report it), so the gate has to be driver-side: the optional
+   `AZ_INFER_BUILD_CONTEXT` makes the script inspect the wheel and refuse to submit against a stale
+   image, in 2 s instead of a 40–380 s cold start.
+
+**Generalisable lesson for any future image-carried change:** stripping a `COPY` from a Dockerfile
+is necessary but not sufficient — the wheel baked into the image is the thing that has to move.
+
 
 ## 2026-08-19 — spec 44 written, signed off, and **phase 1 implemented**: the bundle now carries the adapter's source
 

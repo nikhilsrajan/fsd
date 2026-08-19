@@ -5,8 +5,11 @@ summary: Phase 1 — the bundle carries the adapter's source, so the inference i
 
 # Spec 44 — bundle-carried adapter source (phase 1) + P6 `deploy` registration (phase 2)
 
-**Status: ✅ PHASE 1 SIGNED OFF (2026-08-19, user) — "yes, sign off on the D4 reversal — implement
-phase 1".** Sign-off covers §0 (the spec 38 D4 reversal) and §3 D1–D6. **Phase 2 (D7/D8) is NOT
+**Status: ✅ PHASE 1 SIGNED OFF, IMPLEMENTED, AND PROVEN ON THE CLUSTER (2026-08-19).**
+Signed off by the user ("yes, sign off on the D4 reversal — implement phase 1"); acceptance
+criterion 12 was met the same day — the D11 adapter-import smoke returned `status: "ok"` on
+**`fsd-infer-sklearn:3`, an image containing no adapter source**, with `my_adapter:CropRF` resolved
+purely from the bundle's `code/`. **The per-adapter inference image is dead.** Sign-off covers §0 (the spec 38 D4 reversal) and §3 D1–D6. **Phase 2 (D7/D8) is NOT
 signed off** — questions 5 and 7 of §8 remain open. **Amendment A1 (§9) corrects D2 and was written
 before implementation began — read it with D2.** Two phases, deliberately separable.
 **Phase 1 is the implementable one**; phase 2 is scoped and its store decision is put up for
@@ -377,7 +380,7 @@ bundle path keeps working exactly as today, so phase 2 adds a fast path rather t
 10. `_stage_bundle` and `fetch_bundle_to_scratch` (mocked at the storage boundary, as spec 38's
     tests already are) transfer every code file and no others.
 11. `adapter_smoke` reports a declared-requirement miss as a named dependency, not a traceback (D5).
-12. **Real-cluster gate (user-run, run-book):** the demo runs end to end against an inference
+12. ✅ **MET 2026-08-19 — Real-cluster gate (user-run, run-book):** the demo runs end to end against an inference
     Environment built **without** `my_adapter.py` baked in. Success = the notebook keeps only
     `bundle.save`, and cell 18's seven steps are deleted. This is a **run-book**, not something
     Claude runs (`CLAUDE.md`) — **`runbooks/45-verify-bundle-carried-code.md`**, whose Phase 0
