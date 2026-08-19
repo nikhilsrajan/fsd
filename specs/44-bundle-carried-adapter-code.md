@@ -380,7 +380,10 @@ bundle path keeps working exactly as today, so phase 2 adds a fast path rather t
 12. **Real-cluster gate (user-run, run-book):** the demo runs end to end against an inference
     Environment built **without** `my_adapter.py` baked in. Success = the notebook keeps only
     `bundle.save`, and cell 18's seven steps are deleted. This is a **run-book**, not something
-    Claude runs (`CLAUDE.md`).
+    Claude runs (`CLAUDE.md`) — **`runbooks/45-verify-bundle-carried-code.md`**, whose Phase 0
+    (`runbooks/scripts/45_verify_bundle_code.py`) checks criteria 1–9 **offline in ~10 s** before
+    any cloud money is spent, and whose Phase 3 covers the one migration step (a bundle saved
+    before 2026-08-19 has no `code/` block and must be re-saved).
 
 **Phase 2:** deferred to its own spec section/sign-off; the criterion is "a second run of the same
 model stages 0 bytes and the 627 s disappears".
