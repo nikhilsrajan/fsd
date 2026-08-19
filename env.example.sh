@@ -53,6 +53,10 @@ export AZ_INFER_ENV_NAME='fsd-infer-env'  # inference env: fsd + the adapter's D
 # Versions are queried, never guessed — a stale version silently runs old code:
 export AZ_ENV_VERSION="$(az ml environment list -n "$AZ_ENV_NAME" -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query '[0].version' -o tsv 2>/dev/null)"
 export AZ_INFER_ENV_VERSION="$(az ml environment list -n "$AZ_INFER_ENV_NAME" -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query '[0].version' -o tsv 2>/dev/null)"
+export AZ_INFER_BUILD_CONTEXT=''  # folder holding the fsd wheel the inference image is
+                                  # built from. Set it and runbooks/scripts/45_phase1_*
+                                  # refuses to run against an image built from a
+                                  # pre-spec-44 wheel (the commonest spec 44 failure).
 export AZ_ENV_NAME_VERSION="${AZ_ENV_NAME}:${AZ_ENV_VERSION}"    # demos/e2e_austria_aml.py reads this
 
 # ─── 5. Identity & secrets ───────────────────────────────────────────────────────

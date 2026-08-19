@@ -84,7 +84,36 @@ cd fsd
 This is the phase that deletes work. You are rebuilding the inference Environment from
 `runbooks/38-inference-on-aml.md` → "Build the inference Environment", **with the adapter removed**.
 
-### 1a — strip the adapter from the Dockerfile
+### 1a — rebuild the fsd wheel FIRST (the step everyone skips)
+
+**The image needs a post-spec-44 fsd, not just a stripped Dockerfile.** An image built from an older
+wheel has an old `fetch_bundle_to_scratch` (which never downloads `code/`) and an old `bundle.load`
+(which never touches `sys.path`). The node then raises `ModuleNotFoundError: <your adapter>` *even
+though the bundle staged perfectly* — and it **cannot tell you why**, because an old fsd contains
+none of the code that would report it.
+
+```bash
+cd fsd
+.venv/bin/pip wheel . --no-deps -w <your build context>     # e.g. notebooks/demo_model
+```
+
+Verify it took (instant):
+
+```bash
+.venv/bin/python -c "
+import zipfile, glob, sys
+w = sorted(glob.glob('<your build context>/fsd-*.whl'))[-1]
+src = zipfile.ZipFile(w).read('fsd/model/bundle.py').decode()
+print(w)
+print('spec 44 present:', 'def manifest_code_files' in src)
+"
+```
+
+- **PASS if:** `spec 44 present: True`. If `False`, the wheel did not rebuild — check you ran
+  `pip wheel` from the `fsd/` package root and that `-w` pointed at the build context the Dockerfile
+  actually `COPY`s from.
+
+### 1b — strip the adapter from the Dockerfile
 
 In your `demo_model/Dockerfile` (or wherever you keep it), **delete these two lines**:
 
@@ -101,7 +130,7 @@ not the deps.
 > `fsd-infer-croprf`. That naming is the whole point: one sklearn image serves every sklearn
 > adapter you will ever write, and you rebuild it only when the dependency set changes.
 
-### 1b — build and register it (operator step)
+### 1c — build and register it (operator step)
 
 ```bash
 az ml environment create --file infer-environment.yml \
@@ -120,7 +149,7 @@ echo "$AZ_INFER_ENV_NAME:$AZ_INFER_ENV_VERSION"
 - **PASS if:** the build succeeds and `AZ_INFER_ENV_VERSION` is **non-empty**.
 - **Claude never runs `az ml`/`az acr`** (`CLAUDE.md`) — this is yours.
 
-### 1c — re-save the bundle with this fsd, then smoke it
+### 1d — re-save the bundle with this fsd
 
 The bundle must be written by a post-spec-44 fsd, or it carries no `code/` block:
 
@@ -149,7 +178,7 @@ PY
 - **Expect:** `"version": 2` and a `"code"` block naming your `.py`. If `code` is `null`, your
   adapter classified as *installed* (it is pip-installed) or the save refused — read the error.
 
-### 1d — stage the bundle and smoke it **as an AML job**
+### 1e — stage the bundle and smoke it **as an AML job**
 
 > ⚠️ **The smoke must run on a NODE, not on your laptop.** Your driver venv has the adapter module
 > on `sys.path` and its deps installed, so `python -m fsd.workflows.adapter_smoke <local bundle>`
@@ -160,7 +189,8 @@ PY
 
 ```bash
 cd fsd
-export AZ_BUNDLE_LOCAL=./demo_bundle          # the v2 bundle you just re-saved
+export AZ_BUNDLE_LOCAL=./demo_bundle                  # the v2 bundle you just re-saved
+export AZ_INFER_BUILD_CONTEXT=./notebooks/demo_model  # where the image's fsd wheel lives
 .venv/bin/python runbooks/scripts/45_phase1_generic_image_smoke.py
 ```
 
@@ -199,7 +229,9 @@ if fs.exists(url):
 | `smoke_error` says | Meaning | Fix |
 |---|---|---|
 | `...does not satisfy the bundle's declared requirements: scikit-learn>=1.5: not installed` | **D5 working.** The image lacks a dep the bundle declares. Not a spec-44 failure. | Add it to the Dockerfile's `pip install` line, rebuild, re-run |
-| `ModuleNotFoundError: my_adapter` | The staged bundle carries no usable `code/`, or the ref names a module the bundle does not provide | Check `metrics.code_files` vs `metrics.adapter_ref` — the ref's module must match a file in `code/`. Re-save (step 1c) |
+| `ModuleNotFoundError: <adapter>` **and** `code_files_staged: N/N` | **The image's fsd predates spec 44.** The bundle is fine; the node's fsd is too old to fetch `code/` or put it on `sys.path`. This is the commonest spec-44 failure. | Rebuild the wheel **and** the image — Phase 1a. Set `AZ_INFER_BUILD_CONTEXT` and this script refuses to submit at all |
+| `ModuleNotFoundError: <adapter>` **and** `code_files_staged: 0/N` | The bundle's `code/` did not reach blob | Re-save (step 1d) and re-stage |
+| `ModuleNotFoundError: <something else>` | The adapter imports a module that is not in the image | Add it to the image and to the bundle's `requirements` |
 | `No module named 'fsd'` | The **image** is broken — the fsd wheel did not install | Rebuild; check the `pip install` line found the wheel inside `build.path` |
 | **no status file written** | The job died before the entrypoint ran | Image or node auth. AML studio → the job → Outputs+logs → `user_logs/std_log.txt` |
 
