@@ -184,6 +184,26 @@ A node cannot see the laptop's bundle (spec 37's roi/creds lesson). Design:
 
 ### D4 — A **dedicated inference Environment** carries the adapter + its deps [LOCKED]
 
+> **⚠️ PARTIALLY SUPERSEDED BY [spec 44](44-bundle-carried-adapter-code.md) (signed off 2026-08-19).**
+> Two claims below are **reversed**:
+> 1. *"The adapter is **not** shipped inside the bundle … it is a pip dependency of the
+>    Environment"* — **no longer true.** The bundle now carries the adapter's source under `code/`
+>    and `bundle.load` puts it on `sys.path`. The inference Environment differs only by
+>    **dependency family** (sklearn vs torch), never by model or adapter.
+> 2. *"Where the coupling lands later: P6 `deploy()` … is the appropriate home for building the
+>    image"* — **rejected.** `deploy` registers a bundle to the storage seam; it never builds
+>    images or calls `az ml` (that would put Azure plumbing inside `fsd.api`).
+>
+> **Everything else in D4 stands and spec 44 depends on it:** a dedicated inference Environment
+> separate from the generic build image; the **operator** owns building/registering it; the
+> dispatcher references it **by name** with no per-run image build; dependency installation stays
+> **front-loaded to build time** (spec 44 D5 declares deps in the manifest and *checks* them in the
+> D11 smoke job — fsd never installs at run time); and the D11 smoke job remains the gate.
+>
+> Read D4 below for the surviving rationale, but treat spec 44 §0 as the authority on the two
+> reversed points.
+
+
 The spec-36 datacube Environment is `fsd[azure,mpc]` — generic build infra, no model. Inference needs
 the **user's adapter package** (resolvable by the bundle's `module:attr`) *and* its runtime deps (the
 demo needs `scikit-learn` + `joblib`; a deep model would need `torch`, multi-GB). **[LOCKED]** these go in
