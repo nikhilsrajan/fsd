@@ -93,6 +93,41 @@ inference image (today a run-book script + two env vars); **#68** datacube paths
 calendar-aware mosaicing (one run, two date-range folders); **#69** redundant child grid cells when
 the ROI is itself a grid cell. Already filed and still open: #64 / #65 / #66.
 
+**Six issues from the notebook are now specced, not yet signed off (2026-08-19, latest).**
+`gh issue create` filed the last three — **#70** `save` does not report what it embedded, **#71** a
+sibling import is not auto-detected, **#72** `code=` files from two trees break the import root —
+joining #67/#68/#69. All six are designed in two drafts, each commented onto its issues:
+
+| spec | issues | the one sentence |
+|---|---|---|
+| **45** `bundle-transparency-and-image-verification` | #70, #71, #72, #67 | spec 44 made the bundle carry its adapter; spec 45 makes it **say what it carried** and **refuse to be born broken** — plus `fsd.model.verify_image`, the run-book smoke promoted into the library |
+| **46** `run-addressability-and-grid-dedup` | #68, #69 | a run's path should be a function of what was **requested**; a work unit another already covers should not be dispatched |
+
+**Both defects in spec 46 were measured this session, not inferred:**
+- #69: `roi_to_s2_grids` on the single-cell ROI emits **9** cells and **8 of them are fully covered
+  by the ninth** — 89 % waste. The predicate has to be `covered_by`, not `contains` (`contains`
+  caught only **2 of 8**: a clipped sliver *shares boundary* with its coverer, which `contains`
+  excludes) and not IoU-1 (that means *identical*, which none of the 8 are). On the 300-cell AT_ROI
+  the same rule costs **0.09 s** and drops **1** cell — safe on the normal case, decisive on the
+  degenerate one.
+- #68: the export path is built from each cell's *actual* min/max acquisition
+  (`create_datacube.py:147-151`) while the calendar anchor that sets `T` is the *caller's* window —
+  so the path both splits one run in two and implies a window the cube does not have.
+
+**BOTH SPECS ARE SIGNED OFF (user, 2026-08-19).** Two decisions were the user's: a detected but
+unembedded sibling import makes `save` **refuse, naming the file** (not auto-embed — `code=None`
+keeps one meaning), and the run folder **encodes `mosaic_days`** (`20180401_20180930_m20`), so the
+path identifies the cube contract completely. The four secondary questions were resolved with
+defaults recorded in each spec's §7/§6 — overturn any of them in review.
+
+**→ NEXT SESSION: implement specs 45 and 46 in a Sonnet session** (`/model sonnet`,
+`/effort medium`), per `CLAUDE.md`'s model split. Nothing in `src/` has been touched. The work is
+small and well-fenced: `src/fsd/model/bundle.py` (45 D1–D3) + one new module and a rewrite of
+`runbooks/scripts/45_phase1_generic_image_smoke.py` to call it (45 D4); `src/fsd/workflows/
+create_datacube.py` (46 D1–D3), `src/fsd/grid.py` (46 D4–D5) and the ⚠️ glob docstring at
+`src/fsd/api.py:1096-1101`. Acceptance criteria are numbered in each spec's §4, and both carry
+measured before-numbers to check against.
+
 **Also still open:** **spec 44 phase 2** (`deploy` registration, D7/D8) — specified but **NOT
 signed off**; §8 questions 5 and 7 (blob store vs MLflow-via-AML-workspace) are the live decision.
 Run-book 45 Phase 3 (the migration boundary) is documented but was never formally walked.
