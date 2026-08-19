@@ -17,6 +17,12 @@ Required env vars -- paste them from the uncommitted `../../AZURE_INFRA_PRIVATE.
     AZ_SUBSCRIPTION_ID  AZ_RG  AZ_ML_WORKSPACE  AZ_CLUSTER  AZ_UAMI_CLIENT_ID
     AZ_ROOT  AZ_INFER_ENV_NAME  AZ_INFER_ENV_VERSION  AZ_BUNDLE_LOCAL
 
+Optional but strongly recommended:
+    AZ_INFER_BUILD_CONTEXT  -- the folder holding the fsd wheel your image was built from.
+                               Set it and this script refuses to submit against an image built
+                               from a pre-spec-44 wheel, which is the commonest failure and the
+                               one the node CANNOT report on its own.
+
 Usage, from the `fsd/` package root:
     .venv/bin/python runbooks/scripts/45_phase1_generic_image_smoke.py
 
@@ -87,6 +93,39 @@ try:
             "Re-save it with a post-2026-08-19 fsd (run-book Phase 1c step 1) -- that is the whole "
             "migration. See run-book Phase 3."
         )
+
+    # --- optional but strongly recommended: is the IMAGE's fsd new enough? ------------------
+    # The commonest spec-44 failure is a generic image built from a STALE fsd wheel. Its
+    # `fetch_bundle_to_scratch` never downloads `code/` and its `bundle.load` never touches
+    # `sys.path`, so the node raises `ModuleNotFoundError: <adapter>` even though the bundle
+    # staged perfectly (`code_files_staged: N/N`). The node cannot self-diagnose this -- an old
+    # fsd has none of the code that would report it -- so the check has to happen here.
+    ctx = os.environ.get("AZ_INFER_BUILD_CONTEXT")
+    if ctx:
+        import glob
+        import zipfile
+
+        wheels = sorted(glob.glob(os.path.join(ctx, "fsd-*.whl")))
+        result["metrics"]["build_context_wheel"] = wheels[-1] if wheels else None
+        if not wheels:
+            raise SystemExit(
+                f"AZ_INFER_BUILD_CONTEXT={ctx!r} contains no fsd-*.whl. The image cannot have "
+                "installed fsd from there."
+            )
+        wheel_src = zipfile.ZipFile(wheels[-1]).read("fsd/model/bundle.py").decode()
+        fresh = "def manifest_code_files" in wheel_src
+        result["metrics"]["wheel_has_spec44"] = fresh
+        if not fresh:
+            raise SystemExit(
+                f"{wheels[-1]} PREDATES spec 44 -- it has no `manifest_code_files`, so the image's "
+                "fetch_bundle_to_scratch will not download `code/` and its bundle.load will not put "
+                "it on sys.path. The node will raise ModuleNotFoundError however good the bundle "
+                "is. Rebuild the wheel and the image:\n"
+                f"    .venv/bin/pip wheel . --no-deps -w {ctx}\n"
+                "    az ml environment create --file <your infer-environment.yml> "
+                '-g "$AZ_RG" -w "$AZ_ML_WORKSPACE"\n'
+                "then re-read AZ_INFER_ENV_VERSION and re-run this script."
+            )
 
     from azure.ai.ml import MLClient
     from azure.identity import DefaultAzureCredential
