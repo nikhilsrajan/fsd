@@ -115,3 +115,94 @@ def test_single_polygon_roi_is_unchanged_by_the_union_clip():
     assert not grids["id"].duplicated().any()
     assert grids.geometry.apply(lambda g: roi_geom.buffer(1e-9).contains(g)).all()
     assert grids.geometry.union_all().area == pytest.approx(roi_geom.area, rel=1e-6)
+
+
+# --- spec 46 D4/D5: drop cells already covered by another cell (#69) ---------
+
+
+def _single_s2_cell_polygon(res: int = 11):
+    """One S2 cell's OWN (unscaled) footprint -- using it as an ROI reproduces the
+    measured #69 defect: `polyfill` runs on the ROI's convex hull, so a cell's 8
+    neighbours come back too, and after scale+clip they land as slivers wholly inside
+    the ROI. Picks the polyfilled cell with the largest area so its own footprint sits
+    away from the seed box's edge (interior, not edge-clipped)."""
+    from s2 import s2
+
+    seed = shapely.geometry.box(15.30, 48.40, 15.60, 48.60)
+    cells = s2.polyfill(geo_json=shapely.geometry.mapping(seed), res=res,
+                         geo_json_conformant=True, with_id=True)
+    import pandas as pd
+    df = pd.DataFrame(cells)
+    df["geometry"] = df["geometry"].apply(shapely.geometry.Polygon)
+    row = df.loc[df["geometry"].apply(lambda g: g.area).idxmax()]
+    return row["id"], row["geometry"]
+
+
+def test_roi_that_is_exactly_one_s2_cell_collapses_to_that_one_cell():
+    """AC3 (synthetic form of the measured 476da24 case, which lives outside this repo
+    -- shapefiles/s2grid=476da24.geojson): polyfilling a single cell's own footprint
+    re-discovers its 8 neighbours (convex hull + intersects), all 8 of which are fully
+    covered by the central, scaled+clipped cell once dedup runs -- 9 -> 1."""
+    cell_id, cell_geom = _single_s2_cell_polygon()
+    roi = gpd.GeoDataFrame(geometry=[cell_geom], crs="EPSG:4326")
+
+    grids = grid.roi_to_s2_grids(roi, grid_size_km=5, scale_fact=1.1)
+
+    assert len(grids) == 1
+    assert grids["id"].iloc[0] == cell_id
+
+
+def test_drop_covered_cells_preserves_the_union():
+    """AC4's safety argument, exercised directly: whatever `_drop_covered_cells` drops,
+    the union of what remains must equal the union of what came in (a dropped cell is a
+    geometric subset of a kept one) -- built from a covering big cell plus several
+    smaller cells fully inside it, mirroring the real 9-cells-1-covers-8 shape."""
+    big = shapely.geometry.box(0, 0, 10, 10)
+    small_a = shapely.geometry.box(1, 1, 2, 2)
+    small_b = shapely.geometry.box(3, 3, 4, 4)      # shares no boundary with `big`'s edge
+    small_c = shapely.geometry.box(0, 0, 1, 1)      # shares boundary with `big` (corner)
+    grids = gpd.GeoDataFrame(
+        {"id": ["big", "small_a", "small_b", "small_c"]},
+        geometry=[big, small_a, small_b, small_c], crs="EPSG:4326",
+    )
+    before_union = grids.geometry.union_all()
+
+    out = grid._drop_covered_cells(grids)
+
+    assert list(out["id"]) == ["big"]
+    assert out.geometry.union_all().area == pytest.approx(before_union.area, rel=1e-9)
+
+
+def test_drop_covered_cells_tie_breaks_mutually_equal_cells_deterministically():
+    """Two identical cells must collapse to exactly one, keeping the smaller id --
+    without the tie-break a naive one-pass 'covered_by something else -> drop' rule
+    drops BOTH, since each covers the other."""
+    square = shapely.geometry.box(0, 0, 1, 1)
+    grids = gpd.GeoDataFrame({"id": ["b_dup", "a_dup"]},
+                              geometry=[square, shapely.geometry.box(0, 0, 1, 1)],
+                              crs="EPSG:4326")
+
+    out = grid._drop_covered_cells(grids)
+
+    assert len(out) == 1
+    assert out["id"].iloc[0] == "a_dup"
+
+    # order-independence: same result with the rows the other way round.
+    grids_swapped = gpd.GeoDataFrame({"id": ["a_dup", "b_dup"]},
+                                      geometry=[square, shapely.geometry.box(0, 0, 1, 1)],
+                                      crs="EPSG:4326")
+    out_swapped = grid._drop_covered_cells(grids_swapped)
+    assert len(out_swapped) == 1
+    assert out_swapped["id"].iloc[0] == "a_dup"
+
+
+def test_drop_covered_cells_keeps_non_overlapping_cells():
+    """The dedup must not touch cells that are genuinely distinct (no false positives)."""
+    grids = gpd.GeoDataFrame(
+        {"id": ["left", "right"]},
+        geometry=[shapely.geometry.box(0, 0, 1, 1), shapely.geometry.box(5, 5, 6, 6)],
+        crs="EPSG:4326",
+    )
+    out = grid._drop_covered_cells(grids)
+    assert len(out) == 2
+    assert set(out["id"]) == {"left", "right"}

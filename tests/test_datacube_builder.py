@@ -77,6 +77,12 @@ def test_build_datacube_end_to_end(tmp_path):
     # ts2: clear, values preserved
     assert dc[1, 0, 0, 0] == 110 and dc[1, 2, 2, 1] == 210
     assert md["geotiff_metadata"]["height"] == 4
+    # spec 46 Q3 (#68): the shape's OWN actual acquisition range moved into the cube's
+    # metadata once the run FOLDER stopped naming it (spec 46 D1) -- this fixture's
+    # tiles are 2018-06-01 and 2018-07-01, distinct from the requested
+    # startdate/enddate window (2018-05-31 / 2018-07-02) passed above.
+    assert md["actual_start"] == pd.Timestamp("2018-06-01", tz="UTC")
+    assert md["actual_end"] == pd.Timestamp("2018-07-01", tz="UTC")
 
 
 def test_build_datacube_no_mask_band_requested_closes_35(tmp_path):

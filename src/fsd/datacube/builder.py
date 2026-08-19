@@ -7,7 +7,11 @@ alternate engine (e.g. rslearn) must emit the same datacube.npy + metadata.
 Artifact contract (specs/00 §6):
   datacube.npy        : 4-D (timestamps|ids, height, width, bands)
   metadata.pickle.npy : {geotiff_metadata, timestamps, ids, bands,
-                         data_shape_desc, geometry{shape, crs}, ...}
+                         data_shape_desc, geometry{shape, crs},
+                         actual_start, actual_end, ...}
+                         (actual_start/actual_end: this shape's own min/max acquisition
+                         timestamp, spec 46 D1 Q3 -- the run FOLDER now names the
+                         REQUESTED window, not this data-derived one.)
 """
 
 from __future__ import annotations
@@ -317,6 +321,12 @@ def build_datacube(
                                                   mosaic_scheme=mosaic_scheme,
                                                   mask_value=nodata)))
         datacube, metadata = ops.run_ops(datacube, metadata, sequence=sequence)
+        # spec 46 D1/Q3: the run folder is now named from the REQUESTED window
+        # (startdate/enddate), not each shape's actual acquisition min/max — so that
+        # data-derived fact needs a home other than the path. It's real information
+        # about the data (not the request), so it goes into the cube's own metadata.
+        metadata["actual_start"] = catalog_subset["timestamp"].min()
+        metadata["actual_end"] = catalog_subset["timestamp"].max()
 
     with _timed(timings, "save"):
         fs.makedirs(export_folderpath)

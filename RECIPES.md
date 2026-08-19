@@ -209,6 +209,12 @@ grids.to_file("inference_s2_grids.geojson", driver="GeoJSON")   # cols: id, geom
 # feed to workflows.create_datacube as the inference shapes (id_col="id")
 ```
 
+Since spec 46 D4/D5 (2026-08-19), any cell fully `covered_by` another returned cell is dropped
+and the drop is always printed (`[grid] N cells -> M after dropping K already covered`) — measured
+re-check: `s2grid=476da24.geojson` (an ROI that is itself one S2 cell) → **9 cells before, 1 after**
+(89 % were slivers wholly inside the central cell); `AT_ROI.geojson` → **300 before, 299 after**, in
+~0.09 s. Coverage is unchanged either way (a dropped cell is always a subset of a kept one).
+
 ## End-to-end demo (demo_01+02+03, spec 19)
 
 Full Mode-A run on the existing Ethiopia data, in an isolated venv (keeps fsd's `.venv` lean):

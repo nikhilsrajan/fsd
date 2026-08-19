@@ -5,12 +5,12 @@ summary: Name a datacube run folder from the requested window rather than each c
 
 # Spec 46 — run addressability + grid-cell de-duplication
 
-**Status: ✅ SIGNED OFF 2026-08-19 — NOT YET IMPLEMENTED.** Written against issues **#68** and
+**Status: ✅ SIGNED OFF 2026-08-19 — ✅ IMPLEMENTED 2026-08-19.** Written against issues **#68** and
 **#69**, both raised by the user from the AT_ROI cluster run. Both numbers below were **measured
 this session**, not inferred. §6 Q1 was answered by the user at sign-off: **the folder name encodes
 `mosaic_days`** — D2 is in. The two secondary questions were resolved with the defaults recorded in
-§6. Implementation is a **Sonnet session at `/effort medium`** (§8); nothing in `src/` is touched
-yet.
+§6. Implementation was a **Sonnet session at `/effort medium`** (§8), reviewed by Opus and merged
+the same day.
 
 > **The one sentence:** a run's path should be a function of what was **requested**, and a work
 > unit that another work unit already covers should not be dispatched.
@@ -118,6 +118,19 @@ After clipping, remove any cell whose geometry is **covered by** another cell in
 **Cost, measured:** on the 300-cell AT_ROI the same rule runs in **0.09 s** (shapely STRtree) and
 drops **1** cell — a genuine redundancy, not a regression. So D4 is ~a no-op on normal ROIs and
 removes 89 % of the work on the degenerate one.
+
+**Implementation deviation, recorded at review (2026-08-19):** the code does **not** call shapely's
+raw `.covered_by()`. Measured on the real 476da24 ROI, the exact GEOS predicate caught only **2 of
+the 8** redundant cells — each clipped cell is computed as an independent
+`scaled_cell.intersection(shape)` against the same `shape`, and the resulting floating-point noise
+(a real, non-boundary `difference()` area of relative magnitude 1e-14 to 1e-13) is enough for an
+exact predicate to answer "not covered". `grid._covered` therefore implements `covered_by` **up to
+a relative-area tolerance** (`_COVERED_TOL = 1e-9` — three-to-four orders of magnitude above the
+observed noise, and orders of magnitude below any genuine overlap). The tolerance is relative to
+the *candidate's own* area, so a small sliver is judged against its own scale and a
+genuinely-distinct-but-nearby cell is never absorbed. D4's guarantee is unchanged in substance: a
+dropped cell is a subset of a kept one to within that tolerance, so the union is preserved to the
+same tolerance (AC4 already says "to a tolerance").
 
 ### D5 — the drop is reported, never silent
 

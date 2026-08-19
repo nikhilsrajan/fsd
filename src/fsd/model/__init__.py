@@ -5,12 +5,14 @@ Public surface:
     apply_features, median_per_id            — the F1 chokepoint + F4 reducer (features.py).
     infer_datacube, run_local                — the inference engine (engine.py).
     bundle                                   — save/load the self-describing model bundle.
+    verify_image                             — does an inference image run this bundle? (spec 45 D4)
 """
 
 from fsd.model import bundle
 from fsd.model.adapter import BaseModelAdapter, ModelAdapter, Output
 from fsd.model.engine import infer_datacube, infer_datacube_to_cog, run_local
 from fsd.model.features import apply_features, median_per_id, resolve_aggregate
+from fsd.model.verify_image import verify_image
 
 load_bundle = bundle.load
 save_bundle = bundle.save
@@ -28,4 +30,5 @@ __all__ = [
     "bundle",
     "load_bundle",
     "save_bundle",
+    "verify_image",
 ]

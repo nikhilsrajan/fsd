@@ -25,9 +25,11 @@ Registration/push (P6) is spec 44 phase 2 and is not implemented here.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import importlib
 import importlib.metadata
+import importlib.util
 import inspect
 import json
 import os
@@ -226,6 +228,148 @@ def adapter_code_files(adapter) -> tuple[str, list[str]] | None:
     return root, rels
 
 
+# --- spec 45 D2/D3: catch a bundle that saves fine but dies on a cold-start node ----
+
+
+def _check_adapter_at_top(module_name: str, rels: list[str]) -> None:
+    """D2 (#72): before anything is copied, the adapter's OWN module must sit at the
+    top level of the resolved `code/` tree -- `my_adapter` -> `my_adapter.py`,
+    `my_pkg.adapters` -> `my_pkg/adapters.py`. If it doesn't, the manifest's
+    unqualified `module:attr` ref can never import once `code/` is put on `sys.path`
+    (D2 wins: `resolve_ref` looks up exactly `module_name`, nothing deeper).
+
+    A pure path computation over `rels` -- no imports, no network, no node -- so it
+    catches `code=[...]` files pulled from two different trees (the common root then
+    sits ABOVE the adapter's own directory) before a single byte is copied.
+    """
+    expected = module_name.replace(".", os.sep) + ".py"
+    if expected in rels:
+        return
+
+    basename = os.path.basename(expected)
+    matches = [r for r in rels if r == expected or r.endswith(os.sep + basename)]
+    if not matches:
+        raise ValueError(
+            f"the adapter's module {module_name!r} is not among the files this bundle "
+            f"would embed ({sorted(rels)}); code/ must contain {expected!r}."
+        )
+    adapter_rel = matches[0]
+    adapter_dir = os.path.dirname(adapter_rel)
+    prefix = adapter_dir + os.sep if adapter_dir else ""
+    culprits = [r for r in rels if r != adapter_rel and not r.startswith(prefix)]
+    culprit = culprits[0] if culprits else adapter_rel
+    raise ValueError(
+        f"{basename} would not be importable at the top of code/ -- the resolved "
+        f"import root puts it at {adapter_rel!r} instead of {expected!r}, because "
+        f"{culprit!r} sits outside its directory and pulled the common root up. "
+        "Fix: keep every embedded file under one directory (pass a single containing "
+        "folder to code=[...], or omit code= and let auto-detection embed just the "
+        "adapter's own module)."
+    )
+
+
+def _disp(path: str) -> str:
+    """Cosmetic only -- format an absolute path relative to cwd for an error message,
+    matching the `./demo_model/my_adapter.py` style callers write in `code=[...]`."""
+    rel = os.path.relpath(path)
+    return rel if rel.startswith("..") else os.path.join(".", rel)
+
+
+def _is_installed_distribution(name: str) -> bool:
+    """Is top-level import name `name` satisfied by something OTHER than a file this
+    bundle would embed -- stdlib, a C extension/namespace package, or a pip-installed
+    distribution? Uses `importlib.util.find_spec` to LOCATE the module (finders don't
+    execute module code) -- D3 never imports an embedded file, but classifying a
+    dependency name this way is the same mechanism `classify_adapter_source` already
+    uses for the adapter itself (via `_is_installed`)."""
+    if name in sys.stdlib_module_names:
+        return True
+    try:
+        spec = importlib.util.find_spec(name)
+    except (ImportError, ValueError, ModuleNotFoundError):
+        return False
+    if spec is None:
+        return False
+    if spec.origin is None:  # builtin or namespace package
+        return True
+    return _is_installed(spec.origin)
+
+
+def _check_no_unembedded_siblings(root: str, rels: list[str]) -> None:
+    """D3 (#71): refuse a bundle whose embedded `.py` files import a SIBLING module
+    that lives under the same resolved root but was not embedded -- the node raises
+    `ModuleNotFoundError` after a cold start, and the only reason `save` succeeded is
+    that the driver still has the sibling on its own `sys.path`/cwd.
+
+    Parses each embedded file with `ast` (never imports it -- the module may need
+    dependencies the driver lacks). For every top-level `import X` / `from X import
+    ...`: skip stdlib/an installed distribution/`fsd` itself (a dependency, declared
+    via `requirements=`, never embedded); if `X` resolves to a file under `root` that
+    is not in `rels`, refuse, naming the file and the one-line fix. Scanning is
+    transitive over embedded files (a sibling that imports a sibling), bounded by the
+    same `rels` this bundle would already embed (MAX_CODE_FILES/MAX_CODE_BYTES were
+    already enforced upstream in `adapter_code_files`/`_resolve_explicit_code`).
+
+    Known limits (all shared with MLflow's `infer_code_paths`, spec 45 §3 D3): a
+    module imported dynamically (`importlib.import_module(name)`) is invisible to an
+    ast scan; a non-Python data file opened by relative path is not detected.
+    """
+    processed: set[str] = set()
+    checked_names: set[str] = set()
+    queue = [r for r in rels if r.endswith(".py")]
+
+    while queue:
+        rel = queue.pop()
+        if rel in processed:
+            continue
+        processed.add(rel)
+        path = os.path.join(root, rel)
+        with open(path, "rb") as f:
+            source = f.read()
+        try:
+            tree = ast.parse(source, filename=path)
+        except SyntaxError:
+            continue  # not this function's job to validate the adapter's syntax
+
+        names: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names += [alias.name.split(".")[0] for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                if node.level and node.level > 0:
+                    continue  # relative import -- resolved within the package, not a "sibling"
+                if node.module:
+                    names.append(node.module.split(".")[0])
+
+        for name in names:
+            if name in checked_names:
+                continue
+            checked_names.add(name)
+            if name == "fsd" or _is_installed_distribution(name):
+                continue
+
+            file_candidate = os.path.join(root, name + ".py")
+            pkg_candidate = os.path.join(root, name, "__init__.py")
+            if os.path.isfile(file_candidate):
+                target_rel = name + ".py"
+            elif os.path.isfile(pkg_candidate):
+                target_rel = os.path.join(name, "__init__.py")
+            else:
+                continue  # doesn't resolve under root -- an external dependency, not a sibling
+
+            if target_rel not in rels:
+                fix_files = {os.path.join(root, r) for r in rels}
+                fix_files.add(os.path.join(root, target_rel))
+                fix = ", ".join(repr(_disp(p)) for p in sorted(fix_files))
+                raise ValueError(
+                    f"{rel} imports {name!r}, which resolves to {_disp(os.path.join(root, target_rel))!r} "
+                    "but is not embedded. The node would raise ModuleNotFoundError after a cold "
+                    f"start.\nFix: code=[{fix}]"
+                )
+            if target_rel not in processed:
+                queue.append(target_rel)
+
+
 def _resolve_explicit_code(code) -> tuple[str, list[str]]:
     """`code=[...]` -- take the user at their word, but keep layout relative to a common root."""
     paths = [os.path.abspath(p) for p in code]
@@ -318,6 +462,40 @@ def manifest_code_files(manifest: dict) -> list[str]:
     return [f"{root}/{rel}" for rel in code.get("files", [])]
 
 
+def _human_size(num_bytes: int) -> str:
+    size = float(num_bytes)
+    for unit in ("B", "kB", "MB"):
+        if size < 1024 or unit == "MB":
+            return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"  # pragma: no cover - a code bundle over ~1 GB is already refused
+
+
+def _print_save_report(root: str | None, code_rel: list[str] | None, manifest: dict) -> None:
+    """D1 (#70): say what `save` embedded, before it returns. Print, not `logging` --
+    the audience is a notebook cell, matching the repo's rule that a consequential
+    operation shows what it did (memory `long-process-progress`)."""
+    req = manifest.get("requirements")
+    req_str = f" | requirements: {', '.join(req)}" if req else ""
+    if not code_rel:
+        print(f"[bundle] no code embedded (adapter is a pip dependency of the image) "
+              f"| adapter {manifest['adapter']}{req_str}", flush=True)
+        return
+
+    # The resolved import ROOT is what §7 Q2 calls out as the thing a caller cannot
+    # infer -- including one who passed code=[...] themselves, since the root is
+    # COMPUTED from their paths, not chosen by them (this is exactly the #72 surprise).
+    print(f"[bundle] code root {_disp(root)} -> {CODE_DIR}/", flush=True)
+    total = 0
+    for rel in sorted(code_rel):
+        size = os.path.getsize(os.path.join(root, rel))
+        total += size
+        print(f"[bundle]   {rel} ({_human_size(size)})", flush=True)
+    plural = "" if len(code_rel) == 1 else "s"
+    print(f"[bundle] {len(code_rel)} file{plural}, {_human_size(total)} "
+          f"| adapter {manifest['adapter']}{req_str}", flush=True)
+
+
 def read_spec(bundle_path: str) -> dict:
     """Read just `bundle.json` — the spec, with NO import/model-load (model-free preflight).
 
@@ -336,6 +514,7 @@ def save(
     overwrite: bool = True,
     code=None,
     requirements=None,
+    verbose: bool = True,
 ) -> str:
     """Write a bundle at `dst`: copy each artifact in, embed the adapter's source, and dump the
     manifest read off `adapter`. Returns the bundle folder path. Storage-seam aware (blob later).
@@ -353,6 +532,16 @@ def save(
 
     `requirements` (D5) is an optional list of PEP 508 strings recorded for the smoke job to check.
     fsd never installs them.
+
+    Before anything is copied, two checks (spec 45 D2/D3) turn a bundle that would save fine and
+    die on a cluster node into a `save`-time `ValueError` naming the fix: the adapter's own module
+    must sit at the TOP of the resolved `code/` tree (#72), and every sibling import an embedded
+    file makes must itself be embedded (#71) -- a dependency (declared via `requirements=`) is
+    left alone.
+
+    `verbose=True` (default, spec 45 D1/#70) prints what got embedded -- the resolved import
+    root, the file list with sizes, the adapter ref and the declared requirements -- before
+    returning. `verbose=False` silences it; the return value is unaffected either way.
     """
     dst = str(dst)
     fs.makedirs(dst)
@@ -376,8 +565,13 @@ def save(
         detected = _resolve_explicit_code(code)
 
     code_rel: list[str] | None = None
+    root: str | None = None
     if detected is not None:
         root, rels = detected
+        cls = adapter if isinstance(adapter, type) else type(adapter)
+        _check_adapter_at_top(cls.__module__, rels)
+        _check_no_unembedded_siblings(root, rels)
+
         for rel in rels:
             dst_path = os.path.join(dst, CODE_DIR, rel)
             fs.makedirs(os.path.dirname(dst_path))
@@ -388,6 +582,9 @@ def save(
     manifest = _manifest_from_adapter(adapter, artifacts_rel, code_rel, requirements)
     with fs.open(os.path.join(dst, BUNDLE_MANIFEST), "w") as f:
         json.dump(manifest, f, indent=2)
+
+    if verbose:
+        _print_save_report(root, code_rel, manifest)
     return dst
 
 

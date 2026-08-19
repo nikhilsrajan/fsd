@@ -4,9 +4,9 @@ Spec: specs/08-workflows.md. Preserves the demo_01 UX of run_create_datacube.
 
 Setup reads the catalog once, then pre-slices it per shape (via `catalog.filter_gdf`)
 so each parallel build job reads only its small subset — no shared-file contention. The
-per-row start/end dates are the *actual* tile-derived min/max (the median_mosaic
-anchor, spec 04 caveat / TODO #2). This is the shape-centric workflow TODO #15 will
-later optimize.
+per-row start/end dates written to `input.csv` are the caller's requested window (the
+calendar mosaic anchor, spec 15) — the run-folder name is derived from that same window
+too (spec 46 D1). This is the shape-centric workflow TODO #15 will later optimize.
 """
 
 from __future__ import annotations
@@ -68,8 +68,13 @@ def setup(
     The mosaic anchor written to each row is the caller's `startdate`/`enddate` (not
     the per-shape actual acquisition min/max), so every shape mosaics on the same
     calendar grid and the resulting cubes share a `timestamps` axis that `flatten` can
-    concatenate (spec 15). The per-shape actual dates are still used for the run-folder
-    name only.
+    concatenate (spec 15). The run-folder name is now built from that same requested
+    window + `mosaic_days` (spec 46 D1/D2), not the per-shape actual acquisition
+    range, so every cell of one run lands under one folder that identifies the cube
+    contract it was built against. `timestamp_col` no longer feeds the folder name
+    (`actual_start`/`actual_end` moved into the cube's own metadata, spec 46 Q3) but
+    stays a parameter — `filter_gdf`'s catalog rows already fix "timestamp" as the
+    column, so this is unused today; kept for the caller-facing signature.
     """
     startdate = pd.to_datetime(startdate, utc=True)
     enddate = pd.to_datetime(enddate, utc=True)
@@ -143,11 +148,9 @@ def setup(
             print(f"[setup] skip id={srow[id_col]}: no tiles in range/overlap", flush=True)
             return None
 
-        actual_start = subset[timestamp_col].min()
-        actual_end = subset[timestamp_col].max()
         export_folderpath = os.path.join(
             run_folderpath,
-            f"{actual_start.strftime('%Y%m%d')}_{actual_end.strftime('%Y%m%d')}",
+            f"{startdate.strftime('%Y%m%d')}_{enddate.strftime('%Y%m%d')}_m{mosaic_days}",
             str(srow[id_col]),
         )
         if fs.is_local(export_folderpath):

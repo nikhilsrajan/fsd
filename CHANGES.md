@@ -4,6 +4,57 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## Datacube run-folder naming + grid-cell de-duplication (spec 46, 2026-08-19)
+
+- **`create_datacube.setup`'s export path is now named from the REQUESTED window, not each
+  shape's actual acquisition min/max** (#68). Previously
+  `run_folderpath/{actual_start}_{actual_end}/<id>` — data-derived, so two shapes in the same run
+  could (and on AT_ROI did) land under two different `<window>` folders even though both mosaic on
+  the same calendar grid. Now `run_folderpath/{startdate}_{enddate}_m{mosaic_days}/<id>` — one
+  folder per run, for every cell, naming exactly the parameters that determine the cube's `T`
+  (spec 15). `actual_start`/`actual_end` are not lost: they move into the cube's own
+  `metadata.pickle.npy` (new keys, additive). **Consequence:** a run built under the OLD naming
+  keeps its old folder name (forward-only, no migration) — `api.py`'s `*/*/output.tif` glob still
+  finds it (any middle component matches), but a re-run of an old run under the new fsd writes a
+  NEW folder rather than reusing the old one.
+- **`grid.roi_to_s2_grids` now drops any cell fully covered by another cell in the result** (#69).
+  `polyfill`ing an ROI's convex hull can re-discover neighbours that, after scale+clip, land as
+  slivers wholly inside another returned cell — measured 89 % waste on an ROI that is itself one S2
+  cell (9 cells emitted, 8 fully redundant). The predicate is a numerically-robust `covered_by`
+  (not `contains`, which misses a boundary-sharing sliver; not IoU, which only catches exact
+  duplicates) with a tie-break that keeps the smaller `id` when two cells are geometrically equal.
+  Always prints the before/after count (`[grid] N cells -> M after dropping K already covered`),
+  never silent. **Coverage is provably unchanged**: a dropped cell is always a subset of a kept
+  one, so the union of the returned cells equals the union before de-duplication. Costs ~0.09 s on
+  a 300-cell ROI (drops 1); on the degenerate single-cell-ROI case it removes 8/9 of the dispatched
+  work. `roi_to_s2_grids` is unaffected in the normal (non-overlapping-cell) case.
+
+## Bundle transparency + validation, and image verification promoted to a library call (spec 45, 2026-08-19)
+
+- **`bundle.save` now prints a report by default** (`verbose=True`): the resolved code root, the
+  embedded file list with sizes, the adapter ref, and declared requirements (#70). Pass
+  `verbose=False` for the old silent behavior. **Consequence for anyone parsing `save`'s stdout**
+  (nothing in this repo does): the call now writes to stdout unless silenced.
+- **`bundle.save` now REFUSES a bundle whose adapter's own module would not sit at the top of
+  `code/`** (#72) — e.g. `code=[...]` files drawn from two different directory trees, which pushes
+  the common import root above the adapter's own directory. Raised before anything is copied,
+  naming the file that pulled the root up and the one-line fix.
+- **`bundle.save` now REFUSES a bundle whose embedded `.py` files import an unembedded sibling
+  module** (#71) — e.g. `from helper import V` where `helper.py` sits next to the adapter but
+  wasn't passed to `code=`. Detected by parsing (never importing) each embedded file with `ast`;
+  transitive (a sibling that imports a sibling); a genuine dependency (stdlib, an installed
+  distribution, `fsd` itself) is left alone. The error names the missing file and the fix
+  (`code=[...]` with every file included). Previously this saved fine and only failed on a cluster
+  node, ~40-380 s later, as `ModuleNotFoundError`.
+- **New public helper `fsd.model.verify_image`** (#67): promotes
+  `runbooks/scripts/45_phase1_generic_image_smoke.py`'s driver-checks-first, one-node-job,
+  read-status-back logic into a reusable library call
+  (`verify_image(bundle, environment=..., runner="aml", runner_kwargs=..., build_context=None) ->
+  dict`, `_result.json`-shaped). `runner="local"` **raises** rather than returning a pass — a local
+  run passes trivially because the driver already has the adapter's deps installed and its source
+  on `sys.path` (ADR 0002), which is the false positive this helper exists to prevent. The run-book
+  script is now a thin wrapper over this helper; its `_result.json` shape is unchanged.
+
 ## The model bundle now carries the adapter's source (spec 44 phase 1, 2026-08-19)
 
 `fsd.model.bundle` gained bundle format **version 2**. Three behavior changes, all in `save`/`load`:
