@@ -7,9 +7,11 @@ summary: Phase 1 — the bundle carries the adapter's source, so the inference i
 
 **Status: ✅ PHASE 1 SIGNED OFF, IMPLEMENTED, AND PROVEN ON THE CLUSTER (2026-08-19).**
 Signed off by the user ("yes, sign off on the D4 reversal — implement phase 1"); acceptance
-criterion 12 was met the same day — the D11 adapter-import smoke returned `status: "ok"` on
-**`fsd-infer-sklearn:3`, an image containing no adapter source**, with `my_adapter:CropRF` resolved
-purely from the bundle's `code/`. **The per-adapter inference image is dead.** Sign-off covers §0 (the spec 38 D4 reversal) and §3 D1–D6. **Phase 2 (D7/D8) is NOT
+criterion 12 was met the same day, on both legs. The D11 adapter-import smoke returned
+`status: "ok"` on **`fsd-infer-sklearn:3`, an image containing no adapter source**, with
+`my_adapter:CropRF` resolved purely from the bundle's `code/`; and a **real ROI inference run on
+that same image produced 9/9 per-cell COGs + a STAC catalog in 8.2 min**
+(`runs/spec44-phase2-20260819T143617Z`). **The per-adapter inference image is dead.** Sign-off covers §0 (the spec 38 D4 reversal) and §3 D1–D6. **Phase 2 (D7/D8) is NOT
 signed off** — questions 5 and 7 of §8 remain open. **Amendment A1 (§9) corrects D2 and was written
 before implementation began — read it with D2.** Two phases, deliberately separable.
 **Phase 1 is the implementable one**; phase 2 is scoped and its store decision is put up for
