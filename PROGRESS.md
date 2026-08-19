@@ -204,8 +204,10 @@ of the image, plus extra helper files. The adapter imports from site-packages re
 and previously legal under spec 44 D1 ("take the user at their word"). **Filed as #73** with the
 candidate fix; needs a spec-45 amendment first, since D2 has no carve-out today.
 
-**Not yet done:** `main` still has the pending push from spec 44 plus this session's work (user's
-call, per CLAUDE.md's "push only when asked").
+**Not yet done:** `main` is **3 commits ahead of `origin/main`** (which sits at `7c898e9`, i.e.
+spec 44's work is already pushed — the earlier "pending push from spec 44" note was stale): the
+implementing commit, the merge, and this pointer commit. Pushing is outward, so it stays the
+user's call per CLAUDE.md's "push only when asked": `git -C fsd push origin main`.
 
 ## 2026-08-19 (later) — spec 44 phase 1 **proven on the cluster**; three run-book defects fixed on the way
 
