@@ -1,0 +1,154 @@
+"""Spec 44 phase 1 — prove the adapter imports inside a **generic** inference Environment.
+
+Run-book: `runbooks/45-verify-bundle-carried-code.md` (Phase 1c). Mirrors `runbooks/
+38-inference-on-aml.md` Phase 0 exactly, with one difference that is the entire point: the image
+this runs against has **no adapter source in it**. If the smoke passes, the adapter reached the
+node from inside the bundle.
+
+**The smoke MUST run as an AML job, not on your laptop.** Your driver venv has the adapter module
+on `sys.path` and its deps installed, so a local run passes trivially while proving nothing about
+the image (ADR 0002: the driver's venv is not guaranteed to mirror the node's image). This script
+submits a one-node job and waits.
+
+Costs: one bundle upload + one node cold start (~40-380 s). Everything that CAN be checked on the
+driver IS checked first, before anything is submitted (spec 38 D11's rule).
+
+Required env vars -- paste them from the uncommitted `../../AZURE_INFRA_PRIVATE.md`:
+    AZ_SUBSCRIPTION_ID  AZ_RG  AZ_ML_WORKSPACE  AZ_CLUSTER  AZ_UAMI_CLIENT_ID
+    AZ_ROOT  AZ_INFER_ENV_NAME  AZ_INFER_ENV_VERSION  AZ_BUNDLE_LOCAL
+
+Usage, from the `fsd/` package root:
+    .venv/bin/python runbooks/scripts/45_phase1_generic_image_smoke.py
+
+In a Jupyter notebook use `%run`, NOT `!python` -- the `!` form needs `{var}` substitution and is
+where the `f"{AZ_ROOT}/..."` mistake comes from (IPython's `!` is not an f-string; a literal `f`
+glued to the URL yields `Protocol not known: fabfss`):
+    %run runbooks/scripts/45_phase1_generic_image_smoke.py
+"""
+
+import json
+import os
+import pathlib
+import traceback
+
+# fsd/runbooks/scripts/45_phase1_generic_image_smoke.py -> parents[2] == fsd/
+FSD_ROOT = pathlib.Path(__file__).resolve().parents[2]
+OUT = FSD_ROOT / "tests" / "outputs" / "spec44_verify"
+
+REQUIRED = (
+    "AZ_SUBSCRIPTION_ID", "AZ_RG", "AZ_ML_WORKSPACE", "AZ_CLUSTER", "AZ_UAMI_CLIENT_ID",
+    "AZ_ROOT", "AZ_INFER_ENV_NAME", "AZ_INFER_ENV_VERSION", "AZ_BUNDLE_LOCAL",
+)
+
+result = {
+    "step": "spec44-phase1-generic-image-smoke",
+    "status": "ok",
+    "pass": False,
+    "metrics": {},
+    "expected": {"bundle_version": 2, "code_block_present": True, "smoke_status": "ok"},
+    "error": None,
+}
+
+try:
+    OUT.mkdir(parents=True, exist_ok=True)
+
+    # --- driver-side preflight: everything checkable for free, before any cost ---------------
+    missing = [k for k in REQUIRED if not os.environ.get(k)]
+    if missing:
+        raise SystemExit(
+            "missing env vars: " + ", ".join(missing)
+            + "\nSource them from env.example.sh + AZURE_INFRA_PRIVATE.md first. "
+            "AZ_INFER_ENV_VERSION comes back EMPTY if the Environment does not exist yet -- "
+            "build it (run-book Phase 1b) before running this."
+        )
+
+    from fsd.model import bundle as fsd_bundle
+    from fsd.storage import fs
+    from fsd.workflows import runners
+
+    bundle_local = os.environ["AZ_BUNDLE_LOCAL"]
+    manifest = fsd_bundle.read_spec(bundle_local)      # model-free: no import, no model load
+    version = manifest.get("fsd_bundle_version")
+    code = manifest.get("code")
+
+    result["metrics"]["bundle_local"] = bundle_local
+    result["metrics"]["bundle_version"] = version
+    result["metrics"]["adapter_ref"] = manifest.get("adapter")
+    result["metrics"]["code_block_present"] = bool(code)
+    result["metrics"]["code_files"] = (code or {}).get("files")
+    result["metrics"]["requirements"] = manifest.get("requirements")
+
+    # THE spec-44 precondition. Without it the job is guaranteed to fail with
+    # ModuleNotFoundError on the node, after paying for a cold start.
+    if not code:
+        raise SystemExit(
+            f"{bundle_local} is a version-{version} bundle with no `code` block, so it does NOT "
+            "carry its adapter. On a generic image this WILL fail with ModuleNotFoundError. "
+            "Re-save it with a post-2026-08-19 fsd (run-book Phase 1c step 1) -- that is the whole "
+            "migration. See run-book Phase 3."
+        )
+
+    from azure.ai.ml import MLClient
+    from azure.identity import DefaultAzureCredential
+
+    ml_client = MLClient(
+        DefaultAzureCredential(),
+        os.environ["AZ_SUBSCRIPTION_ID"], os.environ["AZ_RG"], os.environ["AZ_ML_WORKSPACE"],
+    )
+
+    # --- stage the bundle exactly the way run_aml_inference will (spec 38 D3) ---------------
+    staged = runners._stage_bundle(bundle_local, f"{os.environ['AZ_ROOT']}/_spec44_bundle")
+    result["metrics"]["staged_bundle_url"] = staged
+
+    # Prove the code files actually landed -- this is the transport half of the change.
+    staged_code = fsd_bundle.manifest_code_files(manifest)
+    landed = [rel for rel in staged_code if fs.exists(f"{staged}/{rel}")]
+    result["metrics"]["code_files_staged"] = f"{len(landed)}/{len(staged_code)}"
+    if len(landed) != len(staged_code):
+        raise SystemExit(
+            f"only {len(landed)}/{len(staged_code)} code files reached {staged}: "
+            f"missing {[r for r in staged_code if r not in landed]}"
+        )
+
+    # --- submit the one-node smoke INTO the generic image and wait --------------------------
+    env_ref = f"{os.environ['AZ_INFER_ENV_NAME']}:{os.environ['AZ_INFER_ENV_VERSION']}"
+    status_url = f"{os.environ['AZ_ROOT']}/_status/spec44_smoke.json"
+    result["metrics"]["environment"] = env_ref
+
+    aml_command = runners._import_aml_command()
+    job = aml_command(
+        command=f"python -m fsd.workflows.adapter_smoke {staged} --status-url {status_url}",
+        environment=env_ref,
+        compute=os.environ["AZ_CLUSTER"],
+        environment_variables={"AZURE_CLIENT_ID": os.environ["AZ_UAMI_CLIENT_ID"]},
+        display_name="fsd-spec44-generic-image-smoke",
+        experiment_name="fsd-spec44-verify",
+    )
+    print(f"submitting the smoke into {env_ref} on {os.environ['AZ_CLUSTER']} ...")
+    print("a cold node takes 40-380 s; this blocks until the job finishes.")
+    runners._aml_submit_and_wait(
+        ml_client, {"smoke": job}, os.environ["AZ_ROOT"], "spec44-smoke",
+    )
+
+    with fs.open(status_url, "r") as f:
+        smoke = json.load(f)
+    result["metrics"]["smoke_status"] = smoke.get("status")
+    result["metrics"]["smoke_error"] = smoke.get("error")
+
+    result["pass"] = smoke.get("status") == "ok" and version == 2
+    result["status"] = "ok" if result["pass"] else "fail"
+
+except SystemExit as exc:
+    result["status"] = "fail"
+    result["pass"] = False
+    result["error"] = str(exc)
+except Exception:  # noqa: BLE001 - spec 24: ALWAYS write _result.json, never a bare traceback
+    result["status"] = "fail"
+    result["pass"] = False
+    result["error"] = traceback.format_exc()[-2000:]
+
+OUT.mkdir(parents=True, exist_ok=True)
+with open(OUT / "_result_phase1.json", "w") as f:
+    json.dump(result, f, indent=2)
+print(json.dumps(result, indent=2))
+print(f"\nwrote {OUT / '_result_phase1.json'}")

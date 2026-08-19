@@ -19,6 +19,17 @@ summary: Verify spec 44 phase 1 — the bundle carries its adapter, so the infer
 > uncommitted `../../AZURE_INFRA_PRIVATE.md` (workspace root). Run the private-identifier sweep
 > (`RECIPES.md`) before pushing anything derived from this run-book.
 
+> **Running this from a Jupyter notebook?** Every command below is **bash**. Two traps:
+>
+> - **Use `%run`, not `!python`, for the scripts.** `%run runbooks/scripts/45_phase1_generic_image_smoke.py`
+>   inherits your kernel's env and prints the result inline.
+> - **`!` is NOT an f-string.** IPython's `!` already substitutes `{var}` from Python variables, so
+>   writing `!python -m x f"{AZ_ROOT}/b"` passes a literal `f` glued to the URL and you get
+>   `ValueError: Protocol not known: fabfss`. Drop the `f`: `!python -m x "{AZ_ROOT}/b"`.
+>   For shell **environment** variables (what this run-book's `$AZ_ROOT` means) use `$AZ_ROOT`, and
+>   remember `export` in one `!` cell does not survive into the next — set them with
+>   `os.environ[...]` or `%env` instead.
+
 ## Purpose
 
 Four phases, cheapest first, so an expensive failure is never the first thing you learn:
@@ -138,31 +149,35 @@ PY
 - **Expect:** `"version": 2` and a `"code"` block naming your `.py`. If `code` is `null`, your
   adapter classified as *installed* (it is pip-installed) or the save refused — read the error.
 
-Now stage it and run the **adapter-import smoke** against the generic image (runbook 38's Phase 0
-step, unchanged except that the image no longer contains the adapter):
+### 1d — stage the bundle and smoke it **as an AML job**
+
+> ⚠️ **The smoke must run on a NODE, not on your laptop.** Your driver venv has the adapter module
+> on `sys.path` and its deps installed, so `python -m fsd.workflows.adapter_smoke <local bundle>`
+> passes trivially and proves **nothing** about the image (ADR 0002: the driver's venv is not
+> guaranteed to mirror the node's). The script below stages the bundle to blob and submits a
+> one-node job into `$AZ_INFER_ENV_NAME:$AZ_INFER_ENV_VERSION` — the same shape as runbook 38's
+> Phase 0, against an image that no longer contains the adapter.
 
 ```bash
 cd fsd
-.venv/bin/python -m fsd.workflows.adapter_smoke "$AZ_ROOT/bundles/spec44/demo_bundle" \
-  --status-url "$AZ_ROOT/runs/spec44-smoke/_status/0.json"
+export AZ_BUNDLE_LOCAL=./demo_bundle          # the v2 bundle you just re-saved
+.venv/bin/python runbooks/scripts/45_phase1_generic_image_smoke.py
 ```
 
-- **Expect:** `{"status": "ok", "error": null}`.
-- **PASS if:** `status == "ok"`. **This is the headline result**: the adapter imported inside an
-  image that has never heard of it.
-- **If it fails with a named dependency** (e.g. `scikit-learn>=1.5: not installed`), that is D5
-  working — add the dep to the image and rebuild. It is *not* a spec-44 failure.
-- **If it fails with `ModuleNotFoundError: my_adapter`**, the bundle is stale (v1). Re-run 1c.
+- **Expect:** a printed `_result.json` with `"pass": true`, `"smoke_status": "ok"`, and
+  `"code_files_staged": "N/N"`.
+- **PASS if:** `smoke_status == "ok"`. **This is the headline result** — the adapter imported inside
+  an image that has never heard of it.
+- The script **refuses before submitting anything** if the local bundle has no `code` block (a v1
+  bundle), because that job is guaranteed to fail after paying for a cold start. Everything
+  checkable on the driver is checked on the driver (spec 38 D11's rule).
+- **If `smoke_error` names a dependency** (e.g. `scikit-learn>=1.5: not installed`), that is **D5
+  working as designed** — add the dep to the image and rebuild. It is *not* a spec-44 failure.
+- **If `smoke_error` is `ModuleNotFoundError: my_adapter`**, the staged bundle is stale — re-run
+  step 1c so the bundle is re-saved with a post-2026-08-19 fsd, then re-run this step.
+- **If it takes 40–380 s doing nothing visible:** that is the node cold start, not a hang.
 
-Record Phase 1 as:
-
-```json
-{ "step": "spec44-phase1-generic-image", "status": "ok", "pass": true,
-  "metrics": { "env_version": "<AZ_INFER_ENV_VERSION>", "bundle_version": 2,
-               "code_files": ["my_adapter.py"], "smoke_status": "ok" },
-  "expected": { "bundle_version": 2, "smoke_status": "ok" },
-  "error": null }
-```
+It writes `tests/outputs/spec44_verify/_result_phase1.json`. Paste that back.
 
 ---
 
