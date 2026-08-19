@@ -1094,11 +1094,14 @@ def _existing_outputs(candidates, *, run_folderpath: str) -> list[str]:
     "no per-cell outputs were produced" on that — a loud failure, not a silent one.
 
     ⚠️ The `*/*` depth is a **contract with `create_datacube.setup`**, which builds
-    `export_folderpath = run_folderpath/<window>/<id>` (`workflows/create_datacube.py:147-151`).
-    The `<window>` folder is derived from each shape's *actual* timestamp range, so it
-    varies between cells — which is fine here (the glob spans any window, and the key
-    carries whichever one a cell got), but a change to that layout must change this
-    pattern too.
+    `export_folderpath = run_folderpath/<window>/<id>` (`workflows/create_datacube.py`).
+    Since spec 46 D1/D2 the `<window>` folder is derived from the run's *requested*
+    `startdate`/`enddate`/`mosaic_days` — one window per run, shared by every cell —
+    rather than each shape's actual acquisition range, so it no longer varies between
+    cells of the same run. The glob still spans any middle component (old archives keep
+    their pre-spec-46 actual-date folder names, spec 46 D3 — forward-only, no
+    migration), so previously written outputs are still found; a further change to this
+    layout must still change this pattern too.
     """
     hits = {
         _output_key(h)

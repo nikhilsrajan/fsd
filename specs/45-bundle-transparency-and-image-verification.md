@@ -5,11 +5,12 @@ summary: Make `bundle.save` say what it embedded and refuse the two bundles that
 
 # Spec 45 — bundle transparency, bundle validation, and image verification
 
-**Status: ✅ SIGNED OFF 2026-08-19 — NOT YET IMPLEMENTED.** Written against issues **#70, #71,
+**Status: ✅ SIGNED OFF 2026-08-19 — ✅ IMPLEMENTED 2026-08-19.** Written against issues **#70, #71,
 #72, #67**, all raised by the user while driving `notebooks/e2e_austria_aml.ipynb`. The one
 load-bearing question (§7 Q1) was answered by the user at sign-off: **refuse, naming the file** —
 D3 stands as written. The two secondary questions were resolved with the defaults recorded in §7.
-Implementation is a **Sonnet session at `/effort medium`** (§9); nothing in `src/` is touched yet.
+Implementation was a **Sonnet session at `/effort medium`** (§9), reviewed by Opus and merged
+the same day.
 
 > **The one sentence:** spec 44 made the bundle carry its adapter's source; this spec makes the
 > bundle **tell you what it carried** and **refuse to be born broken**.

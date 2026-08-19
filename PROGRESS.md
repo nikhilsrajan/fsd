@@ -4,7 +4,11 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-19 (**spec 44 phase 1 implemented AND proven on the cluster** — the bundle carries the adapter's source, killing the per-adapter inference image; see the entry below. Previously: 2026-07-31, **spec 41 P7 drafted and reviewed** — `docs/tutorial.md` + `docs/howto/*`
+_Last updated: 2026-08-19 (**specs 45 and 46 implemented** — bundle transparency/validation +
+`fsd.model.verify_image`, and run-folder addressability + grid-cell de-duplication; see the entry
+below. Previously same day: **spec 44 phase 1 implemented AND proven on the cluster** — the bundle
+carries the adapter's source, killing the per-adapter inference image. Previously: 2026-07-31,
+**spec 41 P7 drafted and reviewed** — `docs/tutorial.md` + `docs/howto/*`
 (5 pages + an index) + `examples/`, 4 review findings fixed, merged to `main`; awaiting the P7
 cold-start gate. Same day: the **project-state diagnostic was re-run** — the locked demo target was
 hit 2026-07-29 and has no successor named; and the **rslearn spike opened** on `spike/rslearn`.)_
@@ -120,13 +124,11 @@ keeps one meaning), and the run folder **encodes `mosaic_days`** (`20180401_2018
 path identifies the cube contract completely. The four secondary questions were resolved with
 defaults recorded in each spec's §7/§6 — overturn any of them in review.
 
-**→ NEXT SESSION: implement specs 45 and 46 in a Sonnet session** (`/model sonnet`,
-`/effort medium`), per `CLAUDE.md`'s model split. Nothing in `src/` has been touched. The work is
-small and well-fenced: `src/fsd/model/bundle.py` (45 D1–D3) + one new module and a rewrite of
-`runbooks/scripts/45_phase1_generic_image_smoke.py` to call it (45 D4); `src/fsd/workflows/
-create_datacube.py` (46 D1–D3), `src/fsd/grid.py` (46 D4–D5) and the ⚠️ glob docstring at
-`src/fsd/api.py:1096-1101`. Acceptance criteria are numbered in each spec's §4, and both carry
-measured before-numbers to check against.
+**Specs 45 and 46 are IMPLEMENTED, REVIEWED and MERGED to `main` (2026-08-19) — see the entry
+below.** Both specs' acceptance criteria are met, `pytest -q` is green (mpc-extra gap aside,
+pre-existing), and `ruff check src/ tests/ demos/ examples/` is clean. Issues #67–#72 are closed
+against the merge commit and the `worktree-specs-45-46` worktree/branch are pruned.
+**→ NEXT: `git push` `main` — outward, so the user's call (CLAUDE.md, "push only when asked").**
 
 **Also still open:** **spec 44 phase 2** (`deploy` registration, D7/D8) — specified but **NOT
 signed off**; §8 questions 5 and 7 (blob store vs MLflow-via-AML-workspace) are the live decision.
@@ -143,6 +145,67 @@ items are the rslearn Plan B/C decision and spec 43 (`docs/history.md`, deferred
 ---
 
 ## Most recent entry
+
+## 2026-08-19 (latest) — specs 45 and 46 **implemented**: bundle transparency/validation + image
+verification, run-folder addressability + grid dedup
+
+Both signed-off specs (see the entry below) implemented in one Sonnet session, `/effort medium`,
+per `CLAUDE.md`'s model split, then **reviewed by Opus and merged the same day**. All acceptance
+criteria met; `pytest -q` (**758 passed, 1 failed, 85 skipped** — the one failure,
+`test_missing_driver_deps_is_empty_when_everything_is_installed`, is the pre-existing `.venv`
+`mpc`-extra gap and reproduces on unmodified `main`, not a code defect) and `ruff check src/
+tests/ demos/ examples/` are both green.
+
+**Spec 45 — `src/fsd/model/bundle.py`, new `src/fsd/model/verify_image.py`.** `save` now prints a
+report by default (root, files+sizes, adapter ref, requirements; `verbose=False` silences it,
+#70), refuses before copying anything if the adapter's own module wouldn't sit at the top of
+`code/` (#72) or if an embedded file imports an unembedded sibling — transitively, dependencies
+left alone (#71). `fsd.model.verify_image(bundle, environment=..., runner="aml", runner_kwargs=...,
+build_context=None) -> dict` promotes the run-book smoke into the library (#67); `runner="local"`
+raises rather than returning a false-positive pass. `runbooks/scripts/
+45_phase1_generic_image_smoke.py` is now a thin wrapper over it, same `_result.json` shape. Tests:
+`tests/test_bundle_transparency.py` (new, 15 tests) + `tests/test_bundle_code.py` (24, unchanged,
+still green).
+
+**Spec 46 — `src/fsd/workflows/create_datacube.py`, `src/fsd/grid.py`, `src/fsd/api.py` docstring.**
+The export path is now `run_folderpath/{startdate}_{enddate}_m{mosaic_days}/<id>` — one window
+folder per run, derived from the request, not each shape's actual acquisition range (#68);
+`actual_start`/`actual_end` moved into the cube's own `metadata.pickle.npy`. `roi_to_s2_grids` now
+drops any cell `covered_by` another returned cell, printing the before/after count (#69) — a
+numerically-robust `covered_by` check (raw shapely's exact predicate missed 6 of 8 redundant cells
+to floating-point noise on the real `s2grid=476da24` ROI; a relative-area-tolerant version catches
+all 8), tie-broken deterministically by smaller `id`, coverage-preserving by construction.
+**Re-measured against the real shapefiles** (`shapefiles/s2grid=476da24.geojson`,
+`shapefiles/AT_ROI.geojson`): `9 -> 1` and `300 -> 299` exactly as the spec's before-numbers
+predicted, `299` in ~0.075 s. `CHANGES.md`, `RECIPES.md`, `LIMITATIONS.md`'s stale AT_ROI/Phase-1
+cell counts updated. Tests: `tests/test_grid.py` (+5), `tests/test_workflows.py` (+1),
+`tests/test_datacube_builder.py` (assertions added to the existing end-to-end test).
+
+**Review (Opus, `/effort high`, same day) — one real defect found and fixed, plus four
+non-behavioral cleanups.** The defect: the new AC7 test ran
+`runbooks/scripts/45_phase1_generic_image_smoke.py` as a subprocess with its **default** output
+path, so every `pytest -q` in a working checkout **overwrote
+`tests/outputs/spec44_verify/_result_phase1.json`** — which holds the result of the REAL Phase-1
+cluster run the user pastes back per spec 24. The script gained an `--out <dir>` override (same
+argv convention as `34_mixed_baseline_slice.py`'s `--dst`) and the test now writes to `tmp_path`.
+Cleanups: `verify_image` no longer leaks an open `ZipFile` handle, its dead `if req_problems:
+pass` branch became a plain comment, and its docstring now admits it also raises on missing
+`runner_kwargs`; `bundle.py`'s double-`sorted()` in the D3 fix message collapsed to one.
+**Reviewed and accepted as-is:** `_covered`'s tolerance choice (relative to the *candidate's own*
+area, so scale-safe; the deviation from D4's literal "the predicate is `covered_by`" is now
+recorded in spec 46 D4 itself), and `_check_adapter_at_top`'s culprit-naming heuristic (with 3+
+files across trees it may name a different offender, but the prescribed fix — one containing
+directory — is the same either way).
+
+**Flagged for the user, NOT changed** (a spec-scope question, not a bug): spec 45 D2 now refuses
+`bundle.save(installed_adapter, code=["./utils.py"])` — an adapter that really is a pip dependency
+of the image, plus extra helper files. The adapter imports from site-packages regardless of what
+`code/` holds, so the at-top check is irrelevant there, but D2 as written has no carve-out. Narrow
+and previously legal under spec 44 D1 ("take the user at their word"). Worth an issue if that
+combination matters.
+
+**Not yet done:** `main` still has the pending push from spec 44 plus this session's work (user's
+call, per CLAUDE.md's "push only when asked").
 
 ## 2026-08-19 (later) — spec 44 phase 1 **proven on the cluster**; three run-book defects fixed on the way
 

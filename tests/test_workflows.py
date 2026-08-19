@@ -233,6 +233,38 @@ def test_setup_writes_workunits(tmp_path):
         "id", "timestamp", "files", "local_folderpath", "area_contribution"}
 
 
+def test_setup_export_folderpath_is_named_from_the_requested_window(tmp_path):
+    """Spec 46 D1/D2 (#68): the run-folder's middle component is a function of what was
+    REQUESTED (`startdate`/`enddate`/`mosaic_days`), not each shape's own actual
+    acquisition min/max -- so every cell of one run lands under ONE window folder
+    instead of two (the measured defect: `20180404_20180928` and `20180406_20180928`
+    for a single AT_ROI run). Both fixture shapes here see the SAME two catalog tiles
+    (`TS`), so a pre-spec-46 build would already coincide on this small fixture -- the
+    assertion that matters is the *name itself*, not just that the two shapes agree."""
+    cat = tmp_path / "catalog.parquet"
+    shapes = tmp_path / "shapes.geojson"
+    _make_catalog(cat, tmp_path)
+    _two_shapes(shapes)
+    csv = tmp_path / "run" / "input.csv"
+
+    create_datacube.setup(
+        catalog_filepath=str(cat), timestamp_col="timestamp",
+        shapefilepath=str(shapes), id_col="id", run_folderpath=str(tmp_path / "run"),
+        startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
+        bands=["B04", "B08", "SCL"], scl_mask_classes=[8, 9], mosaic_days=20,
+        csv_filepath=str(csv), label_col="label",
+    )
+
+    df = pd.read_csv(csv)
+    expected_window = "20180101_20190101_m20"
+    for p in df["export_folderpath"]:
+        parts = os.path.normpath(p).split(os.sep)
+        assert parts[-2] == expected_window, p
+    # one window folder for the whole run, for every cell (AC1) -- not one per shape.
+    windows = {os.path.normpath(p).split(os.sep)[-2] for p in df["export_folderpath"]}
+    assert windows == {expected_window}
+
+
 def test_setup_does_not_corrupt_a_remote_run_folderpath(tmp_path, monkeypatch):
     """specs/31 §6 finding: os.path.abspath must not be applied to a URL (it would
     turn `abfss://fs@acct.../x` into a mangled local-cwd-prefixed string). setup()'s

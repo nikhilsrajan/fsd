@@ -15,6 +15,7 @@ import geopandas as gpd
 import pandas as pd
 import shapely.affinity
 import shapely.geometry
+from shapely import STRtree
 from shapely.ops import unary_union
 
 from fsd.storage import fs
@@ -69,7 +70,11 @@ def roi_to_s2_grids(roi, *, grid_size_km: float = 5, scale_fact: float = 1.1,
     Steps (per the ROADMAP §4 recipe): S2-`polyfill` the ROI's **convex hull** at the level for
     `grid_size_km` (5 km → res 11), keep cells that **intersect** the ROI, **scale** each by
     `scale_fact` (1.1 → 10 % overlap per side), then **clip** to the ROI so grids stay inside it
-    (`clip=False` keeps the scaled, unclipped cells).
+    (`clip=False` keeps the scaled, unclipped cells). Finally, any cell fully `covered_by`
+    another cell in the result is dropped (spec 46 D4/#69) -- e.g. an ROI that is itself one S2
+    cell polyfills its 8 neighbours too, and after clip+scale those come back as slivers wholly
+    inside the central cell. A dropped cell is always a subset of a kept one, so the union of
+    the returned cells is unchanged; the drop count is always printed (never silent, spec 46 D5).
 
     **An ROI is one region, not a list of shapes.** A multi-row `roi` is `unary_union`-ed into a
     single (multi)polygon *first*, and every step — hull, intersect, clip — works against that
@@ -155,4 +160,80 @@ def roi_to_s2_grids(roi, *, grid_size_km: float = 5, scale_fact: float = 1.1,
             f"({int((dupes > 1).sum())} of {grids['id'].nunique()} repeated, worst "
             f"{dupes.iloc[0]}x) -- one cell must be exactly one row (spec 21 D-GRID-1)."
         )
+
+    grids = _drop_covered_cells(grids)
+    return grids
+
+
+#: Relative-area tolerance for `_covered` below. Two clipped cells that are
+#: geometrically identical or one-subset-of-the-other by construction (both are
+#: `scaled_cell.intersection(shape)` against the SAME `shape`) can still differ by a
+#: few square-degrees of floating-point noise -- measured on the 476da24 case: every
+#: one of the 8 redundant cells has a real (non-boundary) `difference()` area of
+#: relative magnitude 1e-14 to 1e-13, three-to-four orders of magnitude below this
+#: tolerance, while genuinely distinct/overlapping (not one-covering-the-other) cells
+#: differ by orders of magnitude more. shapely's raw `.covered_by()` is an exact GEOS
+#: predicate and does NOT absorb that noise -- it caught only 2 of the 8 redundant
+#: cells in the same measurement, so a tolerant relative-area check is used instead.
+_COVERED_TOL = 1e-9
+
+
+def _covered(a: shapely.geometry.base.BaseGeometry, b: shapely.geometry.base.BaseGeometry,
+             tol: float = _COVERED_TOL) -> bool:
+    """`a` is covered by `b`: boundary-inclusive (unlike `contains`) and tolerant of
+    GEOS floating-point noise in the exact `covered_by` predicate (see `_COVERED_TOL`).
+    Equivalent to `a.covered_by(b)` up to that tolerance."""
+    if not a.intersects(b):
+        return False
+    area_a = a.area
+    if area_a == 0:
+        return True
+    return a.difference(b).area <= tol * area_a
+
+
+def _drop_covered_cells(grids: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Drop any cell whose geometry is covered by another cell in the same set (#69).
+
+    Covered-by, not `contains`/IoU: a clipped sliver *shares boundary* with the cell
+    that covers it, which `contains` (boundary-exclusive) misses -- measured 2 of 8 on
+    the 476da24 case vs 8 of 8 here (spec 46 D4, shapely DE-9IM; see `_covered` for why
+    the exact `.covered_by()` predicate itself isn't used directly). A dropped cell is
+    always a geometric subset of a kept cell, so the union of the output is unchanged
+    -- that's the whole safety argument.
+
+    Two cells that mutually cover each other (i.e. are equal) would otherwise both get
+    dropped by a naive one-pass check; tie-broken deterministically by keeping the
+    smaller `id`.
+    """
+    n = len(grids)
+    if n <= 1:
+        print(f"[grid] {n} cells -> {n} after dropping 0 already covered", flush=True)
+        return grids
+
+    geoms = grids.geometry.to_numpy()
+    ids = grids["id"].to_numpy()
+    tree = STRtree(geoms)
+
+    drop: set[int] = set()
+    for i in range(n):
+        candidates = [j for j in tree.query(geoms[i], predicate="intersects") if j != i]
+        covering = [j for j in candidates if _covered(geoms[i], geoms[j])]
+        if not covering:
+            continue
+        if any(not _covered(geoms[j], geoms[i]) for j in covering):
+            # strictly covered by something bigger (not mutual) -> always redundant
+            drop.add(i)
+            continue
+        # every "coverer" also covers the reverse (mutual coverage, i.e. equal) ->
+        # keep exactly one of the tied group, deterministically, by smallest id
+        equal_group = [i] + covering
+        keep = min(equal_group, key=lambda k: ids[k])
+        if i != keep:
+            drop.add(i)
+
+    if drop:
+        keep_mask = [i not in drop for i in range(n)]
+        grids = grids[keep_mask].reset_index(drop=True)
+    print(f"[grid] {n} cells -> {len(grids)} after dropping {len(drop)} already covered",
+          flush=True)
     return grids
