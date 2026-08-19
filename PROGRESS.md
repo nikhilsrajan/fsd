@@ -59,18 +59,39 @@ image with no adapter source in it** (smoke `ok`; a real ROI run produced **9/9 
 STAC in 8.2 min**), and the **QGIS eyeball passed**. `notebooks/e2e_austria_aml.ipynb` was updated
 to match — cell 18's seven-step per-model image build is gone.
 
-**→ NEXT SESSION: revisit the notebook for further usability improvements.** Spec 44 removed the
-worst friction; the question now is what the *next* worst thing is for a user driving this
-notebook. Two concrete candidates already surfaced, both from the user this session:
+**Notebook session 2026-08-19 (later still) — one accepted change, one rejected shape, one leak
+closed.** `notebooks/e2e_austria_aml.ipynb` is **gitignored, and it is reference material** — an
+example of how a user drives fsd's Azure path, **not** a scratch harness. It was edited this
+session without being asked to be; the user's correction is recorded below and in memory.
 
-1. **Auto-detection is opaque.** The user disliked `bundle.save` silently deciding which files to
-   embed. The mechanism and the explicit `code=[...]` form are now documented in `RECIPES.md`
-   ("What `bundle.save(..., code=...)` actually embeds"), but *documentation was the workaround* —
-   consider whether `save` should report what it embedded, or whether the notebook should always
-   use the explicit form for legibility.
-2. **A sibling import is not auto-detected** and fails only on a node (measured, `RECIPES.md`).
-   `save` could plausibly detect this at bundle time by scanning the module's imports. **Not yet
-   filed as an issue** — worth one.
+**Kept.** The inference image's name/version pin moved up beside the training one (one config
+block), so the inference cell is two lines. The three long `"""…"""` scratchpad docstrings that sat
+above the calls became one-line issue pointers, with their text verbatim in a closing **"Known
+rough edges"** cell.
+
+**Rejected and removed by the user: an upfront preflight cell.** The design constraint, which
+generalises past this notebook: *a check belongs at the step it protects, in sequence.* A block at
+the top that validates everything at once must hardcode input paths and assert artifacts that later
+cells create — it checked `demo_model/my_adapter.py`, which the "Preparing model adapter" section
+creates much further down. That reads as a harness, not as usage. The surviving fact is real
+(`_aml_preflight_common` runs per **dispatch**, so the *inference* image is validated last, ~30 min
+in) and now lives in `RECIPES.md` → "Check an AML environment pin at the step that uses it", as a
+three-line check placed before `run_inference`.
+
+**Leak closed:** `notebooks/runbook-45.ipynb` was **untracked and not ignored**, carrying a live
+storage URL, two GUIDs and the rg/workspace/cluster names in source *and* outputs — one `git add -A`
+from publishing them. `.gitignore` now ignores `notebooks/*.ipynb` as a class (no notebook is
+tracked; `notebooks/README.md` still is) rather than naming files one at a time.
+
+**`ruff` pinned to its rule set.** `ruff` is unpinned in `[dev]` and 0.16 widened its *default*
+selection, so the documented `ruff check src/ tests/` reported **357 pre-existing** hits on
+unchanged code. `[tool.ruff.lint]` now carries an explicit `select = ["E4","E7","E9","F","I"]` —
+ruff's historical default plus import sorting. `src/ tests/ demos/ examples/` is clean again.
+
+**Three issues filed** from the notebook's own notes: **#67** a standard helper for verifying an
+inference image (today a run-book script + two env vars); **#68** datacube paths do not reflect
+calendar-aware mosaicing (one run, two date-range folders); **#69** redundant child grid cells when
+the ROI is itself a grid cell. Already filed and still open: #64 / #65 / #66.
 
 **Also still open:** **spec 44 phase 2** (`deploy` registration, D7/D8) — specified but **NOT
 signed off**; §8 questions 5 and 7 (blob store vs MLflow-via-AML-workspace) are the live decision.

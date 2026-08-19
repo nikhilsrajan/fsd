@@ -985,3 +985,34 @@ print(m['fsd_bundle_version'], m['adapter'], m.get('code'), m.get('requirements'
 ```
 `fsd_bundle_version` must be `2` and `code` must be non-null, or the bundle cannot run on a generic
 (adapter-less) inference image. `read_spec` imports nothing, so this is safe anywhere.
+
+## Check an AML environment pin at the step that uses it
+
+`run_aml`'s own `_aml_preflight_common` already checks cluster / environment / storage root — but
+only at **dispatch**, i.e. once per verb. A flow that trains, then downloads, then infers therefore
+validates its **inference** image last, after the two expensive steps have been paid for; a stale
+pin on that image surfaces ~30 min in.
+
+The check itself is three lines. Put it immediately before `run_inference` (or before whichever
+step the pin protects) — it prints the `latest` version next to the pin so drift is visible without
+being silently followed:
+
+```python
+name, _, version = infer_kwargs["environment"].partition(":")
+ml_client.environments.get(name=name, version=version)          # raises if the pin is gone
+print("latest is", ml_client.environments.get(name=name, label="latest").version)
+```
+
+`ml_client` is an `azure.ai.ml.MLClient` built from the same `subscription_id` /
+`resource_group_name` / `workspace_name` already in `runner_kwargs`.
+
+Why `label="latest"` is **reported, not followed**: pinning is deliberate — an image is rebuilt
+when the **fsd wheel** changes, not just the Dockerfile (see "Rebuild BOTH AML Environments"), so
+following `latest` would silently adopt an untested image. Same shape as the
+`AZ_INFER_BUILD_CONTEXT` gate: a remembered rule does not fire, a check does.
+
+> ⚠️ **Do not hoist this into an upfront config gate** (user, 2026-08-19). A demo notebook is an
+> example of *how to use the library*, so its cells have to read in the order a user would actually
+> do the work. A block at the top that validates everything at once has to hardcode paths and
+> assert artifacts that later cells create (e.g. the adapter module, which does not exist yet at
+> config time) — it reads as a harness, not as usage. Check each thing where it is used.

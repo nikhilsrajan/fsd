@@ -60,3 +60,8 @@ benchmarks/datacube_throughput_figures_*/
 
 # P4 (spec 41 D7): the filled-in copy of env.example.sh -- real account names, ids, URLs
 env.local.sh
+
+# Working notebooks: none are tracked, and they hold live cloud identifiers in
+# both source and outputs. Ignore the whole class, not one file at a time.
+notebooks/*.ipynb
+notebooks/demo_*
