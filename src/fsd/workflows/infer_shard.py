@@ -49,15 +49,20 @@ def _status_url(shard_csv_url: str) -> str:
 def fetch_bundle_to_scratch(bundle_url: str, local_dir: str) -> str:
     """D3: fetch a staged bundle to node-local scratch, manifest-driven -- no directory
     listing. Reads `bundle.json` (`fs.open`), then `fs.get`s each file its `artifacts` map
-    names. Returns `local_dir`, ready for `bundle.load`."""
+    and (spec 44) its `code` block name. Returns `local_dir`, ready for `bundle.load` --
+    which is what puts the fetched `code/` on `sys.path`, so this node needs no
+    adapter-specific image."""
     os.makedirs(local_dir, exist_ok=True)
     manifest_url = os.path.join(bundle_url, _bundle.BUNDLE_MANIFEST)
     with fs.open(manifest_url, "r") as f:
         manifest = json.load(f)
     with open(os.path.join(local_dir, _bundle.BUNDLE_MANIFEST), "w") as f:
         json.dump(manifest, f)
-    for rel in manifest.get("artifacts", {}).values():
-        fs.get(os.path.join(bundle_url, rel), os.path.join(local_dir, rel))
+    rels = list(manifest.get("artifacts", {}).values()) + _bundle.manifest_code_files(manifest)
+    for rel in rels:
+        dst = os.path.join(local_dir, rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)   # spec 44: code/ has subdirectories
+        fs.get(os.path.join(bundle_url, rel), dst)
     return local_dir
 
 

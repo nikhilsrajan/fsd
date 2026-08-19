@@ -4,7 +4,7 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-07-31 (**spec 41 P7 drafted and reviewed** — `docs/tutorial.md` + `docs/howto/*`
+_Last updated: 2026-08-19 (**spec 44 phase 1 implemented** — the bundle carries the adapter's source, killing the per-adapter inference image; see the entry below. Previously: 2026-07-31, **spec 41 P7 drafted and reviewed** — `docs/tutorial.md` + `docs/howto/*`
 (5 pages + an index) + `examples/`, 4 review findings fixed, merged to `main`; awaiting the P7
 cold-start gate. Same day: the **project-state diagnostic was re-run** — the locked demo target was
 hit 2026-07-29 and has no successor named; and the **rslearn spike opened** on `spike/rslearn`.)_
@@ -53,7 +53,12 @@ all fixed — see the entry below); the rest is in the archive. P6/P7 remain.
 > but it drops empty periods, floors the span and end-anchors, so rslearn's `T` is data-dependent.
 > Nothing about the spike belongs in `main` until the Plan-B/C decision.
 
-**Next up:** the spec 41 **P7 D13 cold-start gate** — the user, on a fresh clone and fresh venv,
+**Next up (2026-08-19):** spec 44 **phase 1 is implemented** on `worktree-spec-44` and needs a
+review + the real-cluster gate (§4 criterion 12): rebuild the inference Environment **without** the
+adapter baked in and re-run the demo. Then **phase 2** (`deploy` registration, D7/D8) is specified
+but **not signed off** — §8 questions 5 and 7 are open (blob store vs MLflow-via-AML-workspace).
+
+**Also next:** the spec 41 **P7 D13 cold-start gate** — the user, on a fresh clone and fresh venv,
 follows `docs/tutorial.md` *literally* and reports the first instruction that doesn't work (a
 spec-24 `_result.json`; no improvising, no fixing-as-you-go). The docs are drafted **and reviewed**
 (4 findings, all fixed — entry below); `pytest -q tests/test_docs.py` (153 passed) + `ruff check
@@ -63,6 +68,42 @@ items are the rslearn Plan B/C decision and spec 43 (`docs/history.md`, deferred
 ---
 
 ## Most recent entry
+
+## 2026-08-19 — spec 44 written, signed off, and **phase 1 implemented**: the bundle now carries the adapter's source
+
+**The problem.** Running inference on AML needed a *second, adapter-specific* Docker image, because
+the bundle carried only a code *reference* (spec 38 D4). Delivering one ~40-line `my_adapter.py` to
+the nodes cost 4 hand-written files (Dockerfile, `.dockerignore`, 2 AML YAMLs) + `pip wheel` +
+`az ml environment create` + a smoke job — **repeated on every adapter edit**, while retraining the
+model itself cost nothing (the bundle already carried the weights).
+
+**The change.** *Code moves into the bundle; dependencies stay in the image.* `bundle.save` embeds
+the adapter's source under `code/` (auto-detected, package layout preserved); `bundle.load` prepends
+it to `sys.path`. The inference image now differs only by **dependency family** (sklearn vs torch),
+never by model or adapter.
+
+**This REVERSED two LOCKED decisions in spec 38 D4** (the adapter-is-never-in-the-bundle rule, and
+"P6 `deploy` builds the image"). Signed off by the user the same day; spec 38 D4 now carries a
+supersession note and `runbooks/38` lost its per-adapter image steps. Everything else in D4 stands —
+dedicated Environment, operator owns the build, reference-by-name, deps front-loaded to build time,
+D11 smoke gate.
+
+**Landed:** bundle format **v2** (v1 still loads unchanged); origin classification
+(local → embed / installed → skip / `__main__` → refuse with the fix in the message); a `sys.path`
+collision guard; per-origin drift messages; optional declared `requirements` checked by the smoke
+job (never installed, via `packaging`); `code` files carried by both manifest-driven transports.
+**23 new tests** (`tests/test_bundle_code.py`), mutation-checked.
+
+**Amendment A1, found during implementation:** D2's collision guard as signed off compared *paths*,
+which would have broken save-then-load in one process (`api._ensure_bundle`, and every existing
+bundle test). It compares **content** instead — byte-identical is not a collision.
+
+**Two things the user asked that shaped the spec:** whether a library (MLflow) should do this
+instead — answered in §6 with measured numbers (rejected for phase 1; genuinely strong for phase 2's
+registry, now open question #7); and `packaging` adopted for PEP 508 parsing rather than hand-rolled.
+
+**Not done:** the real-cluster gate, and phase 2 (`deploy`).
+
 
 ## 2026-07-31 — spec 41 P7 **reviewed** (Opus): 4 doc-accuracy findings fixed, merged to `main` → NEXT: the user runs the D13 cold-start gate
 

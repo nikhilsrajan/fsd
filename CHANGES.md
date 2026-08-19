@@ -4,6 +4,34 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## The model bundle now carries the adapter's source (spec 44 phase 1, 2026-08-19)
+
+`fsd.model.bundle` gained bundle format **version 2**. Three behavior changes, all in `save`/`load`:
+
+- **`save` now embeds the adapter's source** under `code/` by default (auto-detected from the
+  adapter class, package layout preserved), and `load` prepends `<bundle>/code` to `sys.path`
+  before resolving `module:attr`. **Consequence:** an adapter no longer has to be `pip install`ed
+  into a per-adapter Docker image (spec 38 D4) — the inference image now differs only by
+  *dependency family*. Opt out with `save(..., code=False)`; override with `code=[paths]`.
+- **`save` now RAISES for an adapter class defined in `__main__`** (a script, or in practice a
+  notebook cell). It previously wrote a manifest saying `adapter: "__main__:CropRF"` that could
+  only fail later, on a cluster node, with a `ModuleNotFoundError` after a cold start. The error
+  names the fix: put the class in a `.py` file and import it.
+- **`load`'s drift-check message is now per-origin.** For a bundle carrying its own code, a
+  manifest/class disagreement can only mean the bundle was edited, and the message says so
+  ("the bundle has been edited"). For an installed-package adapter the original
+  "code/bundle drift" wording is kept, because there the check still catches genuine version skew
+  between the image and the bundle. The check itself, and the instance-vs-class `n_timestamps`
+  skip rule, are unchanged.
+
+**Backward compatible:** a version-1 bundle (no `code` block) loads exactly as before —
+it is indistinguishable from a version-2 installed-package bundle, and both mean "resolve the ref
+from the environment". `load` accepts versions 1 and 2 and refuses anything else.
+
+Also additive: an optional `requirements` list in the manifest (`save(..., requirements=[...])`),
+**declared and checked, never installed** — the D11 one-node smoke job now reports an unsatisfied
+dependency by name instead of surfacing an `ImportError` traceback.
+
 ## `_timing.json`'s `first_admission` leg is anchored on the FIRST submission (spec 40 A3, 2026-07-29)
 
 `<run_root>/_timing.json` (ADR 0021) is a schema other things read, so this records a change in

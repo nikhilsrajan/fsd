@@ -790,13 +790,16 @@ def _stage_bundle(bundle_path: str, dst_url: str) -> str:
     listing/new primitive: the manifest already enumerates every file the bundle needs
     (spec 18 §3.4 -- relative hrefs, no absolute path baked in), so this is the same
     manifest-driven shape the node uses to fetch it back down (`infer_shard.
-    fetch_bundle_to_scratch`). Returns `dst_url`."""
+    fetch_bundle_to_scratch`). Spec 44 adds the embedded adapter source under `code/` to
+    that enumeration -- more files, same shape, still no directory listing. Returns
+    `dst_url`."""
     manifest = _bundle.read_spec(bundle_path)
     with fs.open(os.path.join(bundle_path, _bundle.BUNDLE_MANIFEST), "r") as f:
         raw = f.read()
     with fs.open(os.path.join(dst_url, _bundle.BUNDLE_MANIFEST), "w") as f:
         f.write(raw)
-    for rel in manifest.get("artifacts", {}).values():
+    rels = list(manifest.get("artifacts", {}).values()) + _bundle.manifest_code_files(manifest)
+    for rel in rels:
         fs.transfer(os.path.join(bundle_path, rel), os.path.join(dst_url, rel))
     return dst_url
 
