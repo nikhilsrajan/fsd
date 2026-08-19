@@ -58,6 +58,11 @@ export AZ_INFER_BUILD_CONTEXT=''  # folder holding the fsd wheel the inference i
                                   # refuses to run against an image built from a
                                   # pre-spec-44 wheel (the commonest spec 44 failure).
 export AZ_ENV_NAME_VERSION="${AZ_ENV_NAME}:${AZ_ENV_VERSION}"    # demos/e2e_austria_aml.py reads this
+export AZ_ROI=''                  # run-book 45 Phase 2: ROI geojson (default:
+                                  # ../shapefiles/s2grid=476da24.geojson, single MGRS tile)
+export AZ_OUT_SUFFIX=''           # run-book 45 Phase 2: pin the run id; default is a fresh
+                                  # UTC timestamp (a fresh folder per run -- see issue #66)
+export AZ_MERGE=''                # run-book 45 Phase 2: set to 1 to also build the merged map
 
 # ─── 5. Identity & secrets ───────────────────────────────────────────────────────
 export AZ_UAMI_NAME=''            # user-assigned managed identity the compute runs as

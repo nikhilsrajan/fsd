@@ -245,37 +245,37 @@ if fs.exists(url):
 
 ## Phase 2 — a real ROI inference run on the generic image
 
-Use a **small, single-MGRS-tile ROI** (`shapefiles/s2grid=476da24.geojson`, 100% inside `T33UWP`) so
-this is minutes, not an hour.
+Phase 1 proved the adapter *imports* on a node. This proves the pipeline still *works* through it:
+tile the ROI into grid cells, build a cube per cell, predict, write one COG per cell + STAC — with
+`bundle.load` resolving the adapter from the bundle's `code/` on **every** node.
 
 ```bash
 cd fsd
-.venv/bin/python - <<'PY'
-import fsd, os, json
-result = fsd.run_inference(
-    model="./demo_bundle",                       # the re-saved, v2 bundle
-    roi=os.environ["ROI_PATH"],
-    output_folderpath=os.environ["AZ_ROOT"] + "/runs/spec44-verify",      # a FRESH folder — it is the run id
-    startdate=..., enddate=..., mosaic_days=20,  # must give the bundle's n_timestamps
-    runner="aml", storage="abfss://...",
-    runner_kwargs=dict(cluster=os.environ["AZ_CLUSTER"],
-                       environment=f'{os.environ["AZ_INFER_ENV_NAME"]}:{os.environ["AZ_INFER_ENV_VERSION"]}',
-                       identity_client_id=os.environ["AZ_UAMI_CLIENT_ID"]),
-)
-print(json.dumps({"n_outputs": len(result.output_filepaths)}, indent=2))
-PY
+export AZ_BUNDLE_LOCAL=./notebooks/demo_bundle
+.venv/bin/python runbooks/scripts/45_phase2_roi_inference.py
 ```
 
-- **Expect:** one `output.tif` per grid cell, plus a STAC catalog.
-- **PASS if:** every cell produced an `output.tif` and no job failed with an import error.
-- ⚠️ **Use a fresh `output_folderpath`** — it is the run id, and a stale `input.csv` in an existing
-  folder silently ignores a changed ROI (issue #66).
-- **If it hangs with no output for a long stretch:** that is issue #65 (silent dispatch/poll/merge),
-  not a spec-44 failure. Check `_status/*.json` on blob.
+Defaults, all overridable: ROI `../shapefiles/s2grid=476da24.geojson` (100% inside **T33UWP**, so
+minutes not an hour — `AZ_ROI` to change it); window **2018-04-01 → 2018-09-30 @ `mosaic_days=20`**,
+which gives **T=10** to match the demo bundle; bands `B04`,`B08`; `AZ_MERGE=1` to also build the
+merged crop map.
+
+- **Expect:** `"pass": true` with `outputs_on_blob: "N/N"` and `n_outputs > 0`.
+- **PASS if:** every grid cell produced an `output.tif` and no job failed on an import.
+- **Three driver-side guards run before anything is dispatched**, each fatal and free:
+  the bundle carries a `code` block; the window's **T equals the bundle's `n_timestamps`** (a
+  mismatch discovered after the cubes are built is money already spent); and the catalog exists
+  (inference never downloads — SO-6).
+- **The output folder is the run id** and is timestamped fresh every run, so a stale `input.csv`
+  cannot silently ignore a changed ROI (issue #66). Pin it with `AZ_OUT_SUFFIX` only if you
+  deliberately want to resume.
+- **If it sits quiet for a while:** cold start (40–380 s), then per-cell jobs. Progress is
+  `_status/*.json` appearing under the run folder. A long silent stretch near the end is the
+  driver-side merge pulling COGs over VPN (issue #65), not a hang.
 - **Open the merged COG in QGIS.** Visual validation is the standard here — a run that "succeeded"
   and produced a nonsense map is a failure.
 
----
+It writes `tests/outputs/spec44_verify/_result_phase2.json`. Paste that back.
 
 ## Phase 3 — the migration boundary (do not skip)
 
