@@ -53,13 +53,29 @@ all fixed — see the entry below); the rest is in the archive. P6/P7 remain.
 > but it drops empty periods, floors the span and end-anchors, so rslearn's `T` is data-dependent.
 > Nothing about the spike belongs in `main` until the Plan-B/C decision.
 
-**Next up (2026-08-19):** spec 44 **phase 1 is merged to `main` and FULLY VALIDATED on the
-cluster** — `runbooks/45-verify-bundle-carried-code.md` Phases 0–2 all green on
-**`fsd-infer-sklearn:3`, an image with no adapter source in it**: the adapter-import smoke returned
-`ok`, and a real ROI run produced **9/9 per-cell COGs + STAC in 8.2 min**. Remaining: the **QGIS
-eyeball** of those outputs (a run that "succeeds" with a nonsense map is still a failure —
-`CLAUDE.md`), and **spec 44 phase 2** (`deploy` registration, D7/D8), which is specified but **not
-signed off** — §8 questions 5 and 7 are open (blob store vs MLflow-via-AML-workspace).
+**Spec 44 phase 1 is DONE (2026-08-19).** Merged to `main` and fully validated on the cluster:
+`runbooks/45-verify-bundle-carried-code.md` Phases 0–2 all green on **`fsd-infer-sklearn:3`, an
+image with no adapter source in it** (smoke `ok`; a real ROI run produced **9/9 per-cell COGs +
+STAC in 8.2 min**), and the **QGIS eyeball passed**. `notebooks/e2e_austria_aml.ipynb` was updated
+to match — cell 18's seven-step per-model image build is gone.
+
+**→ NEXT SESSION: revisit the notebook for further usability improvements.** Spec 44 removed the
+worst friction; the question now is what the *next* worst thing is for a user driving this
+notebook. Two concrete candidates already surfaced, both from the user this session:
+
+1. **Auto-detection is opaque.** The user disliked `bundle.save` silently deciding which files to
+   embed. The mechanism and the explicit `code=[...]` form are now documented in `RECIPES.md`
+   ("What `bundle.save(..., code=...)` actually embeds"), but *documentation was the workaround* —
+   consider whether `save` should report what it embedded, or whether the notebook should always
+   use the explicit form for legibility.
+2. **A sibling import is not auto-detected** and fails only on a node (measured, `RECIPES.md`).
+   `save` could plausibly detect this at bundle time by scanning the module's imports. **Not yet
+   filed as an issue** — worth one.
+
+**Also still open:** **spec 44 phase 2** (`deploy` registration, D7/D8) — specified but **NOT
+signed off**; §8 questions 5 and 7 (blob store vs MLflow-via-AML-workspace) are the live decision.
+Run-book 45 Phase 3 (the migration boundary) is documented but was never formally walked.
+**`main` has ~16 unpushed commits** — pushing is the user's call.
 
 **Also next:** the spec 41 **P7 D13 cold-start gate** — the user, on a fresh clone and fresh venv,
 follows `docs/tutorial.md` *literally* and reports the first instruction that doesn't work (a
