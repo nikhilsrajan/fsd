@@ -201,8 +201,8 @@ directory — is the same either way).
 `bundle.save(installed_adapter, code=["./utils.py"])` — an adapter that really is a pip dependency
 of the image, plus extra helper files. The adapter imports from site-packages regardless of what
 `code/` holds, so the at-top check is irrelevant there, but D2 as written has no carve-out. Narrow
-and previously legal under spec 44 D1 ("take the user at their word"). Worth an issue if that
-combination matters.
+and previously legal under spec 44 D1 ("take the user at their word"). **Filed as #73** with the
+candidate fix; needs a spec-45 amendment first, since D2 has no carve-out today.
 
 **Not yet done:** `main` still has the pending push from spec 44 plus this session's work (user's
 call, per CLAUDE.md's "push only when asked").
