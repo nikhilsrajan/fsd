@@ -936,3 +936,52 @@ git branch -d <branch>               # delete a branch -- a separate, explicit s
 - Before removing, confirm nothing is stranded: `git -C <worktree> status --porcelain` (empty) and
   that its commits are pushed or merged. The standing practice is to prune only what is **both**
   landed **and** clean.
+
+## What `bundle.save(..., code=...)` actually embeds (spec 44 D1)
+
+Measured 2026-08-19 against a real `demo_model/` layout, not inferred from the code. `code=None`
+(the default) auto-detects; the explicit forms are for when auto-detection is not what you want.
+
+| you write | what lands in `code/` |
+|---|---|
+| `code=None` (default) | **the adapter's own module only** — `['my_adapter.py']`. For a *package* adapter (`my_pkg.adapters:X`) the whole `my_pkg/` tree, layout preserved |
+| `code=["./demo_model/my_adapter.py"]` | `['my_adapter.py']` — identical to auto-detect, you just chose it |
+| `code=["./demo_model"]` | ⚠️ **the whole folder** — `Dockerfile`, `infer-environment.yml` and a 200 kB `fsd-*.whl` all rode along. `__pycache__`/`*.pyc`/dotfiles are excluded, nothing else is |
+| `code=False` | nothing. Back to spec 38 D4: the adapter must be pip-installed in the image |
+
+**How the import root is chosen** (this is the part worth understanding): walk up
+`module.count(".") + 1` directories from the adapter's source file. `my_adapter` (0 dots) → up 1 →
+`demo_model/`, so `demo_model/` is the directory copied *from* and `<bundle>/code` is what goes on
+`sys.path`. `my_pkg.adapters` (1 dot) → up 2 → the parent of `my_pkg/`, so the package keeps its
+layout and its own intra-package imports still resolve.
+
+### Two ways it silently produces an unloadable bundle
+
+Both **succeed at `save`** and fail on the node, so neither is caught until a cold start is paid for.
+
+1. **A sibling import is NOT auto-detected.** If `my_adapter.py` does `from helper import V`,
+   `code=None` embeds only `my_adapter.py` and the node raises `ModuleNotFoundError: helper`.
+   Auto-detection follows the *module*, not the imports. **Fix — list both, from the same
+   directory:**
+   ```python
+   code=["./demo_model/my_adapter.py", "./demo_model/helper.py"]
+   ```
+   Verified: both land flat in `code/`, and a fresh interpreter with the source directory
+   **deleted** loads the adapter and reads `helper.V`.
+
+2. **Files from two different trees break the root.** `code=["./demo_model/my_adapter.py",
+   "./other/helper.py"]` makes the common root their shared parent, so they land at
+   `code/demo_model/my_adapter.py` and `code/other/helper.py` — and since `<bundle>/code` is what
+   is on `sys.path`, `import my_adapter` fails. **Keep every embedded file under one directory.**
+
+### Checking a bundle without running anything
+
+```bash
+.venv/bin/python -c "
+from fsd.model import bundle
+m = bundle.read_spec('./demo_bundle')
+print(m['fsd_bundle_version'], m['adapter'], m.get('code'), m.get('requirements'))
+"
+```
+`fsd_bundle_version` must be `2` and `code` must be non-null, or the bundle cannot run on a generic
+(adapter-less) inference image. `read_spec` imports nothing, so this is safe anywhere.
