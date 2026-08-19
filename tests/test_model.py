@@ -247,7 +247,12 @@ def test_bundle_load_detects_drift(tmp_path):
     manifest["n_timestamps"] = 99
     with open(mfp, "w") as f:
         json.dump(manifest, f)
-    with pytest.raises(ValueError, match="drift"):
+    # spec 44 D4: the check survives but its MEANING is per-origin. This adapter's source ships
+    # inside the bundle, so a disagreement can only mean the bundle was edited -- which is what
+    # the message now says. (The "code/bundle drift" wording is kept for installed-package
+    # adapters, where version skew between image and bundle is real: see
+    # tests/test_bundle_code.py::test_drift_message_is_per_origin.)
+    with pytest.raises(ValueError, match="has been edited"):
         bundle.load(bundle_dir)
 
 

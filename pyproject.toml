@@ -22,6 +22,7 @@ dependencies = [
     "numba",          # median-mosaic kernel
     "snakemake",      # local runner only (specs/08)
     "tqdm",
+    "packaging",     # PEP 508 parsing for bundle requirement checks (specs/44 D5)
 ]
 
 [project.optional-dependencies]

@@ -47,7 +47,9 @@ export AZ_ML_WORKSPACE=''         # AML workspace name
 export AZ_CLUSTER=''              # the d16 compute cluster name
 export AZ_ACR=''                  # container registry backing the environments
 export AZ_ENV_NAME='fsd-aml-env'          # general-purpose env (download/build/flatten)
-export AZ_INFER_ENV_NAME='fsd-infer-env'  # inference env — also COPYs demos/adapters.py
+export AZ_INFER_ENV_NAME='fsd-infer-env'  # inference env: fsd + the adapter's DEPS only.
+                                  # Since spec 44 it does NOT copy any adapter source —
+                                  # bundles carry that. Rebuild only when DEPS change.
 # Versions are queried, never guessed — a stale version silently runs old code:
 export AZ_ENV_VERSION="$(az ml environment list -n "$AZ_ENV_NAME" -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query '[0].version' -o tsv 2>/dev/null)"
 export AZ_INFER_ENV_VERSION="$(az ml environment list -n "$AZ_INFER_ENV_NAME" -g "$AZ_RG" -w "$AZ_ML_WORKSPACE" --query '[0].version' -o tsv 2>/dev/null)"

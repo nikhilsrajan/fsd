@@ -55,6 +55,7 @@
 | 40 | [e2e-aml-demo-script.md](40-e2e-aml-demo-script.md) | current | yes | `tests/test_e2e_aml_demo_helpers.py`, `tests/test_plot_aml_timings.py`, `tests/test_restamp_cli.py`; ADR 0021 |
 | 41 | [docs-refactor.md](41-docs-refactor.md) | current | P1 (this batch) done; P2-P5, P7 not started | `tests/test_docs.py`; ADRs 0022-0026 |
 | 42 | [tutorial-fixture.md](42-tutorial-fixture.md) | current | not implemented | `runbooks/43-build-tutorial-fixture.md` written; generator scripts + `tests/test_tutorial_fixture.py` not yet written |
+| 44 | [bundle-carried-adapter-code.md](44-bundle-carried-adapter-code.md) | current | **phase 1 implemented** (D1–D6 + amendment A1); phase 2 (D7/D8 `deploy`) not started | `tests/test_bundle_code.py` (24 tests) + `runbooks/45-verify-bundle-carried-code.md`; supersedes spec 38 D4 (§0); phase 2 would close `ROADMAP.md` §7 model-store question |
 | — | [research-s2-reprocessing-dedup.md](research-s2-reprocessing-dedup.md) | current | n/a (research notes) | cited by spec 33 |
 
 ## Conventions

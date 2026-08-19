@@ -48,10 +48,11 @@ output is 300 separate files).
 - **The demo bundle from `runbooks/40-train-and-bundle.md` Phase 3** — `tests/outputs/p40_train_and_bundle/demo_rf_bundle`
   (adapter ref **`adapters:DemoRF`**, `n_timestamps=8`). **If runbook 40 is green, this exists and
   you're done here** — the Setup block exports it as `AZ_BUNDLE_LOCAL`. Its adapter is
-  `demos/adapters.py` (in the repo, but **not in the fsd wheel**), so the inference image below must
-  `COPY` that module (D4) — that is what the "Build the inference Environment" section does. Any other
-  bundle (`fsd.model.bundle.save(adapter, artifacts, dst)`) works too, as long as the image resolves
-  its `bundle.json` `adapter` ref.
+  `demos/adapters.py` (in the repo, but **not in the fsd wheel**). **Since spec 44 the image no
+  longer needs to `COPY` that module** — re-save the bundle with this version of fsd and its source
+  travels inside the bundle. Any other bundle (`fsd.model.bundle.save(adapter, artifacts, dst)`)
+  works too; a **version-1** bundle saved before spec 44 still resolves its `adapter` ref from the
+  image, exactly as before.
 - The Austria archive catalog already on blob (`runbooks/37-download-on-aml.md` Phase 3 /
   `runbooks/37-verify-archive.md`) — inference never calls CDSE/MPC (SO-6), so imagery must already
   be there.
@@ -135,7 +136,22 @@ print("preflight OK:", cat, "reachable; ROIs present; bundle", spec["adapter"], 
 PY
 ```
 
-## Build the inference Environment (D4) — once, or whenever the fsd wheel / adapter changes
+## Build the inference Environment (D4) — once, or whenever the fsd wheel / **deps** change
+
+> **✅ SIMPLIFIED BY SPEC 44 (2026-08-19) — the adapter no longer goes in the image.**
+> The bundle now carries its adapter's source (`code/` in `bundle.json`), and `bundle.load` puts it
+> on `sys.path` on the node. So:
+> - **Drop the `COPY <adapter>.py` / `ENV PYTHONPATH=/opt/adapter` lines** from the Dockerfile below.
+> - **Rebuild only when the fsd wheel or the *dependency set* changes** (e.g. adding `torch`) —
+>   **never** because the model was retrained or the adapter edited. One `scikit-learn` image now
+>   serves every sklearn adapter.
+> - Declare the deps in the bundle instead (`bundle.save(..., requirements=["scikit-learn>=1.5"])`);
+>   the D11 smoke job checks them against this image and names any that are missing. fsd still
+>   **never installs at run time** — that part of D4 is unchanged.
+>
+> The rest of this section (base image, the fsd wheel, `az ml environment create`, the smoke job)
+> is unchanged and still an operator step — **Claude never runs `az ml`/`az acr`** (`CLAUDE.md`).
+
 
 > **Do this BEFORE the Setup block's `AZ_INFER_ENV_VERSION=$(az ml environment list …)` line and
 > before Phase 0.** That line only *reads back* the auto-assigned version — it assumes the

@@ -27,12 +27,17 @@ The run-books that realise it, in dependency order (not numeric order):
 | 4 | `39-training-data-on-aml.md` | flatten the 900 cubes → **land-local** training arrays (`create_training_data` façade) | 36's cubes + `input.csv` | ✅ P0–1 green; P2 re-run pending |
 | 5 | `40-train-and-bundle.md` | features (driver-side) → **train `adapters:DemoRF` @ T=8** → **bundle** | 39's landed arrays | 🆕 not yet run |
 | 6 | `38-inference-on-aml.md` | `run_inference(roi=…, runner="aml")` at scale → per-cell COGs + STAC | 40's bundle + 37's archive | 🟡 impl+reviewed, cluster run pending |
+| 7 | `45-verify-bundle-carried-code.md` | **spec 44 phase 1:** prove the inference image no longer needs the adapter (Phase 0 is offline, ~10 s) | 40's bundle, re-saved | 🆕 not yet run |
 
 **Data hand-offs to remember:** 37 writes `$AZ_ROOT/archive/catalog.parquet` (36/38 read it — **not**
 the `mpc/` prefix from runbook 34); 36 Phase 3 writes `runs/<id>/input.csv` (39 reads it); 39 lands
 `tests/outputs/p39_training_data_aml/landed/` (40 reads it); 40 writes `demo_rf_bundle/` (38 Phase 0
 stages it, `AZ_BUNDLE_LOCAL`). 38 builds a **second, inference-specific** Environment (its own setup
-section) that `COPY`s `demos/adapters.py` so `adapters:DemoRF` resolves on a node.
+section). ⚠️ **Since spec 44 (2026-08-19) that Environment no longer `COPY`s `demos/adapters.py`** —
+the bundle carries its adapter's source and `bundle.load` puts it on `sys.path`, so the image is
+generic per *dependency family* (sklearn vs torch) and is rebuilt only when the **deps** change,
+never when the model or adapter does. Run-book **45** verifies exactly that, and covers the one
+migration step: **a bundle saved before 2026-08-19 must be re-saved**.
 
 **Timing recovery (supports spec 40's e2e report, not part of the run order above):**
 
