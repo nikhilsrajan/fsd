@@ -5,13 +5,18 @@ summary: Extend spec 47 Part C's "don't redo what's done" from the download leg 
 
 # Spec 49 — skip the work that is already done: cubes, then flatten
 
-**Status: 🚧 DRAFT — NOT SIGNED OFF, NOT IMPLEMENTED.** Raised by the user 2026-08-20, immediately
-after signing off spec 48: *"just like how in create_training_data, downloading was avoided if all
+**Status: ✅ SIGNED OFF 2026-08-20 — NOT YET IMPLEMENTED.** **All six §7 questions were signed
+off on their proposed defaults** (user, 2026-08-20), and **§8's external cross-validation is
+complete**. It confirmed D3's central choice against Bazel's and DVC's own reasoning, and
+**strengthened** D3's Azure argument: a blob's `Last-Modified` is not merely unreliable, it is
+read-only and cannot be back-dated by any means — so for the blob side, declining timestamps was
+never a judgement call. Nothing in `src/` is touched yet. Raised by the user 2026-08-20, immediately
+after signing off spec 48 (then `test_adapter`, now `verify_adapter`): *"just like how in create_training_data, downloading was avoided if all
 required downloads were already present, creation of datacubes should also be skipped if all
 datacubes already present. And if all datacubes were already present and training data numpy
 arrays are also present without any discrepancy … then even flattening becomes unnecessary
 (unless modeller forces the overwrite) — the only task create_training_data does is to download
-the flattened numpy arrays."* All §7 questions are open; §8 cross-validation is **not yet done**.
+the flattened numpy arrays."*
 
 > **The one sentence:** spec 47 Part C taught the **download** leg not to redo finished work; the
 > **build** and **flatten** legs never learned, so a re-run that should cost one file transfer
@@ -98,8 +103,12 @@ it here, for three concrete reasons:
   Azure); the flattened arrays land **locally** (`export_folderpath`, stamped by the laptop). A
   comparison between them is a comparison between two unsynchronised clocks. Ordinary skew silently
   produces both false "fresh" and false "stale".
-- **Copying resets mtime.** A cube transferred, re-uploaded, or restored looks new without its
-  content changing; blob does not preserve the source mtime through a copy.
+- **On blob, the timestamp structurally cannot mean what the rule needs it to mean.** A blob's
+  `Last-Modified` is **read-only**, auto-assigned by Azure on every create or overwrite, and cannot
+  be set or back-dated through REST, the SDKs, PowerShell, the CLI or ARM (§8). A cube that is
+  transferred, re-uploaded or restored therefore looks new without its content changing, and no
+  flag can preserve the original — `--preserve-last-modified-time` does not apply to Blob
+  destinations at all. This is not skew; it is the storage layer refusing to carry the fact.
 - **fsd already chose identity over time, twice.** Spec 47 D1 refuses a resume on the cached *id
   set*, not on file age. Snakemake's own file-modification-time trigger is explicitly its
   **legacy** mode (spec 47 §8). Introducing an mtime rule now would be the one place in the
@@ -191,7 +200,7 @@ full run's. A skip is an optimisation, never a different return shape.
   unreadable stamp, unrecognised schema) must be to run.
 - **`feature_sequence` fingerprinting is the weak link.** It is a list of `(callable, kwargs)`; a
   changed *function body* with the same name will not change any obvious fingerprint. §7 Q4.
-- **Interaction with spec 48.** `test_adapter` also lands artifacts locally and also wants a
+- **Interaction with spec 48.** `verify_adapter` also lands artifacts locally and also wants a
   resume-identity check (spec 48 D5). If both invent one, they will differ. §7 Q5 asks whether the
   stamp mechanism should be shared from the start.
 
@@ -212,27 +221,27 @@ full run's. A skip is an optimisation, never a different return shape.
 
 ---
 
-## 7. Questions at sign-off
+## 7. Questions at sign-off — ALL RESOLVED (user, 2026-08-20: every default stands)
 
-1. **Does the build skip belong in `create_training_data`, or in
+1. **[SIGNED OFF — default stands]** **Does the build skip belong in `create_training_data`, or in
    `create_datacube.run_create_datacube`?** The latter benefits `run_inference` too, but changes a
    shared path. *Default proposed: `run_create_datacube`, so every caller gets it — matching where
    spec 47 put the download diff.*
-2. **Should cube presence be openable-and-well-formed, or merely non-empty?** A truncated cube
+2. **[SIGNED OFF — default stands]** **Should cube presence be openable-and-well-formed, or merely non-empty?** A truncated cube
    passes D2 today, exactly as a truncated download passes spec 47 D9. *Default proposed:
    non-empty by default, with an opt-in deeper check — and file the atomic-write issue for cubes as
    the real fix, mirroring #74.*
-3. **Is `overwrite=` the right spelling**, given `run_inference` already has a boolean `overwrite`?
+3. **[SIGNED OFF — default stands]** **Is `overwrite=` the right spelling**, given `run_inference` already has a boolean `overwrite`?
    A string-or-bool union on one verb and a bool on another is a small inconsistency. *Default
    proposed: accept both spellings, document the string form.*
-4. **How is `feature_sequence` fingerprinted?** Qualified function names + kwargs is cheap and
+4. **[SIGNED OFF — default stands]** **How is `feature_sequence` fingerprinted?** Qualified function names + kwargs is cheap and
    misses an edited body; source hashing catches it but is brittle across formatting. *Default
    proposed: qualname + kwargs, and say plainly in the docstring that editing a feature function's
    body does not invalidate the stamp.*
-5. **Should the stamp mechanism be shared with spec 48's resume-identity check** (D5 there), rather
+5. **[SIGNED OFF — default stands]** **Should the stamp mechanism be shared with spec 48's resume-identity check** (D5 there), rather
    than each spec growing its own? *Default proposed: yes — one helper, since both are answering
    "were these artifacts derived from exactly this request?".*
-6. **Does the same treatment belong on `run_inference`'s build leg?** It has a per-cell output skip
+6. **[SIGNED OFF — default stands]** **Does the same treatment belong on `run_inference`'s build leg?** It has a per-cell output skip
    but pays the same cold start to discover it. *Default proposed: out of scope here, file an
    issue.*
 
@@ -240,38 +249,75 @@ full run's. A skip is an optimisation, never a different return shape.
 
 ## 8. Best-practice alignment / sources
 
-**⚠️ NOT YET DONE — this is why the spec is a draft.** Required before sign-off. The internal
-sources are credited below; the external questions are listed after them.
+Cross-validation run at sign-off (2026-08-20). It **confirmed D3's central choice** (identity, not
+timestamps) against how the two most-cited content-addressed build systems justify the same
+decision, **validated the sidecar-stamp shape** against DVC's `dvc.lock`, and **strengthened D3's
+Azure argument** from "copying resets mtime" to something considerably harder. Searches run:
+Bazel/Nix content addressing vs Make's mtime; DVC `dvc.lock` staleness decisions; Azure Blob
+`Last-Modified` semantics on copy.
 
-- `specs/47-driver-side-honesty.md` D8/D9/§3a (internal): the whole template. D1 is D8 one level
-  up; D2 and Risk 1 are §3a's truncation hole restated for cubes; D5's printed-line requirement is
-  D9's "the cheap key must be named, never invisible".
-- `specs/47-driver-side-honesty.md` D1 + §8's Snakemake note (internal): supplied D3's core
-  argument — fsd already refuses on *identity* rather than file age, and mtime is the mode
-  Snakemake documents as legacy.
-- `specs/46-run-addressability-and-grid-dedup.md` D1/D2 (internal): the deterministic run-folder
-  name is what makes a re-run address the same cube paths at all, which is the precondition for D1.
-- `src/fsd/workflows/task.py` (internal): its existing "returns immediately without rebuilding"
-  node-side skip is the evidence that the work is *already* known to be redundant — just discovered
-  after the cold start, which is exactly the #64 shape.
-- `src/fsd/api.py::create_training_data` (internal): established the three-leg structure and that
-  the flatten phase delegates to `flatten_training_data`, so the skip has one place to live.
+### External
+
+- **[Bazel — Remote Caching](https://bazel.build/remote/caching)** and
+  **[Bazel caching explained: how Bazel works](https://sluongng.hashnode.dev/bazel-caching-explained-pt-1-how-bazel-works)**:
+  supplied the **direct confirmation of D3**. The contrast is drawn in exactly the terms this spec
+  needed: a system like Make decides "up to date" by **comparing timestamps** of outputs against
+  inputs, whereas Bazel tracks staleness by **inspecting the content digests of the inputs**. It also
+  supplied the shape of the record — Bazel's action key is *"a hash of everything that defines the
+  action: the input files' content digests, the command string, and the environment variables"* —
+  which is precisely D3's proposed stamp (the cube set, plus the run parameters that shaped the
+  arrays). D3 was written before this search; the search confirms it converged on the standard
+  answer rather than inventing one.
+- **[DVC — Running Pipelines](https://doc.dvc.org/user-guide/pipelines/running-pipelines)** and
+  **[dvc status](https://dvc.org/doc/command-reference/status)**: supplied the validation that a
+  **sidecar lock file is the conventional shape**, not an fsd invention. `dvc.lock` pins the hashes
+  of every dependency *and output* per stage; `dvc repro` re-hashes dependencies, compares against
+  the lock, and skips any stage whose inputs, code or **parameters** are unchanged. `_flatten_stamp.json`
+  is the same mechanism with one stage. Two refinements adopted from this source: the stamp should
+  record the **outputs** as well as the inputs (so a deleted or truncated array invalidates it), and
+  **parameters count as dependencies** — which is what makes a changed `aggregate` invalidate the
+  stamp even though no cube moved. Both were already in D3; this confirms they are load-bearing
+  rather than optional.
+- **[Azure/azure-storage-azcopy #1296](https://github.com/Azure/azure-storage-azcopy/issues/1296)**,
+  **[#3194](https://github.com/Azure/azure-storage-azcopy/issues/3194)** and
+  **[Microsoft Q&A — preserving Last-Modified when copying blobs](https://learn.microsoft.com/en-us/answers/questions/5808274/preserving-original-last-modified-timestamp-when-c)**:
+  **strengthened D3's second bullet beyond what it claimed.** The draft said copying resets mtime.
+  The actual position is harder: a blob's `Last-Modified` is **read-only and auto-assigned by Azure
+  on every create or overwrite**, and **cannot be set or back-dated** through REST, the .NET/Java/
+  Python SDKs, PowerShell, the CLI or ARM. `--preserve-last-modified-time` does not apply to Blob
+  destinations at all. So the timestamp on a cube is not merely unreliable — it is **structurally
+  incapable** of carrying "when this cube's content was produced" across any transfer. D3's rejection
+  of mtime is therefore not a judgement call about skew; for the blob side it is the only option.
+  (The documented workaround — stash the original time in custom metadata — is itself a stamp, which
+  is what D3 proposes.)
+- **[Snakemake — CLI / `--rerun-triggers`](https://snakemake.readthedocs.io/en/stable/executing/cli.html)**
+  (already cited by spec 47 §8, re-used here): its default triggers are `code`, `input`, `mtime`,
+  `params`, `software-env`, and **`mtime` alone is explicitly the *legacy* mode**. This is the
+  precedent D3 leans on for treating a parameter change (`aggregate`, `bands`) as invalidating, not
+  just a file change.
+
+### Internal
+
+- `specs/47-driver-side-honesty.md` D8/D9/§3a: the whole template. D1 is D8 one level up; D2 and
+  Risk 1 are §3a's truncation hole restated for cubes; D5's printed-line requirement is D9's "the
+  cheap key must be named, never invisible".
+- `specs/47-driver-side-honesty.md` D1: supplied D3's core argument — fsd already refuses on
+  *identity* rather than file age, so an mtime rule here would be the one place in the pipeline that
+  regressed.
+- `specs/46-run-addressability-and-grid-dedup.md` D1/D2: the deterministic run-folder name is what
+  makes a re-run address the same cube paths at all — the precondition for D1.
+- `src/fsd/workflows/task.py`: its existing "returns immediately without rebuilding" node-side skip
+  is the evidence that the work is *already* known to be redundant, just discovered after the cold
+  start — exactly the #64 shape.
+- `src/fsd/api.py::create_training_data`: established the three-leg structure and that the flatten
+  phase delegates to `flatten_training_data`, so the skip has one place to live.
+- `specs/48-verify-adapter.md` D5: the other caller of the shared identity helper (§7 Q5).
 - The user's own statement of the requirement (2026-08-20), quoted in the status line — the source
-  of D6's acceptance criterion.
+  of D6's acceptance criterion, and of the mtime formulation D3 declines.
 
-**Still to cross-validate externally before sign-off:**
-
-- **Build-system staleness semantics.** How Snakemake's `--rerun-triggers` (`code`, `input`,
-  `mtime`, `params`, `software-env`) and Make/Bazel decide "already done", and specifically what
-  content-addressed systems (Bazel, Nix) do instead of timestamps — D3's argument should be checked
-  against how they actually justify it.
-- **Whether a sidecar stamp is the conventional shape** for "these outputs came from these inputs"
-  (candidates: Bazel action cache keys, DVC's `dvc.lock`, MLflow run inputs), and what those record
-  that D3's proposed stamp omits.
-- **Object-store mtime semantics on Azure Blob/ADLS** — confirm the claim in D3 that a copy does not
-  preserve the source `last_modified`, rather than asserting it.
-
----
+**Nothing outstanding.** The one finding that changes the spec is the Azure `Last-Modified` result,
+which makes D3's second bullet stronger than drafted; D3's text is updated to match rather than left
+understating its own case.
 
 ## 9. Implementation note
 
