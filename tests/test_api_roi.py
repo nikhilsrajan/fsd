@@ -132,6 +132,129 @@ def test_roi_preflight_refuses_an_roi_that_tiles_to_nothing(tmp_path, monkeypatc
         )
 
 
+# --- spec 47 D1/D2: a cached input.csv must match the freshly tiled grids, by id set ---
+
+
+def _write_grids_and_csv(tmp_path, cached_ids, fresh_ids):
+    """Mirrors what `_run_inference_roi` itself writes: `cells/input.csv` with an `id`
+    column (the cached work list) and a `grids` GeoDataFrame (the freshly tiled roi)."""
+    run_folderpath = tmp_path / "cells"
+    run_folderpath.mkdir()
+    import pandas as pd
+
+    pd.DataFrame({"id": cached_ids}).to_csv(run_folderpath / "input.csv", index=False)
+    grids = gpd.GeoDataFrame(
+        {"id": fresh_ids},
+        geometry=[box(i, i, i + 1, i + 1) for i in range(len(fresh_ids))],
+        crs="EPSG:4326",
+    )
+    return str(run_folderpath / "input.csv"), grids
+
+
+def test_resume_identity_same_id_set_does_not_raise(tmp_path):
+    from fsd.api import _check_resume_identity
+
+    csv_filepath, grids = _write_grids_and_csv(tmp_path, ["a", "b", "c"], ["c", "b", "a"])
+    _check_resume_identity(csv_filepath, grids, str(tmp_path))   # no raise
+
+
+def test_resume_identity_disjoint_id_set_raises_naming_folder_counts_and_sample(tmp_path):
+    from fsd.api import _check_resume_identity
+
+    csv_filepath, grids = _write_grids_and_csv(tmp_path, ["a", "b", "c"], ["x", "y", "z"])
+    with pytest.raises(fsd.PreflightError) as exc_info:
+        _check_resume_identity(csv_filepath, grids, str(tmp_path))
+    msg = str(exc_info.value)
+    assert str(tmp_path) in msg
+    assert "3 cell ids" in msg                       # both counts appear
+    assert any(cid in msg for cid in ("a", "b", "c", "x", "y", "z"))   # a sample of the diff
+    assert "new output_folderpath" in msg
+    assert "spec-46" not in msg                       # not a drift case: fully disjoint
+
+
+def test_resume_identity_small_superset_names_spec46_drift(tmp_path):
+    """D2: cached ⊋ fresh by a handful of ids reads as the spec-46 D4 cell-count change
+    (e.g. AT_ROI 300->299), not a different roi -- the message must say so."""
+    from fsd.api import _check_resume_identity
+
+    csv_filepath, grids = _write_grids_and_csv(tmp_path, ["a", "b", "c"], ["a", "b"])
+    with pytest.raises(fsd.PreflightError, match="spec-46"):
+        _check_resume_identity(csv_filepath, grids, str(tmp_path))
+
+
+def test_roi_resume_raises_before_setup_when_cached_ids_differ(tmp_path, monkeypatch):
+    """Integration: a stale input.csv from a DIFFERENT roi must not silently win (#66) --
+    the raise must happen before `_create_datacube.setup` (and therefore before any node
+    ever fans out on the stale work list)."""
+    import fsd.api as api
+    import fsd.grid as _grid_mod
+
+    fresh = gpd.GeoDataFrame(
+        {"id": ["fresh_a", "fresh_b"]}, geometry=[box(0, 0, 1, 1), box(1, 1, 2, 2)],
+        crs="EPSG:4326",
+    )
+    monkeypatch.setattr(_grid_mod, "roi_to_s2_grids", lambda *a, **kw: fresh)
+    monkeypatch.setattr(api, "_ensure_bundle", lambda *a, **kw: "bundle_path")
+    monkeypatch.setattr(api._create_datacube, "setup",
+                        lambda *a, **kw: pytest.fail("setup ran on a stale work list"))
+
+    _write_grids_and_csv(tmp_path, ["stale_a", "stale_b", "stale_c"], [])
+
+    with pytest.raises(fsd.PreflightError, match="output_folderpath"):
+        fsd.run_inference(
+            _Tiny(), output_folderpath=str(tmp_path), roi=ROI, catalog_filepath="c.parquet",
+            startdate=datetime.datetime(2018, 6, 1), enddate=datetime.datetime(2018, 7, 11),
+            mosaic_days=20, bands=["B04", "B08"],
+        )
+
+
+def test_roi_resume_same_ids_skips_setup_and_dispatches(tmp_path, monkeypatch):
+    """Re-running with the SAME roi (same id set) still resumes: `setup` is skipped and
+    the runner is invoked, exactly as it was before D1/D2 (AC1)."""
+    import fsd.api as api
+    import fsd.grid as _grid_mod
+    from fsd.workflows import runners as _runners
+
+    fresh = gpd.GeoDataFrame(
+        {"id": ["cell_a", "cell_b"]}, geometry=[box(0, 0, 1, 1), box(1, 1, 2, 2)],
+        crs="EPSG:4326",
+    )
+    monkeypatch.setattr(_grid_mod, "roi_to_s2_grids", lambda *a, **kw: fresh)
+    monkeypatch.setattr(api, "_ensure_bundle", lambda *a, **kw: "bundle_path")
+    monkeypatch.setattr(api._create_datacube, "setup",
+                        lambda *a, **kw: pytest.fail("setup ran despite a matching resume"))
+
+    class _Result:
+        returncode = 0
+
+    dispatched = []
+    monkeypatch.setattr(
+        _runners, "run_local_inference",
+        lambda *a, **kw: (dispatched.append((a, kw)), _Result())[1],
+    )
+    # Everything past dispatch (collect outputs / STAC / merge) is out of scope for D1/D2 --
+    # stub it so this test isolates "did the resume skip setup and reach the runner".
+    monkeypatch.setattr(api, "_existing_outputs", lambda *a, **kw: ["out.tif"])
+    monkeypatch.setattr(api, "_finalize_outputs", lambda *a, **kw: "DONE")
+
+    csv_filepath, _ = _write_grids_and_csv(tmp_path, ["cell_a", "cell_b"], [])
+    import pandas as pd
+
+    pd.DataFrame({
+        "id": ["cell_a", "cell_b"],
+        "export_folderpath": ["a", "b"],
+        "shapefilepath": ["a.geojson", "b.geojson"],
+    }).to_csv(csv_filepath, index=False)
+
+    result = fsd.run_inference(
+        _Tiny(), output_folderpath=str(tmp_path), roi=ROI, catalog_filepath="c.parquet",
+        startdate=datetime.datetime(2018, 6, 1), enddate=datetime.datetime(2018, 7, 11),
+        mosaic_days=20, bands=["B04", "B08"],
+    )
+    assert len(dispatched) == 1
+    assert result == "DONE"
+
+
 # --- merge modes -------------------------------------------------------------
 
 def _write_cog(path, epsg, x0, y0, val, size=8, res=10, nodata=255):
