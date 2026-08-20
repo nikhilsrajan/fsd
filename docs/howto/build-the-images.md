@@ -145,13 +145,28 @@ half-built image and every fsd preflight goes green regardless. Submit early and
 fail — they sit in *Preparing* until ACR is done, and that wait lands inside
 `job_admission_seconds`. A 15-minute image build then reads as 15 minutes of slow cluster.
 
+**This gate is manual, and there is no way around that.** Nothing reports it programmatically:
+
+- the `Environment` object has no build state, as above;
+- the build is an **ACR task run, not an AML job**, so it does **not** appear in `az ml job list`.
+  Do not try to poll `--query "[?contains(name,'prepare_image')]"` — it matches nothing whether
+  the build is running, finished or failed. Observed live 2026-08-20: a poll loop built on that
+  query printed `0/0 builds terminal` for ten minutes while both builds completed normally in
+  Studio;
+- `az ml environment show` proves the **asset** is registered, never that the image is built.
+
+So open the version page and read it. Get the workspace ARM id from `az` rather than assembling
+the URL path by hand:
+
 ```bash
-az ml job list -g <resource-group> -w <workspace> \
-  --query "[?contains(name,'prepare_image')].{name:name,status:status}" -o table
+WSID="$(az ml workspace show -n <workspace> -g <resource-group> --query id -o tsv)"
+TID="$(az account show --query tenantId -o tsv)"
+echo "https://ml.azure.com/environments/fsd-aml-env/version/<version>?wsid=$WSID&tid=$TID"
+echo "https://ml.azure.com/environments/fsd-infer-sklearn/version/<version>?wsid=$WSID&tid=$TID"
 ```
 
-Wait for **both** to reach `Completed`. Studio → **Environments** → the new version → build log
-shows the same thing with the actual output.
+Wait for **Build status: Succeeded** on *both* before running anything against them. The build log
+is on the same page.
 
 ## Step 5 — Use them
 
