@@ -71,3 +71,5 @@ notebooks/demo_*
 # the repo is what stops them drifting from the how-to that documents them. The fsd
 # wheel dropped into them at build time is a binary artifact and is not.
 notebooks/images/*/fsd-*.whl
+notebooks/images/.wheel/
+notebooks/images/*/.last_registered.json
