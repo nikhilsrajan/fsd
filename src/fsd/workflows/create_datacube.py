@@ -248,6 +248,60 @@ def _dedupe_on_unit_identity(input_df: pd.DataFrame) -> pd.DataFrame:
     return input_df.loc[input_df.index.isin(keep_index)]  # restore manifest order
 
 
+def _cube_present(datacube_filepath: str) -> bool:
+    """D2 (spec 49): a cube counts as present only when BOTH `datacube.npy` and its
+    `metadata.pickle.npy` sibling exist and are non-empty -- a half-written cube is the
+    same class of defect spec 47 §3a documented for downloads (#74), and this must not
+    repeat it."""
+    metadata_filepath = os.path.join(os.path.dirname(datacube_filepath), "metadata.pickle.npy")
+    for filepath in (datacube_filepath, metadata_filepath):
+        if not fs.exists(filepath) or fs.size(filepath) == 0:
+            return False
+    return True
+
+
+def _build_shortfall(csv_filepath: str, *, force: bool) -> tuple[str, int, int]:
+    """D1 (spec 49): which `input.csv` rows still need a cube built -- the driver-side
+    analogue of spec 47 D8's download diff, one level up. Returns `(dispatch_csv_filepath,
+    n_total, n_missing)`. `force=True` (an `overwrite=` rebuild) treats every row as
+    missing without touching the filesystem (the driver dispatches every row again; the
+    node then actually rebuilds only because the caller is expected to have cleared the
+    old artifacts -- see `_force_rebuild`).
+
+    When nothing is missing, or NOTHING is present yet (today's full-dispatch shape),
+    `dispatch_csv_filepath` is `csv_filepath` itself -- no temp file, no extra write. Only
+    a PARTIAL shortfall gets its own sibling CSV holding just the missing rows, so a run
+    that is 95% built does not fan out 100% (spec 47's own reasoning, D1)."""
+    with fs.open(csv_filepath, "r") as f:
+        df = pd.read_csv(f)
+    n_total = len(df)
+    if force:
+        return csv_filepath, n_total, n_total
+    missing_mask = ~df["datacube_filepath"].apply(_cube_present)
+    n_missing = int(missing_mask.sum())
+    if n_missing in (0, n_total):
+        return csv_filepath, n_total, n_missing
+    shortfall_csv_filepath = f"{csv_filepath}.shortfall.csv"
+    with fs.open(shortfall_csv_filepath, "w") as f:
+        df.loc[missing_mask].to_csv(f, index=False)
+    return shortfall_csv_filepath, n_total, n_missing
+
+
+def _force_rebuild(csv_filepath: str) -> None:
+    """D4 (spec 49): `overwrite="datacubes"`/`True` forces a rebuild. `workflows.task`'s
+    own node-side skip (`fs.exists(datacube.npy)`) would otherwise no-op every row whose
+    cube still exists, so the driver clears each row's existing cube files FIRST -- this is
+    still an identity-free operation (no mtime read anywhere, D3/AC6): it removes whatever
+    is there, unconditionally, for exactly the rows this run addresses."""
+    with fs.open(csv_filepath, "r") as f:
+        df = pd.read_csv(f)
+    for datacube_filepath in df["datacube_filepath"]:
+        metadata_filepath = os.path.join(os.path.dirname(datacube_filepath), "metadata.pickle.npy")
+        for filepath in (datacube_filepath, metadata_filepath):
+            if fs.exists(filepath):
+                fs.rm(filepath)
+
+
 def run_create_datacube(
     catalog_filepath: str,
     timestamp_col: str,
@@ -267,14 +321,22 @@ def run_create_datacube(
     dry_run: bool = False,
     unlock: bool = False,
     overwrite_setup_csv: bool = True,
+    overwrite: bool = False,
     runner: str = "local",
     runner_kwargs: dict | None = None,
 ):
-    """Run setup (unless csv exists), then dispatch the task via `runner`.
+    """Run setup (unless csv exists), then dispatch only the cubes that are still missing.
 
     `runner_kwargs` (spec 36 D3) is forwarded to `runners.run_aml` when `runner="aml"`
     (e.g. `cluster=`, `environment=`, `root=`, `identity_client_id=`) -- the local runner
     takes no extra kwargs, so it is ignored for `runner="local"`.
+
+    `overwrite=True` (spec 49 D1/D4/§7 Q1) forces every cube in `csv_filepath` to be
+    rebuilt (clearing existing artifacts first, `_force_rebuild`); `False` (default) skips
+    per-cell (`_build_shortfall`): a shortfall of 0 prints and returns WITHOUT submitting a
+    single job; a partial shortfall dispatches only the missing rows. No modification time
+    is read anywhere in this decision (D3/AC6) -- presence is `datacube.npy` +
+    `metadata.pickle.npy`, both non-empty (D2).
     """
     if overwrite_setup_csv and fs.exists(csv_filepath):
         fs.rm(csv_filepath)
@@ -288,8 +350,20 @@ def run_create_datacube(
             csv_filepath=csv_filepath, label_col=label_col, mosaic_scheme=mosaic_scheme,
         )
 
+    if overwrite:
+        _force_rebuild(csv_filepath)
+
+    dispatch_csv_filepath, n_total, n_missing = _build_shortfall(csv_filepath, force=overwrite)
+    if n_missing == 0:
+        print(f"[build] 0 of {n_total} cubes missing; nothing to build", flush=True)
+        return None
+    if 0 < n_missing < n_total:
+        print(f"[build] {n_missing} of {n_total} cubes missing; dispatching {n_missing}",
+              flush=True)
+
     if runner == "local":
-        return runners.run_local(csv_filepath, cores=cores, dry_run=dry_run, unlock=unlock)
+        return runners.run_local(dispatch_csv_filepath, cores=cores, dry_run=dry_run,
+                                 unlock=unlock)
     if runner == "aml":
-        return runners.run_aml(csv_filepath, **(runner_kwargs or {}))
+        return runners.run_aml(dispatch_csv_filepath, **(runner_kwargs or {}))
     raise ValueError(f"Unknown runner={runner!r}; valid values: 'local', 'aml'.")

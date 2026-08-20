@@ -225,3 +225,66 @@ def test_pipeline_create_training_data_train_and_infer(tmp_path):
     catalog = pystac.Catalog.from_file(result.stac_catalog_filepath)
     items = list(catalog.get_items(recursive=True))
     assert len(items) == 1
+
+
+# --- spec 48 AC10: fsd.verify_adapter, runner="local", no network ------------
+
+
+class _TutorialConstantAdapter(BaseModelAdapter):
+    """A trivial adapter for `verify_adapter`'s own real end-to-end test (AC10) -- no
+    training needed, `verify_adapter` checks the PIPELINE (cube shape/T, band set, output
+    dtype/range), not model accuracy."""
+
+    required_bands = ["B04", "B08"]
+    n_timestamps = 0  # model-determined
+    output_dtype = "uint8"
+    output_nodata = 255
+    output_band_names = ["output"]
+    feature_sequence = None
+
+    def load(self):
+        pass
+
+    def features(self, data5d, band_indices):
+        return data5d, band_indices
+
+    def predict(self, X_chunk):
+        import numpy as _np
+
+        return _np.zeros(X_chunk.shape[0], dtype="uint8")
+
+
+def test_verify_adapter_real_fixture_local_runner(tmp_path):
+    """AC10: `runner="local"` works end-to-end against a local catalog -- the whole verb,
+    real cube, real inference, no network (spec 36 D3 invariant 3)."""
+    gdf = fs.read_parquet(CATALOG_PATH)
+    startdate = gdf["timestamp"].min().to_pydatetime().replace(tzinfo=None)
+    enddate = (gdf["timestamp"].max() + pd.Timedelta(days=1)).to_pydatetime().replace(tzinfo=None)
+
+    export_folderpath = str(tmp_path / "verify_adapter")
+    result = fsd.verify_adapter(
+        _TutorialConstantAdapter(), roi=ROI_PATH, catalog_filepath=CATALOG_PATH,
+        startdate=startdate, enddate=enddate, mosaic_days=MOSAIC_DAYS, bands=BANDS,
+        export_folderpath=export_folderpath, runner="local",
+    )
+
+    assert result["pass"] is True, result["error"]
+    assert result["metrics"]["cube_t"] > 0
+    for name in ("datacube.npy", "metadata.pickle.npy", "output.tif", "grids.geojson"):
+        assert os.path.exists(os.path.join(export_folderpath, name))
+    assert not os.path.exists(os.path.join(export_folderpath, "features.npy"))  # D7 Q3
+
+    with rasterio.open(os.path.join(export_folderpath, "output.tif")) as src:
+        assert src.count == 1
+        assert src.nodata == 255
+
+    # D5: a second call with the SAME request finds the cube already landed and skips
+    # straight to inference -- no rebuild (cube file untouched).
+    cube_mtime = os.path.getmtime(os.path.join(export_folderpath, "datacube.npy"))
+    result2 = fsd.verify_adapter(
+        _TutorialConstantAdapter(), roi=ROI_PATH, catalog_filepath=CATALOG_PATH,
+        startdate=startdate, enddate=enddate, mosaic_days=MOSAIC_DAYS, bands=BANDS,
+        export_folderpath=export_folderpath, runner="local",
+    )
+    assert result2["pass"] is True
+    assert os.path.getmtime(os.path.join(export_folderpath, "datacube.npy")) == cube_mtime

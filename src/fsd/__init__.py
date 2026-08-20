@@ -18,6 +18,7 @@ from fsd.api import (
     download,
     flatten_training_data,
     run_inference,
+    verify_adapter,
 )
 from fsd.model import BaseModelAdapter, ModelAdapter, Output, load_bundle, save_bundle
 
@@ -39,4 +40,5 @@ __all__ = [
     "load_bundle",
     "run_inference",
     "save_bundle",
+    "verify_adapter",
 ]
