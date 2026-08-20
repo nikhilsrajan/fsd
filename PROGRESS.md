@@ -4,10 +4,15 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-19 (**specs 45 and 46 implemented** — bundle transparency/validation +
-`fsd.model.verify_image`, and run-folder addressability + grid-cell de-duplication; see the entry
-below. Previously same day: **spec 44 phase 1 implemented AND proven on the cluster** — the bundle
-carries the adapter's source, killing the per-adapter inference image. Previously: 2026-07-31,
+_Last updated: 2026-08-20 (**spec 47 implemented AND merged to `main`** — driver-side honesty: a
+stale cached work list on a changed ROI now raises instead of silently resuming the wrong cells
+(#66), the four silent AML legs print progress (#65), a no-op MPC download returns without
+dispatching a job (#64), and `verify_image` raises on caller misuse instead of returning a false
+`pass: False` (Part D, amends spec 45 D4). **NOT YET REVIEWED — that is the next step.** See the
+entry below. Previously: 2026-08-19, **specs 45 and 46 implemented** — bundle transparency/
+validation + `fsd.model.verify_image`, and run-folder addressability + grid-cell de-duplication.
+Same day: **spec 44 phase 1 implemented AND proven on the cluster** — the bundle carries the
+adapter's source, killing the per-adapter inference image. Previously: 2026-07-31,
 **spec 41 P7 drafted and reviewed** — `docs/tutorial.md` + `docs/howto/*`
 (5 pages + an index) + `examples/`, 4 review findings fixed, merged to `main`; awaiting the P7
 cold-start gate. Same day: the **project-state diagnostic was re-run** — the locked demo target was
@@ -128,7 +133,12 @@ defaults recorded in each spec's §7/§6 — overturn any of them in review.
 below.** Both specs' acceptance criteria are met, `pytest -q` is green (mpc-extra gap aside,
 pre-existing), and `ruff check src/ tests/ demos/ examples/` is clean. Issues #67–#72 are closed
 against the merge commit and the `worktree-specs-45-46` worktree/branch are pruned.
-**→ NEXT: `git push` `main` — outward, so the user's call (CLAUDE.md, "push only when asked").**
+
+**Spec 47 is IMPLEMENTED and MERGED to `main` (2026-08-20) but NOT YET REVIEWED — see the entry
+below, and the pointer memory `spec-47-review-handoff` for the next session's starting point.**
+**→ NEXT: an independent Opus review of the merge (`ff8d088..2e5b3b3`), then `git push` `main`** —
+push is outward, so it stays the user's call (CLAUDE.md, "push only when asked"); `main` is 5
+commits ahead of `origin/main` as of this entry.
 
 **Also still open:** **spec 44 phase 2** (`deploy` registration, D7/D8) — specified but **NOT
 signed off**; §8 questions 5 and 7 (blob store vs MLflow-via-AML-workspace) are the live decision.
@@ -145,6 +155,46 @@ items are the rslearn Plan B/C decision and spec 43 (`docs/history.md`, deferred
 ---
 
 ## Most recent entry
+
+## 2026-08-20 — spec 47 **implemented and merged**: driver-side honesty (stale work lists, silent
+dispatch, no-op downloads, misread verdicts) → **NEXT: Opus review of the merge**
+
+Spec 47 (signed off 2026-08-20, same day) implemented in one Sonnet session, `/effort medium`, per
+`CLAUDE.md`'s model split, landing order per the spec's own §9 (Part D first, smallest/lowest-risk;
+then A, B, C in the spec's stated order). **Not yet reviewed** — that is the explicit next step,
+this entry exists to hand it off.
+
+Four independent parts, four issues, one shape: *a driver-side fact the code already has in memory
+gets dropped on the floor instead of acted on or reported.* Each part landed as its own commit on
+`worktree-spec47-part-d`, full `pytest -q` green after each (only the pre-existing
+`test_missing_driver_deps_is_empty_when_everything_is_installed` `.venv` `mpc`-extra gap, same as
+every prior session), `ruff check src/ tests/ demos/ examples/` clean throughout:
+
+| part | issue | commit | fix |
+|---|---|---|---|
+| **D** | amends spec 45 D4 | `51970d2` | `verify_image(build_context=<folder with no wheel>)` now **raises** `ValueError` before the `try` instead of returning `pass: False` — a caller-argument problem was being laundered into a verdict shaped exactly like a real image failure. Stale-wheel case (a real finding about the image) is unchanged. |
+| **A** | #66 | `d8e2b29` | `run_inference(roi=...)` resumed a cached `input.csv` by **existence alone** — a second run into the same `output_folderpath` with a **different** ROI silently re-inferred the FIRST roi's cells. New `api._check_resume_identity` compares the cached `id` set against the freshly tiled grids as a set; any mismatch raises `PreflightError` naming the folder, both counts, a sample of the diff, and the fix (a new `output_folderpath` — now documented as the identity of a run). A cached set that's a strict superset by ≤10 ids is called out as the likely spec-46 D4 cell-count drift, not a different ROI. |
+| **B** | #65 | `1018fd5` | `workflows/runners.py` had exactly one `print()` in 1169 lines; four driver-side AML legs (bundle stage, poll loop, collect, merge) were completely silent — measured 627 s / ~1000 s / 30 m 10 s of silence indistinguishable from a hang. New `fsd.progress.ticker()`, extracted verbatim from `create_datacube.setup`'s `_tick` closure (byte-identical output, regression-tested), now backs all four legs plus `setup` itself. `_aml_submit_and_wait` also now prints `run_id`/`run_root` before any job submits. |
+| **C** | #64 | `aa5bc38` | `run_aml_download`'s MPC branch discovers the full asset list on the driver but dispatched every discovered asset regardless of what the catalog already had — a no-op download still paid a full cold-start fan-out (measured 5m31s). New `runners._mpc_catalog_shortfall` diffs `(tile_id, band)` against the catalog's `id`/`files` columns (a cheap read, never a per-asset destination stat — D9's stated invariant); empty shortfall returns without calling `create_or_update` at all, partial shortfall dispatches only the missing assets. CDSE untouched (D8 explicitly scopes it out — discovery happens on the node there). |
+
+**Merged to `main` 2026-08-20 as `2e5b3b3` (`--no-ff`, clean fast-forward, no conflicts — the
+worktree branched cleanly off `main`@`ff8d088`), worktree pruned** (standing practice). Post-merge
+full suite on `main`: **785 passed, 88 skipped**, same one pre-existing failure, `ruff` clean.
+
+**Explicitly NOT done, by design (spec §2 scope):** the CDSE download path's own no-op-diff (D8
+says a driver-side CDSE discovery pass is a larger, separate change); the atomic-write fix for the
+download path itself (filed as **#74**, the reason spec 47 §7 Q6 chose "existence-only" over
+"size-comparing" for D9's still-unimplemented optional verification pass — that opt-in,
+threaded, off-by-default existence check was **not implemented this session**, deliberately scoped
+out as uncovered by any acceptance criterion; see the spec's D9/§3a for what it would need to catch
+a truncated MPC transfer that the current row-only diff cannot); changing the `input.csv` resume
+mechanism itself; `fs.rm` reliability on blob (#50).
+
+**Issues #64/#65/#66 are NOT YET closed** against the merge commit (unlike the #67–#72 precedent
+from the 45/46 session) — leaving that to whoever reviews, alongside deciding whether to close them
+before or after `git push`.
+
+---
 
 ## 2026-08-19 (latest) — specs 45 and 46 **implemented**: bundle transparency/validation + image
 verification, run-folder addressability + grid dedup
