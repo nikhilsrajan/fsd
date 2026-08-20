@@ -1,30 +1,37 @@
 ---
 status: current
-summary: Make the driver act on and report what it already knows — refuse a work list that no longer matches the request (#66), show progress on the four silent AML legs (#65), and diff the catalog before dispatching a download (#64).
+summary: Make the driver act on and report what it already knows — refuse a work list that no longer matches the request (#66), show progress on the four silent AML legs (#65), diff the catalog before dispatching a download (#64), and stop reporting caller misuse as a failed image verification (amends spec 45 D4).
 ---
 
-# Spec 47 — driver-side honesty: stale work lists, silent dispatch, no-op downloads
+# Spec 47 — driver-side honesty: stale work lists, silent dispatch, no-op downloads, misread verdicts
 
 **Status: 📝 DRAFT — awaiting sign-off.** Written against issues **#66**, **#65** and **#64**, all
 three raised by the user from the same full AML e2e run (2026-08-18) driven from
-`notebooks/e2e_austria_aml.ipynb`. Four §7 questions are open; each carries a default resolved by
-Claude, to confirm or overturn at sign-off. Nothing in `src/` is touched yet.
+`notebooks/e2e_austria_aml.ipynb` — plus **Part D**, a defect in spec 45 D4's error taxonomy hit
+by the user on 2026-08-20 while re-running that same notebook. Five §7 questions are open; each
+carries a default resolved by Claude, to confirm or overturn at sign-off. Nothing in `src/` is
+touched yet.
 
-> **The one sentence:** in all three defects the driver **already has** the information that would
-> have saved the user — the freshly tiled cell ids, the job statuses, the discovered asset list —
-> and it neither acts on it nor says it out loud.
+**Part D amends `specs/45-bundle-transparency-and-image-verification.md` D4.** Spec 45 is not
+edited: specs are point-in-time documents (spec 41 D3 / ADR 0022), so a later spec amends an
+earlier one rather than rewriting it.
+
+> **The one sentence:** in all four defects the driver **already has** the information that would
+> have saved the user — the freshly tiled cell ids, the job statuses, the discovered asset list,
+> the fact that it never tested anything — and it neither acts on it nor says it out loud.
 
 ---
 
-## 1. Three defects, measured
+## 1. Four defects, measured
 
 | # | defect | measured cost |
 |---|---|---|
 | **#66** | a changed ROI is silently ignored when `output_folderpath` is reused | **a wrong answer**: the second run re-inferred the *first* ROI's 9 cells |
 | **#65** | AML dispatch/poll/merge print nothing | **30m10s** of near-total silence; the operator checked Studio and asked if it had hung |
 | **#64** | a no-op download still dispatches the fan-out | **5m31s** of cold start to discover there was nothing to do |
+| **D** | `verify_image` reports caller misuse as `pass: False`, i.e. as a failed image | a run where **nothing was verified** is indistinguishable from a genuinely bad image |
 
-They look like three unrelated papercuts. They are one shape: a driver-side fact that exists in
+They look like four unrelated papercuts. They are one shape: a driver-side fact that exists in
 memory at the moment it would be useful, and is dropped on the floor.
 
 ### #66 — the resume key is existence, not identity
@@ -93,11 +100,38 @@ the per-granule skip logic runs on the node.
 `source="cdse"` is structurally different: it submits **exactly one whole-ROI job** and discovery
 happens *on the node*. The same fix there needs a new driver-side discovery pass — see D8.
 
+### Part D — a misuse is not a verdict
+
+Verbatim, from the user's notebook on 2026-08-20 (the wheel had been deleted from the build
+context):
+
+```
+AssertionError: {'step': 'verify_image', 'status': 'fail', 'pass': False,
+ 'metrics': {... 'requirement_problems_here': []},
+ 'error': "build_context='./demo_model' contains no fsd-*.whl."}
+```
+
+The metrics prove the point: no `staged_bundle_url`, no `code_files_staged`, no `smoke_status`,
+no job submitted. **Nothing about the image was tested.** Yet the return is shaped exactly like
+"the image genuinely failed the smoke job", so the `assert vres["pass"]` in the run-book/notebook
+cannot tell the two apart — and the user's first reading was that their image was broken.
+
+Cause: spec 45 D4 wraps the whole body in `except Exception` to guarantee a `_result.json`-shaped
+return (spec 24). That blanket is correct for anything learned *about the image* and too wide for
+a caller error. `_check_wheel_has_spec44` raises `ValueError` when the folder holds no
+`fsd-*.whl` — a statement about the **caller's argument**, not about the environment under test —
+and the blanket launders it into a verdict.
+
+Spec 45 D4 specified the *stale wheel* case and never specified the *absent wheel* case; this is
+an unspecified edge, not a coding slip. The same gap produced #73 (D2's behaviour for an
+installed adapter), so the fix here is to state the taxonomy once rather than patch case by case.
+
 ## 2. Scope
 
 **In:** a work-list-identity check in `api._run_inference_roi` (#66); a shared progress helper plus
 its four call sites in `workflows/runners.py` (#65); a driver-side catalog diff in
-`runners.run_aml_download`'s **MPC** branch (#64).
+`runners.run_aml_download`'s **MPC** branch (#64); the error taxonomy of `model/verify_image.py`
+(Part D, amending spec 45 D4).
 
 **Out:** the CDSE download path (D8); changing the resume mechanism itself (`input.csv` stays the
 work list); `fs.rm` on blob (#50); the per-shard cold-start overhead itself (#48); any change to
@@ -222,6 +256,34 @@ rather than a silent default. fsd's position: the cheap key is the default (the 
 source of truth), but D9 requires it be named in the docstring and in the printed line, so a user
 who suspects a hole in the archive knows what was and was not checked.
 
+### Part D — verify_image's error taxonomy
+
+#### D10 — the returned dict is reserved for verdicts *about the image*; caller misuse raises
+
+One rule, stated once, so the remaining edges resolve themselves:
+
+- **A statement about the environment under test** → `pass: False` with a populated `error` and
+  whatever metrics were gathered. Unchanged: no `code` block, a **stale** wheel, a partial stage,
+  a missing node status file, a failed smoke job.
+- **A statement about the caller's own arguments** → **raise**, before the `try`. Already true of
+  `runner != "aml"` and missing `runner_kwargs`; Part D adds the absent-wheel case.
+
+The test is: *could this outcome change if the image changed?* If no, it is not a verification
+result and must not wear one.
+
+#### D11 — the `build_context` wheel-presence check is hoisted above the `try`
+
+`build_context` is optional, but a caller who **passes** one has asserted the folder holds the
+wheel the image was built from. If it holds no `fsd-*.whl`, raise `ValueError` naming the folder
+— the message today is already the right message, in the wrong wrapper.
+
+Rejected alternative: **warn and skip the gate**, continuing to the real verification. Friendlier,
+and it silently swallows a typo'd path — the caller believes a staleness gate ran when none did,
+which is the same class of false comfort as `runner="local"` (spec 45 D5). Refusing is honest.
+
+Note what does **not** change: a wheel that is present but **pre-spec-44** stays `pass: False`
+with a populated `error`. That is a real finding about the image.
+
 ## 4. Acceptance criteria
 
 1. Re-running `run_inference(roi=...)` into an `output_folderpath` whose `input.csv` holds a
@@ -243,7 +305,12 @@ who suspects a hole in the archive knows what was and was not checked.
 8. A partially-present MPC download shards only the shortfall: with 828 discovered and 41 missing,
    the submitted shard rows total 41.
 9. A CDSE download is unchanged (regression test) and its docstring says why.
-10. `pytest -q` and `ruff check src/ tests/ demos/ examples/` clean; no network in the unit tests
+10. `verify_image(..., build_context=<folder with no fsd-*.whl>)` **raises** `ValueError` naming
+    the folder, and submits nothing — it does not return `pass: False`.
+11. `verify_image(..., build_context=<folder with a pre-spec-44 wheel>)` still returns
+    `pass: False` with a populated `error` and submits nothing (regression: D11 must not
+    reclassify the stale case).
+12. `pytest -q` and `ruff check src/ tests/ demos/ examples/` clean; no network in the unit tests
     (the AML client is injected, spec 36 D3 invariant 3).
 
 ## 5. Risks
@@ -259,6 +326,11 @@ who suspects a hole in the archive knows what was and was not checked.
   the repo does. Notebook users see more, which is the point.
 - **The extraction in D4 touches a hot, working path** (`setup` runs on every run). Mitigated by
   AC4's byte-identical regression test.
+
+- **D11 turns a soft failure into an exception** for anyone who passes a `build_context` that
+  happens to be empty — previously they got a `pass: False` they could inspect, now they get a
+  traceback. That is the intent (it is a bug in their call), and the notebook/run-book pattern is
+  `assert vres["pass"]`, which already halted.
 
 ## 6. Alternatives considered
 
@@ -291,6 +363,9 @@ who suspects a hole in the archive knows what was and was not checked.
 4. **Does #64 also apply to `create_training_data(download=True)`?** → Default: **yes, for free** —
    it routes through the same `run_aml_download`, so no extra work. Flagged only so the acceptance
    test covers it.
+5. **D10/D11: raise on an absent wheel, or warn and skip the gate?** → Default: **raise**. The
+   caller asserted the folder holds the wheel; silently skipping means believing a gate ran when
+   it did not. *Default resolved by Claude; overturn in review.*
 
 ## 8. Best-practice alignment / sources
 
@@ -333,6 +408,8 @@ who suspects a hole in the archive knows what was and was not checked.
 Per `CLAUDE.md`'s model split, implementation is a **Sonnet session at `/effort medium`** against
 this spec once signed off. Suggested landing order, smallest and safest first:
 
+0. **Part D** — `src/fsd/model/verify_image.py` (~6 lines moved + 2 tests). Smallest, and it
+   unblocks the user's notebook re-run, so land it first.
 1. **Part A / #66** — `src/fsd/api.py` `_run_inference_roi` (~20 lines + 2 tests). Highest
    severity, lowest risk.
 2. **Part B / #65** — new `src/fsd/progress.py`, refactor `workflows/create_datacube.py` to use
@@ -340,4 +417,5 @@ this spec once signed off. Suggested landing order, smallest and safest first:
 3. **Part C / #64** — `workflows/runners.py` MPC branch (~50 lines + tests). The riskiest, and the
    one §7 Q2 may split in half.
 
-Parts A and B touch disjoint files from C and can land independently if the session runs long.
+Part D touches a file none of A/B/C touch; A and B touch disjoint files from C. All four can
+land independently if the session runs long.
