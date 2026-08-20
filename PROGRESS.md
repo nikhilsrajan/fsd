@@ -4,20 +4,7 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-20 (**spec 47 implemented, merged AND Opus-reviewed** — driver-side honesty:
-a stale cached work list on a changed ROI now raises instead of silently resuming the wrong cells
-(#66), the four silent AML legs print progress (#65), a no-op MPC download returns without
-dispatching a job (#64), and `verify_image` raises on caller misuse instead of returning a false
-`pass: False` (Part D, amends spec 45 D4). The review found and fixed **5 defects**, closed
-**#64/#65/#66**, and filed **#75** for D9's deferred existence pass. **`main` is 10 commits ahead of
-`origin/main` and UNPUSHED — push is the user's call.** See the entry below. Previously: 2026-08-19, **specs 45 and 46 implemented** — bundle transparency/
-validation + `fsd.model.verify_image`, and run-folder addressability + grid-cell de-duplication.
-Same day: **spec 44 phase 1 implemented AND proven on the cluster** — the bundle carries the
-adapter's source, killing the per-adapter inference image. Previously: 2026-07-31,
-**spec 41 P7 drafted and reviewed** — `docs/tutorial.md` + `docs/howto/*`
-(5 pages + an index) + `examples/`, 4 review findings fixed, merged to `main`; awaiting the P7
-cold-start gate. Same day: the **project-state diagnostic was re-run** — the locked demo target was
-hit 2026-07-29 and has no successor named; and the **rslearn spike opened** on `spike/rslearn`.)_
+_Last updated: 2026-08-20 (**specs 48 + 49 signed off, awaiting implementation** — `fsd.verify_adapter` runs the adapter over ONE real cube locally before the fan-out; spec 49 stops `create_training_data` redoing finished cube builds and flattens. Both carry completed §8 cross-validation. **Handoff for the Sonnet implementation session: `HANDOFF-specs-48-49.md` at the workspace root.** Same day: spec 47 Opus-reviewed (5 defects, #64/#65/#66 closed, #75 filed); the AML image build documented + split into independent parts; `00_build_images.ipynb` made the one tracked public notebook, guarded by `tests/test_notebooks.py`. `main` @ `3fedd1f`, pushed.)_
 
 ## Where things stand
 
@@ -156,6 +143,79 @@ items are the rslearn Plan B/C decision and spec 43 (`docs/history.md`, deferred
 ---
 
 ## Most recent entry
+
+## 2026-08-20 (later) — specs 48 + 49 signed off; notebooks made public; **NEXT: Sonnet implements both**
+
+Handoff doc: **`HANDOFF-specs-48-49.md` at the WORKSPACE ROOT** (outside the repo — it names the
+untracked file that carries real Azure values). `main` @ `3fedd1f`, **pushed**, tree clean.
+
+### Two specs, both signed off with §8 cross-validation complete
+
+| spec | verb / change | the decision most likely to be got wrong |
+|---|---|---|
+| **48** `specs/48-verify-adapter.md` | new `fsd.verify_adapter` — build ONE cell's cube on AML, land it locally, run the adapter over it, return a verdict + an `output.tif` for QGIS | **D6**: the inference leg must call `workflows.infer_only_task.run_infer_only`; **no branch may say "if verify_adapter"** (AC6). If local and cluster can differ, the verb is worthless. |
+| **49** `specs/49-skip-work-already-done.md` | skip the datacube build when every cube is present, and the flatten when its arrays came from exactly those cubes | **D3**: keys on **identity, never modification time** (AC6 asserts no mtime is read). |
+
+**The gap spec 48 closes:** every existing gate asks *"would the adapter import?"* — `bundle.save`'s
+refusals, `_wheel_has_spec44`, `adapter_smoke` (whose own docstring says "No pipeline logic"),
+`verify_image`. **Nothing runs `predict` on real pixels until the 299-cell fan-out.** An adapter
+with the wrong `n_timestamps`, a `feature_sequence` emitting the wrong band set, or a `predict`
+returning the wrong dtype imports perfectly and smokes green.
+
+**Naming took three passes and is closed:** not `dry_run` (means "execute nothing" universally),
+not `test_adapter` (pytest collects `test_*` even when only *imported* — would have broken fsd's
+own suite), not `adapter_smoke` (already taken by `fsd.workflows.adapter_smoke`, and a "smoke test"
+means synthetic-data format checking). `verify_adapter` follows `verify_image`'s existing precedent.
+
+**Spec 49 D3 declines the mechanism originally proposed (mtime), and §8 backs it:** Bazel decides
+staleness by input **content digests** where Make compares timestamps; DVC's `dvc.lock` is the same
+sidecar shape (and contributed two refinements — record outputs too, treat parameters as
+dependencies); and on Azure a blob's `Last-Modified` is **read-only and cannot be back-dated by any
+means**, so a timestamp physically cannot carry "when this content was produced". That last finding
+made D3's argument stronger than drafted.
+
+**Shared piece:** spec 49 §7 Q5 signed off that spec 48 D5 and spec 49 D3 use **ONE** identity
+helper, not two. Build it during 48, import it in 49.
+
+### Also landed this session
+
+- **Spec 47 reviewed by Opus** (5 defects fixed, #64/#65/#66 closed, **#75** filed for D9's deferred
+  existence pass). Notable: the merge progress bar was measuring header-opens, not the ~1000 s of
+  pixel reads it claimed — it hit 100 % and then ran the expensive phase in silence.
+- **The AML image build is documented and split.** `notebooks/00_build_images.ipynb` is **the one
+  tracked notebook** (`.gitignore` un-ignores it explicitly), with `docs/howto/build-the-images.md`
+  as the scrubbed public page and `notebooks/images/{base,sklearn}/` as tracked build contexts.
+  Part A and Part B register independently, because `az ml environment create` **always** mints a
+  new version — registering both every time churned the one you never touched.
+- **`notebooks/_config.py`** is the single point where a private value enters a public notebook; it
+  reads `env.local.sh` (gitignored, now 6 vars). **`tests/test_notebooks.py`** (14 tests) is what
+  lets a notebook be tracked at all: no saved outputs, no GUID/email/home-dir/storage-URL/RG/
+  workspace/cluster names, scanned across source *and* outputs. **Verified to fail on the
+  pre-scrub file — 6 of 9 fired.**
+- **`env.example.sh` stays complete (54 vars)** and marks the six the notebooks read. It was trimmed
+  to 6 mid-session; that broke `test_az_var_parity` for real — `docs/` names 47 of the removed vars
+  and `demos/` reads 8. The trimmed copy is on the git stash if retiring the other 48 is ever
+  wanted; that needs `docs/reference/environment.md` and `demos/` to move with it.
+- **Two bugs found by running things:** an AML v2 environment build is an **ACR task run, not an AML
+  job**, so the `prepare_image` poll in `RECIPES.md` (since 2026-07-29) matched nothing and looped
+  forever — corrected at source, and the wait is now a Studio link. And `git status --porcelain`
+  over the whole tree let one stray untracked file pin every status cell to "dirty".
+
+### Gates
+
+**804 passed, 90 skipped, 1 pre-existing failure** (`test_missing_driver_deps_…`,
+`planetary_computer` absent from `.venv`, reproduces on unmodified `main`);
+`ruff check src/ tests/ demos/ examples/` clean.
+
+### Still open
+
+**#75** (spec 47 D9's existence pass), **#74** (atomic download writes — the prerequisite that makes
+existence the right predicate), **#73**; CDSE's own no-op diff (spec 47 D8 scopes it out); spec 44
+phase 2 (`deploy`, unsigned). **Gated on a successful e2e run:** tracking
+`e2e_austria_aml.ipynb` + `notebooks/shapefiles/` — and note **`AT_2018_TRAIN.geojson` is
+EuroCrops-derived**, so its licensing is unresolved for a public MIT repo.
+
+---
 
 ## 2026-08-20 — spec 47 **Opus-reviewed**: 5 defects fixed, #64/#65/#66 closed, D9 deferral filed as #75
 
