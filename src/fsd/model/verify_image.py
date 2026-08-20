@@ -36,19 +36,26 @@ from fsd.storage import fs
 __all__ = ["verify_image"]
 
 
-def _check_wheel_has_spec44(build_context: str) -> tuple[bool, str]:
-    """D4 step 1's optional wheel-staleness gate: does the fsd wheel this image was built from
-    already carry `manifest_code_files` (spec 44)? A pre-spec-44 wheel's `fetch_bundle_to_scratch`
-    never downloads `code/` and its `bundle.load` never touches `sys.path` -- the node then raises
-    `ModuleNotFoundError` however good the bundle is, and cannot self-diagnose it (an old fsd has
-    none of the code that would report it), so this has to be checked here, on the driver."""
+def _find_wheel(build_context: str) -> str:
+    """A caller who passes `build_context` has asserted the folder holds the wheel the image was
+    built from (spec 47 D11). An absent wheel is a statement about the CALL, not the image, so
+    this raises rather than returning a verdict -- it must run before `verify_image`'s `try`."""
     wheels = sorted(glob.glob(os.path.join(build_context, "fsd-*.whl")))
     if not wheels:
         raise ValueError(f"build_context={build_context!r} contains no fsd-*.whl.")
-    wheel = wheels[-1]
+    return wheels[-1]
+
+
+def _wheel_has_spec44(wheel: str) -> bool:
+    """D4 step 1's wheel-staleness gate: does the fsd wheel this image was built from already
+    carry `manifest_code_files` (spec 44)? A pre-spec-44 wheel's `fetch_bundle_to_scratch` never
+    downloads `code/` and its `bundle.load` never touches `sys.path` -- the node then raises
+    `ModuleNotFoundError` however good the bundle is, and cannot self-diagnose it (an old fsd has
+    none of the code that would report it), so this has to be checked here, on the driver. Unlike
+    an absent wheel, a stale one IS a statement about the image -- it stays inside the `try`."""
     with zipfile.ZipFile(wheel) as zf:
         src = zf.read("fsd/model/bundle.py").decode()
-    return "def manifest_code_files" in src, wheel
+    return "def manifest_code_files" in src
 
 
 def verify_image(
@@ -99,6 +106,9 @@ def verify_image(
         raise ValueError(
             f"verify_image(runner='aml') requires runner_kwargs{sorted(missing_kwargs)!r}."
         )
+    # D11: a caller who passes build_context has asserted the folder holds the wheel -- an
+    # absent wheel is caller misuse and must raise here, before the try, not become pass=False.
+    wheel = _find_wheel(build_context) if build_context else None
 
     result: dict = {
         "step": "verify_image",
@@ -135,8 +145,8 @@ def verify_image(
         result["metrics"]["requirement_problems_here"] = _bundle.check_requirements(
             manifest.get("requirements"))
 
-        if build_context:
-            fresh, wheel = _check_wheel_has_spec44(build_context)
+        if wheel:
+            fresh = _wheel_has_spec44(wheel)
             result["metrics"]["build_context_wheel"] = wheel
             result["metrics"]["wheel_has_spec44"] = fresh
             if not fresh:
