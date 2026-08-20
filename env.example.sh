@@ -12,6 +12,17 @@
 # What each variable means, where its value comes from, and a command to verify it:
 #   docs/reference/environment.md
 #
+# ─── If you only run the notebooks, you need SIX of these ────────────────────────
+#   AZ_SUBSCRIPTION_ID  AZ_RG  AZ_ML_WORKSPACE  AZ_CLUSTER  AZ_UAMI_CLIENT_ID  AZ_ROOT
+# `notebooks/_config.py` reads those by name and ignores the rest, so your env.local.sh
+# can be six lines long. Everything else below is for the run-books and demos/, which
+# still name them; this template stays complete so `docs/reference/environment.md` and
+# the AZ_* parity check in tests/test_docs.py keep a declaration for every one.
+#
+# NOTE `_config.py` parses rather than sources this file, and SKIPS any value containing
+# `$` — so the `$(az ...)` and `${...}` entries below are invisible to the notebooks by
+# design. If a notebook needs one, paste its literal result into env.local.sh.
+#
 # NOTE none of these are read by `src/fsd/` — every one is operator-facing, consumed
 # by the run-book shell, the `az` CLI, or demos/e2e_austria_aml.py. fsd's own library
 # code takes storage locations as arguments, never from the environment.
