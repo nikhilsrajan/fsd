@@ -117,18 +117,58 @@ PY
 
 If that prints `False`, `verify_image` will (correctly) reject every image built from it.
 
-## Step 3 — Register both environments
+## Step 3 — Register the environment(s) you need — **one at a time**
+
+> ⚠️ **Registering always creates a new version, even when nothing changed.**
+> `az ml environment create` has no no-op mode: AML auto-increments unconditionally. That is
+> deliberate — a version can never mutate under a run that already referenced it — but it means
+> **registering both images every time churns the version of one you never touched.**
+
+The two images are rebuilt on **different schedules**. Decide per image:
+
+| you changed | `fsd-aml-env` | `fsd-infer-sklearn` |
+|---|---|---|
+| the fsd source | rebuild | rebuild |
+| your model's runtime deps (sklearn → torch) | leave alone | rebuild (as a new family) |
+| your trained model | leave alone | leave alone — it rides in the bundle |
+| your adapter code | leave alone | leave alone — it rides in the bundle (spec 44) |
+
+Most users who are only iterating on their own model never rebuild `fsd-aml-env` after the first
+time.
+
+**`fsd-aml-env`** — only when the fsd source changed:
 
 ```bash
 az ml environment create -f notebooks/images/base/environment.yml \
   -g <resource-group> -w <workspace> --query version -o tsv
+```
+
+**`fsd-infer-sklearn`** — when the fsd source *or* your dependency family changed:
+
+```bash
 az ml environment create -f notebooks/images/sklearn/environment.yml \
   -g <resource-group> -w <workspace> --query version -o tsv
 ```
 
-**No `version:` is set in `environment.yml` on purpose** — AML auto-increments, so a rebuild
-always lands on a *new* version and can never mutate one an earlier run referenced. Capture what
-it assigns; you paste both into the run notebook.
+**No `version:` is set in `environment.yml` on purpose** — see the warning above. Capture what
+each call assigns; you paste both into the run notebook.
+
+**To find the version of the image you did *not* rebuild:**
+
+```bash
+az ml environment list -n fsd-aml-env -g <resource-group> -w <workspace> \
+  --query "[].version" -o tsv | sort -V | tail -1
+```
+
+`notebooks/00_build_images.ipynb` automates exactly this split: Part A and Part B are independent,
+each opens with a status cell that compares your current git state against a local record of what
+was last registered from that build context, and Part C resolves both versions whether you ran one
+part or both.
+
+> **Keep the two images on the same fsd where you can.** Rebuilding only the inference image from
+> a newer checkout leaves your datacubes built by one fsd and your inference run by another.
+> Usually fine — the artifacts on disk are the contract — but it is the first thing to check if a
+> cube and a model disagree.
 
 > **Do not write `export V="$(az ...)"`.** `export` always returns 0, so a broken `az` silently
 > assigns its own error text and every later command uses a garbage version. Seen live: `built
@@ -183,12 +223,9 @@ assert vres["pass"], vres
 
 ## When to rebuild
 
-| you changed | rebuild |
-|---|---|
-| fsd source (pulled `main`, a spec landed) | **both** images |
-| your adapter's runtime deps (sklearn → torch) | the inference image (as a new family) |
-| your trained model | **nothing** — it rides in the bundle |
-| your adapter code | **nothing** — it rides in the bundle (spec 44) |
+See the table in [step 3](#step-3--register-the-environments-you-need--one-at-a-time) — and
+remember that "rebuild" means *register that one image*, not both. Registering an image you did
+not change costs you a version number for nothing.
 
 ## Troubleshooting
 
