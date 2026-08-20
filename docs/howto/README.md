@@ -14,12 +14,13 @@ filing (`gh issue create`), not something to work around silently.
 |---|---|---|
 | to point fsd at your own ROI and your own labels | [`your-own-region.md`](your-own-region.md) | you finished the tutorial |
 | to know what a real download actually costs before you start it | [`download-real-imagery.md`](download-real-imagery.md) | CDSE credentials, or MPC (anonymous) |
-| to fan the same calls out onto an Azure ML cluster | [`run-at-scale.md`](run-at-scale.md) | a workspace + cluster your platform admin provisioned |
+| to build the two container images the cluster runs | [`build-the-images.md`](build-the-images.md) | `az login` + a workspace your platform admin provisioned |
+| to fan the same calls out onto an Azure ML cluster | [`run-at-scale.md`](run-at-scale.md) | a workspace + cluster your platform admin provisioned, and both images built |
 | to package your trained model so fsd can run it | [`bundle-your-model.md`](bundle-your-model.md) | a model you already fit |
 | to serve the output COGs/STAC on a map viewer | [`serve-xyz.md`](serve-xyz.md) | an inference run that finished |
 
 Reading order, if you're working through them: **your-own-region → download-real-imagery →
-bundle-your-model → run-at-scale → serve-xyz**. The first two are about getting *your* data in; the
+bundle-your-model → build-the-images → run-at-scale → serve-xyz**. The first two are about getting *your* data in; the
 last three are about getting results out.
 
 For a complete, readable script rather than fragments, see
