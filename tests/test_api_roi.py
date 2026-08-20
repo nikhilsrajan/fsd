@@ -208,6 +208,35 @@ def test_roi_resume_raises_before_setup_when_cached_ids_differ(tmp_path, monkeyp
         )
 
 
+def test_roi_resume_refusal_does_not_touch_the_run_folder(tmp_path, monkeypatch):
+    """The refusal must leave the folder exactly as it found it (review, 2026-08-20): the
+    check used to run AFTER `grids.geojson` was overwritten and a bundle staged, so a
+    refused resume left the old run folder describing the NEW roi while its
+    `cells/input.csv` still described the old one."""
+    import fsd.api as api
+    import fsd.grid as _grid_mod
+
+    fresh = gpd.GeoDataFrame(
+        {"id": ["fresh_a"]}, geometry=[box(0, 0, 1, 1)], crs="EPSG:4326",
+    )
+    monkeypatch.setattr(_grid_mod, "roi_to_s2_grids", lambda *a, **kw: fresh)
+    monkeypatch.setattr(api, "_ensure_bundle",
+                        lambda *a, **kw: pytest.fail("a bundle was staged before the refusal"))
+
+    _write_grids_and_csv(tmp_path, ["stale_a", "stale_b"], [])
+    before = sorted(p.name for p in tmp_path.iterdir())
+
+    with pytest.raises(fsd.PreflightError, match="output_folderpath"):
+        fsd.run_inference(
+            _Tiny(), output_folderpath=str(tmp_path), roi=ROI, catalog_filepath="c.parquet",
+            startdate=datetime.datetime(2018, 6, 1), enddate=datetime.datetime(2018, 7, 11),
+            mosaic_days=20, bands=["B04", "B08"],
+        )
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+    assert not (tmp_path / "grids.geojson").exists()
+
+
 def test_roi_resume_same_ids_skips_setup_and_dispatches(tmp_path, monkeypatch):
     """Re-running with the SAME roi (same id set) still resumes: `setup` is skipped and
     the runner is invoked, exactly as it was before D1/D2 (AC1)."""
@@ -323,6 +352,22 @@ def test_merge_reproject_prints_progress_per_input(tmp_path, capsys):
     out = capsys.readouterr().out
     lines = [ln for ln in out.splitlines() if ln.startswith("[merge] ")]
     assert any(ln.startswith("[merge] 0/3 inputs") for ln in lines)
+    # The per-input WARP is the expensive phase, and it used to run in total silence AFTER
+    # the header-open scan had already printed 100% (review, 2026-08-20).
+    assert any(ln.startswith("[merge] 3/3 inputs reprojected") for ln in lines)
+    assert any(ln.startswith("[merge] merging 3 inputs into the mosaic") for ln in lines)
+
+
+def test_merge_strict_announces_the_pixel_read_phase(tmp_path, capsys):
+    """`rio_merge` is where the pixels are actually read and it has no per-input hook to
+    tick from, so it must at least be announced -- otherwise the 100% line above it is
+    followed by unexplained silence for the bulk of the wall clock."""
+    a, b = tmp_path / "a.tif", tmp_path / "b.tif"
+    _write_cog(a, 32636, 500000, 1300000, 1)
+    _write_cog(b, 32636, 500080, 1300000, 1)
+    _merge_outputs([str(a), str(b)], str(tmp_path / "m.tif"), nodata=255)
+    out = capsys.readouterr().out
+    assert "[merge] merging 2 inputs into the mosaic" in out
 
 
 def test_merge_uses_one_env_for_all_inputs_not_one_per_file(tmp_path, monkeypatch):
@@ -461,4 +506,10 @@ def test_existing_outputs_prints_progress_before_and_after(tmp_path, capsys):
     out = capsys.readouterr().out
     lines = [ln for ln in out.splitlines() if ln.startswith("[collect] ")]
     assert any(ln.startswith("[collect] 0/3 candidates") for ln in lines)
-    assert any(ln.startswith("[collect] 2/3 candidates") for ln in lines)   # 2 found
+    # `done` is candidates PROBED (all 3), not outputs found -- one glob finishes them all,
+    # so reporting the hit count as progress made a finished collect read as "2/3, 67%".
+    # The hit count rides as the suffix instead (review, 2026-08-20).
+    final = [ln for ln in lines if ln.startswith("[collect] 3/3 candidates")]
+    assert final, lines
+    assert final[-1].endswith("| 2 already have an output.tif")
+    assert "eta" not in final[-1]        # nothing to extrapolate a rate from

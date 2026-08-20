@@ -579,9 +579,12 @@ def _aml_submit_and_wait(
             if s in _TERMINAL_JOB_STATUSES and k not in returned_at:
                 returned_at[k] = _now_iso()
         n_terminal = sum(1 for s in statuses.values() if s in _TERMINAL_JOB_STATUSES)
-        tick(n_terminal, suffix=f"{n_jobs - n_terminal} running")
-        if n_terminal == n_jobs:
-            tick(n_terminal, force=True, suffix=f"{n_jobs - n_terminal} running")
+        # One tick per poll, forced on the last one so the 100% line always lands regardless
+        # of the throttle. Forcing it as a SECOND call printed the same line twice whenever
+        # every job was already terminal on the first poll (review, 2026-08-20).
+        done = n_terminal == n_jobs
+        tick(n_terminal, force=done, suffix=f"{n_jobs - n_terminal} running")
+        if done:
             break
         time.sleep(poll_interval_seconds)
 

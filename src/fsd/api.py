@@ -61,7 +61,11 @@ __all__ = [
 # D2 (spec 47): a cached work list that is a strict superset of the freshly tiled grids by no
 # more than this many ids is named as a probable spec-46 D4 cell-count drift (AT_ROI dropped 1,
 # s2grid=476da24 dropped 8, measured 2026-08-19) rather than a different roi.
-_RESUME_DRIFT_SAMPLE = 10
+_RESUME_DRIFT_MAX_MISSING = 10
+
+# How many differing ids D1's error message quotes -- a bounded sample, not the whole diff,
+# which on a 300-cell mismatch would be unreadable.
+_RESUME_DIFF_SAMPLE = 10
 
 
 class PreflightError(ValueError):
@@ -160,7 +164,7 @@ def _check_resume_identity(csv_filepath: str, grids: gpd.GeoDataFrame, output_fo
         return
     only_cached = sorted(cached_ids - fresh_ids)
     only_fresh = sorted(fresh_ids - cached_ids)
-    sample = (only_cached + only_fresh)[:10]
+    sample = (only_cached + only_fresh)[:_RESUME_DIFF_SAMPLE]
     msg = (
         f"output_folderpath={output_folderpath!r} already holds a work list "
         f"({len(cached_ids)} cell ids, in {os.path.join(output_folderpath, 'cells', 'input.csv')}) "
@@ -172,7 +176,7 @@ def _check_resume_identity(csv_filepath: str, grids: gpd.GeoDataFrame, output_fo
     # D2: name the spec-46 D4 cell-count drift explicitly when it is plausibly the cause -- the
     # cached set is a strict superset missing only a handful of ids, not a disjoint id set from a
     # genuinely different roi. Any run folder created before 2026-08-19 hits this.
-    if not only_fresh and 0 < len(only_cached) <= _RESUME_DRIFT_SAMPLE:
+    if not only_fresh and 0 < len(only_cached) <= _RESUME_DRIFT_MAX_MISSING:
         msg += (
             f" This looks like the spec-46 D4 cell-count change (2026-08-19, e.g. 300->299 "
             f"cells for AT_ROI): the cached set is a strict superset missing only "
@@ -826,9 +830,13 @@ def _merge_mosaic(filepaths, nodata, *, reproject_to_dominant: bool, merge_crs):
 
     from fsd.storage.azure import to_vsi
 
-    # D5 (spec 47): tick per input opened -- this is the WAN-latency-bound part (every
-    # per-cell COG read over /vsiadls/, measured ~1000s on 300 cells), matching [setup]'s
-    # shape exactly.
+    # D5 (spec 47): tick per input, matching [setup]'s shape exactly. NOTE what each phase
+    # actually costs, so the bar does not claim to be finished while the long leg runs
+    # (review, 2026-08-20): opening an input reads its HEADER over /vsiadls/ -- real WAN
+    # latency, but small -- while the pixels are read later, inside `rio_merge` (and, in
+    # reproject mode, inside the per-input warp before it). So the open loop gets this
+    # ticker, the reproject loop gets its own, and `rio_merge` -- which has no per-input
+    # hook to tick from -- is at least ANNOUNCED rather than being silence after a 100% line.
     tick = _progress.ticker(len(filepaths), "merge", unit="inputs")
     tick(0, force=True)
 
@@ -854,11 +862,18 @@ def _merge_mosaic(filepaths, nodata, *, reproject_to_dominant: bool, merge_crs):
             target = max(area_by_crs, key=lambda k: len(k))          # degenerate fallback
 
         datasets, tmps = [], []
+        # The expensive per-input phase: each non-target-CRS input is fully decoded and
+        # warped into local scratch. On 300 per-cell COGs over the WAN this dominates the
+        # merge, and before this ticker existed it ran in total silence after the scan
+        # above had already printed 100%.
+        rtick = _progress.ticker(len(filepaths), "merge", unit="inputs reprojected")
+        rtick(0, force=True)
         try:
-            for fp in filepaths:
+            for i, fp in enumerate(filepaths, 1):
                 src = rasterio.open(to_vsi(fp))
                 if src.crs.to_string() == target:
                     datasets.append(src)
+                    rtick(i)
                     continue
                 transform, w, h = calculate_default_transform(
                     src.crs, target, src.width, src.height, *src.bounds)
@@ -881,6 +896,10 @@ def _merge_mosaic(filepaths, nodata, *, reproject_to_dominant: bool, merge_crs):
                     )
                 src.close()
                 datasets.append(rasterio.open(tmp))  # local scratch -- bare open is right
+                rtick(i)
+            rtick(len(filepaths), force=True)
+            print(f"[merge] merging {len(filepaths)} inputs into the mosaic "
+                  "(reads pixels; no per-input progress)", flush=True)
             mosaic, out_transform = rio_merge(datasets, nodata=nodata)
             profile = datasets[0].profile.copy()
             profile.update(driver="GTiff", height=mosaic.shape[1], width=mosaic.shape[2],
@@ -898,6 +917,9 @@ def _merge_mosaic(filepaths, nodata, *, reproject_to_dominant: bool, merge_crs):
             tick(i)
         try:
             crs_set = {s.crs.to_string() for s in srcs}
+            if len(crs_set) == 1:
+                print(f"[merge] merging {len(filepaths)} inputs into the mosaic "
+                      "(reads pixels; no per-input progress)", flush=True)
             if len(crs_set) > 1:
                 raise PreflightError(
                     f"cannot merge outputs across multiple CRS {sorted(crs_set)}; pass "
@@ -1169,15 +1191,21 @@ def _existing_outputs(candidates, *, run_folderpath: str) -> list[str]:
     # D5 (spec 47): TODO #61 already collapsed this to ONE `fs.glob` round trip, so there
     # is no per-candidate loop left to tick against -- print before/after instead, in the
     # same `[label] done/total (...) | elapsed` shape, rather than inventing a per-item
-    # loop that no longer exists.
-    tick = _progress.ticker(len(candidates), "collect", unit="candidates", show_rate=False)
+    # loop that no longer exists. The `done` count is candidates PROBED, not outputs found
+    # (review, 2026-08-20): this leg finishes every candidate in one glob, so reporting the
+    # hit count as progress made a completed collect read as "stuck at 0%" on a fresh run.
+    # The hit count is what the caller wants anyway, so it rides as the suffix. No eta:
+    # there is no intermediate rate to extrapolate one from.
+    tick = _progress.ticker(len(candidates), "collect", unit="candidates",
+                            show_rate=False, show_eta=False)
     tick(0, force=True)
     hits = {
         _output_key(h)
         for h in fs.glob(os.path.join(str(run_folderpath), "*", "*", "output.tif"))
     }
     found = [c for c in candidates if _output_key(c) in hits]
-    tick(len(found), force=True)
+    tick(len(candidates), force=True,
+         suffix=f"{len(found)} already have an output.tif")
     return found
 
 
@@ -1285,6 +1313,16 @@ def _run_inference_roi(
     print(f"[run_inference] roi -> {len(grids)} grid cells at grid_size_km={grid_size_km} "
           f"(one build+infer task each)", flush=True)
 
+    # D1/#66: check the cached work list BEFORE anything writes into output_folderpath
+    # (review, 2026-08-20). This ran after `grids.geojson` had already been overwritten and
+    # a bundle staged, so a refused resume left the old run folder describing THIS roi while
+    # its `cells/input.csv` still described the previous one -- the refusal is supposed to
+    # leave the folder exactly as it found it.
+    run_folderpath = os.path.join(output_folderpath, "cells")
+    csv_filepath = os.path.join(run_folderpath, "input.csv")
+    if fs.exists(csv_filepath):
+        _check_resume_identity(csv_filepath, grids, output_folderpath)
+
     fs.makedirs(output_folderpath)
 
     # model must be a bundle (it crosses a subprocess); auto-save a live adapter.
@@ -1302,13 +1340,10 @@ def _run_inference_roi(
     # 2) per-cell setup (reuse the build workflow's setup; no labels). Skip if input.csv exists
     #    so a re-run resumes (Snakemake then skips already-inferred cells) -- but ONLY if that
     #    cached work list still corresponds to THIS request (D1/#66): resume-by-existence alone
-    #    let a stale input.csv from a prior, different roi silently win.
-    run_folderpath = os.path.join(output_folderpath, "cells")
-    csv_filepath = os.path.join(run_folderpath, "input.csv")
+    #    let a stale input.csv from a prior, different roi silently win. That identity check
+    #    already ran above, before this function wrote anything.
     if scl_mask_classes is None:
         scl_mask_classes = list(config.SCL_MASK_CLASSES)
-    if fs.exists(csv_filepath):
-        _check_resume_identity(csv_filepath, grids, output_folderpath)
     if not fs.exists(csv_filepath):
         try:
             _create_datacube.setup(

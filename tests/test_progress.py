@@ -1,15 +1,22 @@
 """Spec 47 D4/D5 — `fsd.progress.ticker`, the shared throttled progress helper."""
 
+import re
+
 from fsd import progress
 
 
 def test_ticker_prints_expected_shape(capsys):
+    """Pinned as a regex, not as `endswith("s")`: when `elapsed` rounds to 0.0 the rate is 0
+    and the eta segment is legitimately `eta ?` rather than `eta <n>s` (the zero-rate branch
+    `test_ticker_zero_rate_prints_unknown_eta` covers deliberately). Asserting a trailing
+    "s" made this test depend on the wall clock, and it failed under load."""
     tick = progress.ticker(300, "setup", unit="shapes")
     tick(34, force=True)
     out = capsys.readouterr().out.strip()
-    assert out.startswith("[setup] 34/300 shapes (11%) | ")
-    assert "shapes/s | elapsed " in out
-    assert out.endswith("s") and " eta " in out
+    assert re.fullmatch(
+        r"\[setup\] 34/300 shapes \(11%\) \| [\d.]+ shapes/s \| elapsed \d+s \| eta (\?|\d+s)",
+        out,
+    ), out
 
 
 def test_ticker_throttles_unless_forced(capsys):
