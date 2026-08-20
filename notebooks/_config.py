@@ -25,7 +25,30 @@ import pathlib
 import re
 from types import SimpleNamespace
 
-__all__ = ["find_repo", "env_local", "load", "REPO", "NOTEBOOKS", "ENV_LOCAL"]
+__all__ = [
+    "find_repo", "env_local", "load", "NOTEBOOK_VARS", "REPO", "NOTEBOOKS", "ENV_LOCAL",
+]
+
+# The variables the notebooks ask a user to fill in — and therefore the ONLY ones
+# `env.example.sh` declares. This tuple is the single source of truth for that contract;
+# `tests/test_docs.py::test_env_example_declares_exactly_the_notebook_vars` pins the two
+# together in both directions, so a notebook cannot start reading a variable the template
+# never offers, and the template cannot accrete variables no notebook reads.
+#
+# Keeping it short is the point. `env.example.sh` is what a user copies and fills in, and
+# their entry point is a notebook — so a variable that no notebook reads is a blank they
+# are asked to fill for no reason. Run-books name many more (they are point-in-time
+# documents, spec 41 D3, and go stale); `demos/` names a few. Those live in
+# `docs/reference/environment.md`, which documents every variable this project has ever
+# used, not just the ones a notebook needs.
+NOTEBOOK_VARS = (
+    "AZ_SUBSCRIPTION_ID",     # the subscription the workspace lives in
+    "AZ_RG",                  # resource group holding the AML workspace
+    "AZ_ML_WORKSPACE",        # AML workspace name
+    "AZ_CLUSTER",             # the compute cluster the fan-out runs on
+    "AZ_UAMI_CLIENT_ID",      # the NODES' managed identity (not your login)
+    "AZ_ROOT",                # full abfss:// URL the runs write under
+)
 
 
 def find_repo(start: pathlib.Path | None = None) -> pathlib.Path:
