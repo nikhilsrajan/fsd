@@ -4,12 +4,13 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-20 (**spec 47 implemented AND merged to `main`** — driver-side honesty: a
-stale cached work list on a changed ROI now raises instead of silently resuming the wrong cells
+_Last updated: 2026-08-20 (**spec 47 implemented, merged AND Opus-reviewed** — driver-side honesty:
+a stale cached work list on a changed ROI now raises instead of silently resuming the wrong cells
 (#66), the four silent AML legs print progress (#65), a no-op MPC download returns without
 dispatching a job (#64), and `verify_image` raises on caller misuse instead of returning a false
-`pass: False` (Part D, amends spec 45 D4). **NOT YET REVIEWED — that is the next step.** See the
-entry below. Previously: 2026-08-19, **specs 45 and 46 implemented** — bundle transparency/
+`pass: False` (Part D, amends spec 45 D4). The review found and fixed **5 defects**, closed
+**#64/#65/#66**, and filed **#75** for D9's deferred existence pass. **`main` is 10 commits ahead of
+`origin/main` and UNPUSHED — push is the user's call.** See the entry below. Previously: 2026-08-19, **specs 45 and 46 implemented** — bundle transparency/
 validation + `fsd.model.verify_image`, and run-folder addressability + grid-cell de-duplication.
 Same day: **spec 44 phase 1 implemented AND proven on the cluster** — the bundle carries the
 adapter's source, killing the per-adapter inference image. Previously: 2026-07-31,
@@ -156,8 +157,63 @@ items are the rslearn Plan B/C decision and spec 43 (`docs/history.md`, deferred
 
 ## Most recent entry
 
+## 2026-08-20 — spec 47 **Opus-reviewed**: 5 defects fixed, #64/#65/#66 closed, D9 deferral filed as #75
+
+Independent Opus review at `/effort high` of `ff8d088..a195b42` (the Sonnet implementation entry
+below), per the standing practice that the authoring session cannot be its own reviewer.
+
+**Verdict: all 12 acceptance criteria in spec 47 §4 are met** — the band→filename mapping Part C
+depends on is correct (`mpc._select_item_files` writes `<band>.tif`, so `splitext(basename)[0] ==
+band`), the no-op return carries the same keys a dispatched run returns, `[setup]`'s line really is
+byte-identical, and Part D's caller-misuse raises all sit above the `try`. Five defects were found
+*on top of* the ACs, all fixed in `8dc2c1b`, merged as `330302d` (`--no-ff`, worktree pruned).
+
+| # | defect | fix |
+|---|---|---|
+| 1 | **`test_ticker_prints_expected_shape` was flaky** — it asserts `out.endswith("s")`, but when `elapsed` rounds to 0.0 the rate is 0 and the eta segment is legitimately `eta ?`. Failed in a full-suite run, passed in isolation and under `-p no:randomly`; mechanism confirmed by freezing `time.time`. | pinned as a regex, matching the byte-identical `[setup]` test's own approach |
+| 2 | **the merge ticker measured the wrong thing** — `rasterio.open` reads a COG's *header*; the pixels are read inside `rio_merge`, and in reproject mode inside a per-input warp before it. On the case the spec cites (300 per-cell COGs over the WAN, ~1000 s) the bar hit 100% at the end of the header scan and the expensive phase then ran in silence. Worse than no bar: it asserts completion. | the per-input warp gets its own ticker; `rio_merge`, which has no per-input hook, is announced |
+| 3 | **`[collect]` reported hits as progress** — `done` was the hit count against a total of all candidates, so a *finished* collect printed `0/300 candidates (0%)` on a fresh run | `done` is candidates probed (one glob finishes them all); the hit count rides as the suffix; no eta, nothing to extrapolate from |
+| 4 | **D1's refusal mutated the folder it refused** — the identity check ran after `grids.geojson` was overwritten and a bundle staged, so a refused resume left the old run folder describing the NEW roi while its `input.csv` still described the old one | moved above every write; regression test asserts the folder is byte-for-byte untouched |
+| 5 | **`_aml_submit_and_wait` printed its 100% line twice** whenever every job was already terminal on the first poll (an unthrottled tick followed by a forced one) | force the in-loop tick on the last poll instead of adding a second call |
+
+Plus `_RESUME_DRIFT_SAMPLE` was a *threshold* named "sample" while the sample width was a separate
+hardcoded `10` — split into `_RESUME_DRIFT_MAX_MISSING` and `_RESUME_DIFF_SAMPLE`.
+
+**Two documentation gaps closed:**
+
+- **`CHANGES.md` had no spec 47 section**, unlike every recent spec. Added — including a behaviour
+  change the implementation did not call out: **`max_tiles` is now enforced against the shortfall's
+  distinct tiles, not every discovered tile**, so a mostly-already-present request can pass a guard
+  it would previously have tripped. (That is the *more* correct reading of `max_tiles` — the
+  shortfall is what actually gets downloaded — but it is a user-visible change and belonged on the
+  record.)
+- **D9's opt-in existence pass** was signed off (§7 Q3) but not implemented, and the deferral was
+  recorded nowhere. **Adjudicated as a legitimate scope call, not an unimplemented decision** — no
+  §4 acceptance criterion covers it — but it needed a home: filed as **#75**, restating its
+  deliberate limits (existence only, never size; spec 47 §7 Q6 resolved that at its source in #74).
+  Spec 47's status line now names the carve-out.
+
+**Issues #64, #65 and #66 are CLOSED** against `2e5b3b3` + `330302d`, each with a comment covering
+what landed, the behaviour changes, and the tests — matching the #67–#72 precedent.
+
+**Gates on `main` after the merge: 787 passed, 88 skipped, `ruff check src/ tests/ demos/
+examples/` clean.** The single failure is the pre-existing local `.venv` gap
+(`test_missing_driver_deps_is_empty_when_everything_is_installed` — `planetary_computer` absent;
+`pip install -e ".[aml,azure,dev,mpc,grid]"` fixes it), which reproduces on unmodified `main`.
+787 = the 785 baseline + the review's 2 new regression tests.
+
+**⚠️ `main` is 10 commits ahead of `origin/main` and UNPUSHED.** Push is the user's call
+(`CLAUDE.md`: push only when asked). Until then #64/#65/#66's closing comments point at commits
+GitHub cannot yet resolve — each comment says so.
+
+**Open follow-ons:** #75 (D9's existence pass), #74 (atomic download writes — the prerequisite that
+makes existence the *right* predicate), #73 (spec 45 D2's installed-adapter carve-out, unspecced),
+CDSE's own no-op diff (spec 47 D8 scopes it out), spec 44 phase 2 (`deploy`, unsigned).
+
+---
+
 ## 2026-08-20 — spec 47 **implemented and merged**: driver-side honesty (stale work lists, silent
-dispatch, no-op downloads, misread verdicts) → **NEXT: Opus review of the merge**
+dispatch, no-op downloads, misread verdicts) — *reviewed; see the entry above*
 
 Spec 47 (signed off 2026-08-20, same day) implemented in one Sonnet session, `/effort medium`, per
 `CLAUDE.md`'s model split, landing order per the spec's own §9 (Part D first, smallest/lowest-risk;
@@ -190,9 +246,7 @@ out as uncovered by any acceptance criterion; see the spec's D9/§3a for what it
 a truncated MPC transfer that the current row-only diff cannot); changing the `input.csv` resume
 mechanism itself; `fs.rm` reliability on blob (#50).
 
-**Issues #64/#65/#66 are NOT YET closed** against the merge commit (unlike the #67–#72 precedent
-from the 45/46 session) — leaving that to whoever reviews, alongside deciding whether to close them
-before or after `git push`.
+**Issues #64/#65/#66 were closed by the review session** against `2e5b3b3` + `330302d` — see the entry above.
 
 ---
 
