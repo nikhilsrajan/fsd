@@ -4,6 +4,58 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## `fsd.verify_adapter`: one real cube, locally, before the fan-out (spec 48, 2026-08-20)
+
+- **New top-level verb, `fsd.verify_adapter`.** Closes the gap every existing gate stopped short
+  of: `bundle.save`'s refusals prove a bundle is well-formed, `adapter_smoke` proves it imports and
+  `predict` is callable, `verify_image` proves an inference image can run it — none of them ever
+  hands `predict` a real array of pixels before a 299-cell cluster fan-out does. `verify_adapter`
+  builds ONE grid cell's datacube (on `runner="aml"` for the case that matters, `runner="local"`
+  end-to-end with no network for the test suite), lands it locally, and runs it through
+  `fsd.workflows.infer_only_task.run_infer_only` — the SAME unit the cluster runs, not a new
+  inference path — so `output.tif` and `grids.geojson` can be eyeballed in QGIS before a bundle is
+  trusted. Returns a `_result.json`-shaped verdict naming what it did NOT check (the image, scale,
+  any other cell).
+- **Cell selection is deterministic by default** (largest in-window catalog coverage, tie-broken by
+  id) so two runs over the same roi/window pick the same cell; `cell="random"` opts in to a random
+  pick and prints the chosen id so it can be pinned back with `cell=`. `grids.geojson` is always
+  written, so the QGIS pick-and-rerun loop is first-class.
+- **A landed cube resumes by REQUEST identity, never by mere existence** — a second call with the
+  same roi/window/bands/mosaic_days/cell skips straight to inference; a call whose
+  `export_folderpath` already holds a cube for a *different* request raises rather than silently
+  reusing it (the shared `fsd.workflows.stamp` helper, also used by spec 49's flatten skip).
+- **`docs/howto/bundle-your-model.md`** now places `verify_adapter` → `fsd.model.verify_image` →
+  `fsd.run_inference` in order, each section naming what that gate does not check.
+- **Does NOT replace `verify_image`** (spec 45 D5 stands: a local run of the image check would be a
+  false positive) — both gates stay, answering different questions.
+
+## Skip the work that is already done: cubes, then flatten (spec 49, 2026-08-20)
+
+- **`create_training_data`'s build leg now skips per-cell** — `run_create_datacube` diffs
+  `input.csv`'s `datacube_filepath` column against what already exists (both `datacube.npy` and its
+  `metadata.pickle.npy`, non-empty) *before* dispatching: a shortfall of 0 submits no job at all
+  (`[build] 0 of N cubes missing; nothing to build`); a partial shortfall dispatches only the
+  missing rows. Mirrors spec 47 D8's download diff one level up, and converts `workflows.task`'s
+  existing node-side skip from a cold-start-priced no-op into a driver-side one (closes the #64
+  shape for the build leg).
+- **The flatten leg now skips when nothing changed** — on completion, `flatten_training_data` writes
+  `_flatten_stamp.json` recording the identity of the cube set it was derived from (sorted
+  `(id, datacube_filepath)` pairs) plus the run parameters that shape the arrays (`bands`,
+  `mosaic_days`, the window, `aggregate`, the feature transform fingerprinted by qualname+kwargs). A
+  later call whose identity matches AND whose arrays are still present skips the reduce entirely and
+  returns the existing arrays as a working `TrainingData`. **The comparison never reads a
+  modification time** (deliberately declines the mechanism originally proposed): the cubes live on
+  blob, the arrays land locally, the two clocks are unsynchronised, and a blob's `Last-Modified` is
+  read-only and cannot carry "when this content was produced" across any copy. Any mismatch, missing
+  stamp, or missing array fails towards *running*, never towards a wrong skip.
+- **New `overwrite=` on `create_training_data`**: `False` (default, skip whatever is already done),
+  `"datacubes"` (rebuild cubes, and re-flatten), `"flatten"` (keep cubes, redo the flatten), `True`
+  (both). An invalid value raises naming the valid ones.
+- **Consequence:** when every cube and array is already present and current, `create_training_data`
+  now does only what the user described it as doing — land the already-flattened arrays — instead of
+  paying for a fan-out and a reduce it doesn't need. Every skip prints one line naming what it
+  skipped and why, so a fast re-run is never mistaken for one that silently did nothing.
+
 ## Driver-side honesty: stale work lists, silent dispatch, no-op downloads (spec 47, 2026-08-20)
 
 - **`run_inference(roi=...)` now REFUSES a resume whose cached work list is not this roi's**

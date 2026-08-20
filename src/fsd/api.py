@@ -19,6 +19,7 @@ Every verb runs a cheap **preflight** (ROADMAP §2.6) before any heavy work.
 from __future__ import annotations
 
 import datetime
+import json
 import math
 import os
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ from fsd import progress as _progress
 from fsd.bands import modify as _modify
 from fsd.catalog import stac as _stac
 from fsd.catalog.catalog import TileCatalog
+from fsd.catalog.catalog import filter_gdf as _filter_gdf
 from fsd.datacube import flatten as _flatten
 from fsd.model import bundle as _bundle
 from fsd.model import engine as _engine
@@ -44,6 +46,8 @@ from fsd.sources.mpc import download as _mpc_download
 from fsd.storage import fs
 from fsd.storage.azure import configure_storage as _configure_storage
 from fsd.workflows import create_datacube as _create_datacube
+from fsd.workflows import infer_only_task as _infer_only_task
+from fsd.workflows import stamp as _stamp
 
 __all__ = [
     "InferenceResult",
@@ -55,7 +59,11 @@ __all__ = [
     "download",
     "flatten_training_data",
     "run_inference",
+    "verify_adapter",
 ]
+
+# D4 (spec 49): the three settings `overwrite=` accepts on `create_training_data`.
+_VALID_OVERWRITE = (False, True, "datacubes", "flatten")
 
 
 # D2 (spec 47): a cached work list that is a strict superset of the freshly tiled grids by no
@@ -184,6 +192,17 @@ def _check_resume_identity(csv_filepath: str, grids: gpd.GeoDataFrame, output_fo
             f"the fix is the same: use a new output_folderpath."
         )
     raise PreflightError(msg)
+
+
+def _artifacts_present(folder: str, names: list[str]) -> bool:
+    """Every named file under `folder` exists AND is non-empty -- a half-written artifact
+    (#74's class of defect: a truncated write catalogued as complete) must not read as
+    "done" (spec 49 D2, spec 48 D5)."""
+    for name in names:
+        fp = os.path.join(folder, name)
+        if not fs.exists(fp) or fs.size(fp) == 0:
+            return False
+    return True
 
 
 def _normalize_window(startdate, enddate) -> tuple[pd.Timestamp | None, pd.Timestamp | None, list[str]]:
@@ -378,6 +397,7 @@ def create_training_data(
     max_cloudcover: float | None = None,
     cog: bool = True,
     creds: CdseCredentials | None = None,
+    overwrite: bool | str = False,
     runner: str = "local",
     runner_kwargs: dict | None = None,
     storage=None,
@@ -389,6 +409,19 @@ def create_training_data(
     Orchestrates an optional download phase, `workflows.create_datacube` (one datacube per
     polygon, calendar mosaic), then `flatten_training_data` — the user never types "flatten".
     Returns a `TrainingData` handle.
+
+    **Skips work already done (spec 49).** The download leg already diffs against the
+    catalog (spec 47 D8). The build leg diffs `input.csv`'s `datacube_filepath` column
+    against what already exists (`run_create_datacube` D1/D2): a shortfall of 0 submits no
+    job. The flatten leg is skipped when `_flatten_stamp.json` already records the identity
+    (never the modification time, D3) of exactly this cube set + these run parameters
+    (`bands`/`mosaic_days`/window/`aggregate`/feature transform) -- so when nothing changed,
+    ``create_training_data`` does only what the user described it as doing: fetch the
+    already-flattened arrays. `overwrite=` forces past this: ``False`` (default) skips
+    whatever is already done; ``"datacubes"`` rebuilds the cubes (and therefore re-flattens,
+    since the caller has explicitly asked for a rebuild); ``"flatten"`` keeps the cubes and
+    redoes the flatten; ``True`` does both. Every skip prints one line naming what it
+    skipped and why.
 
     **Download phase (D1):** `download=False` (default, back-compat) requires `catalog_filepath`
     to already exist (run `fsd.download` first — compute never fetches from a provider
@@ -424,6 +457,10 @@ def create_training_data(
     if adapter is not None and feature_sequence is not None:
         raise PreflightError(
             "pass either `adapter` or `feature_sequence`, not both (ambiguous feature transform)."
+        )
+    if overwrite not in _VALID_OVERWRITE:
+        raise PreflightError(
+            f"overwrite={overwrite!r} must be one of {list(_VALID_OVERWRITE)} (spec 49 D4)."
         )
 
     startdate, enddate, date_errs = _normalize_window(startdate, enddate)
@@ -529,14 +566,22 @@ def create_training_data(
             storage=storage, runner=runner, runner_kwargs=runner_kwargs,
         )
 
+    # D4 (spec 49): `overwrite="datacubes"`/`True` forces a rebuild of the cubes; a
+    # rebuild is NOT itself forced to re-flatten -- that falls out of D3 (the flatten
+    # skip compares identity, and `overwrite="datacubes"` unconditionally forces the
+    # flatten leg too, below, since a caller who explicitly asked for a rebuild should
+    # never see a stale flatten silently reused while the rebuild is still in flight).
+    build_overwrite = overwrite in (True, "datacubes")
+    flatten_overwrite = overwrite in (True, "flatten", "datacubes")
+
     csv_filepath = os.path.join(run_folderpath, "input.csv")
     _create_datacube.run_create_datacube(
         catalog_filepath=catalog_filepath, timestamp_col="timestamp",
         shapefilepath=shapefilepath, id_col=id_col, run_folderpath=run_folderpath,
         startdate=startdate, enddate=enddate, bands=bands,
         scl_mask_classes=scl_mask_classes, mosaic_days=mosaic_days,
-        csv_filepath=csv_filepath, label_col=label_col, cores=cores, runner=runner,
-        runner_kwargs=runner_kwargs,
+        csv_filepath=csv_filepath, label_col=label_col, cores=cores,
+        overwrite=build_overwrite, runner=runner, runner_kwargs=runner_kwargs,
     )
 
     # Flatten phase delegates to `flatten_training_data` (D5) -- no duplicated reduce/
@@ -552,7 +597,7 @@ def create_training_data(
         id_col="id", label_col=("label" if label_col is not None else None),
         filepath_col="datacube_filepath",
         adapter=adapter, feature_sequence=feature_sequence, aggregate=aggregate,
-        runner=runner, runner_kwargs=flatten_runner_kwargs,
+        overwrite=flatten_overwrite, runner=runner, runner_kwargs=flatten_runner_kwargs,
     )
 
     return TrainingData(
@@ -560,6 +605,76 @@ def create_training_data(
         n_pixels=td.n_pixels, n_timestamps=td.n_timestamps, bands=td.bands,
         feature_bands=td.feature_bands,
     )
+
+
+_FLATTEN_STAMP_NAME = "_flatten_stamp.json"
+
+
+def _flatten_identity(input_df: pd.DataFrame, *, id_col, filepath_col, adapter, feature_sequence,
+                      aggregate) -> dict:
+    """D3 (spec 49): "were these arrays derived from exactly this request?" -- the sorted
+    `(id, datacube_filepath)` pairs `input_df` names, plus the run parameters that shape the
+    arrays (read straight off `input_df`'s own columns, written there by
+    `create_datacube.setup`: `bands`/`mosaic_days`/window/`scl_mask_classes`), plus the
+    feature transform (`aggregate` + `feature_sequence`, fingerprinted by qualname+kwargs,
+    §7 Q4 -- editing a feature function's BODY with the same name does not invalidate this).
+    Never a modification time (D3/AC6)."""
+    cubes = sorted(
+        [str(row[id_col]), str(row[filepath_col])] for _, row in input_df.iterrows()
+    )
+    params: dict = {}
+    for col in ("bands", "mosaic_days", "startdate", "enddate", "scl_mask_classes",
+               "mosaic_scheme"):
+        if col in input_df.columns:
+            params[col] = sorted(set(input_df[col].astype(str)))
+    params["aggregate"] = _fingerprint_aggregate(aggregate)
+    params["features"] = _fingerprint_features(adapter, feature_sequence)
+    identity = {"cubes": cubes, "params": params}
+    # Canonicalize through a JSON round-trip: `write_stamp`/`read_stamp` compare against a
+    # stamp that has already made this trip (tuples -> lists, non-JSON kwargs -> repr), so
+    # comparing a freshly-computed identity that has NOT would spuriously mismatch.
+    return json.loads(json.dumps(identity, default=str))
+
+
+def _fingerprint_aggregate(aggregate):
+    if aggregate is None:
+        return None
+    if isinstance(aggregate, str):
+        return aggregate
+    return _stamp.compute_callable_fingerprint(aggregate)
+
+
+def _fingerprint_sequence(sequence) -> list:
+    return [[_stamp.compute_callable_fingerprint(fn), kwargs] for fn, kwargs in sequence]
+
+
+def _fingerprint_features(adapter, feature_sequence) -> dict | None:
+    if adapter is not None:
+        cls = type(adapter)
+        identity: dict = {"adapter_class": f"{cls.__module__}.{cls.__qualname__}"}
+        seq = getattr(adapter, "feature_sequence", None)
+        if seq is not None:
+            identity["feature_sequence"] = _fingerprint_sequence(seq)
+        else:
+            identity["features_method"] = _stamp.compute_callable_fingerprint(adapter.features)
+        return identity
+    if feature_sequence is not None:
+        return {"feature_sequence": _fingerprint_sequence(feature_sequence)}
+    return None
+
+
+def _flatten_outputs_present(export_folderpath: str, *, label_col, want_features: bool) -> bool:
+    """D6: the arrays a skip would reuse must actually be there -- a matching stamp with a
+    missing file (e.g. a half-cleaned export_folderpath) must fail towards running, never
+    towards a skip that then can't load."""
+    names = ["data.npy", "coords.npy", "ids.npy", "metadata.pickle.npy"]
+    if label_col is not None:
+        names.append("labels.npy")
+    if want_features:
+        names += ["features.npy", "feature_ids.npy"]
+        if label_col is not None:
+            names.append("feature_labels.npy")
+    return _artifacts_present(export_folderpath, names)
 
 
 def flatten_training_data(
@@ -573,6 +688,7 @@ def flatten_training_data(
     adapter=None,
     feature_sequence=None,
     aggregate=None,
+    overwrite: bool = False,
     runner: str = "local",
     runner_kwargs: dict | None = None,
     storage=None,
@@ -591,6 +707,15 @@ def flatten_training_data(
     only ever runs on the driver).
 
     `label_col` (D-labels) optional: `labels.npy` is written only when given.
+
+    **Skip (spec 49 D3/D6):** on completion this writes `_flatten_stamp.json` recording the
+    identity of the cubes + run parameters it was derived from. `overwrite=False` (default):
+    if a later call's identity matches the stamp AND every array is still present, the reduce
+    is skipped entirely and the existing arrays are returned as a `TrainingData` -- otherwise
+    (mismatch, missing stamp, missing/corrupt arrays) it reduces as normal. `overwrite=True`
+    always reduces. The comparison never reads a modification time (D3/AC6): a cube rebuilt
+    under the same id/path is caught only if the id/path SET or the run parameters differ --
+    see `_flatten_identity`.
     """
     if adapter is not None and feature_sequence is not None:
         raise PreflightError(
@@ -614,37 +739,60 @@ def flatten_training_data(
     _configure_storage(storage)
     fs.makedirs(export_folderpath)
 
-    if runner == "aml":
-        from fsd.workflows import runners as _runners
+    with fs.open(input_csv, "r") as f:
+        input_df = pd.read_csv(f)
 
-        rk = dict(runner_kwargs or {})
-        aml_root = rk.pop("root")
-        run_id = rk.pop("run_id", None) or pd.Timestamp.now(tz="UTC").strftime("%Y%m%dT%H%M%SZ")
-        blob_export = f"{aml_root.rstrip('/')}/runs/{run_id}/_flatten"
+    want_features = adapter is not None or feature_sequence is not None or aggregate is not None
+    identity = _flatten_identity(
+        input_df, id_col=id_col, filepath_col=filepath_col,
+        adapter=adapter, feature_sequence=feature_sequence, aggregate=aggregate,
+    )
+    stamp_filepath = os.path.join(export_folderpath, _FLATTEN_STAMP_NAME)
 
-        _runners.run_aml_flatten(
-            input_csv, blob_export, id_col=id_col, label_col=label_col,
-            filepath_col=filepath_col, nodata=nodata, root=aml_root, run_id=run_id, **rk,
+    skip = False
+    if not overwrite:
+        skip = _stamp.matches_stamp(stamp_filepath, identity) and _flatten_outputs_present(
+            export_folderpath, label_col=label_col, want_features=want_features,
         )
-        files = ["data.npy", "coords.npy", "ids.npy", "metadata.pickle.npy"]
-        if label_col is not None:
-            files.append("labels.npy")
-        _land_local(blob_export, export_folderpath, files)
+
+    if skip:
+        print(f"[flatten] arrays match the current {len(input_df)} cubes; skipping", flush=True)
     else:
-        with fs.open(input_csv, "r") as f:
-            filepaths_df = pd.read_csv(f)
-        _flatten.flatten(
-            filepaths_df=filepaths_df, filepath_col=filepath_col, id_col=id_col,
-            export_folderpath=export_folderpath, label_col=label_col, nodata=nodata,
-        )
+        if runner == "aml":
+            from fsd.workflows import runners as _runners
+
+            rk = dict(runner_kwargs or {})
+            aml_root = rk.pop("root")
+            run_id = rk.pop("run_id", None) or pd.Timestamp.now(tz="UTC").strftime(
+                "%Y%m%dT%H%M%SZ"
+            )
+            blob_export = f"{aml_root.rstrip('/')}/runs/{run_id}/_flatten"
+
+            _runners.run_aml_flatten(
+                input_csv, blob_export, id_col=id_col, label_col=label_col,
+                filepath_col=filepath_col, nodata=nodata, root=aml_root, run_id=run_id, **rk,
+            )
+            files = ["data.npy", "coords.npy", "ids.npy", "metadata.pickle.npy"]
+            if label_col is not None:
+                files.append("labels.npy")
+            # force=True: this branch only runs when the flatten stamp did NOT match (a
+            # genuine re-run), so stale local arrays from a prior, different identity must
+            # be overwritten -- not mistaken for "already landed" (spec 49 D3).
+            _land_local(blob_export, export_folderpath, files, force=True)
+        else:
+            _flatten.flatten(
+                filepaths_df=input_df, filepath_col=filepath_col, id_col=id_col,
+                export_folderpath=export_folderpath, label_col=label_col, nodata=nodata,
+            )
+        _stamp.write_stamp(stamp_filepath, identity)
 
     data = fs.load_npy(os.path.join(export_folderpath, "data.npy"))
     metadata = fs.load_npy(
         os.path.join(export_folderpath, "metadata.pickle.npy"), allow_pickle=True
     )[()]
 
-    feature_bands = None
-    if adapter is not None or feature_sequence is not None or aggregate is not None:
+    feature_bands = metadata.get("feature_bands")
+    if not skip and want_features:
         feature_bands = _apply_training_features(
             export_folderpath, metadata, adapter=adapter,
             feature_sequence=feature_sequence, aggregate=aggregate,
@@ -657,15 +805,21 @@ def flatten_training_data(
     )
 
 
-def _land_local(blob_prefix: str, local_folder: str, files: list[str]) -> None:
+def _land_local(blob_prefix: str, local_folder: str, files: list[str], *, force: bool = False) -> None:
     """D4: bring the compact flatten-reduce output home. One `storage.transfer` per file
     (`data.npy`/`coords.npy`/`ids.npy`/`metadata.pickle.npy` + `labels.npy` iff present) --
     `transfer` is single-object + atomic (`.part` + rename, `fs.py:282`), so a failed copy
-    never leaves a truncated `.npy` and this loop is safe to re-run (existence = already landed)."""
+    never leaves a truncated `.npy` and this loop is safe to re-run.
+
+    `force=False` (default): existence = already landed, so a retried call after an
+    interrupted transfer skips whatever already arrived. `force=True` (spec 49 D3): the
+    caller has already decided this IS a genuine re-run (the flatten identity changed, or
+    `overwrite=True`) -- stale local files from a PRIOR, different identity must be
+    overwritten, not mistaken for "already landed"."""
     fs.makedirs(local_folder)
     for name in files:
         dst = os.path.join(local_folder, name)
-        if fs.exists(dst):
+        if not force and fs.exists(dst):
             continue
         fs.transfer(os.path.join(blob_prefix, name), dst)
 
@@ -1394,6 +1548,339 @@ def _run_inference_roi(
         output_filepaths, output_folderpath, spec, merge, collection_id, dt,
         grids_filepath=grids_filepath, merge_crs=merge_crs, geometries=geometries,
     )
+
+
+def _cell_coverage(grids: gpd.GeoDataFrame, catalog_gdf, startdate, enddate) -> dict[str, int]:
+    """D3: in-window catalog coverage per grid cell -- the count of catalog rows
+    `filter_gdf` matches to that cell alone, used to pick the deterministic default (the
+    cell most likely to build a full cube, so a failure reads as the adapter's, not an
+    empty/half-empty cell's)."""
+    coverage: dict[str, int] = {}
+    for _, row in grids.iterrows():
+        cell_gdf = gpd.GeoDataFrame({"geometry": [row.geometry]}, crs=grids.crs)
+        subset = _filter_gdf(catalog_gdf, cell_gdf, startdate, enddate)
+        coverage[str(row["id"])] = int(subset.shape[0])
+    return coverage
+
+
+def verify_adapter(
+    model,
+    *,
+    roi,
+    catalog_filepath: str,
+    startdate: datetime.datetime,
+    enddate: datetime.datetime,
+    mosaic_days: int,
+    bands: list[str],
+    export_folderpath: str,
+    cell: str | None = None,
+    grid_size_km: float = 5,
+    scale_fact: float = 1.1,
+    scl_mask_classes: list[int] | None = None,
+    predict_batch_size: int | None = None,
+    skip_nan: bool = True,
+    runner: str = "local",
+    runner_kwargs: dict | None = None,
+    storage=None,
+) -> dict:
+    """One real grid cell's datacube, built on `runner`, landed locally, run through the
+    adapter's ACTUAL inference code -- so `output.tif` can be eyeballed in QGIS before
+    trusting a bundle for a many-cell fan-out (spec 48).
+
+    Where this sits in the workflow (D2 -- this is NOT a substitute for either neighbour,
+    and answers a different question from both):
+
+    1. **`verify_adapter`** (here) -- is my adapter's LOGIC right? Local, minutes, iterate
+       here. Checks the cube shape/`T` against the adapter's declared `n_timestamps`, the
+       post-`feature_sequence` band set against `required_bands`, and whether `predict`
+       returns the declared `output_dtype`/value range on REAL pixels (real SCL masking,
+       real nodata, real interpolation gaps) -- none of which `adapter_smoke`'s import-only
+       check can see. Says NOTHING about the image (`fsd.model.verify_image`'s job) and
+       NOTHING about scale (one cell is not the fan-out) or any cell but the one it ran.
+    2. `fsd.model.verify_image` -- will the IMAGE run it? One AML node, ~40-380s.
+    3. `fsd.run_inference` -- the fan-out, N nodes.
+
+    `model` is a live adapter or a bundle path; a live adapter is auto-saved to a temp
+    bundle first (`_ensure_bundle`, as `run_inference` already does) -- so this run also
+    exercises bundling itself, and the bundle produced is the same one `run_inference`
+    would use.
+
+    `cell=`: an explicit grid-cell id uses it (`PreflightError`, naming the available ids
+    bounded, if it is not in this roi); `None` (default) picks DETERMINISTICALLY -- largest
+    in-window catalog coverage, tie-broken by id -- and prints which cell and why, so two
+    runs over the same roi/window pick the same cell; `"random"` opts in to a random pick
+    and prints the chosen id so a run worth keeping can be pinned by pasting that id back as
+    `cell=` (D3). `grids.geojson` (every cell in the roi) is ALWAYS written next to the
+    output and its path printed -- open it in QGIS, pick an id, re-run with `cell=`.
+
+    `export_folderpath` is where everything lands, LOCALLY, no hidden cache (D8): the cube
+    (`datacube.npy` + `metadata.pickle.npy`), `output.tif`, `grids.geojson`, `cell.geojson`,
+    `_result.json`. No flattened/feature array is written (D7 Q3) -- the adapter is for
+    inference, inference output is the grid cell's raster, and `output.tif` is what gets
+    checked. A second call with the SAME roi/window/bands/mosaic_days/cell and the cube
+    already landed skips the build+land entirely and goes straight to inference (D5) -- the
+    resume keys on the REQUEST's identity (`fsd.workflows.stamp`), never on file age
+    (mirrors spec 47 D1); a call whose `export_folderpath` already holds a cube for a
+    DIFFERENT request raises rather than silently reusing it.
+
+    `runner="local"` (default) builds from a local catalog end-to-end, no network -- what the
+    test suite uses. `runner="aml"` (the case that matters in practice) builds the ONE
+    cell's datacube through the same per-cell unit of work `create_training_data` fans out
+    (`fsd.workflows.create_datacube.run_create_datacube`, D4) -- no new build path, and the
+    inference leg is a one-row call into `fsd.workflows.infer_only_task.run_infer_only` (D6)
+    -- the SAME unit the cluster runs, so no branch anywhere may special-case this verb.
+
+    Returns a `_result.json`-shaped dict (spec 24): `{"step", "status", "pass", "metrics",
+    "expected", "error"}`. `metrics` carries the cube shape, cube `T` vs the adapter's
+    declared `n_timestamps`, the band set after `feature_sequence` vs `required_bands`,
+    output dtype vs `output_dtype`, output value range, nodata fraction, and the cube/COG/
+    grids paths. A `T` mismatch is reported as `pass: False` (never raised) -- only CALLER
+    misuse (a bad `cell=`, an unreadable roi, a mismatched export_folderpath) raises
+    `PreflightError`; every statement ABOUT the adapter comes back in the dict (spec 47
+    Part D). This run says nothing about the image, nothing about scale, and nothing about
+    any cell but the one it ran.
+    """
+    from fsd import grid as _grid
+
+    startdate, enddate, date_errs = _normalize_window(startdate, enddate)
+    errs = _check_local_seams(runner, storage, storage_allowed=(runner == "aml")) + date_errs
+    if not date_errs:
+        errs += _check_window(startdate, enddate, mosaic_days, bands)
+    if not export_folderpath:
+        errs.append("export_folderpath is required.")
+    if cell is not None and not isinstance(cell, str):
+        errs.append(f"cell must be a string id, 'random', or None (got {cell!r}).")
+
+    spec = _model_spec(model)
+    required = set(spec.get("required_bands") or [])
+    missing = required - set(bands)
+    if missing:
+        errs.append(f"bands is missing model-required {sorted(missing)}.")
+    want_t = int(spec.get("n_timestamps") or 0)
+
+    roi_gdf = None
+    try:
+        if isinstance(roi, gpd.GeoDataFrame):
+            roi_gdf = roi
+        elif isinstance(roi, str):
+            roi_gdf = fs.read_geo(roi)   # storage seam, not gpd.read_file (TODO #47)
+    except Exception as exc:  # noqa: BLE001 - surfaced as a preflight error
+        errs.append(f"could not read roi: {exc}.")
+    if roi_gdf is not None and len(roi_gdf) == 0:
+        errs.append("roi is empty.")
+
+    grids = None
+    if not errs:
+        try:
+            grids = _grid.roi_to_s2_grids(
+                roi_gdf if roi_gdf is not None else roi,
+                grid_size_km=grid_size_km, scale_fact=scale_fact,
+            )
+        except ImportError:
+            raise  # the [grid] extra is missing -- spec 19's own message is the clear one
+        except Exception as exc:  # noqa: BLE001 - surfaced as a preflight error
+            errs.append(f"could not tile roi into grid cells: {exc}.")
+    if grids is not None and len(grids) == 0:
+        errs.append(
+            f"roi tiled into 0 grid cells at grid_size_km={grid_size_km} -- the roi is "
+            f"smaller than one cell, or its geometry is degenerate."
+        )
+    _raise_preflight(errs)
+
+    if scl_mask_classes is None:
+        scl_mask_classes = list(config.SCL_MASK_CLASSES)
+
+    fs.makedirs(export_folderpath)
+    grids_filepath = os.path.join(export_folderpath, "grids.geojson")
+    # GDAL/pyogrio has no abfss:// write driver -- stage via the storage seam (mirrors
+    # _run_inference_roi's own grids.geojson write, spec 21).
+    with fs.open(grids_filepath, "w") as f:
+        f.write(grids.to_json(default=str))
+    print(f"[verify_adapter] roi -> {len(grids)} grid cells; wrote {grids_filepath}",
+          flush=True)
+
+    available = sorted(grids["id"].astype(str))
+    if cell == "random":
+        import random as _random
+
+        chosen_cell = _random.choice(available)
+        print(f'[verify_adapter] cell="random" picked {chosen_cell!r} -- pass '
+              f"cell={chosen_cell!r} to reproduce this run.", flush=True)
+    elif cell is not None:
+        chosen_cell = str(cell)
+        if chosen_cell not in available:
+            shown = available[:50]
+            more = f" (+{len(available) - 50} more)" if len(available) > 50 else ""
+            raise PreflightError(
+                f"cell={chosen_cell!r} is not one of this roi's {len(available)} grid "
+                f"cells. Available ids: {shown}{more}."
+            )
+    else:
+        catalog_gdf = TileCatalog(catalog_filepath).read()
+        coverage = _cell_coverage(grids, catalog_gdf, startdate, enddate)
+        # largest in-window catalog coverage, tie-broken by (smallest) id.
+        chosen_cell = min(available, key=lambda i: (-coverage.get(i, 0), i))
+        print(f"[verify_adapter] cell={chosen_cell!r} picked deterministically (largest "
+              f"in-window catalog coverage: {coverage.get(chosen_cell, 0)} intersecting "
+              f"tiles).", flush=True)
+
+    # --- D5: resume by the REQUEST's identity, never mere existence --------------------
+    identity = {
+        "roi": roi if isinstance(roi, str) else roi_gdf.to_json(default=str),
+        "startdate": str(startdate), "enddate": str(enddate), "mosaic_days": int(mosaic_days),
+        "bands": sorted(bands), "scl_mask_classes": sorted(scl_mask_classes),
+        "grid_size_km": grid_size_km, "scale_fact": scale_fact, "cell": chosen_cell,
+    }
+    cube_filepath = os.path.join(export_folderpath, "datacube.npy")
+    metadata_filepath = os.path.join(export_folderpath, "metadata.pickle.npy")
+    stamp_filepath = os.path.join(export_folderpath, "_cube_stamp.json")
+
+    existing_stamp = _stamp.read_stamp(stamp_filepath)
+    if existing_stamp is not None:
+        existing_identity = {k: v for k, v in existing_stamp.items() if not k.startswith("_")}
+        if existing_identity != identity:
+            raise PreflightError(
+                f"export_folderpath={export_folderpath!r} already holds a cube for a "
+                f"DIFFERENT request (its stamp does not match this roi/window/bands/"
+                f"mosaic_days/cell) -- resuming it would silently reuse stale work (spec "
+                f"47 D1's precedent: a dry run's whole purpose is to be trusted). Use a "
+                f"new export_folderpath, or remove the existing one."
+            )
+    cube_ready = existing_stamp is not None and _artifacts_present(
+        export_folderpath, ["datacube.npy", "metadata.pickle.npy"]
+    )
+
+    if cube_ready:
+        print(f"[verify_adapter] cube for cell={chosen_cell!r} already landed at "
+              f"{export_folderpath} and matches this request; skipping the build.",
+              flush=True)
+    else:
+        # D4: one-row shapefile for JUST the chosen cell -> the SAME per-cell unit of
+        # work `create_training_data` fans out, through the SAME runner seam. No new
+        # build path.
+        cell_row = grids.loc[grids["id"].astype(str) == chosen_cell]
+        cell_filepath = os.path.join(export_folderpath, "cell.geojson")
+        with fs.open(cell_filepath, "w") as f:
+            f.write(cell_row.to_json(default=str))
+
+        build_folderpath = os.path.join(export_folderpath, "_build")
+        build_csv_filepath = os.path.join(build_folderpath, "input.csv")
+        try:
+            _create_datacube.run_create_datacube(
+                catalog_filepath=catalog_filepath, timestamp_col="timestamp",
+                shapefilepath=cell_filepath, id_col="id", run_folderpath=build_folderpath,
+                startdate=startdate, enddate=enddate, bands=bands,
+                scl_mask_classes=scl_mask_classes, mosaic_days=mosaic_days,
+                csv_filepath=build_csv_filepath, label_col=None, cores=1,
+                runner=runner, runner_kwargs=runner_kwargs,
+            )
+        except ValueError as exc:
+            raise PreflightError(_imagery_missing_message(
+                cell_row, startdate, enddate, bands,
+                catalog_filepath=catalog_filepath, why=str(exc),
+            )) from exc
+
+        with fs.open(build_csv_filepath, "r") as f:
+            build_row = pd.read_csv(f).iloc[0]
+        # D5: landing is storage.transfer, exactly as create_training_data lands its
+        # compact array -- the local cube becomes a first-class artifact.
+        _land_local(
+            os.path.dirname(str(build_row["datacube_filepath"])), export_folderpath,
+            ["datacube.npy", "metadata.pickle.npy"],
+        )
+        _stamp.write_stamp(stamp_filepath, identity)
+
+    # --- D6: the inference leg IS infer_only_task.run_infer_only, unmodified -----------
+    bundle_path = _ensure_bundle(model, export_folderpath, why="verify_adapter")
+    output_filepath = os.path.join(export_folderpath, "output.tif")
+    infer_csv_filepath = os.path.join(export_folderpath, "_infer_input.csv")
+    with fs.open(infer_csv_filepath, "w") as f:
+        pd.DataFrame({
+            "datacube_filepath": [cube_filepath], "output_filepath": [output_filepath],
+        }).to_csv(f, index=False)
+
+    written = _infer_only_task.run_infer_only(
+        infer_csv_filepath, (0, 1), bundle_path,
+        predict_batch_size=predict_batch_size, skip_nan=skip_nan, overwrite=True,
+    )
+
+    # --- D7/D8: build the verdict -------------------------------------------------------
+    metadata = fs.load_npy(metadata_filepath, allow_pickle=True)[()]
+    cube_t = len(metadata["timestamps"])
+    cube = fs.load_npy(cube_filepath)
+    band_indices = {b: i for i, b in enumerate(metadata["bands"])}
+
+    # The post-feature_sequence band set needs the LIVE adapter (a bundle manifest carries
+    # no feature_sequence, only its declared spec) -- load it once more to introspect.
+    adapter_obj = _bundle.load(bundle_path)
+    feature_sequence = getattr(adapter_obj, "feature_sequence", None)
+    if feature_sequence:
+        _, feat_bi = _apply_features(
+            np.zeros((1, cube_t, 1, 1, len(band_indices)), dtype="float32"), band_indices,
+            feature_sequence=feature_sequence,
+        )
+        post_feature_bands = [b for b, _ in sorted(feat_bi.items(), key=lambda kv: kv[1])]
+    else:
+        post_feature_bands = list(metadata["bands"])
+
+    result: dict = {
+        "step": "verify_adapter",
+        "status": "ok",
+        "pass": False,
+        "metrics": {
+            "cell": chosen_cell,
+            "cube_filepath": cube_filepath,
+            "cube_shape": list(cube.shape),
+            "cube_bands": list(metadata["bands"]),
+            "cube_t": cube_t,
+            "adapter_n_timestamps": want_t,
+            "post_feature_sequence_bands": post_feature_bands,
+            "required_bands": sorted(required),
+            "output_filepath": output_filepath if written else None,
+            "grids_filepath": grids_filepath,
+        },
+        "expected": {"n_timestamps": want_t, "required_bands": sorted(required)},
+        "error": None,
+    }
+
+    if want_t and cube_t != want_t:
+        result["status"] = "fail"
+        result["error"] = f"cube T={cube_t} but adapter n_timestamps={want_t}."
+        return result
+
+    if not written:
+        result["status"] = "fail"
+        result["error"] = f"no output written for cell={chosen_cell!r}."
+        return result
+
+    import rasterio
+
+    with rasterio.open(output_filepath) as src:
+        arr = src.read()
+        output_nodata = src.nodata
+    result["metrics"].update({
+        "output_dtype": str(arr.dtype),
+        "output_value_min": float(np.nanmin(arr)) if arr.size else None,
+        "output_value_max": float(np.nanmax(arr)) if arr.size else None,
+        "output_nodata_fraction": (
+            float((arr == output_nodata).sum()) / arr.size
+            if output_nodata is not None and arr.size else None
+        ),
+    })
+    output_dtype = spec.get("output_dtype")
+    if output_dtype and str(arr.dtype) != str(output_dtype):
+        result["status"] = "fail"
+        result["error"] = (
+            f"output dtype={arr.dtype} but adapter declares output_dtype={output_dtype!r}."
+        )
+        return result
+
+    result["pass"] = True
+    print(f"[verify_adapter] pass -- open {output_filepath} and {grids_filepath} in QGIS. "
+          f"This checks the ADAPTER only: nothing about the image (fsd.model.verify_image) "
+          f"and nothing about scale (fsd.run_inference; one cell is not the fan-out).",
+          flush=True)
+    return result
 
 
 def deploy(model_bundle, *, storage=None, **kw):

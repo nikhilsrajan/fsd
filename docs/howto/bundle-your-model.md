@@ -106,6 +106,45 @@ unit, not just a convenience:
   or a notebook-defined class won't reload there. `examples/eurocrops_rf.py` is written the way it
   is — a standalone importable module — specifically so `eurocrops_rf:EuroCropsRF` resolves.
 
+## Verify it, then run it: three gates, each answering a different question
+
+Before dispatching a many-cell fan-out, run these **in order** — each is cheap relative to the one
+after it, and each answers a question the others cannot:
+
+1. **`fsd.verify_adapter`** — does my adapter's LOGIC compute the right thing? Builds ONE real
+   grid cell's datacube (locally, or on AML for the case that matters), lands it on your laptop, and
+   runs your adapter over it through the exact same code the cluster runs
+   (`fsd.workflows.infer_only_task.run_infer_only`) — so you can open `output.tif` in QGIS before
+   trusting the bundle at all. **Does NOT check:** the inference image (see step 2), scale (one
+   cell is not the fan-out), or any cell but the one it ran.
+
+   ```python
+   report = fsd.verify_adapter(
+       bundle_dir, roi="your_roi.geojson", catalog_filepath=catalog,
+       startdate=..., enddate=..., mosaic_days=20, bands=required_bands,
+       export_folderpath="data/verify_adapter",   # the cube + output.tif land HERE, locally
+   )
+   assert report["pass"], report["error"]
+   ```
+
+2. **`fsd.model.verify_image`** — will the inference IMAGE actually run this bundle? Submits ONE
+   real Azure ML node running your bundle inside the target Environment (~40–380s). **Does NOT
+   check:** whether the adapter's logic is correct (that's step 1 — a local run here would pass
+   trivially, since the driver already has your adapter's source on `sys.path`) or scale.
+
+   ```python
+   from fsd.model import verify_image
+
+   report = verify_image(
+       bundle_dir, environment="fsd-infer-sklearn:3",
+       runner_kwargs={"cluster": ..., "root": ..., "identity_client_id": ...},
+   )
+   assert report["pass"], report["error"]
+   ```
+
+3. **`fsd.run_inference`** — the fan-out, N nodes. **Does NOT re-check** what steps 1–2 already
+   proved; it assumes the adapter and image are both sound.
+
 ## Run it
 
 ```python
