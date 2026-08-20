@@ -1,0 +1,204 @@
+# How to: build the two AML node images
+
+> **Last verified:** 2026-08-20 @ `7b26b89`. Re-verify after any change to
+> `fsd.model.verify_image`, to the extras in `pyproject.toml`, or to the base image.
+
+Everything on an Azure ML cluster runs inside a container. fsd needs **two**, and neither of them
+is per-model. This page is what to build, which files each build needs, and — the part that is
+easy to get wrong — **why the fsd wheel has to sit next to a Dockerfile and not next to your
+model**.
+
+Do this **before** [`run-at-scale.md`](run-at-scale.md). That page assumes both images exist.
+
+## The two images
+
+| image | used by | what it adds |
+|---|---|---|
+| **`fsd-aml-env`** | download shards, datacube builds, `create_training_data`'s flatten | fsd + `[azure,mpc]` |
+| **`fsd-infer-sklearn`** | the `run_inference` fan-out, `verify_image`'s smoke job | the same, **plus** `scikit-learn` + `joblib` |
+
+The inference image is generic **per dependency family**, never per model. Since spec 44 the
+adapter's *source* travels inside the bundle, so the image copies no adapter and sets no
+`PYTHONPATH`. Every sklearn model you ever bundle runs on this one image. A torch model needs an
+`fsd-infer-torch` built identically with the last two dependencies swapped — that is the only
+difference between the two Dockerfiles here.
+
+## Which files each thing needs
+
+Three folders, one job each. They used to be one folder, which is why the wheel's role was
+unclear.
+
+```
+notebooks/
+  images/
+    base/                    <- BUILD CONTEXT for fsd-aml-env
+      Dockerfile                 what to install
+      .dockerignore              keeps stray artifacts out of the context
+      environment.yml            the AML asset definition
+      fsd-0.1.0-*.whl            <- built by you, step 2; gitignored
+    sklearn/                 <- BUILD CONTEXT for fsd-infer-sklearn
+      Dockerfile   .dockerignore   environment.yml   fsd-0.1.0-*.whl
+  demo_model/                <- YOUR MODEL. No Docker files, no wheel.
+      my_adapter.py              -> bundle.save(code=[...])
+      rf.joblib                  -> bundle.save(artifacts={"model": ...})
+```
+
+The real files are in the repo:
+[`notebooks/images/base/Dockerfile`](../../notebooks/images/base/Dockerfile) and
+[`notebooks/images/sklearn/Dockerfile`](../../notebooks/images/sklearn/Dockerfile). Read them —
+they are commented line by line.
+
+### Why the wheel sits beside the Dockerfile, not beside the model
+
+Three separate facts, which the old single-folder layout blurred into one confusing rule:
+
+1. **`bundle.save` never reads the wheel.** Bundling takes your adapter source (`code=`) and your
+   trained artifacts (`artifacts=`). That is all. A wheel in the model folder does nothing at all.
+2. **The wheel is what gets installed into the image.** `COPY fsd-*.whl /tmp/` only works if the
+   wheel is inside the Docker *build context* — Docker cannot read a file outside it. That is the
+   only reason the wheel must be in one specific folder.
+3. **`verify_image(build_context=...)` re-reads that same folder afterwards.** It opens the wheel
+   and checks whether it carries spec 44's `manifest_code_files`. If it does not, the registered
+   image was built from a pre-spec-44 fsd; the node would raise `ModuleNotFoundError` however good
+   your bundle is, and an old fsd has none of the code that would report that. Catching it on the
+   driver costs ~2 s instead of a cold start.
+
+So `build_context` means **"the folder I built this image from"**, and it must still hold the
+wheel afterwards.
+
+> ⚠️ **`verify_image` raises `ValueError` if `build_context` holds no `fsd-*.whl`** — it does not
+> return `pass: False`. A missing wheel is a mistake in your *call*; `pass: False` is a verdict
+> about the *image*, and a run where nothing was verified must not look like a run where the image
+> genuinely failed (spec 47 D10/D11). Practical consequence: **do not clean the wheel out of the
+> build context after building.**
+
+## Prerequisites
+
+- `az login` into the tenant hosting the workspace, plus the `ml` extension (`az extension add -n ml`).
+- An AML workspace and resource group — a platform-admin action, not something this repo
+  provisions. Ask for them by name; see [`run-at-scale.md`](run-at-scale.md).
+- A local fsd checkout with its venv (`pip install -e ".[dev,aml,mpc,azure,grid]"`).
+
+## Step 1 — Confirm what you are about to package
+
+**The wheel is built from your working tree, not from a release.** Whatever is checked out and
+uncommitted right now is what lands on the nodes. A stale checkout here is the single most common
+cause of "the fix I just made isn't on the cluster".
+
+```bash
+cd /path/to/fsd
+git log --oneline -3
+git status --porcelain
+```
+
+## Step 2 — Build the wheel into both contexts
+
+```bash
+rm -f notebooks/images/*/fsd-*.whl          # never leave two: `ls fsd-*.whl` would pick one
+.venv/bin/pip wheel . --no-deps -w notebooks/images/base/
+cp notebooks/images/base/fsd-*.whl notebooks/images/sklearn/
+ls notebooks/images/*/fsd-*.whl
+```
+
+`--no-deps` on purpose: we want the fsd wheel alone, and the Dockerfiles resolve its dependencies
+inside the image.
+
+Confirm the wheel is current before spending 20 minutes of ACR time on it:
+
+```bash
+python - <<'PY'
+import glob, zipfile
+w = glob.glob("notebooks/images/base/fsd-*.whl")[0]
+with zipfile.ZipFile(w) as zf:
+    src = zf.read("fsd/model/bundle.py").decode()
+print(w, "| wheel_has_spec44:", "def manifest_code_files" in src)
+PY
+```
+
+If that prints `False`, `verify_image` will (correctly) reject every image built from it.
+
+## Step 3 — Register both environments
+
+```bash
+az ml environment create -f notebooks/images/base/environment.yml \
+  -g <resource-group> -w <workspace> --query version -o tsv
+az ml environment create -f notebooks/images/sklearn/environment.yml \
+  -g <resource-group> -w <workspace> --query version -o tsv
+```
+
+**No `version:` is set in `environment.yml` on purpose** — AML auto-increments, so a rebuild
+always lands on a *new* version and can never mutate one an earlier run referenced. Capture what
+it assigns; you paste both into the run notebook.
+
+> **Do not write `export V="$(az ...)"`.** `export` always returns 0, so a broken `az` silently
+> assigns its own error text and every later command uses a garbage version. Seen live: `built
+> fsd-aml-env:No module named 'rpds.rpds'`. Capture first, check it is digits, then export.
+
+## Step 4 — Wait for the ACR builds ⚠️
+
+**This is the step people skip, and it is the expensive one to skip.**
+
+`az ml environment create` registers the *asset* and returns immediately; the image builds
+asynchronously in ACR (~10–20 min each, occasionally flaky). The v2 `Environment` object carries
+**no build state whatsoever**, so `ml_client.environments.get(name, version)` succeeds against a
+half-built image and every fsd preflight goes green regardless. Submit early and jobs do not
+fail — they sit in *Preparing* until ACR is done, and that wait lands inside
+`job_admission_seconds`. A 15-minute image build then reads as 15 minutes of slow cluster.
+
+```bash
+az ml job list -g <resource-group> -w <workspace> \
+  --query "[?contains(name,'prepare_image')].{name:name,status:status}" -o table
+```
+
+Wait for **both** to reach `Completed`. Studio → **Environments** → the new version → build log
+shows the same thing with the actual output.
+
+## Step 5 — Use them
+
+```python
+runner_kwargs = dict(environment="fsd-aml-env:<version>", ...)
+infer_kwargs  = dict(runner_kwargs, environment="fsd-infer-sklearn:<version>")
+
+vres = verify_image(bundle_dir,
+                    environment="fsd-infer-sklearn:<version>",
+                    runner="aml", runner_kwargs=infer_kwargs,
+                    build_context="./images/sklearn")
+assert vres["pass"], vres
+```
+
+## When to rebuild
+
+| you changed | rebuild |
+|---|---|
+| fsd source (pulled `main`, a spec landed) | **both** images |
+| your adapter's runtime deps (sklearn → torch) | the inference image (as a new family) |
+| your trained model | **nothing** — it rides in the bundle |
+| your adapter code | **nothing** — it rides in the bundle (spec 44) |
+
+## Troubleshooting
+
+**`az` returned something that is not a version.** `az ml` tries to auto-upgrade itself and cannot
+on an AML compute instance: the extension there lives system-wide at `/opt/az/extensions/ml`,
+owned by root, while you run as `azureuser`. It fails with `Permission denied` and leaves the
+extension **half-deleted**, after which every `az ml` command breaks. Run these steps from your
+laptop, or reinstall the extension with `sudo`.
+
+**Lost a version number.**
+
+```bash
+az ml environment list -n fsd-infer-sklearn -g <resource-group> -w <workspace> \
+  --query "[].version" -o tsv | sort -V | tail -1
+```
+
+**Checking one version exists.** `--version` is required — without it the CLI fails with `Must
+provide either version or label`. Do not query `provisioning_state`: it is not in the environment
+schema, and `--query` on a missing field prints an empty line that reads like a failure.
+
+**`verify_image` returns `wheel_has_spec44: False`.** The image was built from a pre-spec-44 fsd.
+Redo steps 1–4 from a current checkout.
+
+**`verify_image` raises `ValueError: build_context=... contains no fsd-*.whl`.** The wheel was
+cleaned out of the build context. Redo step 2; do not delete it afterwards.
+
+**A build failed.** Studio → Environments → the version → build log. Re-running step 3 registers a
+fresh version, which is cheap and never mutates the old one.

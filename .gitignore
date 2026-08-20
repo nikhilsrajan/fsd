@@ -65,3 +65,9 @@ env.local.sh
 # both source and outputs. Ignore the whole class, not one file at a time.
 notebooks/*.ipynb
 notebooks/demo_*
+
+# The AML image build contexts (docs/howto/build-the-images.md) ARE tracked -- a
+# Dockerfile and an environment.yml carry no cloud identifiers, and keeping them in
+# the repo is what stops them drifting from the how-to that documents them. The fsd
+# wheel dropped into them at build time is a binary artifact and is not.
+notebooks/images/*/fsd-*.whl

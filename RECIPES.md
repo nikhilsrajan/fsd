@@ -738,6 +738,15 @@ going forward (that was run-book 41's whole job, now free).
 
 ## Rebuild BOTH AML Environments (after any fsd change that runs on a node)
 
+> **⚠️ Superseded for the inference image by [`docs/howto/build-the-images.md`](docs/howto/build-the-images.md)
+> (2026-08-20).** The block below is kept for its `az` guard, its ACR-wait note and its CLI
+> gotchas, which all still apply — but its **image 2 is pre-spec-44**: `COPY adapter_src/` and
+> `ENV PYTHONPATH=/opt/adapter` bake one adapter into the image, and since spec 44 the adapter's
+> source rides inside the bundle instead. Building that way now gives you an image that is
+> needlessly per-model. The tracked build contexts are
+> [`notebooks/images/base/`](notebooks/images/base/Dockerfile) and
+> [`notebooks/images/sklearn/`](notebooks/images/sklearn/Dockerfile).
+
 **The node's `fsd` comes from the image, not from your checkout.** `git pull` on the driver
 changes nothing about what executes on the cluster: the AML Environment bakes in a wheel, so any
 change under `src/fsd/workflows/`, `sources/`, `datacube/`, `raster/` or `model/` needs a rebuild
