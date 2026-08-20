@@ -61,10 +61,18 @@ benchmarks/datacube_throughput_figures_*/
 # P4 (spec 41 D7): the filled-in copy of env.example.sh -- real account names, ids, URLs
 env.local.sh
 
-# Working notebooks: none are tracked, and they hold live cloud identifiers in
-# both source and outputs. Ignore the whole class, not one file at a time.
+# Working notebooks: not tracked, because they hold live cloud identifiers in both
+# source and outputs. Ignore the whole class, not one file at a time.
 notebooks/*.ipynb
 notebooks/demo_*
+
+# ...with ONE exception. `00_build_images.ipynb` is the how-to for building the two node
+# images and is deliberately public: it reads its only private values (AZ_RG,
+# AZ_ML_WORKSPACE) from the gitignored `env.local.sh`, and everything else in it is
+# generic. `tests/test_notebooks.py` enforces both halves of that -- no saved outputs, no
+# hardcoded identifiers -- so it cannot quietly become a leak. Clear outputs before
+# committing (Kernel > Restart & Clear All Outputs).
+!notebooks/00_build_images.ipynb
 
 # The AML image build contexts (docs/howto/build-the-images.md) ARE tracked -- a
 # Dockerfile and an environment.yml carry no cloud identifiers, and keeping them in
