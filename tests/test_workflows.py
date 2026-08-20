@@ -3,6 +3,7 @@
 import datetime
 import importlib.util
 import os
+import re
 import time
 from unittest import mock
 
@@ -150,6 +151,35 @@ def test_setup_reads_catalog_once_regardless_of_shape_count(tmp_path, monkeypatc
     # Two shapes, but the source catalog is read exactly once. (The per-shape slices
     # written under run/ are different files and are not read back here.)
     assert [r for r in reads if r == str(cat)] == [str(cat)]
+
+
+def test_setup_progress_line_format_is_byte_identical_to_before(tmp_path, capsys):
+    """Spec 47 D4/AC4: `_tick`'s throttle+rate+ETA math moved to `fsd.progress.ticker`,
+    but the printed line shape must be unchanged -- users have already learned to read
+    `[setup] done/total shapes (pct%) | rate shapes/s | elapsed Es | eta Xs`."""
+    cat = tmp_path / "catalog.parquet"
+    shapes = tmp_path / "shapes.geojson"
+    _make_catalog(cat, tmp_path)
+    _two_shapes(shapes)
+
+    create_datacube.setup(
+        catalog_filepath=str(cat), timestamp_col="timestamp",
+        shapefilepath=str(shapes), id_col="id", run_folderpath=str(tmp_path / "run"),
+        startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
+        bands=["B04", "B08", "SCL"], scl_mask_classes=[8, 9], mosaic_days=20,
+        csv_filepath=str(tmp_path / "run" / "input.csv"), label_col="label",
+    )
+    out = capsys.readouterr().out
+    tick_lines = [ln for ln in out.splitlines() if ln.startswith("[setup] ") and "shapes (" in ln]
+    assert tick_lines, f"no [setup] progress line found in:\n{out}"
+    for ln in tick_lines:
+        assert re.match(
+            r"^\[setup\] \d+/2 shapes \(\d+%\) \| [\d.]+ shapes/s \| elapsed \d+s \| eta (\?|\d+s)$",
+            ln,
+        ), ln
+    # both endpoints (force=True) must be present regardless of throttling
+    assert any(ln.startswith("[setup] 0/2 shapes") for ln in tick_lines)
+    assert any(ln.startswith("[setup] 2/2 shapes") for ln in tick_lines)
 
 
 def test_setup_manifest_order_is_shapefile_order_not_completion_order(tmp_path):

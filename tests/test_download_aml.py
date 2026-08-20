@@ -332,6 +332,126 @@ def test_run_aml_download_mpc_partition_is_non_vacuous():
     assert all_ids != {r["tile_id"] for r in rows}
 
 
+# --- spec 47 D8/#64: a driver-side catalog diff precedes MPC dispatch --------
+
+def _write_mpc_catalog(path, tile_bands: dict[str, list[str]]):
+    """A real `TileCatalog` with one row per tile, `files` = `<band>.tif` per band --
+    the exact shape `mpc._append_downloaded` writes."""
+    from shapely.geometry import Point
+
+    from fsd.sources.mpc import S2_L2A_DECLARATION
+
+    catalog = TileCatalog(str(path))
+    rows = [{
+        "id": tile_id, "satellite": "sentinel-2-l2a",
+        "timestamp": "2018-06-01T00:00:00+00:00", "s3url": "",
+        "local_folderpath": f"/data/{tile_id}",
+        "files": ",".join(f"{b}.tif" for b in bands),
+        "cloud_cover": 0.0, "offset": 0, "nodata": 0, "geometry": Point(0, 0),
+    } for tile_id, bands in tile_bands.items()]
+    catalog.append(rows, declaration=S2_L2A_DECLARATION)
+    return catalog
+
+
+def test_run_aml_download_mpc_shortfall_empty_returns_without_submitting(
+    fake_aml_command, monkeypatch, tmp_path,
+):
+    """D8 (#64): every discovered asset is already catalogued -> return WITHOUT
+    calling `ml_client.jobs.create_or_update` at all, same keys a dispatched run
+    returns (AC7)."""
+    rows = _mpc_rows(5)   # tile_id T0..T4, band B04
+    monkeypatch.setattr(runners._mpc, "discover_shard_rows", lambda *a, **kw: rows)
+    catalog_path = tmp_path / "catalog.parquet"
+    _write_mpc_catalog(catalog_path, {f"T{i}": ["B04"] for i in range(5)})
+    ml_client = _FakeMLClient(["Completed"])
+
+    result = runners.run_aml_download(
+        "memory://roi.geojson", "2018-06-01", "2018-06-11", ["B04"],
+        "memory://aml_dl_mpc_short/data", str(catalog_path),
+        source="mpc", cluster="c", environment="fsd-env:1",
+        root="memory://aml_dl_mpc_short/root", identity_client_id="x", max_tiles=100,
+        ml_client=ml_client, run_id="shortrun",
+    )
+
+    assert ml_client.submitted == []
+    assert result.keys() == {"run_id", "source", "n_jobs", "job_statuses", "reports"}
+    assert result["n_jobs"] == 0
+
+
+def test_run_aml_download_mpc_shortfall_partial_dispatches_only_missing(
+    fake_aml_command, monkeypatch, tmp_path,
+):
+    """D8 (#64): a partially-present request shards only the shortfall (AC8) -- a
+    95%-present request must not dispatch 100%. Mirrors the spec's own worked
+    example shape (some discovered, some already catalogued)."""
+    rows = _mpc_rows(10)   # T0..T9, band B04
+    monkeypatch.setattr(runners._mpc, "discover_shard_rows", lambda *a, **kw: rows)
+    catalog_path = tmp_path / "catalog.parquet"
+    # 7 of 10 tiles already have B04; 3 (T7, T8, T9) are missing.
+    _write_mpc_catalog(catalog_path, {f"T{i}": ["B04"] for i in range(7)})
+    ml_client = _FakeMLClient(["Completed", "Completed", "Completed"])
+
+    result = runners.run_aml_download(
+        "memory://roi.geojson", "2018-06-01", "2018-06-11", ["B04"],
+        "memory://aml_dl_mpc_part/data", str(catalog_path),
+        source="mpc", cluster="c", environment="fsd-env:1",
+        root="memory://aml_dl_mpc_part/root", identity_client_id="x", max_tiles=100,
+        n_shards=3, ml_client=ml_client, run_id="partrun",
+    )
+
+    assert result["n_jobs"] == 3
+    all_ids = set()
+    for k in range(3):
+        with fs.open(f"memory://aml_dl_mpc_part/root/runs/partrun/shards/{k}.csv", "r") as f:
+            shard_df = pd.read_csv(f)
+        all_ids |= set(shard_df["tile_id"])
+    assert all_ids == {"T7", "T8", "T9"}
+
+
+def test_run_aml_download_mpc_shortfall_prints_before_and_after_counts(
+    fake_aml_command, monkeypatch, tmp_path, capsys,
+):
+    rows = _mpc_rows(10)
+    monkeypatch.setattr(runners._mpc, "discover_shard_rows", lambda *a, **kw: rows)
+    catalog_path = tmp_path / "catalog.parquet"
+    _write_mpc_catalog(catalog_path, {f"T{i}": ["B04"] for i in range(7)})
+    ml_client = _FakeMLClient(["Completed"] * 3)
+
+    runners.run_aml_download(
+        "memory://roi.geojson", "2018-06-01", "2018-06-11", ["B04"],
+        "memory://aml_dl_mpc_msg/data", str(catalog_path),
+        source="mpc", cluster="c", environment="fsd-env:1",
+        root="memory://aml_dl_mpc_msg/root", identity_client_id="x", max_tiles=100,
+        n_shards=3, ml_client=ml_client, run_id="msgrun",
+    )
+    out = capsys.readouterr().out
+    assert "[download] 3 of 10 assets missing; dispatching 3" in out
+
+
+def test_mpc_catalog_shortfall_absent_catalog_returns_all_rows(tmp_path):
+    from fsd.workflows.runners import _mpc_catalog_shortfall
+
+    rows = _mpc_rows(3)
+    assert _mpc_catalog_shortfall(str(tmp_path / "nope.parquet"), rows) == rows
+
+
+def test_mpc_catalog_shortfall_checks_band_not_just_tile(tmp_path):
+    """A tile already in the catalog but MISSING one of the requested bands must still
+    show up in the shortfall -- 'already present' is keyed on (tile_id, band), not
+    tile_id alone."""
+    from fsd.workflows.runners import _mpc_catalog_shortfall
+
+    rows = [
+        {"tile_id": "T0", "band": "B04", "dst": "x"},
+        {"tile_id": "T0", "band": "B08", "dst": "y"},
+    ]
+    catalog_path = tmp_path / "catalog.parquet"
+    _write_mpc_catalog(catalog_path, {"T0": ["B04"]})   # B08 missing for T0
+
+    shortfall = _mpc_catalog_shortfall(str(catalog_path), rows)
+    assert [r["band"] for r in shortfall] == ["B08"]
+
+
 # --- test 2/5: D4/D5/D6 -- job spec carries AZURE_CLIENT_ID, timeout, KV coords,
 # and never a secret value ----------------------------------------------------
 

@@ -21,6 +21,7 @@ from importlib.resources import files
 import pandas as pd
 
 from fsd import config
+from fsd import progress as _progress
 from fsd import secrets as _secrets
 from fsd.catalog.catalog import TileCatalog as _TileCatalog
 from fsd.model import bundle as _bundle
@@ -541,6 +542,11 @@ def _aml_submit_and_wait(
     per-job/per-run metrics (`_derive_timing`). Written **before** raising on failure,
     so a crashed dispatch still leaves every completed step's telemetry on disk (D3).
     Nothing new is returned -- no `timing` field, per ADR 0021."""
+    # D6 (spec 47): name run_id + run_root BEFORE any job is submitted -- the cheapest
+    # line in the whole spec, and the one that most directly answers "is it stuck?" from
+    # outside the notebook (`_status/*.json`/`_timing.json` live under run_root).
+    print(f"[aml] run_id={run_id} run_root={run_root}", flush=True)
+
     t_start = _now_iso()
     job_names: dict[int, str] = {}
     submitted_at: dict[int, str] = {}
@@ -557,6 +563,13 @@ def _aml_submit_and_wait(
         submitted_at[k] = t_last_submit
         job_names[k] = submitted.name
 
+    # D5 (spec 47): tick from the statuses dict this loop already maintains -- no extra
+    # AML calls. A fan-out's per-second completion rate isn't meaningful (show_rate=False);
+    # a single job additionally has no rate to derive an ETA from, so it prints elapsed
+    # only rather than inventing one (show_eta=False).
+    n_jobs = len(job_names)
+    tick = _progress.ticker(n_jobs, "aml", unit="jobs terminal", show_rate=False,
+                            show_eta=(n_jobs > 1))
     statuses: dict[int, str] = {}
     returned_at: dict[int, str] = {}
     while True:
@@ -565,7 +578,10 @@ def _aml_submit_and_wait(
             statuses[k] = s
             if s in _TERMINAL_JOB_STATUSES and k not in returned_at:
                 returned_at[k] = _now_iso()
-        if all(s in _TERMINAL_JOB_STATUSES for s in statuses.values()):
+        n_terminal = sum(1 for s in statuses.values() if s in _TERMINAL_JOB_STATUSES)
+        tick(n_terminal, suffix=f"{n_jobs - n_terminal} running")
+        if n_terminal == n_jobs:
+            tick(n_terminal, force=True, suffix=f"{n_jobs - n_terminal} running")
             break
         time.sleep(poll_interval_seconds)
 
@@ -799,8 +815,17 @@ def _stage_bundle(bundle_path: str, dst_url: str) -> str:
     with fs.open(os.path.join(dst_url, _bundle.BUNDLE_MANIFEST), "w") as f:
         f.write(raw)
     rels = list(manifest.get("artifacts", {}).values()) + _bundle.manifest_code_files(manifest)
-    for rel in rels:
+    # D5 (spec 47): the destination + total size is printed BEFORE the upload starts --
+    # this is the leg measured at 627 s for 13 MB over VPN, the one silence costs most on.
+    total_bytes = sum(fs.size(os.path.join(bundle_path, rel)) for rel in rels)
+    print(f"[stage] bundle -> {dst_url} | {len(rels)} files, {total_bytes / 1e6:.1f} MB",
+          flush=True)
+    tick = _progress.ticker(len(rels), "stage", unit="files")
+    tick(0, force=True)
+    for i, rel in enumerate(rels, 1):
         fs.transfer(os.path.join(bundle_path, rel), os.path.join(dst_url, rel))
+        tick(i)
+    tick(len(rels), force=True)
     return dst_url
 
 
@@ -983,6 +1008,30 @@ def _iso(dt) -> str:
     return pd.Timestamp(dt).isoformat()
 
 
+def _mpc_catalog_shortfall(catalog_filepath: str, rows: list[dict]) -> list[dict]:
+    """D8/D9 (spec 47, #64): which of `rows` (`_mpc.discover_shard_rows`'s own shape --
+    one row per `(tile_id, band)` asset) the existing catalog does NOT already cover.
+
+    "Already present" means the catalog already carries a row for `tile_id` whose
+    `files` column (comma-separated basenames, `mpc._append_downloaded`) covers `band`
+    -- a catalog READ, never a destination `fs.exists`/`fs.stat` (D9: one WAN listing
+    per asset would approach the cold-start cost this diff exists to avoid). This rests
+    on the catalog's own invariant that a row exists only if its file does (D9) --
+    currently violated by an interrupted MPC transfer leaving a truncated file under
+    the final name (spec 47 §3a); restoring it is #74, out of scope here. An absent
+    catalog means nothing is present, unchanged from today's behaviour (dispatch
+    everything)."""
+    if not fs.exists(catalog_filepath):
+        return rows
+    catalog_df = _TileCatalog(catalog_filepath).read()
+    have: dict[str, set[str]] = {}
+    for _, r in catalog_df.iterrows():
+        files = str(r.get("files") or "")
+        bands_present = {os.path.splitext(f)[0] for f in files.split(",") if f}
+        have.setdefault(str(r["id"]), set()).update(bands_present)
+    return [r for r in rows if r["band"] not in have.get(str(r["tile_id"]), set())]
+
+
 def run_aml_download(
     roi: str,
     startdate,
@@ -1036,6 +1085,17 @@ def run_aml_download(
     `ml_client` is the test/injection seam (D3 invariant 3, mirrors `run_aml`): pass
     a fake with `.compute.get`, `.environments.get`, `.jobs.create_or_update`,
     `.jobs.get` to avoid any network call.
+
+    **MPC only** (spec 47 D8, #64): discovery already runs on the driver here, so before
+    any preflight or dispatch the discovered `(tile_id, band)` assets are diffed against
+    `catalog_filepath` -- "already present" means the catalog already has a row for
+    `tile_id` whose `files` covers `band` (`_mpc_catalog_shortfall`; a catalog READ, not
+    a per-asset destination stat, D9). A shortfall of zero returns without calling
+    `ml_client.jobs.create_or_update` at all; a partial shortfall shards and dispatches
+    only the missing assets, not the full discovered list. **CDSE is explicitly out**:
+    it submits exactly one whole-ROI job and discovery happens on the node inside it
+    (D1's asymmetry), so the same driver-side diff would need a new CDSE discovery pass
+    on the driver -- a larger change, deferred (D8).
     """
     if source not in ("cdse", "mpc"):
         raise ValueError(f"source={source!r} must be one of 'cdse', 'mpc'.")
@@ -1092,7 +1152,23 @@ def run_aml_download(
         rows = _mpc.discover_shard_rows(
             roi, startdate, enddate, bands, dst_folderpath, max_cloudcover=max_cloudcover
         )
+        n_discovered = len(rows)
+
+        # D8 (spec 47, #64): diff against the existing catalog BEFORE any preflight or
+        # dispatch -- a request whose every discovered asset is already catalogued must
+        # not submit a single job (measured 5m31s of cold start to discover there was
+        # nothing to do); a partially-present request must shard only the shortfall, not
+        # the full discovered list (a 95%-present request must not dispatch 100%).
+        rows = _mpc_catalog_shortfall(catalog_filepath, rows)
         n_assets = len(rows)
+        if n_assets == 0:
+            print(f"[download] 0 of {n_discovered} assets missing; nothing to download",
+                  flush=True)
+            return {"run_id": run_id, "source": "mpc", "n_jobs": 0,
+                    "job_statuses": {}, "reports": {}}
+        if n_assets < n_discovered:
+            print(f"[download] {n_assets} of {n_discovered} assets missing; "
+                  f"dispatching {n_assets}", flush=True)
 
         _aml_download_preflight(
             ml_client, cluster=cluster, environment=environment, root=root,

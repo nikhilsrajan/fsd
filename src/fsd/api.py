@@ -28,6 +28,7 @@ import numpy as np
 import pandas as pd
 
 from fsd import config
+from fsd import progress as _progress
 from fsd.bands import modify as _modify
 from fsd.catalog import stac as _stac
 from fsd.catalog.catalog import TileCatalog
@@ -55,6 +56,12 @@ __all__ = [
     "flatten_training_data",
     "run_inference",
 ]
+
+
+# D2 (spec 47): a cached work list that is a strict superset of the freshly tiled grids by no
+# more than this many ids is named as a probable spec-46 D4 cell-count drift (AT_ROI dropped 1,
+# s2grid=476da24 dropped 8, measured 2026-08-19) rather than a different roi.
+_RESUME_DRIFT_SAMPLE = 10
 
 
 class PreflightError(ValueError):
@@ -137,6 +144,42 @@ def _check_window(startdate, enddate, mosaic_days, bands) -> list[str]:
 def _raise_preflight(errs: list[str]) -> None:
     if errs:
         raise PreflightError("preflight failed:\n  - " + "\n  - ".join(errs))
+
+
+def _check_resume_identity(csv_filepath: str, grids: gpd.GeoDataFrame, output_folderpath: str) -> None:
+    """D1 (spec 47): `input.csv` resumes by EXISTENCE, not identity -- a cached work list from a
+    prior, different roi must not silently win over the freshly tiled grids (#66). Compares the
+    `id` sets; ANY difference raises rather than repairing, because both repairs are worse:
+    rewriting `input.csv` in place orphans every cell already written under the old id set, and
+    deleting the folder is not reliable on blob (#50). Detect-and-refuse is the honest subset of
+    Snakemake's detect-and-rerun (D1)."""
+    with fs.open(csv_filepath, "r") as f:
+        cached_ids = set(pd.read_csv(f)["id"].astype(str))
+    fresh_ids = set(grids["id"].astype(str))
+    if cached_ids == fresh_ids:
+        return
+    only_cached = sorted(cached_ids - fresh_ids)
+    only_fresh = sorted(fresh_ids - cached_ids)
+    sample = (only_cached + only_fresh)[:10]
+    msg = (
+        f"output_folderpath={output_folderpath!r} already holds a work list "
+        f"({len(cached_ids)} cell ids, in {os.path.join(output_folderpath, 'cells', 'input.csv')}) "
+        f"that does not match the freshly tiled roi ({len(fresh_ids)} cell ids). "
+        f"output_folderpath is the identity of a run (spec 47 D3) -- reusing one for a different "
+        f"roi (or a different grid_size_km/scale_fact) would silently resume the OLD work list. "
+        f"Sample of the differing ids: {sample}. Fix: use a new output_folderpath for this roi."
+    )
+    # D2: name the spec-46 D4 cell-count drift explicitly when it is plausibly the cause -- the
+    # cached set is a strict superset missing only a handful of ids, not a disjoint id set from a
+    # genuinely different roi. Any run folder created before 2026-08-19 hits this.
+    if not only_fresh and 0 < len(only_cached) <= _RESUME_DRIFT_SAMPLE:
+        msg += (
+            f" This looks like the spec-46 D4 cell-count change (2026-08-19, e.g. 300->299 "
+            f"cells for AT_ROI): the cached set is a strict superset missing only "
+            f"{len(only_cached)} id(s), rather than a disjoint set from an unrelated roi. If so, "
+            f"the fix is the same: use a new output_folderpath."
+        )
+    raise PreflightError(msg)
 
 
 def _normalize_window(startdate, enddate) -> tuple[pd.Timestamp | None, pd.Timestamp | None, list[str]]:
@@ -256,6 +299,11 @@ def download(
     REVISED, see `workflows.runners.run_aml_download`. `creds` is ignored for
     `runner="aml"`: the dispatched job reads them on the node instead, so `roi`
     must be a url the node can also read (not an in-memory GeoDataFrame).
+
+    `dst_folderpath` is the identity of this download (spec 47 D3): its `TileCatalog` is what a
+    re-run diffs against to skip what is already there, so re-running with a different `roi`/
+    `startdate`/`enddate`/`bands` into the same `dst_folderpath` appends into one shared catalog
+    rather than starting a new one.
     """
     startdate, enddate, date_errs = _normalize_window(startdate, enddate)
     errs = _check_local_seams(runner, storage) + date_errs
@@ -778,19 +826,26 @@ def _merge_mosaic(filepaths, nodata, *, reproject_to_dominant: bool, merge_crs):
 
     from fsd.storage.azure import to_vsi
 
+    # D5 (spec 47): tick per input opened -- this is the WAN-latency-bound part (every
+    # per-cell COG read over /vsiadls/, measured ~1000s on 300 cells), matching [setup]'s
+    # shape exactly.
+    tick = _progress.ticker(len(filepaths), "merge", unit="inputs")
+    tick(0, force=True)
+
     if reproject_to_dominant:
         from rasterio.crs import CRS as _RioCRS
         from rasterio.warp import Resampling, calculate_default_transform
         from rasterio.warp import reproject as rio_reproject
 
         area_by_crs: dict[str, float] = {}
-        for fp in filepaths:
+        for i, fp in enumerate(filepaths, 1):
             with rasterio.open(to_vsi(fp)) as s:
                 key = s.crs.to_string()
                 # extent area in the cell's own (metric UTM) CRS — comparable across UTM zones
                 area_by_crs[key] = area_by_crs.get(key, 0.0) + (
                     abs(s.transform.a * s.transform.e) * s.width * s.height
                 )
+            tick(i)
         if merge_crs is not None:
             target = _RioCRS.from_user_input(merge_crs).to_string()   # user-forced target CRS
         elif any(area_by_crs.values()):
@@ -837,7 +892,10 @@ def _merge_mosaic(filepaths, nodata, *, reproject_to_dominant: bool, merge_crs):
                 if os.path.exists(t):
                     os.remove(t)
     else:
-        srcs = [rasterio.open(to_vsi(fp)) for fp in filepaths]
+        srcs = []
+        for i, fp in enumerate(filepaths, 1):
+            srcs.append(rasterio.open(to_vsi(fp)))
+            tick(i)
         try:
             crs_set = {s.crs.to_string() for s in srcs}
             if len(crs_set) > 1:
@@ -854,6 +912,7 @@ def _merge_mosaic(filepaths, nodata, *, reproject_to_dominant: bool, merge_crs):
             for s in srcs:
                 s.close()
 
+    tick(len(filepaths), force=True)
     return mosaic, out_transform, profile
 
 
@@ -938,6 +997,10 @@ def run_inference(
       (``fsd.grid``), then fans out a per-cell **build-datacube + infer -> COG** task through the
       **runner seam** (Snakemake locally; Batch swaps in at P4 unchanged). Imagery is assumed
       already present in ``catalog_filepath`` — inference never touches CDSE (conserve quota).
+      **``output_folderpath`` is the identity of the run** (spec 47 D3): re-running ROI mode into
+      the same ``output_folderpath`` resumes the cached per-cell work list, so it must name this
+      exact ``roi``/``grid_size_km``/``scale_fact`` — reusing it for a different roi raises
+      ``PreflightError`` (D1) rather than silently mixing work lists.
 
     `model` is a live `ModelAdapter` or a **bundle path**; a bundle is required for ROI mode and for
     ``cores>1`` (both cross a subprocess) — a live adapter is auto-saved to a temp bundle. Preflight
@@ -1103,11 +1166,19 @@ def _existing_outputs(candidates, *, run_folderpath: str) -> list[str]:
     migration), so previously written outputs are still found; a further change to this
     layout must still change this pattern too.
     """
+    # D5 (spec 47): TODO #61 already collapsed this to ONE `fs.glob` round trip, so there
+    # is no per-candidate loop left to tick against -- print before/after instead, in the
+    # same `[label] done/total (...) | elapsed` shape, rather than inventing a per-item
+    # loop that no longer exists.
+    tick = _progress.ticker(len(candidates), "collect", unit="candidates", show_rate=False)
+    tick(0, force=True)
     hits = {
         _output_key(h)
         for h in fs.glob(os.path.join(str(run_folderpath), "*", "*", "output.tif"))
     }
-    return [c for c in candidates if _output_key(c) in hits]
+    found = [c for c in candidates if _output_key(c) in hits]
+    tick(len(found), force=True)
+    return found
 
 
 def _imagery_missing_message(roi, startdate, enddate, bands, *, catalog_filepath, why) -> str:
@@ -1229,11 +1300,15 @@ def _run_inference_roi(
         f.write(grids.to_json(default=str))
 
     # 2) per-cell setup (reuse the build workflow's setup; no labels). Skip if input.csv exists
-    #    so a re-run resumes (Snakemake then skips already-inferred cells).
+    #    so a re-run resumes (Snakemake then skips already-inferred cells) -- but ONLY if that
+    #    cached work list still corresponds to THIS request (D1/#66): resume-by-existence alone
+    #    let a stale input.csv from a prior, different roi silently win.
     run_folderpath = os.path.join(output_folderpath, "cells")
     csv_filepath = os.path.join(run_folderpath, "input.csv")
     if scl_mask_classes is None:
         scl_mask_classes = list(config.SCL_MASK_CLASSES)
+    if fs.exists(csv_filepath):
+        _check_resume_identity(csv_filepath, grids, output_folderpath)
     if not fs.exists(csv_filepath):
         try:
             _create_datacube.setup(

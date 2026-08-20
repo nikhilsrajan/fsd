@@ -258,6 +258,54 @@ def test_run_aml_inference_skip_smoke_submits_no_smoke_job(tmp_path, fake_aml_co
     assert len(ml_client.submitted) == 1   # just the one shard, no smoke job
 
 
+# --- spec 47 D5/D6: the four silent legs now print --------------------------------
+
+def test_run_aml_inference_prints_stage_and_aml_progress(tmp_path, fake_aml_command, capsys):
+    """D5/D6: the stage-bundle upload and the AML poll loop must each print at least one
+    progress line; the run_id/run_root line comes before any job is submitted; the
+    single-job smoke wait omits an ETA (D5) while the 2-shard fan-out shows one."""
+    bundle_dir = _write_bundle(tmp_path)
+    input_csv = "memory://run5/cells/input.csv"
+    _write_input_csv(input_csv, n_units=5)
+    ml_client = _FakeMLClient({"smoke": "Completed", "0": "Completed", "1": "Completed"})
+
+    runners.run_aml_inference(
+        input_csv, bundle_dir, cluster="c", environment="fsd-infer-env:1",
+        root="memory://run5/root", identity_client_id="x", n_shards=2,
+        ml_client=ml_client, run_id="progrun",
+    )
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+
+    # [stage]: destination + size announced before upload, then a completed tick
+    assert any(ln.startswith("[stage] bundle -> ") and "files," in ln for ln in lines)
+    stage_ticks = [ln for ln in lines if ln.startswith("[stage] ") and "files (" in ln]
+    assert any("100%" in ln for ln in stage_ticks)
+
+    # [aml]: run_id/run_root named before any job is submitted (appears at least twice --
+    # once for the smoke sub-run, once for the 2-shard main run).
+    id_lines = [ln for ln in lines if ln.startswith("[aml] run_id=")]
+    assert any("run_id=progrun-smoke" in ln and "run_root=" in ln for ln in id_lines)
+    assert any("run_id=progrun " in ln and "run_root=" in ln for ln in id_lines)
+
+    # single-job smoke wait: no rate, no eta
+    smoke_ticks = [ln for ln in lines if ln.startswith("[aml] 0/1 jobs terminal")
+                  or ln.startswith("[aml] 1/1 jobs terminal")]
+    assert smoke_ticks
+    for ln in smoke_ticks:
+        assert "/s" not in ln
+        assert "eta" not in ln
+
+    # 2-shard main wait: eta present, no rate, "running" suffix present
+    fanout_ticks = [ln for ln in lines if ln.startswith("[aml] 0/2 jobs terminal")
+                    or ln.startswith("[aml] 2/2 jobs terminal")]
+    assert fanout_ticks
+    for ln in fanout_ticks:
+        assert "/s" not in ln
+        assert "eta" in ln
+        assert "running" in ln
+
+
 # --- test 4: run_aml_inference raises on Failed / status!="ok" ---------------------
 
 def test_run_aml_inference_raises_on_failed_job(tmp_path, fake_aml_command):

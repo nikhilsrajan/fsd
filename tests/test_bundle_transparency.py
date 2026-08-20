@@ -369,6 +369,32 @@ def test_verify_image_stale_wheel_detected_before_submission(tmp_path, importabl
     assert ml_client.submitted == []
 
 
+def test_verify_image_absent_wheel_raises_not_a_verdict(tmp_path, importable, fake_aml_command):
+    """Spec 47 D10/D11: a build_context with no fsd-*.whl is caller misuse, not a statement about
+    the image -- it must raise ValueError and submit nothing, never come back as pass=False."""
+    importable("vabsent_mod.py")
+    import vabsent_mod
+
+    try:
+        bdir = bundle.save(vabsent_mod.TinyAdapter(), {}, str(tmp_path / "b"), verbose=False)
+    finally:
+        _purge("vabsent_mod")
+
+    build_ctx = tmp_path / "ctx_empty"
+    build_ctx.mkdir()
+
+    ml_client = _FakeMLClient({"smoke": "Completed"})
+    with pytest.raises(ValueError, match="contains no fsd-\\*.whl"):
+        verify_image(
+            bdir, environment="fsd-infer-sklearn:3", runner="aml",
+            runner_kwargs=dict(cluster="c", root="memory://vimg_absent/root", identity_client_id="x",
+                               ml_client=ml_client),
+            build_context=str(build_ctx),
+        )
+
+    assert ml_client.submitted == []
+
+
 def test_verify_image_missing_status_file_is_its_own_diagnosis(tmp_path, importable, fake_aml_command):
     """The job "completed" per AML but never wrote a status file -- the entrypoint never
     ran (image/auth problem), and that must itself become the diagnosis, not a KeyError."""
