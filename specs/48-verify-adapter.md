@@ -1,16 +1,16 @@
 ---
 status: current
-summary: Close the gap between "the adapter imports" and a 299-cell fan-out — fsd.test_adapter builds ONE real datacube on AML, lands it locally, and runs the adapter over it through the same code the cluster runs, so the output.tif can be eyeballed before bundling is trusted.
+summary: Close the gap between "the adapter imports" and a 299-cell fan-out — fsd.verify_adapter builds ONE real datacube on AML, lands it locally, and runs the adapter over it through the same code the cluster runs, so the output.tif can be eyeballed before bundling is trusted.
 ---
 
-# Spec 48 — `fsd.test_adapter`: one real cube, locally, before the fan-out
+# Spec 48 — `fsd.verify_adapter`: one real cube, locally, before the fan-out
 
 **Status: ✅ SIGNED OFF 2026-08-20 — NOT YET IMPLEMENTED.** Raised by the user 2026-08-20, from
 the same AML e2e session that produced specs 45–47. **All six §7 questions were answered by the
-user at sign-off** (Q1 overturned the proposed name; Q3 overturned the proposed default; Q2/Q4/Q5/Q6
-confirmed the defaults). §8's external cross-validation was run at sign-off and is complete — it
-confirmed §1's taxonomy, validated D7's metric set, and turned up one concrete hazard in the chosen
-name, handled in **D9**. Nothing in `src/` is touched yet.
+user at sign-off**; Q1 (the name) was then reopened by the user and settled a second time — see
+D1. §8's external cross-validation was run at sign-off and is complete: it confirmed §1's
+taxonomy, validated D7's metric set with no gap, and its finding about pytest collection is what
+retired the interim `test_adapter` name. Nothing in `src/` is touched yet.
 
 > **The one sentence:** every gate fsd has today asks *"would the adapter import?"*; none asks
 > *"does `predict` produce sensible output on real pixels?"* — and the first thing that does is a
@@ -75,7 +75,7 @@ or any GUI (fsd emits files QGIS opens, spec 41 D2).
 
 ## 3. Decisions
 
-### D1 — one new verb, `fsd.test_adapter`, not a flag on `run_inference` [Q1: name chosen by the user]
+### D1 — one new verb, `fsd.verify_adapter`, not a flag on `run_inference` [Q1: name chosen by the user]
 
 `run_inference` already carries two modes (ROI and CSV) and four runners. A third mode meaning "do
 one cell, land it, and tell me about it" would worsen an already-branchy preflight for a case that
@@ -83,21 +83,41 @@ is *pedagogically* separate: this is the step you run **once, before** you trust
 output is a **verdict**, not a map.
 
 ```python
-report = fsd.test_adapter(
+report = fsd.verify_adapter(
     model,                                   # a live adapter OR a bundle path
     roi="...", catalog_filepath="...",
     startdate=..., enddate=..., mosaic_days=20, bands=[...],
     cell="476da24",                          # or None -> D3 picks one; "random" opt-in
-    export_folderpath="./test_adapter",      # where the cube + output land LOCALLY
+    export_folderpath="./verify_adapter",      # where the cube + output land LOCALLY
     runner="aml", runner_kwargs={...},       # how the CUBE gets built
 )
 ```
 
-**The name was `dry_run` in the draft and the user overturned it (Q1) — correctly.** §8 found that
-`--dry-run` means *"show me what would happen, execute nothing"* everywhere it is established
-(`make -n`, `terraform plan`, `kubectl --dry-run`, Snakemake). This verb executes a real build and
-a real inference, so `dry_run` would have been actively misleading. `test_adapter` says what it
-does. It carries one hazard of its own — see **D9**.
+**The name took three passes, and the reasoning is worth keeping** (Q1):
+
+1. the draft proposed **`dry_run`** — retired, because §8 confirmed `--dry-run` means *"show me
+   what would happen, execute nothing"* everywhere it is established (`make -n`, `terraform plan`,
+   `kubectl --dry-run`, Snakemake), and this verb runs a real build and a real inference;
+2. **`test_adapter`** — retired, because pytest collects on *name*: any `test_*` callable is
+   collected even when merely **imported** into a test module, so fsd's own
+   `from fsd import test_adapter` would have produced a fixture error in a file containing no bug.
+   That is fixable with `__test__ = False`, but it is a workaround for a name, not a reason for one;
+3. **`adapter_smoke`** — considered and rejected on two independent grounds. It is **already taken**
+   by `fsd.workflows.adapter_smoke` (spec 38 D11's node-side import check), and §8 established that
+   a *smoke test* means end-to-end on tiny **synthetic** data proving only that formats hold —
+   which is exactly what that existing module does, and exactly what this verb is not.
+
+**`verify_adapter` is the repo's own convention.** `verify_image` already returns a
+`_result.json`-shaped verdict rather than raising, and `fsd/model/__init__.py` describes it as
+"does an inference image run this bundle?". The pair now reads as one family, and the name carries
+no pytest hazard:
+
+- `fsd.verify_adapter` — does this adapter **compute the right thing**? (local, real cube)
+- `fsd.model.verify_image` — does this **image** run this bundle? (one node)
+
+It stays a **top-level verb** rather than moving into `fsd.model`, because it is a step in the
+user's workflow (`download` → `create_training_data` → `verify_adapter` → `run_inference`), not a
+model-module utility.
 
 ### D2 — this does not replace `verify_image`, and the spec says so out loud
 
@@ -105,12 +125,12 @@ Spec 45 D5 **rejects `runner="local"` for image verification**, because the driv
 adapter's source on `sys.path` and its dependencies installed (ADR 0002), so a local pass is a
 false positive *about the image*. That reasoning is correct and unchanged.
 
-`test_adapter` answers a **different question**: not "will this image run the adapter?" but "does this
+`verify_adapter` answers a **different question**: not "will this image run the adapter?" but "does this
 adapter compute the right thing?". A local run is the *right* venue for that — the user can drop
 into a debugger, inspect the array, and open the COG in QGIS. Both gates stay, and the docs place
 them in order:
 
-1. `test_adapter` — is my adapter's **logic** right? (local, minutes, iterate here)
+1. `verify_adapter` — is my adapter's **logic** right? (local, minutes, iterate here)
 2. `verify_image` — will the **image** run it? (one node, ~40–380 s)
 3. `run_inference` — the fan-out.
 
@@ -120,7 +140,7 @@ closed.
 ### D3 — cell selection: explicit id, else a deterministic pick, and always write `grids.geojson`
 
 `fsd.grid.roi_to_s2_grids` already produces the cells, and `_run_inference_roi` already writes them
-to `grids.geojson` for exactly this kind of inspection. `test_adapter`:
+to `grids.geojson` for exactly this kind of inspection. `verify_adapter`:
 
 - `cell="476da24"` → use it; raise `PreflightError` naming the available ids (bounded) if it is not
   in the ROI;
@@ -152,7 +172,7 @@ storage seam, exactly as `create_training_data` lands its compact array. Two con
 stating:
 
 - the user keeps a **real cube on their laptop**, so the second and later iterations of an adapter
-  need **no cluster at all** — `test_adapter` with the cube already present skips straight to inference.
+  need **no cluster at all** — `verify_adapter` with the cube already present skips straight to inference.
   This is what makes the loop tight enough to actually iterate in;
 - that resume must key on the cube's **identity** (roi/window/bands/mosaic_days), not its mere
   existence. Spec 47 D1 is the precedent, and repeating that mistake here would be worse: a dry
@@ -166,8 +186,8 @@ which is used for aml batch scaled inference"* — and fsd already has the piece
 Snakemake infer-only runner and the AML shard drive through `fsd.model.engine`, and it already
 takes a CSV of `datacube_filepath` / `output_filepath`.
 
-So `test_adapter`'s inference leg is: write a one-row `input.csv` and call `run_infer_only`. **No branch
-anywhere may say "if test_adapter".** If the local result and the cluster result can differ, the run
+So `verify_adapter`'s inference leg is: write a one-row `input.csv` and call `run_infer_only`. **No branch
+anywhere may say "if verify_adapter".** If the local result and the cluster result can differ, the run
 is worthless.
 
 A live adapter is auto-saved to a temp bundle first (`_ensure_bundle`, as `run_inference` already
@@ -201,43 +221,21 @@ with the two paths worth opening. Per the user's standing principle — LLMs are
 GeoTIFFs, so raster output gets eyeballed in QGIS — the verdict is **assistive**, and the COG is the
 actual deliverable.
 
-### D9 — `fsd.test_adapter` must set `__test__ = False`
-
-Found by §8's cross-validation, and it would otherwise have bitten this repo's own suite on day one.
-
-**pytest collects by name.** Any function named `test_*` at module level in a collected file is
-picked up as a test — *including one that was merely imported there*. fsd's own tests will
-certainly write `from fsd import test_adapter`, and pytest would then try to run it as a test,
-fail to supply its required arguments, and report a fixture error in a file that contains no such
-bug. The same trap is why `TestClient`/`TestConfig`-style imports produce
-`PytestCollectionWarning` for users of other libraries.
-
-pytest documents the escape hatch: **set `__test__ = False` on the object**. So:
-
-```python
-def test_adapter(model, *, roi, ...): ...
-test_adapter.__test__ = False        # not a pytest test -- see spec 48 D9
-```
-
-This is a one-line cost and does not argue against the name; it argues for pinning the line with a
-regression test, because a future refactor that re-exports the verb elsewhere silently reintroduces
-it (AC13).
-
 ---
 
 ## 4. Acceptance criteria
 
-1. `fsd.test_adapter(model, roi=…, cell="476da24", runner="aml", …)` builds exactly **one** datacube,
+1. `fsd.verify_adapter(model, roi=…, cell="476da24", runner="aml", …)` builds exactly **one** datacube,
    dispatches exactly **one** AML job, and lands `datacube.npy` + `metadata.pickle.npy` locally.
 2. `cell=None` picks deterministically: two runs over the same ROI/window pick the same cell, and
    the printed line names the cell and the reason.
 3. `cell=` naming an id not in the ROI raises `PreflightError` listing available ids (bounded).
 4. `grids.geojson` is always written and its path printed, whether or not `cell=` was given.
-5. A second `test_adapter` with the cube already local and the same roi/window/bands/mosaic_days
+5. A second `verify_adapter` with the cube already local and the same roi/window/bands/mosaic_days
    **submits no job** and goes straight to inference; a *changed* window or band set is detected and
    refused rather than silently reusing the old cube (D5, spec 47 D1's precedent).
 6. The inference leg calls `fsd.workflows.infer_only_task.run_infer_only` — asserted by test, with
-   no `test_adapter`-specific branch in `engine`, `infer_only_task` or `bundle`.
+   no `verify_adapter`-specific branch in `engine`, `infer_only_task` or `bundle`.
 7. A **live adapter** is accepted and auto-saved to a bundle; the bundle it produces is the same one
    `run_inference` would use (asserted by comparing `bundle.read_spec`).
 8. The returned dict is `_result.json`-shaped and carries: cube shape, cube `T`, adapter
@@ -247,28 +245,26 @@ it (AC13).
    an `error` naming both numbers — it does not raise, and it does not pass.
 10. `runner="local"` works end-to-end against a local catalog (the tutorial fixture), so the test
     suite covers the whole verb with no network (spec 36 D3 invariant 3).
-11. The docstring and `docs/howto/bundle-your-model.md` place `test_adapter` → `verify_image` →
+11. The docstring and `docs/howto/bundle-your-model.md` place `verify_adapter` → `verify_image` →
     `run_inference` in order, and say what each does **not** check.
 12. `pytest -q` and `ruff check src/ tests/ demos/ examples/` clean.
-13. `fsd.test_adapter.__test__ is False`, and a test file that does `from fsd import test_adapter`
-    collects **zero** extra tests and emits no `PytestCollectionWarning` (D9).
-14. `cell="random"` prints the chosen id, and passing that id back as `cell=` reproduces the same
+13. `cell="random"` prints the chosen id, and passing that id back as `cell=` reproduces the same
     cell (Q2).
-15. **No** `features.npy` (or any flattened array) is written — the artifacts are exactly those in
+14. **No** `features.npy` (or any flattened array) is written — the artifacts are exactly those in
     D8 (Q3).
 
 ---
 
 ## 5. Risks
 
-- **A green `test_adapter` reads as "ready to scale".** One cell is not 299: it says nothing about per-cell
+- **A green `verify_adapter` reads as "ready to scale".** One cell is not 299: it says nothing about per-cell
   variance, cold starts, quota or the multi-CRS seam. D7 makes the return state this, but the docs
   must repeat it or the verb over-promises — the same failure mode spec 47 Part D fixed for
   `verify_image`.
 - **The local cube ages.** A cube built once and reused for weeks will not reflect a changed catalog
   or a re-ingested archive. D5's identity check covers the *request*, not the *archive*. Related:
   #74 (a truncated download can be catalogued as complete).
-- **`test_adapter` becomes a fourth mode of `run_inference` by accretion.** If it grows a `cells=` list
+- **`verify_adapter` becomes a fourth mode of `run_inference` by accretion.** If it grows a `cells=` list
   or an `roi=` fan-out, it *is* `run_inference` and should be deleted. The one-cell constraint is the
   design, not a limitation.
 - **Adapter iteration on one cell overfits to that cell.** Mitigated by D3's largest-coverage pick
@@ -296,11 +292,7 @@ it (AC13).
 
 ## 7. Questions at sign-off — ALL RESOLVED (user, 2026-08-20)
 
-1. **[RESOLVED — user, 2026-08-20: default OVERTURNED]** **Verb name.** → **`fsd.test_adapter`**.
-   The draft proposed `fsd.dry_run`; §8 confirmed that `--dry-run` means "show what would happen,
-   execute nothing" everywhere it is established (`make -n`, `terraform plan`, `kubectl --dry-run`,
-   Snakemake), which this verb violates — it runs a real build and a real inference. See **D1**,
-   and **D9** for the pytest hazard the chosen name carries.
+1. **[RESOLVED — user, 2026-08-20, after two reopenings]** **Verb name.** → **`fsd.verify_adapter`**. `dry_run` (draft) means "execute nothing" by established convention; `test_adapter` (interim) collides with pytest collection; `adapter_smoke` is already taken by `fsd.workflows.adapter_smoke` and means synthetic-data format checking. `verify_adapter` follows the repo's own `verify_image` precedent. Full reasoning in **D1**.
 2. **[RESOLVED — user, 2026-08-20: default stands]** **Deterministic or random?** →
    **deterministic, with `cell="random"` opt-in that prints the chosen id so it can be pinned.**
    Folded into D3.
@@ -322,8 +314,9 @@ it (AC13).
 
 Cross-validation run at sign-off (2026-08-20). It did three things: it **confirmed** §1's taxonomy
 of what a "smoke" test is and is not, it **validated** D7's metric set against standard practice
-without finding a gap, and it **turned up one concrete hazard** in the name the user chose, which
-became D9. The searches run were: pytest collection of imported `test_*` callables; TorchGeo /
+without finding a gap, and it **retired one candidate name outright** (`test_adapter`, on the
+pytest collision) while confirming a second was unusable (`adapter_smoke`, already taken and the
+wrong word). The searches run were: pytest collection of imported `test_*` callables; TorchGeo /
 rslearn single-tile predict flows; and ML-deployment terminology for pre-production checks on real
 data (sanity check vs smoke test) including which output properties are conventionally asserted.
 
@@ -331,7 +324,7 @@ data (sanity check vs smoke test) including which output properties are conventi
 
 - **[pytest — how to capture warnings](https://docs.pytest.org/en/stable/how-to/capture-warnings.html)**
   and **[pytest-dev/pytest #6154](https://github.com/pytest-dev/pytest/issues/6154)**: supplied
-  **D9 in full**. These establish (a) that pytest collects on *name* — a `test_*` function or
+  **D1's rejection of `test_adapter`**. These establish (a) that pytest collects on *name* — a `test_*` function or
   `Test*` class is collected even when it was only **imported** into a test module, which is the
   exact shape of `from fsd import test_adapter`; and (b) that the documented escape hatch is
   setting **`__test__ = False`** on the object. Without this search the chosen verb name would have
@@ -347,7 +340,7 @@ data (sanity check vs smoke test) including which output properties are conventi
 - **[Intuit Engineering — Automated Sanity Checks for ML Model Deployment](https://medium.com/intuit-engineering/how-to-streamline-ml-model-deployment-automated-sanity-checks-64a23166fdc5)**:
   supplied the **category this verb belongs to** — a *sanity check* is a set of tests run in a
   **pre-production environment on real data** to catch systematic errors before deployment. That is
-  exactly `test_adapter`'s job, and it is why D2's insistence that this does not replace
+  exactly `verify_adapter`'s job, and it is why D2's insistence that this does not replace
   `verify_image` is the standard split rather than an fsd quirk.
 - The same two sources supplied **D7's validation**: schema/dtype checking, **value-range
   validation**, and **null/nodata counts** are all named as the conventional minimum for asserting
@@ -363,8 +356,14 @@ data (sanity check vs smoke test) including which output properties are conventi
   `output.tif` is the thing checked) the conventional choice.
 - **Naming (`make -n`, `terraform plan`, `kubectl --dry-run`, Snakemake `--dry-run`)**: the
   established meaning of "dry run" is *show what would happen, execute nothing*. This verb executes
-  a real build and a real inference. This is what retired the draft's `dry_run` name in favour of
-  the user's `test_adapter` (Q1, D1).
+  a real build and a real inference. This retired the draft's `dry_run` name (Q1, D1).
+- **[PEP 8](https://peps.python.org/pep-0008/)** plus the surveyed Python naming discussions:
+  supplied the (negative) finding that `verify_` / `check_` / `validate_` are **not** crisply
+  distinguished in general Python practice — the only clear signal is that a function returning a
+  *report of issues* rather than raising is conventionally `validate_`/`verify_`, and that `test_`
+  is the one prefix with a hard framework collision. Since external convention does not decide
+  between the survivors, D1 falls back on **internal** consistency with `verify_image`, which is
+  the stronger signal.
 
 ### Internal
 
