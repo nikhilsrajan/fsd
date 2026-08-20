@@ -5,7 +5,7 @@ summary: Make the driver act on and report what it already knows — refuse a wo
 
 # Spec 47 — driver-side honesty: stale work lists, silent dispatch, no-op downloads, misread verdicts
 
-**Status: ✅ SIGNED OFF 2026-08-20 — NOT YET IMPLEMENTED.** Written against issues **#66**, **#65** and **#64**, all
+**Status: ✅ SIGNED OFF 2026-08-20 — ✅ IMPLEMENTED 2026-08-20** (Sonnet, §9's landing order; Opus-reviewed 2026-08-20, review fixes on top). **One carve-out: D9's opt-in existence pass was NOT implemented** — no §4 acceptance criterion covers it and it was scoped out to contain risk; deferred to **#75**, which restates its deliberate limits. Everything else in §3 landed. Written against issues **#66**, **#65** and **#64**, all
 three raised by the user from the same full AML e2e run (2026-08-18) driven from
 `notebooks/e2e_austria_aml.ipynb` — plus **Part D**, a defect in spec 45 D4's error taxonomy hit
 by the user on 2026-08-20 while re-running that same notebook. All six §7 questions are resolved (user,

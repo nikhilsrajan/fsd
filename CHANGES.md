@@ -4,6 +4,36 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## Driver-side honesty: stale work lists, silent dispatch, no-op downloads (spec 47, 2026-08-20)
+
+- **`run_inference(roi=...)` now REFUSES a resume whose cached work list is not this roi's**
+  (#66). `output_folderpath/cells/input.csv` used to resume by *existence* alone, so re-running
+  into a reused `output_folderpath` with a different `roi` silently re-inferred the OLD roi's
+  cells. The freshly tiled cell-id set is now compared against the cached one and any difference
+  raises `PreflightError` before anything is written into the folder. **Consequence:** every run
+  folder created before 2026-08-19 mismatches its own freshly tiled grids (spec 46 D4 changed
+  cell counts) and can no longer be resumed into — the error names that cause explicitly. The
+  fix in every case is a new `output_folderpath`, which is now documented as the identity of a
+  run.
+- **An MPC `download` whose assets are all already catalogued no longer dispatches anything**
+  (#64). `run_aml_download`'s MPC branch diffs the driver-side discovered `(tile_id, band)` list
+  against the existing catalog before preflight: an empty shortfall returns the same result shape
+  a dispatched run returns with `n_jobs=0` and no `jobs.create_or_update` call at all; a partial
+  shortfall shards **only the missing assets**. **Consequence:** `max_tiles` is now enforced
+  against the shortfall's distinct tiles rather than every discovered tile, so a request that is
+  mostly already-present can pass a guard it would previously have tripped. CDSE is unchanged —
+  its discovery runs on the node inside a single whole-ROI job (spec 47 D8).
+- **The four silent AML legs print progress** (#65) — bundle staging, the job poll loop, output
+  collection and the per-cell merge, all in `[setup]`'s established
+  `[label] done/total unit (pct%) | rate | elapsed | eta` shape, now shared from `fsd.progress.ticker`
+  rather than a closure inside `create_datacube.setup`. `[setup]`'s own line is byte-identical.
+  The run id + run root are printed before the first job is submitted.
+- **`verify_image(build_context=<folder with no fsd-*.whl>)` now raises `ValueError`** instead of
+  returning `pass: False` (amends spec 45 D4). The returned `_result.json`-shaped dict is reserved
+  for verdicts *about the image*; a bad argument is caller misuse and must not be indistinguishable
+  from a genuinely failing image. A wheel that is present but pre-spec-44 still returns
+  `pass: False` — that is a real finding about the image.
+
 ## Datacube run-folder naming + grid-cell de-duplication (spec 46, 2026-08-19)
 
 - **`create_datacube.setup`'s export path is now named from the REQUESTED window, not each
