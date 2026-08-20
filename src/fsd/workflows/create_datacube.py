@@ -15,12 +15,12 @@ import concurrent.futures
 import datetime
 import io
 import os
-import time
 
 import geopandas as gpd
 import pandas as pd
 
 from fsd import config
+from fsd import progress as _progress
 from fsd.catalog.catalog import TileCatalog, filter_gdf
 from fsd.storage import fs
 from fsd.workflows import runners
@@ -114,23 +114,11 @@ def setup(
     print(f"[setup] catalog read once: {len(catalog_gdf)} rows, for {n_shapes} shapes",
           flush=True)
 
-    t0 = time.time()
-    last_print = 0.0
-
-    def _tick(done: int, force: bool = False) -> None:
-        """Live progress + ETA -- setup does per-shape network I/O and can run for
-        many minutes on a remote run folder; silence is indistinguishable from a hang."""
-        nonlocal last_print
-        now = time.time()
-        if not force and now - last_print < 2.0:
-            return
-        last_print = now
-        elapsed = now - t0
-        rate = done / elapsed if elapsed > 0 and done else 0.0
-        eta = f"{(n_shapes - done) / rate:.0f}s" if rate else "?"
-        pct = 100 * done / n_shapes if n_shapes else 100.0
-        print(f"[setup] {done}/{n_shapes} shapes ({pct:.0f}%) | {rate:.1f} shapes/s "
-              f"| elapsed {elapsed:.0f}s | eta {eta}", flush=True)
+    # D4 (spec 47): the throttle + rate + ETA math itself now lives in `fsd.progress`
+    # (extracted verbatim from what was here) so every driver-side loop shares one
+    # implementation and one output format -- setup does per-shape network I/O and can
+    # run for many minutes on a remote run folder; silence is indistinguishable from a hang.
+    _tick = _progress.ticker(n_shapes, "setup", unit="shapes")
 
     def _prepare(srow) -> dict | None:
         """One shape's control files + its input.csv row. Pure per-shape work: it

@@ -299,6 +299,32 @@ def test_merge_reproject_area_dominant_beats_count(tmp_path):
         assert s.crs.to_epsg() == 32637                        # area wins over cell count
 
 
+def test_merge_strict_prints_progress_per_input(tmp_path, capsys):
+    """D5: `_merge_outputs`/`_merge_mosaic` ticks per input opened -- the WAN-latency-
+    bound part (every per-cell COG read over /vsiadls/, measured ~1000s on 300 cells)."""
+    a, b = tmp_path / "a.tif", tmp_path / "b.tif"
+    _write_cog(a, 32636, 500000, 1300000, 1)
+    _write_cog(b, 32636, 500080, 1300000, 1)
+    _merge_outputs([str(a), str(b)], str(tmp_path / "m.tif"), nodata=255)
+    out = capsys.readouterr().out
+    lines = [ln for ln in out.splitlines() if ln.startswith("[merge] ")]
+    assert any(ln.startswith("[merge] 0/2 inputs") for ln in lines)
+    assert any(ln.startswith("[merge] 2/2 inputs") for ln in lines)
+    assert any("inputs/s" in ln for ln in lines)
+
+
+def test_merge_reproject_prints_progress_per_input(tmp_path, capsys):
+    a, b, c = tmp_path / "a.tif", tmp_path / "b.tif", tmp_path / "c.tif"
+    _write_cog(a, 32636, 500000, 1300000, 1)
+    _write_cog(b, 32636, 500080, 1300000, 1)
+    _write_cog(c, 32637, 400000, 1300000, 2)
+    _merge_outputs([str(a), str(b), str(c)], str(tmp_path / "m.tif"), nodata=255,
+                   reproject_to_dominant=True)
+    out = capsys.readouterr().out
+    lines = [ln for ln in out.splitlines() if ln.startswith("[merge] ")]
+    assert any(ln.startswith("[merge] 0/3 inputs") for ln in lines)
+
+
 def test_merge_uses_one_env_for_all_inputs_not_one_per_file(tmp_path, monkeypatch):
     """Two bugs in one pin, both found on real blob data (run-book 38 Phase 4, 2026-07-28).
 
@@ -415,3 +441,24 @@ def test_existing_outputs_empty_when_nothing_matches(tmp_path):
     run = tmp_path / "cells"
     run.mkdir()
     assert _existing_outputs([_cell_out(run, "w", "id")], run_folderpath=str(run)) == []
+
+
+def test_existing_outputs_prints_progress_before_and_after(tmp_path, capsys):
+    """D5: collect has no per-candidate loop left to tick against (TODO #61 already
+    collapsed it to one `fs.glob`), so it prints before/after in the same shape rather
+    than inventing a per-item loop that no longer exists."""
+    from fsd.api import _existing_outputs
+
+    run = tmp_path / "cells"
+    window = "20180406_20180928"
+    for cid in ("aaa", "ccc"):
+        d = run / window / cid
+        d.mkdir(parents=True)
+        (d / "output.tif").write_bytes(b"x")
+
+    candidates = [_cell_out(run, window, c) for c in ("aaa", "bbb", "ccc")]
+    _existing_outputs(candidates, run_folderpath=str(run))
+    out = capsys.readouterr().out
+    lines = [ln for ln in out.splitlines() if ln.startswith("[collect] ")]
+    assert any(ln.startswith("[collect] 0/3 candidates") for ln in lines)
+    assert any(ln.startswith("[collect] 2/3 candidates") for ln in lines)   # 2 found

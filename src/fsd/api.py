@@ -28,6 +28,7 @@ import numpy as np
 import pandas as pd
 
 from fsd import config
+from fsd import progress as _progress
 from fsd.bands import modify as _modify
 from fsd.catalog import stac as _stac
 from fsd.catalog.catalog import TileCatalog
@@ -825,19 +826,26 @@ def _merge_mosaic(filepaths, nodata, *, reproject_to_dominant: bool, merge_crs):
 
     from fsd.storage.azure import to_vsi
 
+    # D5 (spec 47): tick per input opened -- this is the WAN-latency-bound part (every
+    # per-cell COG read over /vsiadls/, measured ~1000s on 300 cells), matching [setup]'s
+    # shape exactly.
+    tick = _progress.ticker(len(filepaths), "merge", unit="inputs")
+    tick(0, force=True)
+
     if reproject_to_dominant:
         from rasterio.crs import CRS as _RioCRS
         from rasterio.warp import Resampling, calculate_default_transform
         from rasterio.warp import reproject as rio_reproject
 
         area_by_crs: dict[str, float] = {}
-        for fp in filepaths:
+        for i, fp in enumerate(filepaths, 1):
             with rasterio.open(to_vsi(fp)) as s:
                 key = s.crs.to_string()
                 # extent area in the cell's own (metric UTM) CRS — comparable across UTM zones
                 area_by_crs[key] = area_by_crs.get(key, 0.0) + (
                     abs(s.transform.a * s.transform.e) * s.width * s.height
                 )
+            tick(i)
         if merge_crs is not None:
             target = _RioCRS.from_user_input(merge_crs).to_string()   # user-forced target CRS
         elif any(area_by_crs.values()):
@@ -884,7 +892,10 @@ def _merge_mosaic(filepaths, nodata, *, reproject_to_dominant: bool, merge_crs):
                 if os.path.exists(t):
                     os.remove(t)
     else:
-        srcs = [rasterio.open(to_vsi(fp)) for fp in filepaths]
+        srcs = []
+        for i, fp in enumerate(filepaths, 1):
+            srcs.append(rasterio.open(to_vsi(fp)))
+            tick(i)
         try:
             crs_set = {s.crs.to_string() for s in srcs}
             if len(crs_set) > 1:
@@ -901,6 +912,7 @@ def _merge_mosaic(filepaths, nodata, *, reproject_to_dominant: bool, merge_crs):
             for s in srcs:
                 s.close()
 
+    tick(len(filepaths), force=True)
     return mosaic, out_transform, profile
 
 
@@ -1154,11 +1166,19 @@ def _existing_outputs(candidates, *, run_folderpath: str) -> list[str]:
     migration), so previously written outputs are still found; a further change to this
     layout must still change this pattern too.
     """
+    # D5 (spec 47): TODO #61 already collapsed this to ONE `fs.glob` round trip, so there
+    # is no per-candidate loop left to tick against -- print before/after instead, in the
+    # same `[label] done/total (...) | elapsed` shape, rather than inventing a per-item
+    # loop that no longer exists.
+    tick = _progress.ticker(len(candidates), "collect", unit="candidates", show_rate=False)
+    tick(0, force=True)
     hits = {
         _output_key(h)
         for h in fs.glob(os.path.join(str(run_folderpath), "*", "*", "output.tif"))
     }
-    return [c for c in candidates if _output_key(c) in hits]
+    found = [c for c in candidates if _output_key(c) in hits]
+    tick(len(found), force=True)
+    return found
 
 
 def _imagery_missing_message(roi, startdate, enddate, bands, *, catalog_filepath, why) -> str:

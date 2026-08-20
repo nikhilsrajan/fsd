@@ -21,6 +21,7 @@ from importlib.resources import files
 import pandas as pd
 
 from fsd import config
+from fsd import progress as _progress
 from fsd import secrets as _secrets
 from fsd.catalog.catalog import TileCatalog as _TileCatalog
 from fsd.model import bundle as _bundle
@@ -541,6 +542,11 @@ def _aml_submit_and_wait(
     per-job/per-run metrics (`_derive_timing`). Written **before** raising on failure,
     so a crashed dispatch still leaves every completed step's telemetry on disk (D3).
     Nothing new is returned -- no `timing` field, per ADR 0021."""
+    # D6 (spec 47): name run_id + run_root BEFORE any job is submitted -- the cheapest
+    # line in the whole spec, and the one that most directly answers "is it stuck?" from
+    # outside the notebook (`_status/*.json`/`_timing.json` live under run_root).
+    print(f"[aml] run_id={run_id} run_root={run_root}", flush=True)
+
     t_start = _now_iso()
     job_names: dict[int, str] = {}
     submitted_at: dict[int, str] = {}
@@ -557,6 +563,13 @@ def _aml_submit_and_wait(
         submitted_at[k] = t_last_submit
         job_names[k] = submitted.name
 
+    # D5 (spec 47): tick from the statuses dict this loop already maintains -- no extra
+    # AML calls. A fan-out's per-second completion rate isn't meaningful (show_rate=False);
+    # a single job additionally has no rate to derive an ETA from, so it prints elapsed
+    # only rather than inventing one (show_eta=False).
+    n_jobs = len(job_names)
+    tick = _progress.ticker(n_jobs, "aml", unit="jobs terminal", show_rate=False,
+                            show_eta=(n_jobs > 1))
     statuses: dict[int, str] = {}
     returned_at: dict[int, str] = {}
     while True:
@@ -565,7 +578,10 @@ def _aml_submit_and_wait(
             statuses[k] = s
             if s in _TERMINAL_JOB_STATUSES and k not in returned_at:
                 returned_at[k] = _now_iso()
-        if all(s in _TERMINAL_JOB_STATUSES for s in statuses.values()):
+        n_terminal = sum(1 for s in statuses.values() if s in _TERMINAL_JOB_STATUSES)
+        tick(n_terminal, suffix=f"{n_jobs - n_terminal} running")
+        if n_terminal == n_jobs:
+            tick(n_terminal, force=True, suffix=f"{n_jobs - n_terminal} running")
             break
         time.sleep(poll_interval_seconds)
 
@@ -799,8 +815,17 @@ def _stage_bundle(bundle_path: str, dst_url: str) -> str:
     with fs.open(os.path.join(dst_url, _bundle.BUNDLE_MANIFEST), "w") as f:
         f.write(raw)
     rels = list(manifest.get("artifacts", {}).values()) + _bundle.manifest_code_files(manifest)
-    for rel in rels:
+    # D5 (spec 47): the destination + total size is printed BEFORE the upload starts --
+    # this is the leg measured at 627 s for 13 MB over VPN, the one silence costs most on.
+    total_bytes = sum(fs.size(os.path.join(bundle_path, rel)) for rel in rels)
+    print(f"[stage] bundle -> {dst_url} | {len(rels)} files, {total_bytes / 1e6:.1f} MB",
+          flush=True)
+    tick = _progress.ticker(len(rels), "stage", unit="files")
+    tick(0, force=True)
+    for i, rel in enumerate(rels, 1):
         fs.transfer(os.path.join(bundle_path, rel), os.path.join(dst_url, rel))
+        tick(i)
+    tick(len(rels), force=True)
     return dst_url
 
 
