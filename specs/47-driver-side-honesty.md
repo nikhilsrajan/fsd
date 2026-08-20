@@ -8,9 +8,9 @@ summary: Make the driver act on and report what it already knows — refuse a wo
 **Status: 📝 DRAFT — awaiting sign-off.** Written against issues **#66**, **#65** and **#64**, all
 three raised by the user from the same full AML e2e run (2026-08-18) driven from
 `notebooks/e2e_austria_aml.ipynb` — plus **Part D**, a defect in spec 45 D4's error taxonomy hit
-by the user on 2026-08-20 while re-running that same notebook. Five §7 questions are open; each
-carries a default resolved by Claude, to confirm or overturn at sign-off. Nothing in `src/` is
-touched yet.
+by the user on 2026-08-20 while re-running that same notebook. §7 Q1-Q5 are **signed off (user, 2026-08-20)**; **Q6 is open** — D9's
+optional file check turns out to rest on an invariant the download path currently violates (§3a).
+Nothing in `src/` is touched yet.
 
 **Part D amends `specs/45-bundle-transparency-and-image-verification.md` D4.** Spec 45 is not
 edited: specs are point-in-time documents (spec 41 D3 / ADR 0022), so a later spec amends an
@@ -242,19 +242,64 @@ Step 4 matters as much as step 3: a request that is 95 % already-present must no
 single whole-ROI job (§1), so the same treatment requires a new driver-side CDSE discovery pass —
 a larger change, a different risk profile, and not the path that produced the measured 5m31s.
 
-#### D9 — the diff key is the catalog row, not the file on disk, and is named loudly
+#### D9 — the diff key is the catalog row; the catalog's own invariant is what makes that safe [SIGNED OFF — user, 2026-08-20, with caveats]
 
-"Already present" means **the catalog has a row for `tile_id` whose `files` covers `band`**. It
-does *not* stat the destination object. Rationale: a per-granule existence probe is one WAN
-listing per asset — on the order of the cold start this decision exists to avoid — and the
-catalog is already the archive's declared contents everywhere else in fsd.
+"Already present" means **the catalog has a row for `tile_id` whose `files` covers `band`**. The
+default diff does **not** stat the destination.
 
-The cost is a real failure mode: a catalog row whose file was deleted or never landed makes the
-diff skip a download that is genuinely needed. **rclone makes exactly this trade explicit** — its
-default compares size *and* modtime, and the cheap comparison (`--size-only`) is an opt-in flag
-rather than a silent default. fsd's position: the cheap key is the default (the catalog *is* fsd's
-source of truth), but D9 requires it be named in the docstring and in the printed line, so a user
-who suspects a hole in the archive knows what was and was not checked.
+**The invariant this rests on (user, 2026-08-20):** *a catalog entry should exist only if the file
+exists on disk.* An entry with no file is therefore **a bug in the download**, to be fixed there —
+not a hazard the diff should defend against. That reframes D9: the catalog is not a cheap
+approximation of the archive, it is the archive's declared contents, and anything else is a defect
+upstream. §3a below records that this invariant is **currently violated**, which is why §7 Q6 is
+open rather than signed off.
+
+**The optional check (user, 2026-08-20):** a *deleted* file is a different matter — the archive
+changed under the catalog through no fault of the download. So an **opt-in** verification pass is
+in scope: for each catalog entry that the diff would rely on, check the path exists. Threaded
+(the cost is per-object latency, not CPU), off by default, and **no size comparison in this
+iteration**. Whether existence is the right predicate at all is §7 Q6.
+
+**rclone makes exactly this trade explicit** — its default compares size *and* modtime, and the
+cheaper comparison (`--size-only`) is an opt-in flag rather than a silent default. fsd's position
+differs deliberately because of the invariant above: the cheap key is the *default* here, but D9
+requires it be named in the docstring and in the printed line, so a user who suspects a hole in
+the archive knows what was and was not checked.
+
+### 3a. The invariant is currently violated — an incomplete download can produce a catalog row
+
+Found 2026-08-20 while validating D9 against the code. **This is a defect in the download path,
+not in the diff**, and it is the reason §7 Q6 is open.
+
+`sources/mpc.py::_transfer_and_stamp_one` (lines 218-248) has **no `.part`/`.tmp`/rename
+convention**: for a local destination `scratch = dst_path`, so `fs.transfer` writes **directly to
+the final filename**. An interrupted transfer leaves a **truncated file under the final name** —
+the extension encodes nothing about completeness.
+
+The idempotency guard then converts that into a catalog row:
+
+```python
+if fs.exists(dst_path) and fs.size(dst_path) > 0:
+    return True, "skipped"          # a truncated leftover is non-empty
+```
+
+`_append_downloaded` appends a row for every `ok=True` result, and `"skipped"` returns `ok=True`.
+So **a re-run after an interrupted run promotes a truncated file to a catalogued one.** No
+exotic path is required.
+
+Consequences for this spec:
+
+- the failure mode worth catching is **truncation**, not absence — so a mere existence probe (the
+  optional check as first sketched) would pass a truncated file and give false confidence;
+- catching truncation needs a **size** (the STAC asset's declared length, available at discovery
+  for MPC) or a COG-header validity read — beyond "no size comparison yet";
+- CDSE has no such convention either, but gets a *de facto* guard: its jp2→COG re-encode fails on
+  a truncated input, so a partial rarely reaches the final `.tif`. Implicit, not designed, and
+  **not verified to the same depth** as the MPC path.
+
+The atomic-write fix itself (temp path + rename once complete, mirroring spec 36 D7's
+`_save_npy_atomic` for datacube artifacts) belongs in the download path and should be its own
+issue, not folded in here.
 
 ### Part D — verify_image's error taxonomy
 
@@ -349,23 +394,35 @@ with a populated `error`. That is a real finding about the image.
 
 ## 7. Questions at sign-off
 
-1. **D1: hard error, or warning + proceed with the cached list?** → Default: **hard error**
+1. **[SIGNED OFF — user, 2026-08-20: default stands]** **D1: hard error, or warning?** → **hard error**
    (matches the issue's own "Suggested"). The counter-argument is the one-week spec-46 drift
    window in D2, which a warning would smooth over. If you want a middle path, the cheapest is an
    explicit `resume=False`/`force_resetup=` kwarg rather than a softer default. *Default resolved
    by Claude; overturn in review.*
-2. **D8: short-circuit only, or short-circuit + shortfall-only dispatch?** → Default: **both**.
+2. **[SIGNED OFF — user, 2026-08-20: default stands]** **D8: short-circuit only, or also shortfall-only dispatch?** → **both**.
    Short-circuit alone fixes the measured 5m31s; shortfall-only is what makes a 95 %-present
    request cheap, and the issue calls step 4 out explicitly. It is also the riskier half (D9), so
    this is the one to split out if you want a smaller first landing. *Default resolved by Claude.*
-3. **D9: catalog row only, or row + destination existence?** → Default: **row only**, named in the
-   docstring and the printed line. *Default resolved by Claude.*
-4. **Does #64 also apply to `create_training_data(download=True)`?** → Default: **yes, for free** —
+3. **[SIGNED OFF — user, 2026-08-20, with caveats]** **D9: catalog row only, or row + destination
+   existence?** → **row only by default**, on the stated invariant that a catalog entry implies a
+   file on disk; an **opt-in, threaded** existence pass covers the deleted-file case; no size
+   comparison this iteration. Folded into D9. **The predicate itself is now Q6.**
+4. **[SIGNED OFF — user, 2026-08-20: default stands]** **Does #64 also apply to
+   `create_training_data(download=True)`?** → **yes, for free** —
    it routes through the same `run_aml_download`, so no extra work. Flagged only so the acceptance
    test covers it.
-5. **D10/D11: raise on an absent wheel, or warn and skip the gate?** → Default: **raise**. The
+5. **[SIGNED OFF — user, 2026-08-20: default stands]** **D10/D11: raise on an absent wheel?** → **raise**. The
    caller asserted the folder holds the wheel; silently skipping means believing a gate ran when
-   it did not. *Default resolved by Claude; overturn in review.*
+   it did not.
+6. **OPEN — D9's optional check: existence, or completeness?** §3a shows the invariant D9 rests on
+   is violated today: an interrupted MPC transfer leaves a truncated file under the final name,
+   and the `size > 0` skip promotes it to a catalog row on the next run. An **existence** probe
+   passes that file. Options: (a) ship the existence pass anyway and fix the download separately
+   (cheap, but the pass gives false confidence); (b) make the opt-in pass compare against the
+   STAC-declared asset **size** (available at discovery for MPC); (c) fix the download to write
+   atomically (temp + rename, mirroring spec 36 D7) and keep the pass existence-only. **Not
+   defaulted by Claude — the user asked to discuss this one.** (b) and (c) are complementary, and
+   (c) is arguably a separate issue rather than part of this spec.
 
 ## 8. Best-practice alignment / sources
 
