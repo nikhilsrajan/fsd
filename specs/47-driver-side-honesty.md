@@ -5,12 +5,14 @@ summary: Make the driver act on and report what it already knows — refuse a wo
 
 # Spec 47 — driver-side honesty: stale work lists, silent dispatch, no-op downloads, misread verdicts
 
-**Status: 📝 DRAFT — awaiting sign-off.** Written against issues **#66**, **#65** and **#64**, all
+**Status: ✅ SIGNED OFF 2026-08-20 — NOT YET IMPLEMENTED.** Written against issues **#66**, **#65** and **#64**, all
 three raised by the user from the same full AML e2e run (2026-08-18) driven from
 `notebooks/e2e_austria_aml.ipynb` — plus **Part D**, a defect in spec 45 D4's error taxonomy hit
-by the user on 2026-08-20 while re-running that same notebook. §7 Q1-Q5 are **signed off (user, 2026-08-20)**; **Q6 is open** — D9's
-optional file check turns out to rest on an invariant the download path currently violates (§3a).
-Nothing in `src/` is touched yet.
+by the user on 2026-08-20 while re-running that same notebook. All six §7 questions are resolved (user,
+2026-08-20). Q6 was the load-bearing one: D9's optional file check rests on an invariant the
+download path currently violates (§3a), and the user chose to **fix the download** (atomic write)
+rather than have the check compensate for it — filed as **#74**, out of scope here. Nothing in
+`src/` is touched yet.
 
 **Part D amends `specs/45-bundle-transparency-and-image-verification.md` D4.** Spec 45 is not
 edited: specs are point-in-time documents (spec 41 D3 / ADR 0022), so a later spec amends an
@@ -133,8 +135,9 @@ its four call sites in `workflows/runners.py` (#65); a driver-side catalog diff 
 `runners.run_aml_download`'s **MPC** branch (#64); the error taxonomy of `model/verify_image.py`
 (Part D, amending spec 45 D4).
 
-**Out:** the CDSE download path (D8); changing the resume mechanism itself (`input.csv` stays the
-work list); `fs.rm` on blob (#50); the per-shard cold-start overhead itself (#48); any change to
+**Out:** the CDSE download path (D8); the atomic-write fix for downloads (**#74**, §7 Q6 — the
+defect §3a documents is repaired there, not here); changing the resume mechanism itself
+(`input.csv` stays the work list); `fs.rm` on blob (#50); the per-shard cold-start overhead itself (#48); any change to
 what a download *fetches* once dispatched.
 
 ## 3. Decisions
@@ -256,9 +259,10 @@ open rather than signed off.
 
 **The optional check (user, 2026-08-20):** a *deleted* file is a different matter — the archive
 changed under the catalog through no fault of the download. So an **opt-in** verification pass is
-in scope: for each catalog entry that the diff would rely on, check the path exists. Threaded
-(the cost is per-object latency, not CPU), off by default, and **no size comparison in this
-iteration**. Whether existence is the right predicate at all is §7 Q6.
+in scope: for each catalog entry that the diff would rely on, check the path **exists**. Threaded
+(the cost is per-object latency, not CPU), off by default, and **no size comparison** — not in
+this iteration and not later either, because §7 Q6 resolved the underlying problem at its source
+(#74) rather than here. Existence is the right predicate *once the invariant actually holds*.
 
 **rclone makes exactly this trade explicit** — its default compares size *and* modtime, and the
 cheaper comparison (`--size-only`) is an opt-in flag rather than a silent default. fsd's position
@@ -297,9 +301,16 @@ Consequences for this spec:
   a truncated input, so a partial rarely reaches the final `.tif`. Implicit, not designed, and
   **not verified to the same depth** as the MPC path.
 
-The atomic-write fix itself (temp path + rename once complete, mirroring spec 36 D7's
-`_save_npy_atomic` for datacube artifacts) belongs in the download path and should be its own
-issue, not folded in here.
+**Resolution (user, 2026-08-20 — §7 Q6):** fix the download to write atomically (temp path +
+rename once complete, mirroring spec 36 D7's `_save_npy_atomic`), and keep D9's optional pass
+**existence-only**. Filed as **#74**; explicitly **out of scope for this spec** (§2). Restoring
+the invariant at its source is a real fix, whereas a size-comparing check here would be a second
+mechanism compensating for a defect it cannot repair — and would leave every *other* consumer of
+the catalog (notably `datacube.builder._load_images`) still trusting a truncated granule.
+
+**Ordering note for the implementer:** D9's optional pass is honest on its own terms today (it
+catches deleted files, which is what it claims), so it does **not** block on #74. But its
+docstring must say that a *truncated* file passes it, until #74 lands.
 
 ### Part D — verify_image's error taxonomy
 
@@ -414,15 +425,15 @@ with a populated `error`. That is a real finding about the image.
 5. **[SIGNED OFF — user, 2026-08-20: default stands]** **D10/D11: raise on an absent wheel?** → **raise**. The
    caller asserted the folder holds the wheel; silently skipping means believing a gate ran when
    it did not.
-6. **OPEN — D9's optional check: existence, or completeness?** §3a shows the invariant D9 rests on
+6. **[SIGNED OFF — user, 2026-08-20: option (c)]** **D9's optional check: existence, or
+   completeness?** → **fix the download atomically (#74); the pass stays existence-only.** §3a shows the invariant D9 rests on
    is violated today: an interrupted MPC transfer leaves a truncated file under the final name,
    and the `size > 0` skip promotes it to a catalog row on the next run. An **existence** probe
    passes that file. Options: (a) ship the existence pass anyway and fix the download separately
    (cheap, but the pass gives false confidence); (b) make the opt-in pass compare against the
    STAC-declared asset **size** (available at discovery for MPC); (c) fix the download to write
-   atomically (temp + rename, mirroring spec 36 D7) and keep the pass existence-only. **Not
-   defaulted by Claude — the user asked to discuss this one.** (b) and (c) are complementary, and
-   (c) is arguably a separate issue rather than part of this spec.
+   atomically (temp + rename, mirroring spec 36 D7) and keep the pass existence-only.
+   **Chosen: (c)**, filed as #74 and kept out of this spec's scope.
 
 ## 8. Best-practice alignment / sources
 
