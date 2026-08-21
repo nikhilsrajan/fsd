@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import datetime
+import hashlib
 import io
 import os
 
@@ -35,6 +36,34 @@ COL_LABEL = "label"
 _UNIT_IDENTITY_COLS = (
     COL_ID, "startdate", "enddate", "bands", "mosaic_days", "mosaic_scheme", "scl_mask_classes",
 )
+
+
+def params_key(bands: list[str], mosaic_scheme: str, scl_mask_classes: list[int]) -> str:
+    """Spec 50 D6: a short digest of the params EVERY cell in a run shares (never the
+    set of ids -- that is the thing Q1 rejected). Folded into the `<window>` path
+    segment so path granularity matches `_UNIT_IDENTITY_COLS`: two requests differing
+    only in `bands` must resolve to different paths, or the second silently overwrites
+    the first and the build skip reads the wrong-band cube as "present" (D6). Same
+    string form `setup` already writes to `input.csv` (`",".join(...)`), so a digest
+    computed here and one computed from a read-back `input.csv` row agree byte-for-byte."""
+    raw = "|".join([
+        ",".join(bands), mosaic_scheme, ",".join(str(v) for v in scl_mask_classes),
+    ])
+    return hashlib.sha1(raw.encode()).hexdigest()[:8]
+
+
+def window_folder_segment(
+    startdate: datetime.datetime, enddate: datetime.datetime, mosaic_days: int, *,
+    bands: list[str], mosaic_scheme: str, scl_mask_classes: list[int],
+) -> str:
+    """The one run-folder segment shared by every cell of a request (spec 46 D1/D2,
+    extended by spec 50 D6): `<startdate>_<enddate>_m<mosaic_days>_<params_key>`. Callers
+    that need to name an expected cube path WITHOUT running `setup` (D3/D4) call this with
+    the same arguments `setup` was given -- same inputs, same string, no catalog access."""
+    startdate = pd.to_datetime(startdate, utc=True)
+    enddate = pd.to_datetime(enddate, utc=True)
+    key = params_key(bands, mosaic_scheme, scl_mask_classes)
+    return f"{startdate.strftime('%Y%m%d')}_{enddate.strftime('%Y%m%d')}_m{mosaic_days}_{key}"
 
 
 def setup(
@@ -110,6 +139,10 @@ def setup(
     # round-trips) before a single job was submitted. Same rows out, one read in.
     catalog_gdf = TileCatalog(catalog_filepath).read()
 
+    window_segment = window_folder_segment(startdate, enddate, mosaic_days,
+                                            bands=bands, mosaic_scheme=mosaic_scheme,
+                                            scl_mask_classes=scl_mask_classes)
+
     n_shapes = len(shapes_gdf)
     print(f"[setup] catalog read once: {len(catalog_gdf)} rows, for {n_shapes} shapes",
           flush=True)
@@ -136,11 +169,7 @@ def setup(
             print(f"[setup] skip id={srow[id_col]}: no tiles in range/overlap", flush=True)
             return None
 
-        export_folderpath = os.path.join(
-            run_folderpath,
-            f"{startdate.strftime('%Y%m%d')}_{enddate.strftime('%Y%m%d')}_m{mosaic_days}",
-            str(srow[id_col]),
-        )
+        export_folderpath = os.path.join(run_folderpath, window_segment, str(srow[id_col]))
         if fs.is_local(export_folderpath):
             # os.path.abspath is only meaningful (and safe) for a local path — on a
             # URL (e.g. abfss://...) it would corrupt the host/scheme (specs/31 §6).

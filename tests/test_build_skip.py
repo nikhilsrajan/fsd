@@ -224,19 +224,20 @@ def test_local_runner_addresses_the_same_cube_paths_twice(tmp_path, monkeypatch)
     assert a == b
 
 
-def test_aml_run_folderpath_is_derived_from_the_clock(tmp_path, monkeypatch):
-    """#83, characterised. `run_folderpath` defaults to `{root}/runs/{run_id}` where run_id is
-    a fresh UTC timestamp, so two calls seconds apart address different cubes, the shortfall is
-    always N of N, and the build/flatten skips can never fire. Locked in deliberately: whoever
-    makes the default deterministic must come here and say so."""
+def test_aml_run_folderpath_no_longer_derived_from_the_clock(tmp_path, monkeypatch):
+    """#83, fixed by spec 50 D6. `run_folderpath` used to default to `{root}/runs/{run_id}`
+    where run_id was a fresh UTC timestamp, so two calls seconds apart addressed different
+    cubes, the shortfall was always N of N, and the build/flatten skips could never fire.
+    Flipped deliberately (not deleted) per the spec 50 handoff: the default is now a plain
+    stable name ("train"), not a hash of the request (Q1 rejected set-level addressing) and
+    not the clock."""
     a, b = _run_folderpaths_of_two_calls(
         tmp_path, monkeypatch,
         runner="aml",
         runner_kwargs={"root": str(tmp_path / "root"), "cluster": "c",
                        "environment": "e:1", "identity_client_id": "i"},
     )
-    assert a.rsplit("/", 1)[0] == b.rsplit("/", 1)[0] == f"{tmp_path}/root/runs"
-    assert a.rsplit("/", 1)[1].endswith("Z")   # the leaf is a UTC timestamp, not the request
+    assert a == b == f"{tmp_path}/root/runs/train"
 
 
 def test_aml_is_stable_when_run_folderpath_is_given(tmp_path, monkeypatch):

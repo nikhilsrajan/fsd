@@ -532,11 +532,18 @@ def create_training_data(
 
     run_id = None
     if runner == "aml":
+        # D6 (spec 50/#83): `run_id` stays fresh per SUBMISSION -- it names `shards/` +
+        # `_status/` under `run_aml`'s own run_root, and that identifies a dispatch, which
+        # is the right thing for it to identify. Only ARTIFACT paths (this run_folderpath)
+        # become deterministic: a fresh run_id every call is exactly #83 (every target
+        # missing on every call, no skip can ever fire). "train" is a plain stable name,
+        # not a hash of the request -- Q1 rejected addressing the group; `<params>/<id>`
+        # below still carries per-cell granularity.
         run_id = (runner_kwargs or {}).get("run_id") or pd.Timestamp.now(tz="UTC").strftime(
             "%Y%m%dT%H%M%SZ"
         )
         if run_folderpath is None:
-            run_folderpath = f"{root.rstrip('/')}/runs/{run_id}"
+            run_folderpath = f"{root.rstrip('/')}/runs/train"
     elif run_folderpath is None:
         run_folderpath = os.path.join(export_folderpath, "run")
 

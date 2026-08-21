@@ -16,6 +16,7 @@ from rasterio.crs import CRS as RioCRS
 from rasterio.transform import from_origin
 from shapely.geometry import box
 
+from fsd import config
 from fsd.bands import modify
 from fsd.model import BaseModelAdapter, bundle
 from fsd.storage import fs
@@ -286,7 +287,8 @@ def test_setup_export_folderpath_is_named_from_the_requested_window(tmp_path):
     )
 
     df = pd.read_csv(csv)
-    expected_window = "20180101_20190101_m20"
+    key = create_datacube.params_key(["B04", "B08", "SCL"], config.MOSAIC_SCHEME, [8, 9])
+    expected_window = f"20180101_20190101_m20_{key}"
     for p in df["export_folderpath"]:
         parts = os.path.normpath(p).split(os.sep)
         assert parts[-2] == expected_window, p
