@@ -354,6 +354,16 @@ a decision to argue with rather than a gap to fill.
   April and does after a re-ingest stays known-empty until the manifest is invalidated. It is keyed
   to the request identity, so a changed window or band set clears it — but a changed *archive* under
   an unchanged request does not. This is the same hole as the bullet above, in a new place.
+
+  **[Addendum, implementation review 2026-08-21 — not a change of decision.]** The escape hatch for
+  that last case is `overwrite="datacubes"`/`True`: it runs the legacy full-`setup` pass, which
+  re-derives every shape straight from the catalog, and **clears this window's manifest entry** as
+  it does so. That clearing is required rather than incidental — once the manifest is subtracted
+  from the request-side identity (which it must be, or a single imagery-less cell makes D2's
+  short-circuit unmatchable forever), the manifest becomes load-bearing for identity *equality*, so
+  it must never be write-only: an id that regains an `input.csv` row is forgotten, or the two
+  identities can never agree again and the short-circuit is dead for that request. The *scoped*
+  walk still never rediscovers a known-empty cell — that is this bullet's risk, working as designed.
 - **A refactor of the verb everything else depends on.** `create_training_data` is the most-used
   entry point and the e2e notebook drives it. Phasing (§9) exists to keep each step revertible.
 - **Cheap-check ordering can invert.** The walk assumes the top question is the cheapest. It is
