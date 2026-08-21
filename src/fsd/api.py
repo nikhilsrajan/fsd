@@ -547,6 +547,16 @@ def create_training_data(
                 want_features=want_features,
             )
 
+    # D7 (spec 50): the walk announces what it resolved, before it runs anything. Reached
+    # only when the top-level short-circuit above did NOT fire.
+    if overwrite is not False:
+        stale_reason = f"overwrite={overwrite!r} forces a rebuild"
+    else:
+        stamp = _stamp.read_stamp(os.path.join(export_folderpath, _FLATTEN_STAMP_NAME))
+        stale_reason = "no stamp" if stamp is None else "stamp does not match this request"
+    print(f"[plan] target: {export_folderpath} arrays -> STALE ({stale_reason})", flush=True)
+    print(f"[plan]   flatten: {len(gdf)} cubes required", flush=True)
+
     fs.makedirs(run_folderpath)
     fs.makedirs(export_folderpath)
 
@@ -619,6 +629,8 @@ def create_training_data(
     build_overwrite = overwrite in (True, "datacubes")
     flatten_overwrite = overwrite in (True, "flatten", "datacubes")
 
+    print("[plan] will run: build -> flatten -> land", flush=True)
+
     csv_filepath = os.path.join(run_folderpath, "input.csv")
     _create_datacube.run_create_datacube(
         catalog_filepath=catalog_filepath, timestamp_col="timestamp",
@@ -626,6 +638,12 @@ def create_training_data(
         startdate=startdate, enddate=enddate, bands=bands,
         scl_mask_classes=scl_mask_classes, mosaic_days=mosaic_days,
         csv_filepath=csv_filepath, label_col=label_col, cores=cores,
+        # D4/§9 step 4: setup is scoped to the shortfall (`build_shortfall_only`) unless
+        # the caller explicitly forces a cube rebuild -- a forced rebuild also forces
+        # setup to re-read the catalog, so a stale per-shape `catalog.parquet` slice is
+        # never rebuilt from. Ordinary re-runs (the case D4 exists for) and
+        # `overwrite="flatten"` (cubes NOT forced) both take the scoped path.
+        overwrite_setup_csv=build_overwrite,
         overwrite=build_overwrite, runner=runner, runner_kwargs=runner_kwargs,
     )
 

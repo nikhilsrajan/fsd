@@ -4,6 +4,41 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## `create_training_data` resolves backwards from the target (spec 50, 2026-08-21)
+
+- **A re-run stops paying for `setup` before it can even be skipped.** Spec 49 taught each leg to
+  skip finished work, but every leg still ran its own preflight first — `run_create_datacube`
+  defaulted to `overwrite_setup_csv=True`, which deleted `input.csv` and re-ran `setup` (reading the
+  catalog, filtering 900 shapes, writing 1800 control files) on every call, even when every cube
+  already existed (measured: 96 s on the Austria e2e). `create_training_data` now resolves the walk
+  **backwards**: it checks whether the requested arrays are already current *before* touching the
+  catalog or the build leg at all. A fully-resumed call performs zero catalog reads, zero `setup`
+  calls, zero dispatch — it lands the arrays and returns.
+- **The flatten identity is now computed from the REQUEST, not from `input.csv`.** `input.csv` is
+  `setup`'s own output, so the old skip could only be evaluated *after* paying for the work it was
+  meant to skip. `api._flatten_identity_from_request` computes the same identity `_flatten_identity`
+  does — off the caller's label polygons, window, and params — with zero file reads. A cube's export
+  path is fully derivable from `(run_folderpath, window, id)` alone; naming a cube never requires
+  building one.
+- **`run_folderpath` is no longer clock-based (#83).** It used to default to a fresh UTC timestamp
+  for `runner="aml"`, so every artifact path was missing on every call and no skip — spec 49's or
+  spec 50's — could ever fire. The default is now the plain stable name `runs/train` (never a hash
+  of the request or the shape-id set: addressing stays per-path, so one new polygon touches only its
+  own cube, not the whole run). The window path segment also gained a short digest of `(bands,
+  mosaic_scheme, scl_mask_classes)`, so two requests differing only in `bands` resolve to different
+  cube paths instead of silently colliding.
+- **On a partial re-run, `setup` now runs only for the missing shapes** — 900 shapes with 40
+  missing costs `setup` 40 shapes and 80 control-file writes, not 1800. A cell with no in-window
+  imagery is recorded once (a sibling `_manifest.json` in the run folder) and reported as
+  known-empty on later runs, rather than being retried forever. This new scoped path is used
+  whenever the caller does not explicitly force a cube rebuild; `overwrite="datacubes"`/`True` still
+  fall back to the original delete-and-regenerate `setup` pass, since a forced rebuild should also
+  refresh a possibly-stale per-shape catalog slice.
+- **Not done:** `overwrite_setup_csv` still exists and multi-window accumulation
+  (`input.csv` growing across different start/end dates for the same run folder) is not enabled —
+  that is spec 50 D9, deliberately deferred until #84 (the array layer's window-collision bug) is
+  fixed first.
+
 ## `fsd.verify_adapter`: one real cube, locally, before the fan-out (spec 48, 2026-08-20)
 
 - **New top-level verb, `fsd.verify_adapter`.** Closes the gap every existing gate stopped short

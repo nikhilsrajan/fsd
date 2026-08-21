@@ -44,6 +44,21 @@ def _two_shapes(path):
     gdf.to_file(path, driver="GeoJSON")
 
 
+def _shapes(path, ids, *, outside_ids=()):
+    """`ids` inside the `_make_catalog` bbox (`box(0, 0, 10, 10)`), except any in
+    `outside_ids` -- placed far away so they have no intersecting tile (D5's known-empty
+    case)."""
+    geoms = []
+    for i in ids:
+        if i in outside_ids:
+            geoms.append(box(1000 + i, 1000, 1001 + i, 1001))
+        else:
+            geoms.append(box(i + 1, i + 1, i + 2, i + 2))
+    gpd.GeoDataFrame(
+        {"id": list(ids), "label": [f"l{i}" for i in ids], "geometry": geoms}, crs="EPSG:4326",
+    ).to_file(path, driver="GeoJSON")
+
+
 # --- AC7b: two requests differing only in `bands` resolve to different cube paths -----
 
 def test_params_key_differs_when_bands_differ():
@@ -253,3 +268,133 @@ def test_top_level_short_circuit_prints_plan_and_fetch(tmp_path, monkeypatch, ca
     out = capsys.readouterr().out
     assert "[plan] target:" in out and "CURRENT" in out
     assert "[fetch] export ->" in out
+
+
+# --- Step 4 / phase 2: the full backward walk (D2/D4/D5/D7) ---------------------------
+
+def _walk_kwargs(cat, run_folder, csv_fp, **extra):
+    kwargs = dict(
+        catalog_filepath=str(cat), timestamp_col="timestamp", id_col="id",
+        run_folderpath=str(run_folder),
+        startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
+        bands=["B04"], scl_mask_classes=[8, 9], mosaic_days=20,
+        csv_filepath=csv_fp, label_col="label",
+    )
+    kwargs.update(extra)
+    return kwargs
+
+
+def _spy_on_setup(monkeypatch):
+    """Records the ids `setup` was called with. Reads `shapefilepath` INSIDE the spy --
+    `build_shortfall_only` writes it to a `tempfile.TemporaryDirectory()` that is gone by
+    the time `setup` returns."""
+    calls = []
+    orig_setup = create_datacube.setup
+
+    def spy(**kw):
+        calls.append(sorted(gpd.read_file(kw["shapefilepath"])["id"]))
+        return orig_setup(**kw)
+
+    monkeypatch.setattr(create_datacube, "setup", spy)
+    return calls
+
+
+def test_build_shortfall_only_calls_setup_for_missing_ids_only(tmp_path, monkeypatch):
+    """AC3: a partial run calls `setup` only for the missing ids -- scaled down from
+    spec 50's own 900/40 example: 3 already have rows, 2 more are requested, `setup`
+    receives exactly those 2 shapes."""
+    cat = tmp_path / "catalog.parquet"
+    _make_catalog(cat, tmp_path)
+    run_folder = tmp_path / "run"
+    csv_fp = str(run_folder / "input.csv")
+    kwargs = _walk_kwargs(cat, run_folder, csv_fp)
+
+    shapes3 = tmp_path / "shapes3.geojson"
+    _shapes(shapes3, [0, 1, 2])
+    create_datacube.build_shortfall_only(shapefilepath=str(shapes3), **kwargs)
+
+    calls = _spy_on_setup(monkeypatch)
+    shapes5 = tmp_path / "shapes5.geojson"
+    _shapes(shapes5, [0, 1, 2, 3, 4])
+    n_present, n_missing, n_known_empty = create_datacube.build_shortfall_only(
+        shapefilepath=str(shapes5), **kwargs,
+    )
+
+    assert (n_present, n_missing, n_known_empty) == (3, 2, 0)
+    assert calls == [[3, 4]]
+
+
+def test_build_shortfall_only_no_setup_call_when_nothing_missing(tmp_path, monkeypatch):
+    """AC5, in spirit: cube targets are enumerated with no catalog access -- `setup` (the
+    only catalog reader in this module) is proven never called on a fully-satisfied
+    request."""
+    cat = tmp_path / "catalog.parquet"
+    shapes = tmp_path / "shapes.geojson"
+    _make_catalog(cat, tmp_path)
+    _shapes(shapes, [0, 1])
+    run_folder = tmp_path / "run"
+    csv_fp = str(run_folder / "input.csv")
+    kwargs = _walk_kwargs(cat, run_folder, csv_fp, shapefilepath=str(shapes))
+
+    create_datacube.build_shortfall_only(**kwargs)  # first call builds the real rows
+
+    def _raise(*a, **kw):
+        raise AssertionError("setup (the only catalog reader here) must not run")
+
+    monkeypatch.setattr(create_datacube, "setup", _raise)
+    n_present, n_missing, n_known_empty = create_datacube.build_shortfall_only(**kwargs)
+    assert n_missing == 0
+
+
+def test_adding_one_polygon_rebuilds_exactly_one_cube(tmp_path, monkeypatch):
+    """AC7a/D6 Q1: 3 shapes built, then a 4th requested -> the shortfall is 1 and `setup`
+    receives exactly 1 shape. No set-level hash appears anywhere: the new id gets its own
+    leaf, everything else is untouched."""
+    cat = tmp_path / "catalog.parquet"
+    _make_catalog(cat, tmp_path)
+    run_folder = tmp_path / "run"
+    csv_fp = str(run_folder / "input.csv")
+    kwargs = _walk_kwargs(cat, run_folder, csv_fp)
+
+    shapes3 = tmp_path / "shapes3.geojson"
+    _shapes(shapes3, [0, 1, 2])
+    create_datacube.build_shortfall_only(shapefilepath=str(shapes3), **kwargs)
+    with fs.open(csv_fp, "r") as f:
+        paths_before = set(pd.read_csv(f)["export_folderpath"])
+
+    calls = _spy_on_setup(monkeypatch)
+    shapes4 = tmp_path / "shapes4.geojson"
+    _shapes(shapes4, [0, 1, 2, 3])
+    n_present, n_missing, n_known_empty = create_datacube.build_shortfall_only(
+        shapefilepath=str(shapes4), **kwargs,
+    )
+
+    assert n_missing == 1
+    assert calls == [[3]]
+
+    with fs.open(csv_fp, "r") as f:
+        paths_after = set(pd.read_csv(f)["export_folderpath"])
+    assert paths_before <= paths_after  # the 3 existing cube paths are untouched
+    assert len(paths_after) == 4
+
+
+def test_known_empty_recorded_once_and_shortfall_converges_to_zero(tmp_path):
+    """AC6/D5: a cell with no in-window imagery is recorded once and reported as
+    known-empty on the next run; two consecutive identical runs both report a shortfall
+    of 0 -- the non-convergence case the manifest exists to prevent."""
+    cat = tmp_path / "catalog.parquet"
+    shapes = tmp_path / "shapes.geojson"
+    _make_catalog(cat, tmp_path)
+    _shapes(shapes, [0, 1], outside_ids=[1])  # id 1 has no intersecting tile
+    run_folder = tmp_path / "run"
+    csv_fp = str(run_folder / "input.csv")
+    kwargs = _walk_kwargs(cat, run_folder, csv_fp, shapefilepath=str(shapes))
+
+    n_present1, n_missing1, n_known_empty1 = create_datacube.build_shortfall_only(**kwargs)
+    assert (n_present1, n_missing1, n_known_empty1) == (0, 2, 0)  # neither seen before
+
+    n_present2, n_missing2, n_known_empty2 = create_datacube.build_shortfall_only(**kwargs)
+    assert (n_present2, n_missing2, n_known_empty2) == (1, 0, 1)  # id 1 now known-empty
+
+    n_present3, n_missing3, n_known_empty3 = create_datacube.build_shortfall_only(**kwargs)
+    assert n_missing3 == 0  # converges: stays 0, never rediscovered
