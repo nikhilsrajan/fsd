@@ -34,3 +34,27 @@ Status: `dropped` (no plan) · `deferred` (intended later) · `superseded` (repl
 | `rsutils.utils_preprocess` grab-bag (cloud-mask, SAR scaling, patch-finding) except the `mask_interpolate` kernel | rsutils | dropped | only `mask_interpolate` is needed (folded into `bands.modify`); rest is off-path | per-need |
 
 > When reconsidering an item, link the spec that re-introduces it.
+
+## Approaches tried inside fsd and reverted
+
+Not legacy carry-overs — things fsd built, ran, and removed. Recorded here because each one will
+look like a good idea again, and the code they were removed from now carries only a pointer
+(`docs/reference/code-comments.md`: cut the changelog, keep the hazard).
+
+### The `InvalidBlockList` write retry (`storage/fs.py`, reverted 2026-07-28, #57 → #58)
+
+`_write_with_retry` retried any write whose error message looked like a transient Azure
+block-commit race. **It fixed nothing, and made diagnosis worse.**
+
+The failure it was built for was duplicate work-unit ids making 16 threads write the *same* blob
+(spec 21 D-GRID-1). That collision is deterministic, so every writer simply retried into every
+other writer — turning a fast, legible failure into a minutes-long error storm that buried the real
+cause. The actual fix was to refuse duplicate ids at the source (`create_datacube.setup`).
+
+No transient adlfs race has ever been observed here: run-book 36 wrote 900 distinct blobs at the
+same 16-way concurrency, same VPN, same account, in 71 s with zero errors.
+
+**If you reintroduce it:** match only Azure storage error codes, never adlfs's
+`"Failed to upload block"` prefix — that comes from a catch-all `except Exception` in
+`adlfs/spec.py::_async_upload_chunk`, so every write failure wears it, permanent auth/RBAC ones
+included.

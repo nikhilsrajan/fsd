@@ -1,21 +1,21 @@
 """fsspec-based storage seam + first-class S3-compatible transport.
 
-Spec: specs/10-storage-and-scale.md
+**Rule: no other module in fsd opens files directly.** Catalog, tiles, datacubes and
+training arrays all read and write through here, which is what makes local -> Azure Blob
+/ S3 a config change rather than a code change. (The one documented exception is raster
+pixel reads, which go through rasterio/GDAL VSI.)
 
-Rule: no other module in fsd opens files directly. Everything (catalog, tiles,
-datacubes, training arrays) reads/writes through here, so local -> Azure Blob / S3
-is a config change, not a code change.
+Any S3-compatible store (AWS, CDSE EODATA, MinIO, …) is just an s3fs filesystem
+distinguished by `endpoint_url` + keys in `storage_options`, so a tile download is
+`transfer(src_s3_url, dst_url)`.
 
-Any S3-compatible store (AWS, CDSE EODATA, MinIO, ...) is just an s3fs filesystem
-distinguished by `endpoint_url` + keys passed via `storage_options`. A tile
-download is therefore `transfer(src_s3_url, dst_url)` -- a copy between fsspec
-filesystems.
+`path` may be a local path or an fsspec URL (`file://`, `s3://`, `az://`, …).
+`storage_options` are backend kwargs, e.g. for CDSE S3::
 
-`path` everywhere may be a plain local path or an fsspec URL
-(`file://`, `s3://`, `az://`, ...). `storage_options` are backend kwargs, e.g.
-for CDSE S3:
     {"key": access, "secret": secret,
      "client_kwargs": {"endpoint_url": config.CDSE_S3_ENDPOINT_URL}}
+
+Spec: specs/10-storage-and-scale.md
 """
 
 from __future__ import annotations
@@ -53,32 +53,17 @@ __all__ = [
     "SOURCE_PATH_ATTRS_KEY",
 ]
 
-# REVERTED 2026-07-28 (TODO #57 -> #58): there was a `_write_with_retry` here that
-# retried a write whose error message looked like a transient Azure block-commit
-# race (`InvalidBlockList`). It fixed nothing. The failure it was built for was
-# duplicate work-unit ids making 16 threads write the SAME blob (spec 21 D-GRID-1),
-# which a retry can never resolve -- the collision is deterministic, so every writer
-# just retried into every other writer. Worse, it turned a fast, legible failure into
-# a minutes-long error storm that BURIED the real cause. No transient adlfs race has
-# ever been observed here: runbook 36 wrote 900 distinct blobs at the same 16-way
-# concurrency, same VPN, same account, in 71 s with zero errors.
-#
-# If a genuine transient race is ever demonstrated (distinct paths, monotonic
-# attempts), reintroduce it -- but match only the Azure storage error codes, never
-# adlfs's `"Failed to upload block"` prefix: that comes from a catch-all
-# `except Exception` in `adlfs/spec.py::_async_upload_chunk`, so every write failure
-# wears it, including permanent auth/RBAC ones.
+# Writes here are deliberately not retried: see DROPPED.md, "the InvalidBlockList write
+# retry". Retrying a deterministic id collision buries the real cause (#58).
 
-# spec 35 §2/§5a. `PANDAS_ATTRS_FOOTER_KEY` is the upstream pandas/geopandas
-# convention (pandas issue #54321, geopandas PR #3597) that `.attrs` is
-# JSON-encoded under -- reusing it means fsd converges with a future geopandas
-# release instead of forking a second convention (spec 35 §2).
+# The upstream pandas/geopandas convention for JSON-encoding `.attrs` into the Parquet
+# footer. Reusing the same key converges with a future geopandas release instead of
+# forking a second convention.
 PANDAS_ATTRS_FOOTER_KEY = b"PANDAS_ATTRS"
 
-# `read_parquet` stamps this onto the returned `.attrs` so downstream code can
-# tell "read from a file" apart from "hand-built in this process" (spec 35 §5a).
-# It is bookkeeping, not data: `write_parquet` always strips it before writing
-# (spec 35 §10), so it never leaks an absolute local path into a written artifact.
+# Stamped onto `.attrs` by `read_parquet` so downstream code can tell "read from a file"
+# from "hand-built in this process". Bookkeeping, not data -- `write_parquet` always
+# strips it, so it never leaks an absolute local path into a written artifact.
 SOURCE_PATH_ATTRS_KEY = "fsd:source_path"
 
 
@@ -91,9 +76,12 @@ def _fs_and_path(url: str, storage_options: dict | None = None):
 
 
 def is_local(path: str) -> bool:
-    """True if `path` resolves to the local filesystem (vs. an `abfss://`/`s3://`/...
-    URL). Guards code that must not apply local-path-only operations (`os.path.abspath`,
-    `os.makedirs`, bare `open`) to a remote URL — see specs/31 §6."""
+    """True if `path` resolves to the local filesystem (vs. an `abfss://`/`s3://`/… URL).
+
+    Guards code that must not apply local-path-only operations to a remote URL:
+    `os.path.abspath` corrupts the scheme and host, `os.makedirs` and bare `open` cannot
+    see it at all.
+    """
     import fsspec.utils
 
     return fsspec.utils.get_protocol(path) in ("file", "local")
@@ -144,11 +132,8 @@ def put(local_path: str, remote_path: str, **storage_options: Any) -> None:
 
 
 def get(remote_path: str, local_path: str, **storage_options: Any) -> None:
-    """Download a (possibly remote) file to local disk.
-
-    Needed because some tools (rasterio/GDAL) want a real local path rather than
-    an fsspec handle.
-    """
+    """Download a (possibly remote) file to local disk, for tools like rasterio/GDAL
+    that need a real local path rather than an fsspec handle."""
     fs, rpath = _fs_and_path(remote_path, storage_options)
     parent = os.path.dirname(local_path)
     if parent:
@@ -159,10 +144,9 @@ def get(remote_path: str, local_path: str, **storage_options: Any) -> None:
 def rename(src_path: str, dst_path: str, **storage_options: Any) -> None:
     """Move `src_path` onto `dst_path` on one fsspec filesystem, in a single `mv`.
 
-    The atomic-publish primitive for D7 (spec 36): on an HNS Azure account rename is a
-    single metadata operation, and locally it is `os.rename` -- so a writer that saves
-    to `src_path` and renames onto `dst_path` at the end leaves no window where a reader
-    can observe a partial artifact.
+    The atomic-publish primitive: on an HNS Azure account this is one metadata
+    operation and locally it is `os.rename`, so a writer that saves to `src_path` and
+    renames at the end leaves no window where a reader sees a partial artifact.
     """
     fs, spath = _fs_and_path(src_path, storage_options)
     _, dpath = _fs_and_path(dst_path, storage_options)
@@ -176,13 +160,11 @@ def ls(url: str, **storage_options: Any) -> list[str]:
 
 
 def find_sizes(url: str, **storage_options: Any) -> dict[str, int]:
-    """Recursively list `url`, returning `{path: size_in_bytes}` for every FILE under it.
+    """Recursively list `url`, returning `{path: size_in_bytes}` for every file under it.
 
-    One paginated directory walk instead of an `exists` + `size` round-trip per file. At
-    900 cells x 2 files that is ~2 requests rather than ~3600 sequential ones over the
-    WAN, which is the difference between a progress bar and an apparent hang (2026-08-21:
-    the driver-side cube-presence sweep). Raises if `url` does not exist -- callers that
-    treat "no folder yet" as "nothing present" must handle that themselves.
+    One paginated directory walk, so bulk presence checks cost a couple of requests
+    rather than an `exists` + `size` round-trip per file. Raises if `url` does not exist
+    — callers treating "no folder yet" as "nothing present" must handle that.
     """
     fs, p = _fs_and_path(url, storage_options)
     return {k: int(v.get("size") or 0) for k, v in fs.find(p, detail=True).items()}
@@ -215,17 +197,12 @@ def size(url: str, **storage_options: Any) -> int:
 
 
 def modified(url: str, **storage_options: Any) -> Any | None:
-    """The backend's own last-modified time for a file, or `None` when the backend
-    does not record one.
+    """The *server's* last-modified time for a file, or `None` if the backend records
+    none.
 
-    The *server's* clock, not this process's — which is the point: spec 40 D11
-    measures driver-vs-storage clock skew by writing a scratch blob and reading back
-    the stamp the storage account put on it. `ls`/`glob` deliberately return bare
-    path strings (`ls` passes `detail=False`), so there is no other route to an
-    mtime through this module.
-
-    `None` rather than a raise for a backend without mtimes, so a caller measuring
-    skew can report "unavailable" instead of silently reporting zero skew.
+    The server's clock, not this process's — which is what makes it usable for measuring
+    driver-vs-storage clock skew. `None` rather than a raise, so a caller measuring skew
+    reports "unavailable" instead of silently reporting zero skew.
     """
     fs, p = _fs_and_path(url, storage_options)
     try:
@@ -263,15 +240,11 @@ def read_geo(path: str, **storage_options: Any):
     """Read a vector file (GeoJSON/shapefile/…) -> GeoDataFrame, through the storage seam.
 
     **Never hand a path straight to `gpd.read_file`.** GDAL/pyogrio has no `abfss://`
-    driver, so an fsspec-only scheme never reaches a reader and the failure is reported as
+    driver, so an fsspec-only scheme never reaches a reader and the failure surfaces as
     `DataSourceError: <abfss url>: No such file or directory` — for a file that
-    demonstrably exists. That message has now cost time on three separate cluster runs
-    (`workflows/task.py` spec 36 D6a/TODO #40, `sources/cdse._roi_gdf` run-book 37 Phase 1,
-    and `create_training_data`'s label polygons on the spec-40 demo). fsspec understands
-    the scheme; GDAL does not. This is the one shared reader TODO #47 asks for.
+    demonstrably exists. fsspec understands the scheme; GDAL does not.
 
-    Local paths work unchanged — `fs.open` passes them through — so callers need no
-    is-it-remote branch.
+    Local paths pass through unchanged, so callers need no is-it-remote branch. (#47)
     """
     import geopandas as gpd
 
@@ -281,8 +254,7 @@ def read_geo(path: str, **storage_options: Any):
 
 
 def _decode_pandas_attrs(footer_metadata: dict | None) -> dict:
-    """`pyarrow` schema/file metadata -> the restored `.attrs` dict, or `{}` if
-    there is no `PANDAS_ATTRS` footer key (spec 35 §2)."""
+    """`pyarrow` footer metadata -> the restored `.attrs` dict, or `{}` if absent."""
     if not footer_metadata:
         return {}
     raw = footer_metadata.get(PANDAS_ATTRS_FOOTER_KEY)
@@ -294,10 +266,8 @@ def _decode_pandas_attrs(footer_metadata: dict | None) -> dict:
 def read_parquet(path: str, **storage_options: Any):
     """Read a (Geo)Parquet file -> GeoDataFrame.
 
-    Restores `.attrs` from the Parquet footer's `PANDAS_ATTRS` key if present
-    (spec 35 §2 -- geopandas' own writer/reader does not do this, unlike
-    pandas'), and always stamps `attrs[SOURCE_PATH_ATTRS_KEY] = path` so
-    downstream code can tell this GeoDataFrame came from a file (spec 35 §5a).
+    Restores `.attrs` from the footer's `PANDAS_ATTRS` key if present — geopandas' own
+    reader does not, unlike pandas' — and stamps `attrs[SOURCE_PATH_ATTRS_KEY] = path`.
     """
     import geopandas as gpd
 
@@ -315,20 +285,14 @@ def read_parquet(path: str, **storage_options: Any):
 
 
 def write_parquet(path: str, df, **storage_options: Any) -> None:
-    """Write a (Geo)DataFrame to `path` as (Geo)Parquet.
+    """Write a (Geo)DataFrame to `path` as (Geo)Parquet, JSON-encoding `df.attrs` into
+    the footer under `PANDAS_ATTRS`. `SOURCE_PATH_ATTRS_KEY` is always stripped first —
+    it is read-side bookkeeping and would leak a local path into the artifact.
 
-    If `df.attrs` is non-empty (minus `SOURCE_PATH_ATTRS_KEY`, always stripped
-    -- spec 35 §10, it is read-side bookkeeping that would otherwise leak a
-    local path into a written artifact), the attrs are JSON-encoded into the
-    footer under `PANDAS_ATTRS` (spec 35 §2): `to_parquet` -> `pq.read_table` ->
-    `replace_schema_metadata` -> `pq.write_table`. Empty attrs skip this
-    entirely -- byte-for-byte today's write path at today's cost.
-
-    Note: the attrs-present path re-encodes the table through pyarrow, so
-    row-group layout/compression follow pyarrow's defaults rather than
-    necessarily being byte-identical to plain `to_parquet` output -- harmless
-    for catalog-sized data (KB-MB), but don't route a large dataframe through
-    this expecting zero extra cost (spec 35 §10).
+    The attrs-present path re-encodes the table through pyarrow, so row-group layout and
+    compression follow pyarrow's defaults rather than `to_parquet`'s. Harmless at
+    catalog size (KB–MB); don't route a large dataframe through it expecting no cost.
+    Empty attrs skip the re-encode entirely.
     """
     fs, p = _fs_and_path(path, storage_options)
     _ensure_parent(fs, p)
@@ -351,9 +315,8 @@ def write_parquet(path: str, df, **storage_options: Any) -> None:
 
 
 def peek_parquet_attrs(path: str, **storage_options: Any) -> dict:
-    """Read only the Parquet footer -- no row group -- and return the restored
-    `.attrs` dict, or `{}` if there is none (spec 35 §1/§6: cheap inspection of
-    the declaration stamp, e.g. for `fsd-catalog-inspect`)."""
+    """Read only the Parquet footer — no row group — and return the restored `.attrs`,
+    or `{}`. Cheap inspection of a catalog's declaration stamp without loading it."""
     import pyarrow.parquet as pq
 
     fs, p = _fs_and_path(path, storage_options)
@@ -375,18 +338,14 @@ def transfer(
 ) -> None:
     """Copy one object between fsspec filesystems (provider-agnostic).
 
-    A satellite tile band file download is `transfer(s3_src, local_or_blob_dst)`.
-    `src_url` may be an S3-compatible store configured via `src_options`, e.g. CDSE
-    EODATA: ``{"key": ..., "secret": ...,
-    "client_kwargs": {"endpoint_url": config.CDSE_S3_ENDPOINT_URL}}``.
+    A tile band-file download is `transfer(s3_src, local_or_blob_dst)`. Bytes are
+    streamed, so source and destination need not share a backend (e.g. CDSE S3 -> Azure
+    Blob); configure each side through `src_options`/`dst_options`.
 
-    Streams bytes, so it works across different backends (e.g. CDSE S3 -> Azure
-    Blob) without a common-filesystem assumption.
-
-    **Atomic:** bytes are streamed to a `.part` sidecar and renamed onto `dst_url`
-    only after the copy fully succeeds. A failed/timed-out/killed transfer therefore
-    never leaves a 0-byte or truncated file at the destination path — so an
-    existence check is a safe "already downloaded" signal on resume.
+    **Atomic:** bytes go to a `.part` sidecar and are renamed onto `dst_url` only after
+    the copy fully succeeds, so a failed or killed transfer never leaves a truncated file
+    at the destination — which is what makes an existence check a safe "already
+    downloaded" signal on resume.
     """
     src_fs, spath = _fs_and_path(src_url, src_options)
     dst_fs, dpath = _fs_and_path(dst_url, dst_options)

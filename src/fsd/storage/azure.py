@@ -1,15 +1,15 @@
 """Azure ADLS Gen2 compute seam — `to_vsi`, the GDAL VSI token, and `storage=` config.
 
-Spec: specs/31-p1-azure-storage-seam.md (compute seam only; §5 download-to-blob is SUSPENDED
-into the ingest/normalization contract spec, not implemented here).
+Deliberately not a storage-options registry, and no credential object is passed around:
+adlfs auto-resolves `DefaultAzureCredential` from `account_name` + `anon=False`, and
+fsspec's per-protocol config (`fsspec.config.conf` / `FSSPEC_{PROTOCOL}_*`) already does
+what a registry would.
 
-There is no bespoke storage-options registry and no credential object passed around: adlfs,
-given only `account_name` + `anon=False`, auto-resolves `DefaultAzureCredential` itself (§1),
-and fsspec's native per-protocol config (`fsspec.config.conf` / `FSSPEC_{PROTOCOL}_*` env)
-already does what a registry would. This module supplies the two things fsspec/adlfs cannot:
-the deterministic `abfss://` -> `/vsiadls/` URL translation GDAL needs (adlfs is not on GDAL's
-pixel-read path), and a token for GDAL's own Azure VSI handler (which, unlike adlfs, never
-refreshes a token it's been given).
+This module supplies only the two things fsspec/adlfs cannot: the `abfss://` ->
+`/vsiadls/` translation GDAL needs (adlfs is not on GDAL's pixel-read path), and a token
+for GDAL's Azure VSI handler, which unlike adlfs never refreshes a token it is given.
+
+Spec: specs/31-p1-azure-storage-seam.md
 """
 
 from __future__ import annotations
@@ -33,8 +33,8 @@ _credential = None
 
 
 def _get_credential():
-    """The single module-cached `DefaultAzureCredential` (§4 — reuse is the documented best
-    practice: it shares the token cache and avoids Entra 429 throttling)."""
+    """The single module-cached `DefaultAzureCredential`. Reuse is deliberate: it shares
+    the token cache and avoids Entra 429 throttling."""
     global _credential
     if _credential is None:
         with _credential_lock:
@@ -48,10 +48,9 @@ def _get_credential():
 def storage_token() -> str:
     """A fresh Storage-scoped bearer token from the module-cached credential.
 
-    `DefaultAzureCredential.get_token` caches + auto-refreshes internally (thread-safe MSAL
-    cache), so calling this before every GDAL VSI open is cheap and always-valid — GDAL's own
-    `AZURE_STORAGE_ACCESS_TOKEN` is a static token it does not refresh, so the caller (us) owns
-    the refresh by re-fetching one per open rather than a hand-rolled expiry margin.
+    Call this before *every* GDAL VSI open: `AZURE_STORAGE_ACCESS_TOKEN` is static and GDAL
+    never refreshes it, so refresh is ours to own. Cheap, because `get_token` caches and
+    auto-refreshes internally — re-fetching per open beats a hand-rolled expiry margin.
     """
     return _get_credential().get_token("https://storage.azure.com/.default").token
 
@@ -89,19 +88,18 @@ def account_from_url(url: str) -> str | None:
 
 
 def configure_storage(storage: Any) -> None:
-    """Apply a verb's `storage=` kwarg: sets **both** `os.environ` and `fsspec.config.conf`.
+    """Apply a verb's `storage=` kwarg. `None`/`"local"` are no-ops; `"azure"` (or
+    `{"backend": "azure", ...}`) enables authenticated adlfs; anything else raises.
 
-    fsspec populates `fsspec.config.conf` from `FSSPEC_*` env **at import time**; mutating
-    `os.environ` after that does not retroactively update the already-imported parent process's
-    `conf`, so both must be set explicitly. `os.environ` is what a Snakemake-subprocess child (or
-    a Batch task at P4) inherits and re-reads on its own import — no live credential object
-    crosses that boundary (D4).
+    Sets **both** `os.environ` and `fsspec.config.conf`, and both are required. fsspec
+    populates `conf` from `FSSPEC_*` env at *import* time, so mutating `os.environ`
+    afterwards does not update this process's already-imported `conf`; conversely
+    `os.environ` is what a subprocess child inherits and re-reads on its own import,
+    which is how the setting crosses that boundary with no live credential object.
 
-    `storage=None` or `storage="local"` are no-ops. `storage="azure"` or
-    `{"backend": "azure", ...}` sets `FSSPEC_ABFSS_ANON=false` (the one config key that
-    matters — §1: `apply_config` keys on `AzureBlobFileSystem.protocol`, which covers
-    `abfs`/`az`/`abfss` from one key; the account comes from the URL host, not from
-    config). Any other backend raises.
+    `FSSPEC_ABFSS_ANON` is the only key needed: fsspec's `apply_config` keys on
+    `AzureBlobFileSystem.protocol`, covering `abfs`/`az`/`abfss` at once, and the account
+    comes from the URL host rather than from config.
     """
     if storage is None or storage == "local":
         return
