@@ -328,7 +328,11 @@ def _row_matches_window(
         if col in ("startdate", "enddate"):
             got = str(pd.to_datetime(got, utc=True))
         else:
-            got = str(got)
+            # F5: `",".join([])` -> `""` -> an empty CSV field -> read back as NaN,
+            # not `""`. Without this, `scl_mask_classes=[]` ("mask nothing", a
+            # legitimate request) round-trips to "nan" and never matches its own
+            # freshly-written request value, purging every row on every call.
+            got = "" if pd.isna(got) else str(got)
         if got != want_val:
             return False
     return True
@@ -437,17 +441,36 @@ def build_shortfall_only(
         cube_folder = cube_export_folderpath(run_folderpath, window_segment, srow[id_col])
         datacube_filepath = os.path.join(cube_folder, "datacube.npy")
         if _cube_present(datacube_filepath):
-            present_ids.append(id_value)
+            # F1: a cube with no row is not "satisfied" -- nothing downstream (the
+            # build leg, flatten) ever looks at the cube directly, only at
+            # `input.csv` rows, and nothing else ever calls `setup` for this id. Route
+            # it through `setup` (idempotent, and `_build_shortfall` still skips the
+            # cube itself) so the row comes back.
+            missing_srows.append(srow)
         elif id_value in known_empty:
             pass  # D5: known-empty, satisfied -- never rediscovered
         else:
             missing_srows.append(srow)
 
+    # F3: `present_ids`/`missing_srows` above answer "does setup need to run for this
+    # id" (a ROW question) -- but the announced plan must match what `_build_shortfall`
+    # actually dispatches next (a CUBE question). An interrupted prior run can have a
+    # row with no cube behind it yet; count that as missing for the printed line
+    # without changing whether `setup` reruns for it (it doesn't need to -- the row is
+    # already correct, only the runner needs to build the cube).
+    cube_missing_ids = {
+        id_value for id_value in present_ids
+        if not _cube_present(os.path.join(
+            cube_export_folderpath(run_folderpath, window_segment, id_value), "datacube.npy"
+        ))
+    }
     n_total = len(shapes_gdf)
     n_missing = len(missing_srows)
     n_known_empty = n_total - len(present_ids) - n_missing
-    print(f"[plan]   build: {len(present_ids)} present, {n_missing} missing, "
-          f"{n_known_empty} known-empty -> will build {n_missing}", flush=True)
+    n_missing_for_plan = n_missing + len(cube_missing_ids)
+    n_present_for_plan = len(present_ids) - len(cube_missing_ids)
+    print(f"[plan]   build: {n_present_for_plan} present, {n_missing_for_plan} missing, "
+          f"{n_known_empty} known-empty -> will build {n_missing_for_plan}", flush=True)
 
     # Persist the window-scoped purge even when nothing is missing -- an existing
     # `input.csv` carrying a DIFFERENT window's rows must never leak into this window's
@@ -463,14 +486,27 @@ def build_shortfall_only(
     with tempfile.TemporaryDirectory() as tmp:
         shortfall_shapefilepath = os.path.join(tmp, "shortfall.geojson")
         shortfall_gdf.to_file(shortfall_shapefilepath, driver="GeoJSON")
-        setup(
-            catalog_filepath=catalog_filepath, timestamp_col=timestamp_col,
-            shapefilepath=shortfall_shapefilepath, id_col=id_col,
-            run_folderpath=run_folderpath, startdate=startdate, enddate=enddate,
-            bands=bands, scl_mask_classes=scl_mask_classes, mosaic_days=mosaic_days,
-            csv_filepath=csv_filepath, label_col=label_col, mosaic_scheme=mosaic_scheme,
-            max_concurrent=max_concurrent,
-        )
+        try:
+            setup(
+                catalog_filepath=catalog_filepath, timestamp_col=timestamp_col,
+                shapefilepath=shortfall_shapefilepath, id_col=id_col,
+                run_folderpath=run_folderpath, startdate=startdate, enddate=enddate,
+                bands=bands, scl_mask_classes=scl_mask_classes, mosaic_days=mosaic_days,
+                csv_filepath=csv_filepath, label_col=label_col, mosaic_scheme=mosaic_scheme,
+                max_concurrent=max_concurrent,
+            )
+        except ValueError:
+            # F2: `setup` raises when NONE of the shapes it was handed have tiles in
+            # range -- reachable here because this call is scoped to just the
+            # shortfall, unlike the old whole-shapefile path where one out-of-coverage
+            # polygon among hundreds could never trigger it. Record the whole
+            # shortfall as known-empty (D5) and let the caller's request converge,
+            # rather than crashing the entire `create_training_data` call.
+            newly_empty = [str(srow[id_col]) for srow in missing_srows]
+            _record_known_empty(run_folderpath, window_segment, newly_empty)
+            print(f"[setup] shortfall of {len(missing_srows)} had no tiles in range/overlap "
+                  f"-- recorded known-empty", flush=True)
+            return len(present_ids), n_missing, n_known_empty
 
     with fs.open(csv_filepath, "r") as f:
         after_df = pd.read_csv(f)

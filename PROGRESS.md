@@ -4,7 +4,18 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-21 (**spec 50 §9 steps 0/1/2/4 IMPLEMENTED, reviewed-worthy and merged to `main`** — `create_training_data` now resolves backwards from the target: a fully-resumed call performs zero catalog reads, zero `setup` calls, zero dispatch; a partial re-run's `setup` runs only for the missing shapes; `run_folderpath` (#83) is no longer clock-based, and the window path segment carries a digest of (bands, mosaic_scheme, scl_mask_classes) so path granularity matches row identity. Step 3 (D9) deliberately NOT done — still blocked on #84. All spec 50 §4 acceptance criteria met except AC7c (depends on step 3). Full suite 860 passed / 92 skipped / 1 pre-existing failure, ruff clean. **NEXT: hand back to Opus for review** (an authoring session cannot review itself). `main` is **7 commits ahead of `origin/main`, unpushed**.)_
+_Last updated: 2026-08-21 (**spec 50 review'd by Opus, 5 bugs fixed by Sonnet in a worktree** —
+`/tmp/review-fsd-spec-50.md` found 2 blockers + 3 more (F1 a cube with no `input.csv` row was
+never rebuilt, worse under the D6 shared `runs/train` folder; F2 a shortfall entirely lacking
+imagery crashed `create_training_data` instead of converging via D5; F3 the `[plan] build:` line
+could claim `0 missing` while the build leg dispatched every row; F4 a known-empty cell made the
+top-level short-circuit unmatchable forever; F5 `scl_mask_classes=[]` round-tripped to NaN and
+purged every row). All 5 fixed in `src/fsd/workflows/create_datacube.py` +
+`src/fsd/api.py`, 6 new tests added to `tests/test_backward_walk.py`, CHANGES.md's spec 50 entry
+updated with the fixes + the two pre-push migration notes (path-shape change orphans old cubes on
+disk; preflight error-batching change). Full suite 864 passed / 90 skipped / 1 pre-existing
+failure (`planetary_computer` absent), ruff clean. **NEXT: Opus re-review**, then push. `main` was
+**7 commits ahead of `origin/main`, unpushed** before this session's fix commit(s).)_
 
 ## Where things stand
 

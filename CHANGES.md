@@ -38,6 +38,51 @@ carried over (renames, restructures, behavioral tweaks). Pure removals go in
   (`input.csv` growing across different start/end dates for the same run folder) is not enabled —
   that is spec 50 D9, deliberately deferred until #84 (the array layer's window-collision bug) is
   fixed first.
+- **Migration note:** the window path segment gaining a `_<params_key>` suffix (above) means cubes
+  already on disk under the OLD path shape (e.g. `20180101_20190101_m20/`, no params suffix) are no
+  longer addressed by the new one and will rebuild from scratch on first use. Correct, but a
+  one-time cost worth knowing about before re-running an existing root.
+- **Preflight error batching changed.** `download=True` validation (`source`, `max_tiles`, `creds`)
+  moved into wave 2 of preflight, so it now fires *after* the `[plan]` line is printed and
+  `run_folderpath`/`export_folderpath` are created, and no longer batches together with the
+  structural (wave-1) errors. Cosmetic (both waves still raise before any build/flatten work), but
+  intentional-looking enough to call out here.
+- **Opus review, 2026-08-21 — 5 bugs fixed before push** (`/tmp/review-fsd-spec-50.md`):
+  - **A cube with no `input.csv` row was counted "present" and its row was never rebuilt.**
+    `build_shortfall_only` treated a cube that exists on disk but has no current-window row as
+    fully satisfied, but everything downstream (`_build_shortfall`, `run_local`/`run_aml`,
+    `flatten`) reads rows, not cubes, and nothing else ever calls `setup` for that id. Reachable by
+    deleting `input.csv` for a "clean rebuild" (crashes `_build_shortfall` with `FileNotFoundError`
+    on the next call), and — worse, silently — once the aml run folder became shared
+    (`runs/train`, above): switching between two windows' requests against the same root purged the
+    first window's rows and never restored them, so a resumed call for that window built an
+    `input.csv` with 0 rows and `flatten_training_data` got handed an empty CSV with no error.
+    Fixed: a rowless-but-built cube is now routed back through `setup` (idempotent) so its row
+    comes back, instead of being treated as done.
+  - **A shortfall whose shapes ALL lack imagery raised `ValueError` and crashed the whole
+    `create_training_data` call.** The old whole-shapefile `setup` call could absorb one
+    out-of-coverage polygon among hundreds; `build_shortfall_only` can hand `setup` a shortfall
+    that is *entirely* out-of-coverage (e.g. one new polygon added to an otherwise-complete run),
+    and `setup`'s own `ValueError` propagated uncaught, before D5's known-empty manifest was ever
+    written — so the request could never converge. Fixed: `build_shortfall_only` now catches that
+    `ValueError`, records the shortfall as known-empty, and continues.
+  - **The `[plan] build:` line could claim `0 missing` while the build leg dispatched every row.**
+    The plan line counted `input.csv` rows, not cubes — an interrupted run (rows written, cubes not
+    yet built, exactly the case a resume exists for) printed `will build 0` and then dispatched
+    everything anyway. Fixed: the printed line now separately checks cube presence for rows that
+    already exist, so it agrees with what `_build_shortfall` actually finds (whether `setup` is
+    rerun for those ids is unaffected — the row was already correct).
+  - **A known-empty cell made the top-level short-circuit unmatchable forever.** `input.csv` never
+    gets a row for a shape `setup` found no imagery for, so `_flatten_identity` (computed from
+    `input.csv`) never names it — but `_flatten_identity_from_request` (computed from the request
+    alone) named every requested id, including known-empty ones, so the two identities could never
+    agree once a single cell in a request had no imagery. Fixed: `_flatten_identity_from_request`
+    now subtracts D5's recorded known-empty ids before building its cube list.
+  - **`scl_mask_classes=[]` purged every row on every call.** `",".join([])` writes `""` to the
+    CSV, which reads back as `NaN`, not `""` — so a legitimate "mask nothing" request could never
+    match its own freshly-written window/params and every row was dropped and (with the F1 bug)
+    the file ended up empty. Fixed: NaN/empty are now normalized consistently everywhere a
+    `scl_mask_classes` (or similarly-joined) field is compared or re-derived.
 
 ## `fsd.verify_adapter`: one real cube, locally, before the fan-out (spec 48, 2026-08-20)
 

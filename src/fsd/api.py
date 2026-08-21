@@ -689,7 +689,10 @@ def _flatten_identity(input_df: pd.DataFrame, *, id_col, filepath_col, adapter, 
     for col in ("bands", "mosaic_days", "startdate", "enddate", "scl_mask_classes",
                "mosaic_scheme"):
         if col in input_df.columns:
-            params[col] = sorted(set(input_df[col].astype(str)))
+            # F5: an empty `scl_mask_classes=[]` writes `",".join([])` == "" to the CSV,
+            # which reads back as NaN, not "" -- normalize so this matches
+            # `_flatten_identity_from_request`'s freshly-computed "" for the same request.
+            params[col] = sorted(set(input_df[col].fillna("").astype(str)))
     params["aggregate"] = _fingerprint_aggregate(aggregate)
     params["features"] = _fingerprint_features(adapter, feature_sequence)
     identity = {"cubes": cubes, "params": params}
@@ -720,7 +723,13 @@ def _flatten_identity_from_request(
         startdate, enddate, mosaic_days, bands=bands, mosaic_scheme=mosaic_scheme,
         scl_mask_classes=scl_mask_classes,
     )
-    ids = sorted(str(v) for v in gdf[id_col])
+    # F4: `input.csv` never gets a row for a shape `setup` found no imagery for (D5's
+    # known-empty cells), so `_flatten_identity` (computed FROM `input.csv`) never
+    # names them either. Without this, a request with even one such cell could never
+    # match its own stamp -- subtract the recorded known-empty ids here so the two
+    # identities agree once the manifest has them.
+    known_empty = _create_datacube._read_known_empty(run_folderpath, window_segment)
+    ids = sorted(str(v) for v in gdf[id_col] if str(v) not in known_empty)
     cubes = sorted(
         [id_value, os.path.join(
             _create_datacube.cube_export_folderpath(run_folderpath, window_segment, id_value),
