@@ -11,8 +11,8 @@ import datetime
 import os
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
-import pytest
 from shapely.geometry import box
 
 from fsd import api, config
@@ -145,3 +145,111 @@ def test_request_identity_reads_no_input_csv(tmp_path):
     )
     assert not (tmp_path / "input.csv").exists()
     assert len(identity["cubes"]) == 2
+
+
+# --- Step 2 / phase 1: the top-level short-circuit ------------------------------------
+
+def _fake_run_create_datacube(
+    *, csv_filepath, run_folderpath, startdate, enddate, mosaic_days, bands,
+    scl_mask_classes, mosaic_scheme=config.MOSAIC_SCHEME, **kw,
+):
+    """A `run_create_datacube` stand-in that writes an `input.csv` row whose
+    `datacube_filepath` is the SAME path `create_datacube.cube_export_folderpath` (and
+    therefore `_flatten_identity_from_request`) would derive -- otherwise the two
+    identities would legitimately disagree and the short-circuit correctly would not
+    fire. Real `setup` is not exercised here; only its output shape is."""
+    window_segment = create_datacube.window_folder_segment(
+        startdate, enddate, mosaic_days, bands=bands, mosaic_scheme=mosaic_scheme,
+        scl_mask_classes=scl_mask_classes,
+    )
+    cube_folder = create_datacube.cube_export_folderpath(run_folderpath, window_segment, 0)
+    fs.makedirs(os.path.dirname(csv_filepath))
+    pd.DataFrame({
+        "datacube_filepath": [os.path.join(cube_folder, "datacube.npy")],
+        "id": [0], "label": ["a"], "bands": [",".join(bands)], "mosaic_days": [mosaic_days],
+        "startdate": [str(pd.to_datetime(startdate, utc=True))],
+        "enddate": [str(pd.to_datetime(enddate, utc=True))],
+        "scl_mask_classes": [",".join(str(v) for v in scl_mask_classes)],
+        "mosaic_scheme": [mosaic_scheme],
+    }).to_csv(csv_filepath, index=False)
+
+
+def _fake_flatten(*, export_folderpath, label_col=None, **kw):
+    fs.makedirs(export_folderpath)
+    fs.save_npy(os.path.join(export_folderpath, "data.npy"), np.zeros((1, 1, 1)))
+    fs.save_npy(os.path.join(export_folderpath, "ids.npy"), np.array([0]))
+    fs.save_npy(os.path.join(export_folderpath, "coords.npy"), np.zeros((1, 2)))
+    fs.save_npy(os.path.join(export_folderpath, "metadata.pickle.npy"),
+                {"timestamps": [0], "bands": ["B04"]}, allow_pickle=True)
+    if label_col is not None:
+        fs.save_npy(os.path.join(export_folderpath, "labels.npy"), np.array(["a"]))
+
+
+def test_top_level_short_circuit_skips_setup_and_catalog(tmp_path, monkeypatch):
+    """AC1/AC2: a fully-resumed `create_training_data` call performs no catalog read, no
+    `setup` call, and no dispatch (D2) -- it lands the arrays and returns, off the
+    request-derived identity alone, and the returned `TrainingData` matches the first
+    run's."""
+    cat = tmp_path / "catalog.parquet"
+    cat.write_text("")  # exists for call #1's preflight; contents are never real parquet
+    export = tmp_path / "export"
+
+    monkeypatch.setattr(api._create_datacube, "run_create_datacube", _fake_run_create_datacube)
+    monkeypatch.setattr(api._flatten, "flatten", _fake_flatten)
+
+    gdf = gpd.GeoDataFrame(
+        {"fid": [0], "crop": ["a"], "geometry": [box(0, 0, 1, 1)]}, crs="EPSG:4326",
+    )
+    kwargs = dict(
+        label_polygons=gdf, catalog_filepath=str(cat),
+        startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
+        mosaic_days=20, bands=["B04"], id_col="fid", label_col="crop",
+        export_folderpath=str(export),
+    )
+    td1 = api.create_training_data(**kwargs)
+
+    # Prove call #2 needs neither `setup` nor the catalog: move the catalog file away,
+    # and make `run_create_datacube` (the build leg, which is what would call `setup`)
+    # and `TileCatalog.filter` (the D13 guardrail's catalog read) both raise if reached.
+    cat.rename(tmp_path / "moved.parquet")
+
+    def _raise_build(*a, **kw):
+        raise AssertionError("run_create_datacube must not run when the target is CURRENT")
+
+    def _raise_filter(*a, **kw):
+        raise AssertionError("the catalog must not be read when the target is CURRENT")
+
+    monkeypatch.setattr(api._create_datacube, "run_create_datacube", _raise_build)
+    monkeypatch.setattr(api.TileCatalog, "filter", _raise_filter)
+
+    td2 = api.create_training_data(**kwargs)
+
+    assert td2.n_pixels == td1.n_pixels
+    assert td2.n_timestamps == td1.n_timestamps
+    assert td2.bands == td1.bands
+
+
+def test_top_level_short_circuit_prints_plan_and_fetch(tmp_path, monkeypatch, capsys):
+    """AC9/D7: the satisfied case prints `[plan] ... CURRENT` then `[fetch] ...`."""
+    cat = tmp_path / "catalog.parquet"
+    cat.write_text("")
+    export = tmp_path / "export"
+
+    monkeypatch.setattr(api._create_datacube, "run_create_datacube", _fake_run_create_datacube)
+    monkeypatch.setattr(api._flatten, "flatten", _fake_flatten)
+
+    gdf = gpd.GeoDataFrame(
+        {"fid": [0], "crop": ["a"], "geometry": [box(0, 0, 1, 1)]}, crs="EPSG:4326",
+    )
+    kwargs = dict(
+        label_polygons=gdf, catalog_filepath=str(cat),
+        startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
+        mosaic_days=20, bands=["B04"], id_col="fid", label_col="crop",
+        export_folderpath=str(export),
+    )
+    api.create_training_data(**kwargs)
+    capsys.readouterr()
+    api.create_training_data(**kwargs)
+    out = capsys.readouterr().out
+    assert "[plan] target:" in out and "CURRENT" in out
+    assert "[fetch] export ->" in out
