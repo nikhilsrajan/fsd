@@ -12,6 +12,7 @@ import os
 import numpy as np
 import pandas as pd
 
+from fsd import api
 from fsd.storage import fs
 from fsd.workflows import create_datacube as cd
 
@@ -159,3 +160,104 @@ def test_no_mtime_read_in_build_skip_logic():
     ))
     for forbidden in ("getmtime", "st_mtime", "os.stat", ".stat()"):
         assert forbidden not in src
+
+
+# --- #83: do two identical calls address the same cube paths? -----------------
+#
+# The build skip compares `input.csv`'s cube paths against what exists, so it can only fire
+# if two identical calls NAME the same paths. These characterise where that holds and where
+# it does not -- "will this resurface elsewhere?" made executable.
+
+def _polys(n=1):
+    import geopandas as gpd
+    import shapely.geometry
+
+    return gpd.GeoDataFrame(
+        {"fid": list(range(n)), "crop": ["a"] * n,
+         "geometry": [shapely.geometry.box(i, 0, i + 1, 1) for i in range(n)]},
+        crs="EPSG:4326",
+    )
+
+
+def _run_folderpaths_of_two_calls(tmp_path, monkeypatch, **extra):
+    """`run_folderpath` as handed to the build unit, on two identical back-to-back calls."""
+    import datetime
+
+    seen = []
+
+    def fake_run_create_datacube(*, csv_filepath, run_folderpath, **kw):
+        seen.append(run_folderpath)
+        fs.makedirs(os.path.dirname(csv_filepath))
+        pd.DataFrame({"datacube_filepath": [f"{run_folderpath}/w/0/datacube.npy"],
+                      "id": [0], "label": ["a"]}).to_csv(csv_filepath, index=False)
+
+    def fake_flatten_training_data(input_csv, export_folderpath, **kw):
+        fs.makedirs(export_folderpath)
+        fs.save_npy(os.path.join(export_folderpath, "data.npy"), np.zeros((1, 1, 1)))
+        fs.save_npy(os.path.join(export_folderpath, "metadata.pickle.npy"),
+                    {"timestamps": [0], "bands": ["B04"]}, allow_pickle=True)
+        return api.TrainingData(
+            export_folderpath=export_folderpath, run_folderpath=os.path.dirname(input_csv),
+            n_pixels=1, n_timestamps=1, bands=["B04"],
+        )
+
+    monkeypatch.setattr(api._create_datacube, "run_create_datacube", fake_run_create_datacube)
+    monkeypatch.setattr(api, "flatten_training_data", fake_flatten_training_data)
+
+    cat = tmp_path / "catalog.parquet"
+    cat.parent.mkdir(parents=True, exist_ok=True)
+    cat.write_text("")
+    for _ in range(2):
+        api.create_training_data(
+            label_polygons=_polys(), catalog_filepath=str(cat),
+            startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
+            mosaic_days=20, bands=["B04"], id_col="fid", label_col="crop",
+            export_folderpath=str(tmp_path / "export"), **extra,
+        )
+    return seen
+
+
+def test_local_runner_addresses_the_same_cube_paths_twice(tmp_path, monkeypatch):
+    """`runner="local"` was never affected by #83: its run_folderpath is
+    `export_folderpath/run`, which carries no clock."""
+    a, b = _run_folderpaths_of_two_calls(tmp_path, monkeypatch)
+    assert a == b
+
+
+def test_aml_run_folderpath_is_derived_from_the_clock(tmp_path, monkeypatch):
+    """#83, characterised. `run_folderpath` defaults to `{root}/runs/{run_id}` where run_id is
+    a fresh UTC timestamp, so two calls seconds apart address different cubes, the shortfall is
+    always N of N, and the build/flatten skips can never fire. Locked in deliberately: whoever
+    makes the default deterministic must come here and say so."""
+    a, b = _run_folderpaths_of_two_calls(
+        tmp_path, monkeypatch,
+        runner="aml",
+        runner_kwargs={"root": str(tmp_path / "root"), "cluster": "c",
+                       "environment": "e:1", "identity_client_id": "i"},
+    )
+    assert a.rsplit("/", 1)[0] == b.rsplit("/", 1)[0] == f"{tmp_path}/root/runs"
+    assert a.rsplit("/", 1)[1].endswith("Z")   # the leaf is a UTC timestamp, not the request
+
+
+def test_aml_is_stable_when_run_folderpath_is_given(tmp_path, monkeypatch):
+    """The #83 workaround, locked in: an explicit `run_folderpath` makes two identical calls
+    address identical cube paths, which is what the build + flatten skips require."""
+    pinned = str(tmp_path / "root" / "runs" / "train")
+    a, b = _run_folderpaths_of_two_calls(
+        tmp_path, monkeypatch,
+        runner="aml", run_folderpath=pinned,
+        runner_kwargs={"root": str(tmp_path / "root"), "cluster": "c",
+                       "environment": "e:1", "identity_client_id": "i"},
+    )
+    assert a == b == pinned
+
+
+def test_run_inference_run_folderpath_carries_no_clock():
+    """`run_inference` is structurally immune to #83: its run folder is derived from the
+    caller's `output_folderpath`, never from a timestamp -- which is why spec 47 D5's
+    per-cell output skip works today. Asserted on the source so a refactor that introduces a
+    run_id here has to notice."""
+    src = inspect.getsource(api._run_inference_roi)
+    assert 'os.path.join(output_folderpath, "cells")' in src
+    for clock in ("Timestamp.now", "datetime.now", "utcnow"):
+        assert clock not in src
