@@ -144,6 +144,54 @@ items are the rslearn Plan B/C decision and spec 43 (`docs/history.md`, deferred
 
 ## Most recent entry
 
+## 2026-08-21 (later) — `verify_adapter` wired into the AML e2e notebook; a third review defect found
+
+The user asked to re-run `notebooks/e2e_austria_aml.ipynb` on the specs 48+49 code, with
+`verify_adapter` added after the adapter is written. Wiring it up surfaced a defect the review had
+not: **`verify_adapter(runner="aml")` could not have worked.**
+
+**The defect (fixed, `7d0f780`, merged `126c75f`).** The verb passed
+`run_folderpath=export_folderpath/_build` — a *local* path — to the per-cell build unit.
+`create_datacube.setup` turns a local `run_folderpath` into an **absolute driver path**
+(`os.path.abspath`) and writes it into `input.csv`, which on `runner="aml"` is read by the **node**.
+So the node was told to write the cube to `/Users/<driver>/...`, which does not exist on it. The
+build now roots on `runner_kwargs["root"]/runs/<run_id>/_verify_adapter` exactly as
+`create_training_data` roots its own run, and the cube is transferred DOWN into the local
+`export_folderpath` — which is what D5 said landing was all along. `runner_kwargs["root"]` is now
+required for `runner="aml"`. Two red-first tests.
+
+**Why the ACs missed it, worth remembering:** AC1's test monkeypatches `run_create_datacube`
+wholesale, so it asserts *how many* builds happen and never *where*; AC10's real end-to-end runs
+`runner="local"`. A spec can have a fully-tested criterion for "the case that matters in practice"
+and still never execute that case.
+
+### Notebook changes (`notebooks/e2e_austria_aml.ipynb` — gitignored, not committed)
+
+- **`RESUME_RUN` in the config cell.** `ROOT` carried a fresh timestamp every run, so *none* of
+  spec 49's skips could ever fire — a re-run addressed a brand-new archive. `RESUME_RUN` pins a
+  previous run id back. Without this the notebook could not demonstrate spec 49 at all.
+- **A `verify_adapter` section between the adapter and the bundling cells**, which is where the
+  notebook's own "To do" already asked for it (*"test out the adapter before bundling"*, *"create
+  one single datacube … and run via adapter"*). Takes the **live** adapter, so the run exercises
+  bundling too; `cell=None` for the deterministic pick; `export_folderpath` keyed to `RUN` because
+  the resume stamp covers the request but **not** `catalog_filepath`.
+- The bundling cell no longer re-constructs the adapter — one source of truth for `n_timestamps`,
+  and nothing is bundled that has not had real pixels through it.
+- Expectation blocks updated for spec 49's `[build]`/`[flatten]` lines, including the one-time
+  "the first resume re-flattens because the stamp did not exist yet" case; `#76`/`#77` and the
+  archive-identity gap added to "Known rough edges".
+
+### Run-book
+
+`runbooks/48-e2e-austria-with-verify-adapter.md` — two passes: **A** fresh (nothing to skip), **B**
+resumed with `RESUME_RUN` (the actual spec 49 test). Claude does not run it; the user pastes back
+each step's result block. The QGIS check on `output.tif` is step A4 and is the deliverable, not the
+verdict dict.
+
+### Gate
+
+`main` @ `126c75f` + this entry, **unpushed**. The notebook is gitignored and stays that way.
+
 ## 2026-08-21 — specs 48 + 49 **Opus-reviewed**: 2 defects fixed, #76/#77 filed
 
 Independent Opus review of `20a47e7..c0d9d17` (the Sonnet implementation entry below), per the

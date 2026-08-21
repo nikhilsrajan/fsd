@@ -1043,3 +1043,73 @@ following `latest` would silently adopt an untested image. Same shape as the
 > do the work. A block at the top that validates everything at once has to hardcode paths and
 > assert artifacts that later cells create (e.g. the adapter module, which does not exist yet at
 > config time) — it reads as a harness, not as usage. Check each thing where it is used.
+
+## Static-check a notebook you just edited, before anyone pays for a cluster run
+
+Editing `.ipynb` JSON by script is easy to get subtly wrong: a moved cell that now uses a name
+bound later, a kwarg the verb does not take, a broken `source` list. All three fail *after* the
+notebook has already dispatched work — the `verify_adapter` cell edit (2026-08-21) hit exactly
+this (`adapter` was used one cell before anything constructed it). These three checks take under a
+second and catch all of it on the driver.
+
+```bash
+cd fsd
+# 1. the file is still a valid notebook
+.venv/bin/python -c "import nbformat; nbformat.validate(nbformat.read('notebooks/<nb>.ipynb', as_version=4)); print('ok')"
+
+# 2. every name is bound by an EARLIER cell (run top to bottom)
+.venv/bin/python - <<'PY'
+import ast, builtins, nbformat
+nb = nbformat.read('notebooks/<nb>.ipynb', as_version=4)
+defined, problems = set(dir(builtins)), []
+for i, c in enumerate(nb.cells):
+    if c.cell_type != "code" or not c.source.strip():
+        continue
+    stores, imports, used = set(), set(), set()
+    for n in ast.walk(ast.parse(c.source)):
+        if isinstance(n, ast.Name):
+            (stores if isinstance(n.ctx, ast.Store) else used).add(n.id)
+        elif isinstance(n, (ast.Import, ast.ImportFrom)):
+            for a in n.names: imports.add((a.asname or a.name).split(".")[0])
+        elif isinstance(n, (ast.FunctionDef, ast.ClassDef)): stores.add(n.name)
+        elif isinstance(n, ast.comprehension):
+            for t in ast.walk(n.target):
+                if isinstance(t, ast.Name): stores.add(t.id)
+    local = stores | imports
+    missing = sorted(u for u in used - defined - local if not u.startswith("_"))
+    if missing: problems.append(f"cell {i}: {missing}")
+    defined |= local
+print("\n".join(problems) or "clean")
+PY
+```
+
+**The name check must add a cell's own assignments before testing its uses** — the obvious version
+(collect all `Load` names, compare against what earlier cells defined) reports every
+assigned-then-used-in-the-same-cell variable as undefined and buries the one real finding in noise.
+
+```bash
+# 3. every fsd verb call still binds against the real signature
+.venv/bin/python - <<'PY'
+import ast, inspect, nbformat, fsd
+targets = {n: getattr(fsd, n) for n in
+           ("verify_adapter", "create_training_data", "run_inference", "download")}
+nb = nbformat.read('notebooks/<nb>.ipynb', as_version=4)
+for c in nb.cells:
+    if c.cell_type != "code" or not c.source.strip(): continue
+    for n in ast.walk(ast.parse(c.source)):
+        if not isinstance(n, ast.Call): continue
+        f = n.func
+        name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
+        if name not in targets: continue
+        sig, kw = inspect.signature(targets[name]), [k.arg for k in n.keywords if k.arg]
+        unknown = [k for k in kw if k not in sig.parameters]
+        try:
+            sig.bind(*[object()] * len(n.args), **{k: object() for k in kw})
+            print(f"{name}: binds OK" + (f"  !! unknown {unknown}" if unknown else ""))
+        except TypeError as e:
+            print(f"{name}: !! {e}")
+PY
+```
+
+Check 3 is the one that pays for itself on AML verbs: a typo'd `runner_kwargs` key or a renamed
+parameter otherwise surfaces after the job has been submitted.
