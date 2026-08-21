@@ -226,6 +226,12 @@ Two answers overturned the draft, and both improved it.
 
 ### NEXT — implement spec 50 (Sonnet, `/effort medium`)
 
+**Handoff doc: `HANDOFF-spec-50.md` at the WORKSPACE ROOT** (outside the repo, as before — it names
+the untracked files that carry real Azure values). It holds the traps, the definition of done, and
+the verified test baseline (**847 passed, 92 skipped, 1 known pre-existing failure** on `a00702f`).
+The `/handoff` session baton is `/tmp/handoff-fsd-spec-50-implementation.md` — ephemeral, and it
+points back here.
+
 §9 order: **0** #83/D6 deterministic run folder → **1** D3 request-derived identity → **2** phase 1
 top-level short-circuit → **3** D9 append+dedupe **(BLOCKED on #84)** → **4** phase 2 the full walk.
 
