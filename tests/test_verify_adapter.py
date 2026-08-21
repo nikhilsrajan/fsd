@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime
 import inspect
+import json
 import os
 
 import geopandas as gpd
@@ -315,3 +316,70 @@ def test_export_folderpath_required(tmp_path, monkeypatch):
             startdate=JAN1, enddate=JAN60, mosaic_days=20, bands=BANDS,
             export_folderpath="",
         )
+
+
+# --- D8: the verdict is a FILE, not only a return value ----------------------
+
+def test_result_json_is_written_on_pass_and_on_fail(tmp_path, monkeypatch):
+    """D8 lists `_result.json` among the artifacts `export_folderpath` holds, and spec 24's
+    whole run-book protocol is the user pasting that file back -- so it must land on disk,
+    on the failing exits as much as the passing one."""
+    _patch_grid(monkeypatch)
+    _patch_build_and_infer(monkeypatch)
+    cat = _catalog(tmp_path)
+
+    export_ok = str(tmp_path / "export_ok")
+    result = fsd.verify_adapter(
+        _FakeAdapter(), roi=ROI, catalog_filepath=cat,
+        startdate=JAN1, enddate=JAN60, mosaic_days=20, bands=BANDS,
+        export_folderpath=export_ok, cell="cell_a",
+    )
+    result_filepath = os.path.join(export_ok, "_result.json")
+    assert os.path.exists(result_filepath)
+    with open(result_filepath) as f:
+        on_disk = json.load(f)
+    assert on_disk["pass"] is True
+    assert on_disk["step"] == "verify_adapter"
+    assert on_disk["metrics"]["cell"] == result["metrics"]["cell"]
+
+    export_fail = str(tmp_path / "export_fail")
+    fsd.verify_adapter(
+        _WrongTAdapter(), roi=ROI, catalog_filepath=cat,
+        startdate=JAN1, enddate=JAN60, mosaic_days=20, bands=BANDS,
+        export_folderpath=export_fail, cell="cell_a",
+    )
+    with open(os.path.join(export_fail, "_result.json")) as f:
+        failed = json.load(f)
+    assert failed["pass"] is False
+    assert failed["status"] == "fail"
+    assert str(T + 5) in failed["error"]
+
+
+# --- D5: existence is not identity, on the LANDING too -----------------------
+
+def test_cube_without_a_matching_stamp_is_relanded_not_reused(tmp_path, monkeypatch):
+    """A cube file left in `export_folderpath` with no stamp beside it (e.g. the caller
+    deleted `_cube_stamp.json` to get past the "different request" refusal) must be
+    OVERWRITTEN by the fresh build, never skipped as "already landed" -- otherwise the
+    stamp written afterwards would claim this request's identity over the old cube's
+    pixels."""
+    _patch_grid(monkeypatch)
+    calls = _patch_build_and_infer(monkeypatch)
+    cat = _catalog(tmp_path)
+    export = str(tmp_path / "export")
+
+    kwargs = dict(
+        roi=ROI, catalog_filepath=cat, startdate=JAN1, enddate=JAN60,
+        mosaic_days=20, bands=BANDS, export_folderpath=export, cell="cell_a",
+    )
+    fsd.verify_adapter(_FakeAdapter(), **kwargs)
+    assert calls["build"] == 1
+
+    # Stand in for "a cube from some other request is sitting here, unstamped".
+    landed = os.path.join(export, "datacube.npy")
+    fs.save_npy(landed, np.full((T, 2, 2, len(BANDS)), 7.0, dtype="float32"))
+    os.remove(os.path.join(export, "_cube_stamp.json"))
+
+    fsd.verify_adapter(_FakeAdapter(), **kwargs)
+    assert calls["build"] == 2                       # no stamp -> rebuild
+    assert float(fs.load_npy(landed).max()) == 0.0   # and the sentinel was overwritten

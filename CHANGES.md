@@ -15,7 +15,9 @@ carried over (renames, restructures, behavioral tweaks). Pure removals go in
   `fsd.workflows.infer_only_task.run_infer_only` — the SAME unit the cluster runs, not a new
   inference path — so `output.tif` and `grids.geojson` can be eyeballed in QGIS before a bundle is
   trusted. Returns a `_result.json`-shaped verdict naming what it did NOT check (the image, scale,
-  any other cell).
+  any other cell) — and **writes that verdict to `export_folderpath/_result.json`** on every exit,
+  passing or failing, so it can be pasted back into a run-book (spec 24) rather than dying with the
+  process.
 - **Cell selection is deterministic by default** (largest in-window catalog coverage, tie-broken by
   id) so two runs over the same roi/window pick the same cell; `cell="random"` opts in to a random
   pick and prints the chosen id so it can be pinned back with `cell=`. `grids.geojson` is always

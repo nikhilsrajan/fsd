@@ -4,7 +4,7 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-20 (**specs 48 + 49 signed off, awaiting implementation** — `fsd.verify_adapter` runs the adapter over ONE real cube locally before the fan-out; spec 49 stops `create_training_data` redoing finished cube builds and flattens. Both carry completed §8 cross-validation. **Handoff for the Sonnet implementation session: `HANDOFF-specs-48-49.md` at the workspace root.** Same day: spec 47 Opus-reviewed (5 defects, #64/#65/#66 closed, #75 filed); the AML image build documented + split into independent parts; `00_build_images.ipynb` made the one tracked public notebook, guarded by `tests/test_notebooks.py`. `main` @ `3fedd1f`, pushed.)_
+_Last updated: 2026-08-21 (**specs 48 + 49 implemented, merged, and Opus-reviewed** — `fsd.verify_adapter` runs the adapter over ONE real cube locally before the fan-out; spec 49 stops `create_training_data` redoing finished cube builds and flattens. All 25 acceptance criteria across the two specs are met; the review found **2 defects in spec 48's verb**, both fixed with red-first regression tests, and filed the two issues spec 49's sign-off promised (**#76** atomic cube writes, **#77** `run_inference`'s build-leg skip). `main` is **3 commits ahead of `origin/main` and NOT pushed** — the push is the user's call.)_
 
 ## Where things stand
 
@@ -143,6 +143,67 @@ items are the rslearn Plan B/C decision and spec 43 (`docs/history.md`, deferred
 ---
 
 ## Most recent entry
+
+## 2026-08-21 — specs 48 + 49 **Opus-reviewed**: 2 defects fixed, #76/#77 filed
+
+Independent Opus review of `20a47e7..c0d9d17` (the Sonnet implementation entry below), per the
+standing practice that the authoring session cannot be its own reviewer. Fixes in `4989025`.
+
+**Verdict: all 25 acceptance criteria are met** — spec 48's 14 and spec 49's 11. The two
+structural ACs are genuinely asserted rather than assumed (`test_no_verify_adapter_branch_in_
+shared_inference_code` greps `engine`/`infer_only_task`/`bundle` for the forbidden branch; the two
+"no mtime" tests scan the skip logic's own source). The shared identity helper spec 49 §7 Q5
+required exists exactly once, as `fsd.workflows.stamp`, and is used by both specs. Checked
+independently: `pytest -q` at 836 passed / 88 skipped / the 1 known `planetary_computer` failure,
+`ruff check src/ tests/ demos/ examples/` clean, and
+`test_verify_adapter_real_fixture_local_runner` (spec 48 AC10, the no-network end-to-end) really
+runs rather than skipping.
+
+| # | defect | fix |
+|---|---|---|
+| 1 | **`_result.json` was never written.** D8 lists it among the artifacts `export_folderpath` holds and the verb's docstring names it, but only the dict was returned — and spec 24's whole run-book protocol is the user pasting that *file* back. A failing verdict also returned in total silence. | every exit routes through `_finish_verify_adapter`, which writes the file and prints the error + path on a failure |
+| 2 | **an unstamped cube was reused and then mis-stamped.** The cube landing used `_land_local(force=False)`, so a `datacube.npy` that merely EXISTED was skipped as "already landed" — and `write_stamp` then recorded THIS request's identity over the previous request's pixels. Reachable by deleting `_cube_stamp.json` to get past the "different request" refusal. | `force=True`: reaching that branch MEANS the local cube is not trusted. Existence standing in for identity is exactly what D5 exists to prevent — and the same reasoning was already applied correctly to the AML flatten branch |
+
+Both regression tests were confirmed red on the unfixed code (`assert False` on the missing file,
+`assert 7.0 == 0.0` on a sentinel cube surviving the rebuild).
+
+### Cleared, not flagged
+
+- **`_force_rebuild` and #50.** It calls `fs.rm` non-recursively on single files; #50 is specific to
+  `rm(recursive=True)` on `abfss://`, so it does not apply.
+- **Spec 49 AC10** (a fully-skipped run and a full run return equal `TrainingData`).
+  `_apply_training_features` persists `feature_bands` into `metadata.pickle.npy`, so the skip path
+  reconstructs it from disk correctly.
+- **D3 vs. a same-path rebuild.** The stamp cannot catch a cube rebuilt at the same path with the
+  same parameters (no content digest — §7 Q2's signed-off default). The implementation is honest
+  about it: `overwrite="datacubes"` forces the flatten leg rather than relying on the stamp, and the
+  docstring says so plainly. Correct call, and the residue is Risk 1, not a defect.
+
+### Filed, per spec 49 §7's sign-off
+
+- **#76** — datacube writes are not atomic, so a truncated cube passes spec 49 D2's presence test and
+  is skipped as built (Q2; #74 one level up, and the `.part`+rename primitive already exists).
+- **#77** — `run_inference`'s build leg still pays a cold start to discover work already done: its
+  per-cell skip is decided on the node, after dispatch (Q6; the #64 shape once more).
+
+### Not addressed, deliberately
+
+- **`cell="random"` twice into one `export_folderpath` now raises** rather than building the new
+  cell — the D5 identity includes `cell`, so a fresh random pick reads as a different request.
+  Defensible, but D3 sells random as the way to sample an ROI. Wants a docstring sentence or a
+  per-cell subfolder; neither is a defect against a written AC.
+- **The "no mtime" guards are substring scans** (`getmtime`, `st_mtime`, `os.stat`, `.stat()`) and
+  would not catch the fsspec route (`fs.info(...)["mtime"]`); `api._artifacts_present`, which the
+  flatten skip depends on, is not in the scanned set. No such call exists today, so AC6 holds.
+- **Driver-side cost grows with N:** `_cell_coverage` runs one full-catalog `filter_gdf` per grid
+  cell (299 passes on AT_ROI when `cell=None`), and `_cube_present` costs 4 storage round-trips per
+  cube (~3,600 for 900) where one prefix listing would do. Both spec-sanctioned; both worth an issue
+  if a re-run ever feels slow before it feels wrong.
+
+### Gate
+
+`main` is **3 commits ahead of `origin/main` and unpushed** (`c0d9d17` implementation + merge,
+plus this review's fix commit and its merge). Pushing is the user's call.
 
 ## 2026-08-20 (later) — specs 48 + 49 signed off; notebooks made public; **NEXT: Sonnet implements both**
 
