@@ -6,7 +6,7 @@ supersedes: specs/44-bundle-carried-adapter-code.md D7, D8 (phase 2, proposed an
 
 # Spec 51 — `fsd.deploy`: a verified bundle+image pair, under one name (P6)
 
-**Status: 🟡 ALL QUESTIONS RESOLVED — AWAITING FINAL SIGN-OFF, NOT IMPLEMENTED.** Three structural
+**Status: ✅ SIGNED OFF 2026-08-22 — NOT YET IMPLEMENTED.** Three structural
 questions were put to the user before drafting (2026-08-22) and answered: the registry is a
 **storage-seam prefix** (not ACR/ORAS, not the AML registry); `deploy()` **requires a verified
 image** rather than building one; versioning is **immutable versions + mutable aliases**, the shape
