@@ -13,6 +13,7 @@ import os
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import pytest
 from shapely.geometry import box
 
 from fsd import api, config
@@ -189,7 +190,16 @@ def _fake_run_create_datacube(
     }).to_csv(csv_filepath, index=False)
 
 
-def _fake_flatten(*, export_folderpath, label_col=None, **kw):
+def _fake_flatten_training_data(
+    input_csv, export_folderpath, *, id_col="id", filepath_col="datacube_filepath",
+    label_col=None, adapter=None, feature_sequence=None, aggregate=None, **kw,
+):
+    """A `flatten_training_data` stand-in, patched at this level (not
+    `_flatten.flatten`) so it is exercised identically under `runner="local"` and
+    `runner="aml"` (AC11) -- the aml branch dispatches through `runners.run_aml_flatten`,
+    a code path this fake must not need to know about. Writes the REAL stamp via
+    `api._flatten_identity`, so the top-level short-circuit's independently-computed
+    `_flatten_identity_from_request` genuinely has something correct to match against."""
     fs.makedirs(export_folderpath)
     fs.save_npy(os.path.join(export_folderpath, "data.npy"), np.zeros((1, 1, 1)))
     fs.save_npy(os.path.join(export_folderpath, "ids.npy"), np.array([0]))
@@ -199,18 +209,33 @@ def _fake_flatten(*, export_folderpath, label_col=None, **kw):
     if label_col is not None:
         fs.save_npy(os.path.join(export_folderpath, "labels.npy"), np.array(["a"]))
 
+    with fs.open(input_csv, "r") as f:
+        input_df = pd.read_csv(f)
+    identity = api._flatten_identity(
+        input_df, id_col=id_col, filepath_col=filepath_col,
+        adapter=adapter, feature_sequence=feature_sequence, aggregate=aggregate,
+    )
+    api._stamp.write_stamp(os.path.join(export_folderpath, api._FLATTEN_STAMP_NAME), identity)
 
-def test_top_level_short_circuit_skips_setup_and_catalog(tmp_path, monkeypatch):
-    """AC1/AC2: a fully-resumed `create_training_data` call performs no catalog read, no
-    `setup` call, and no dispatch (D2) -- it lands the arrays and returns, off the
-    request-derived identity alone, and the returned `TrainingData` matches the first
-    run's."""
+    return api.TrainingData(
+        export_folderpath=export_folderpath, run_folderpath=os.path.dirname(input_csv),
+        n_pixels=1, n_timestamps=1, bands=["B04"],
+    )
+
+
+@pytest.mark.parametrize("runner", ["local", "aml"])
+def test_top_level_short_circuit_skips_setup_and_catalog(tmp_path, monkeypatch, runner):
+    """AC1/AC2/AC11: a fully-resumed `create_training_data` call performs no catalog
+    read, no `setup` call, and no dispatch (D2) -- it lands the arrays and returns, off
+    the request-derived identity alone, and the returned `TrainingData` matches the
+    first run's. Identical under `runner="local"` and `runner="aml"` -- the walk is
+    above the runner seam (AC11); only `run_folderpath`'s default differs."""
     cat = tmp_path / "catalog.parquet"
     cat.write_text("")  # exists for call #1's preflight; contents are never real parquet
     export = tmp_path / "export"
 
     monkeypatch.setattr(api._create_datacube, "run_create_datacube", _fake_run_create_datacube)
-    monkeypatch.setattr(api._flatten, "flatten", _fake_flatten)
+    monkeypatch.setattr(api, "flatten_training_data", _fake_flatten_training_data)
 
     gdf = gpd.GeoDataFrame(
         {"fid": [0], "crop": ["a"], "geometry": [box(0, 0, 1, 1)]}, crs="EPSG:4326",
@@ -219,8 +244,13 @@ def test_top_level_short_circuit_skips_setup_and_catalog(tmp_path, monkeypatch):
         label_polygons=gdf, catalog_filepath=str(cat),
         startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
         mosaic_days=20, bands=["B04"], id_col="fid", label_col="crop",
-        export_folderpath=str(export),
+        export_folderpath=str(export), runner=runner,
     )
+    if runner == "aml":
+        kwargs["runner_kwargs"] = {
+            "root": str(tmp_path / "root"), "cluster": "c", "environment": "e:1",
+            "identity_client_id": "i",
+        }
     td1 = api.create_training_data(**kwargs)
 
     # Prove call #2 needs neither `setup` nor the catalog: move the catalog file away,
@@ -251,7 +281,7 @@ def test_top_level_short_circuit_prints_plan_and_fetch(tmp_path, monkeypatch, ca
     export = tmp_path / "export"
 
     monkeypatch.setattr(api._create_datacube, "run_create_datacube", _fake_run_create_datacube)
-    monkeypatch.setattr(api._flatten, "flatten", _fake_flatten)
+    monkeypatch.setattr(api, "flatten_training_data", _fake_flatten_training_data)
 
     gdf = gpd.GeoDataFrame(
         {"fid": [0], "crop": ["a"], "geometry": [box(0, 0, 1, 1)]}, crs="EPSG:4326",

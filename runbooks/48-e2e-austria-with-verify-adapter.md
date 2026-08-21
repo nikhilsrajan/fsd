@@ -142,6 +142,14 @@ notebook now passes `run_folderpath=f"{ROOT}/runs/{TRAIN_RUN}"` explicitly.
 with the default timestamp folder, set `TRAIN_RUN` to that run's id (the `run_root` line in A2
 names it: `.../runs/<id>`) to adopt the cubes it already built.
 
+**Update (spec 50, 2026-08-21): the pin is no longer required.** `run_folderpath`'s default for
+`runner="aml"` is now the plain stable name `{ROOT}/runs/train` (#83 fixed, D6) — the SAME string
+`TRAIN_RUN = "train"` above already pinned by hand. The notebook can now drop the explicit
+`run_folderpath=` line and rely on the default; `TRAIN_RUN` is kept here as an explicit override
+(e.g. to run two training sets side by side under one `ROOT`), not because it is required to make
+the skip reachable at all. A partial re-run also no longer redoes `setup` for cells whose cube
+already exists — `setup` runs only for the missing shapes.
+
 ### Step B1 — Setup (cells 0–7)
 
 - **PASS if:** `RUN = demo-... (resumed)` and it is the **same string** you recorded, **and**
@@ -212,8 +220,8 @@ The run passes when **all** of:
   would fix it. If a cube looks wrong, `overwrite="datacubes"` is the hammer.
 - **#77** — cell 30's per-cell skip is still decided on the node, after dispatch. A 95%-complete
   re-run of the fan-out still starts ~299 tasks.
-- **#83** — spec 49's skips are unreachable without an explicit `run_folderpath`, and the N-of-N
-  shortfall prints nothing, so the failure is silent. `TRAIN_RUN` is the workaround; the fix
-  (deterministic default, or at least printing the full-dispatch line) is undecided.
+- **#83 — FIXED (spec 50 step 0, 2026-08-21).** `run_folderpath` no longer defaults to a fresh
+  timestamp for `runner="aml"`; the default is now the stable `{ROOT}/runs/train`, the same string
+  `TRAIN_RUN` pinned by hand. The explicit pin above is now an optional override, not a requirement.
 - **A `verify_adapter` cube does not know which archive it came from** — the resume stamp covers
   the request, not `catalog_filepath`. This is why `export_folderpath` is keyed to `RUN`.
