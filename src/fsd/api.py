@@ -689,7 +689,10 @@ def _flatten_identity(input_df: pd.DataFrame, *, id_col, filepath_col, adapter, 
     for col in ("bands", "mosaic_days", "startdate", "enddate", "scl_mask_classes",
                "mosaic_scheme"):
         if col in input_df.columns:
-            params[col] = sorted(set(input_df[col].astype(str)))
+            # F5: an empty `scl_mask_classes=[]` writes `",".join([])` == "" to the CSV,
+            # which reads back as NaN, not "" -- normalize so this matches
+            # `_flatten_identity_from_request`'s freshly-computed "" for the same request.
+            params[col] = sorted(set(input_df[col].fillna("").astype(str)))
     params["aggregate"] = _fingerprint_aggregate(aggregate)
     params["features"] = _fingerprint_features(adapter, feature_sequence)
     identity = {"cubes": cubes, "params": params}
@@ -708,8 +711,14 @@ def _flatten_identity_from_request(
     """D3 (spec 50) -- **the load-bearing decision**: the same identity `_flatten_identity`
     computes, but from the REQUEST rather than from `input.csv` (which is `setup`'s
     OUTPUT -- that is the knot §1 describes). A cube's path is derivable from
-    `(run_folderpath, window, id)` and nothing else (§3 D3), so this reads zero files: no
-    catalog, no `input.csv`, no `setup`.
+    `(run_folderpath, window, id)` and nothing else (§3 D3), so naming the targets costs
+    no catalog read, no `input.csv` read, and no `setup` call (AC4/AC5).
+
+    It does read one small file: D5's `_manifest.json`, to subtract the known-empty ids
+    (F4). That is not the knot D3 unties -- the manifest is not produced by the rule this
+    identity decides about, it is a cheap sibling record -- but it does mean the manifest
+    and `input.csv` must agree about which ids have rows, which is why
+    `create_datacube._forget_known_empty`/`_clear_known_empty` exist.
 
     Produces the exact same dict shape as `_flatten_identity(input_df, ...)` -- same
     `cubes` list, same `params` keys, same string forms -- so a caller can compare the two
@@ -720,7 +729,13 @@ def _flatten_identity_from_request(
         startdate, enddate, mosaic_days, bands=bands, mosaic_scheme=mosaic_scheme,
         scl_mask_classes=scl_mask_classes,
     )
-    ids = sorted(str(v) for v in gdf[id_col])
+    # F4: `input.csv` never gets a row for a shape `setup` found no imagery for (D5's
+    # known-empty cells), so `_flatten_identity` (computed FROM `input.csv`) never
+    # names them either. Without this, a request with even one such cell could never
+    # match its own stamp -- subtract the recorded known-empty ids here so the two
+    # identities agree once the manifest has them.
+    known_empty = _create_datacube._read_known_empty(run_folderpath, window_segment)
+    ids = sorted(str(v) for v in gdf[id_col] if str(v) not in known_empty)
     cubes = sorted(
         [id_value, os.path.join(
             _create_datacube.cube_export_folderpath(run_folderpath, window_segment, id_value),
