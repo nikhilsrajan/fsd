@@ -4,7 +4,14 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-21 (**spec 50 review'd by Opus, 5 bugs fixed by Sonnet in a worktree** —
+_Last updated: 2026-08-22 (**spec 50 fully landed + PUSHED; spec 51 (P6 `deploy`) SIGNED OFF, not
+implemented** — `main` @ `6e163c5`, **level with `origin/main`, nothing unpushed**, tree clean.
+Suite 870 passed / 90 skipped / 1 pre-existing failure (`planetary_computer` absent), ruff clean.
+**NEXT: a Sonnet `/effort medium` session implements spec 51 §9 step 0.** See the 2026-08-22 entry
+below for the full state, including two defects found on the first real AML run and the
+comment-convention work.)_
+
+_Previously: 2026-08-21 (**spec 50 review'd by Opus, 5 bugs fixed by Sonnet in a worktree** —
 `/tmp/review-fsd-spec-50.md` found 2 blockers + 3 more (F1 a cube with no `input.csv` row was
 never rebuilt, worse under the D6 shared `runs/train` folder; F2 a shortfall entirely lacking
 imagery crashed `create_training_data` instead of converging via D5; F3 the `[plan] build:` line
@@ -155,7 +162,106 @@ items are the rslearn Plan B/C decision and spec 43 (`docs/history.md`, deferred
 
 ## Most recent entry
 
-## 2026-08-21 (latest) — spec 50 §9 steps 0/1/2/4 implemented and merged; hand back to Opus for review
+## 2026-08-22 — spec 50 landed + pushed; **spec 51 (P6 `deploy`) signed off**; comment convention
+
+`main` @ `6e163c5`, **level with `origin/main`**, tree clean. Suite **870 passed / 90 skipped / 1
+pre-existing failure** (`test_missing_driver_deps_is_empty_when_everything_is_installed`,
+`planetary_computer` absent from `.venv` — reproduces on unmodified `main`), `ruff check src/ tests/
+demos/ examples/` clean.
+
+### Spec 50 — closed out over three review rounds
+
+Opus reviewed the Sonnet implementation (`/tmp/review-fsd-spec-50.md`), found 2 blockers + 3 more
+(F1–F5); Sonnet fixed those; Opus re-reviewed and found **2 defects the fixes themselves
+introduced**; then the first real AML run surfaced **2 more**. All landed and pushed.
+
+The two the re-review caught:
+
+- **F2's fix swallowed `setup`'s duplicate-`id_col` guard.** `setup` raises `ValueError` for a
+  second, unrelated reason — its deliberate refusal of a shapefile with duplicate ids (added
+  2026-07-28, after a multi-polygon ROI made `roi_to_s2_grids` repeat cell ids). The bare
+  `except ValueError` caught it, printed "no tiles in range/overlap" (false) and recorded the shapes
+  known-empty: a loud refusal turned into quietly missing training data. Fixed with a dedicated
+  `NoWorkUnitsError(ValueError)` subclass, so every existing `except ValueError` caller (notably
+  `verify_adapter`) is unaffected.
+- **F4's fix made the known-empty manifest load-bearing but write-only.** Once a cell was recorded
+  empty, a forced rebuild (`overwrite="datacubes"`/`True` — D5's documented escape hatch)
+  legitimately restored its `input.csv` row while the request-side identity kept subtracting it:
+  permanent mismatch, F4 relocated rather than fixed. Fixed with `_forget_known_empty` /
+  `_clear_known_empty`.
+
+The two the **first real AML run** surfaced (user reported `create_training_data` apparently stuck
+after `[plan] will run:`):
+
+- **Stale pre-D6 `input.csv` rows were adopted.** `_row_matches_window` compared run *parameters*,
+  which is not sufficient once D6 changed the path shape: a row written before it matches every
+  parameter while still naming the pre-digest folder. Consequence was silent — the plan announced a
+  full rebuild while the build leg, reading the row's own stale `datacube_filepath`, found the old
+  cube present and dispatched **nothing**, and the flatten stamp then recorded paths the
+  request-derived identity can never reproduce. `_row_matches_path` now makes the derived path part
+  of what makes a row current.
+- **The cube-presence sweep was a silent serial walk.** `_cube_present` is four blob round-trips per
+  cell and ran per cell, serially, in **two** places with no output: ~3600 sequential round-trips at
+  900 cells, ~20 min over the WAN, indistinguishable from a hang — while `setup` has used 16 threads
+  for the same class of I/O since spec 47. Presence now resolves from **one recursive listing per
+  `<window>` folder** (`storage.fs.find_sizes` → `_present_cube_ids_at`), compared in memory by the
+  `<id>` path leaf so it never reconciles local `abspath` against a backend's path spelling.
+  Unlistable folders fall back to per-path checks that are concurrent **and** ticked.
+
+**Notebook `notebooks/e2e_austria_aml.ipynb` updated** (cells 3 and 8) for the backward walk: the
+`[plan]` block, `TRAIN_RUN` now optional (#83 fixed), `_manifest.json`, and a prominent warning that
+D6's path change **orphans cubes built before it** — the next run is a one-time full 900-cube
+fan-out, not a resume (`20180401_20180930_m20` → `20180401_20180930_m20_cc38ae79`; `verify_adapter`
+moves to `..._1adc8caa`). The notebook is gitignored, so this is not in git.
+
+### Spec 51 — P6 `deploy`, SIGNED OFF 2026-08-22, NOT implemented
+
+`specs/51-deploy-model-registry.md` (588 lines, D1–D11, all seven §7 questions answered).
+
+**What it decides.** `deploy` binds a **saved** bundle to the inference image **proven** to run it,
+under one immutable name. Registry = a prefix on the storage seam (no new infra; `rise`'s storage
+account and RBAC already exist). Immutable versions + a content digest; **aliases** are the only
+mutable pointer (`crop-rf:3` for a version — spec 44 D7's spelling — `crop-rf@champion` for an
+alias, bare `crop-rf` refused). `deploy` refuses an unverified pair, a bundle without declared
+`requirements`, and a live adapter.
+
+**It completes `specs/44` phase 2 (D7/D8)**, proposed in July and never signed off, and finally
+answers spec 44's §7 Q7 (MLflow — no, out of scope; analysis retained in §6 so it can be reopened
+cheaply). It removes spec 44 D8's **measured 627 s per run** of redundant bundle re-upload.
+
+**D11 is the one to remember:** the central registry location is undecided *on purpose*, so nothing
+the registry writes may contain an absolute path, a URL, or the registry root. Relocation is then a
+copy plus a changed `registry=`, verified by re-computing the D2 digest. `migrate` therefore ships
+in §9 **step 0**, not later.
+
+**Left open deliberately, both recorded in §6/§7:** where the central registry finally lives, and
+public model hosting (Hugging Face as a separate `fsd.publish` verb, *not* a D10 backend — a public
+bundle advertising a private `fsd-infer-sklearn:6` would promise a binding no outsider can act on).
+
+### Comment convention (issue #85)
+
+`src/fsd` measured at 28% prose / **0.49 prose lines per code line**, 986 backward references across
+422 functions. Classifying 3,188 substantive prose lines: 18% pure development history, 3% history
+around a why, 11% pure rationale, 68% plain description — so the narrative is not the bulk; the
+**tag density** is what makes it read like a changelog. `docs/reference/code-comments.md` states the
+rule as **cut the changelog, keep the hazard**, applied to `storage/` as a worked sample (1.05 →
+0.82 prose per code line, 27 → 2 refs, proven comments-only by comparing ASTs with docstrings
+stripped). The rest of the sweep is **issue #85**, to be done *before* the next major development
+push. `fs.py`'s reverted `_write_with_retry` block moved to `DROPPED.md`'s new "Approaches tried
+inside fsd and reverted" section.
+
+### NEXT — implement spec 51 (Sonnet, `/effort medium`)
+
+Against `specs/51-deploy-model-registry.md` §9, in order. **Step 0 first and alone**:
+`fsd.model.registry` — layout, `publish`, `resolve`, `migrate`, `_aliases.json`, the content digest.
+Pure local-filesystem unit tests, no verb touched, no Azure. Steps 1–3 (resolution in
+`api._ensure_bundle`; `deploy` itself; the `[model]` line) follow.
+
+Known trap for that session: `EnterWorktree` branches from `origin/main`; and tests inside a
+worktree import the **wrong** `fsd` unless `PYTHONPATH=$PWD/src` is set, because the shared `.venv`'s
+editable install points at the main checkout's `src/`.
+
+## 2026-08-21 — spec 50 §9 steps 0/1/2/4 implemented and merged; hand back to Opus for review
 
 A Sonnet session (`/effort medium`) implemented spec 50 against the signed-off spec, per
 `HANDOFF-spec-50.md`. Steps landed in order, each its own commit, `--no-ff` merged to `main`
@@ -211,7 +317,7 @@ the definition of done) — in particular the design call in step 4 (purge-other
 narrower than D9) and the `overwrite_setup_csv=build_overwrite` wiring are the two judgment calls
 most worth a second look.
 
-## 2026-08-21 (latest) — **spec 50 signed off**: resolve backwards from the target; #83/#84 filed
+## 2026-08-21 — **spec 50 signed off**: resolve backwards from the target; #83/#84 filed
 
 The user asked what the current skipping approach is and proposed the Snakemake **rule** shape —
 check the output, and if it must be produced, check its inputs, recursively. Investigating it turned
