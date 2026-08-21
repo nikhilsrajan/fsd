@@ -1563,6 +1563,25 @@ def _cell_coverage(grids: gpd.GeoDataFrame, catalog_gdf, startdate, enddate) -> 
     return coverage
 
 
+_VERIFY_ADAPTER_RESULT_NAME = "_result.json"
+
+
+def _finish_verify_adapter(export_folderpath: str, result: dict) -> dict:
+    """D8: `_result.json` is one of the artifacts `export_folderpath` is promised to hold --
+    the verdict is a FILE the user (or a run-book, spec 24) can paste back, not only a return
+    value that dies with the process. Every exit from `verify_adapter` goes through here, so a
+    failure verdict lands on disk exactly as a passing one does."""
+    fs.write_text(
+        os.path.join(export_folderpath, _VERIFY_ADAPTER_RESULT_NAME),
+        json.dumps(result, indent=2, sort_keys=True, default=str),
+    )
+    if not result["pass"]:
+        print(f"[verify_adapter] FAIL -- {result['error']} "
+              f"See {os.path.join(export_folderpath, _VERIFY_ADAPTER_RESULT_NAME)}.",
+              flush=True)
+    return result
+
+
 def verify_adapter(
     model,
     *,
@@ -1784,9 +1803,16 @@ def verify_adapter(
             build_row = pd.read_csv(f).iloc[0]
         # D5: landing is storage.transfer, exactly as create_training_data lands its
         # compact array -- the local cube becomes a first-class artifact.
+        #
+        # force=True: reaching this branch MEANS the local cube is not trusted (no stamp,
+        # or the artifacts were absent/empty). Landing with force=False would skip a file
+        # that merely EXISTS -- e.g. a cube left behind after the caller deleted
+        # `_cube_stamp.json` to get past the "different request" refusal above -- and the
+        # `write_stamp` below would then record THIS request's identity over the previous
+        # request's pixels. Existence is not identity (D5, spec 47 D1's precedent).
         _land_local(
             os.path.dirname(str(build_row["datacube_filepath"])), export_folderpath,
-            ["datacube.npy", "metadata.pickle.npy"],
+            ["datacube.npy", "metadata.pickle.npy"], force=True,
         )
         _stamp.write_stamp(stamp_filepath, identity)
 
@@ -1846,12 +1872,12 @@ def verify_adapter(
     if want_t and cube_t != want_t:
         result["status"] = "fail"
         result["error"] = f"cube T={cube_t} but adapter n_timestamps={want_t}."
-        return result
+        return _finish_verify_adapter(export_folderpath, result)
 
     if not written:
         result["status"] = "fail"
         result["error"] = f"no output written for cell={chosen_cell!r}."
-        return result
+        return _finish_verify_adapter(export_folderpath, result)
 
     import rasterio
 
@@ -1873,14 +1899,14 @@ def verify_adapter(
         result["error"] = (
             f"output dtype={arr.dtype} but adapter declares output_dtype={output_dtype!r}."
         )
-        return result
+        return _finish_verify_adapter(export_folderpath, result)
 
     result["pass"] = True
     print(f"[verify_adapter] pass -- open {output_filepath} and {grids_filepath} in QGIS. "
           f"This checks the ADAPTER only: nothing about the image (fsd.model.verify_image) "
           f"and nothing about scale (fsd.run_inference; one cell is not the fan-out).",
           flush=True)
-    return result
+    return _finish_verify_adapter(export_folderpath, result)
 
 
 def deploy(model_bundle, *, storage=None, **kw):

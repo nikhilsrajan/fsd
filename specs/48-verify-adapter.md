@@ -5,12 +5,22 @@ summary: Close the gap between "the adapter imports" and a 299-cell fan-out — 
 
 # Spec 48 — `fsd.verify_adapter`: one real cube, locally, before the fan-out
 
-**Status: ✅ SIGNED OFF 2026-08-20 — NOT YET IMPLEMENTED.** Raised by the user 2026-08-20, from
+**Status: ✅ IMPLEMENTED 2026-08-20, REVIEWED 2026-08-21.** Raised by the user 2026-08-20, from
 the same AML e2e session that produced specs 45–47. **All six §7 questions were answered by the
 user at sign-off**; Q1 (the name) was then reopened by the user and settled a second time — see
 D1. §8's external cross-validation was run at sign-off and is complete: it confirmed §1's
 taxonomy, validated D7's metric set with no gap, and its finding about pytest collection is what
-retired the interim `test_adapter` name. Nothing in `src/` is touched yet.
+retired the interim `test_adapter` name.
+
+**Implemented** in `16f688c` (`fsd.verify_adapter` in `src/fsd/api.py`, the shared
+`fsd.workflows.stamp` helper, `tests/test_verify_adapter.py`), all 14 §4 criteria met.
+**Opus review 2026-08-21** found one D8 gap and one D5 gap, both since fixed: `_result.json`
+was returned but never written to `export_folderpath` (D8 lists it as an artifact, and spec
+24's run-book protocol is the user pasting that file back), and the cube landing used
+`_land_local(force=False)`, so a cube sitting in `export_folderpath` without a matching stamp
+was skipped as "already landed" and then stamped with the NEW request's identity — existence
+standing in for identity, the exact substitution D5 exists to prevent. Both carry red-first
+regression tests.
 
 > **The one sentence:** every gate fsd has today asks *"would the adapter import?"*; none asks
 > *"does `predict` produce sensible output on real pixels?"* — and the first thing that does is a

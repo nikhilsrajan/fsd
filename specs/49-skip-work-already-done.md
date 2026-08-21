@@ -5,12 +5,15 @@ summary: Extend spec 47 Part C's "don't redo what's done" from the download leg 
 
 # Spec 49 — skip the work that is already done: cubes, then flatten
 
-**Status: ✅ SIGNED OFF 2026-08-20 — NOT YET IMPLEMENTED.** **All six §7 questions were signed
+**Status: ✅ IMPLEMENTED 2026-08-20, REVIEWED 2026-08-21.** **All six §7 questions were signed
 off on their proposed defaults** (user, 2026-08-20), and **§8's external cross-validation is
 complete**. It confirmed D3's central choice against Bazel's and DVC's own reasoning, and
 **strengthened** D3's Azure argument: a blob's `Last-Modified` is not merely unreliable, it is
 read-only and cannot be back-dated by any means — so for the blob side, declining timestamps was
-never a judgement call. Nothing in `src/` is touched yet. Raised by the user 2026-08-20, immediately
+never a judgement call. **Implemented** in `16f688c` (the build-leg shortfall in
+`workflows/create_datacube.py`, the flatten stamp in `api.flatten_training_data`, the shared
+`fsd.workflows.stamp` helper, `overwrite=` on `create_training_data`), all 11 §4 criteria met;
+**Opus-reviewed 2026-08-21** with no defect found in this spec's legs. Raised by the user 2026-08-20, immediately
 after signing off spec 48 (then `test_adapter`, now `verify_adapter`): *"just like how in create_training_data, downloading was avoided if all
 required downloads were already present, creation of datacubes should also be skipped if all
 datacubes already present. And if all datacubes were already present and training data numpy
@@ -230,7 +233,7 @@ full run's. A skip is an optimisation, never a different return shape.
 2. **[SIGNED OFF — default stands]** **Should cube presence be openable-and-well-formed, or merely non-empty?** A truncated cube
    passes D2 today, exactly as a truncated download passes spec 47 D9. *Default proposed:
    non-empty by default, with an opt-in deeper check — and file the atomic-write issue for cubes as
-   the real fix, mirroring #74.*
+   the real fix, mirroring #74.* **Filed as #76 (2026-08-21).**
 3. **[SIGNED OFF — default stands]** **Is `overwrite=` the right spelling**, given `run_inference` already has a boolean `overwrite`?
    A string-or-bool union on one verb and a bool on another is a small inconsistency. *Default
    proposed: accept both spellings, document the string form.*
@@ -243,7 +246,7 @@ full run's. A skip is an optimisation, never a different return shape.
    "were these artifacts derived from exactly this request?".*
 6. **[SIGNED OFF — default stands]** **Does the same treatment belong on `run_inference`'s build leg?** It has a per-cell output skip
    but pays the same cold start to discover it. *Default proposed: out of scope here, file an
-   issue.*
+   issue.* **Filed as #77 (2026-08-21).**
 
 ---
 
