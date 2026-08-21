@@ -312,6 +312,85 @@ def _cube_present(datacube_filepath: str) -> bool:
     return True
 
 
+_CUBE_FILES = ("datacube.npy", "metadata.pickle.npy")
+
+
+def _present_cube_ids_at(window_folderpath: str) -> set[str] | None:
+    """The ids whose cube is fully built, from ONE recursive listing of the window folder.
+
+    `_cube_present` costs four blob round-trips per cell (`exists` + `size`, twice), and
+    both driver-side sweeps run it per cell, serially: 900 cells was ~3600 sequential
+    round-trips over the WAN with no output, which reads as a hang (2026-08-21). A
+    directory walk answers the same question in a couple of paginated requests.
+
+    Keyed by the `<id>` path leaf, never the full path, so it does not have to reconcile
+    `os.path.abspath` (local) against a backend's own path spelling (`abfss://` -> adlfs
+    returns `container/...`). Returns `None` when the folder cannot be listed at all --
+    including the ordinary "nothing built yet" case -- and the caller falls back to
+    per-path checks, so this is a fast path, never a new source of truth.
+    """
+    try:
+        listing = fs.find_sizes(window_folderpath)
+    except Exception:  # noqa: BLE001 - unlistable (absent, or a backend without find)
+        return None
+    have: dict[str, set[str]] = {}
+    for path, nbytes in listing.items():
+        if nbytes <= 0:
+            continue  # a zero-byte artifact is not present (D2/#74)
+        parts = path.replace("\\", "/").rstrip("/").split("/")
+        if len(parts) < 2 or parts[-1] not in _CUBE_FILES:
+            continue
+        have.setdefault(parts[-2], set()).add(parts[-1])
+    return {id_value for id_value, names in have.items() if len(names) == len(_CUBE_FILES)}
+
+
+def _cube_present_many(
+    datacube_filepaths, *, label: str, max_concurrent: int = config.SETUP_MAX_CONCURRENT,
+) -> dict[str, bool]:
+    """`_cube_present` for many cubes: concurrent (latency-bound blob I/O, exactly
+    `setup`'s own argument for threads) and ticked, so a long sweep is never silent.
+    The fallback for when `_present_cube_ids` cannot list the folder."""
+    paths = list(datacube_filepaths)
+    out: dict[str, bool] = {}
+    if not paths:
+        return out
+    _tick = _progress.ticker(len(paths), label, unit="cubes")
+    _tick(0, force=True)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent) as pool:
+        futures = {pool.submit(_cube_present, p): p for p in paths}
+        for done, fut in enumerate(concurrent.futures.as_completed(futures), start=1):
+            out[futures[fut]] = fut.result()
+            _tick(done)
+    _tick(len(paths), force=True)
+    return out
+
+
+def _presence_for_paths(datacube_filepaths, *, label: str) -> dict[str, bool]:
+    """`{datacube_filepath: is the cube fully built}` for many cubes at once.
+
+    The fast path is one recursive listing per `<window>` folder (`_present_cube_ids_at`);
+    anything that cannot be listed falls back to concurrent, ticked per-path checks. Both
+    driver-side sweeps -- the announced plan and the dispatch decision -- go through here,
+    so neither can be the silent serial walk they both were (2026-08-21).
+    """
+    paths = list(datacube_filepaths)
+    by_folder: dict[str, list[str]] = {}
+    for path in paths:
+        by_folder.setdefault(os.path.dirname(os.path.dirname(path)), []).append(path)
+
+    out: dict[str, bool] = {}
+    unresolved: list[str] = []
+    for window_folderpath, group in by_folder.items():
+        present_ids = _present_cube_ids_at(window_folderpath)
+        if present_ids is None:
+            unresolved.extend(group)
+            continue
+        for path in group:
+            out[path] = os.path.basename(os.path.dirname(path)) in present_ids
+    out.update(_cube_present_many(unresolved, label=label))
+    return out
+
+
 def _load_shapes_gdf(shapefilepath: str) -> gpd.GeoDataFrame:
     with fs.open(shapefilepath, "rb") as f:
         return gpd.read_file(io.BytesIO(f.read()))
@@ -346,6 +425,34 @@ def _row_matches_window(
             # freshly-written request value, purging every row on every call.
             got = "" if pd.isna(got) else str(got)
         if got != want_val:
+            return False
+    return True
+
+
+def _row_matches_path(row, *, run_folderpath: str, window_segment: str) -> bool:
+    """Does an existing `input.csv` row name the path THIS request derives for its id?
+
+    `_row_matches_window` compares the run PARAMETERS, which is not sufficient on its own:
+    spec 50 D6 changed the path shape (the `<window>` segment gained a `_<params_key>`
+    digest), so a row written before that change matches on every parameter and still
+    points at the OLD folder. Adopting it means the new addressing silently never takes
+    effect -- the plan announces a full rebuild while the build leg, reading the row's own
+    stale `datacube_filepath`, finds the old cube present and dispatches nothing. Worse,
+    the flatten stamp then records old paths that the request-derived identity can never
+    reproduce, so the top-level short-circuit is dead for that request forever.
+
+    So the path is part of what makes a row current. A row that fails this is purged and
+    its id goes back into the shortfall, which regenerates the row at the right path.
+    (Found on the first real AML run after D6 landed, 2026-08-21.)
+    """
+    if COL_ID not in row.index:
+        return False
+    expected = cube_export_folderpath(run_folderpath, window_segment, row[COL_ID])
+    for col, want in (("export_folderpath", expected),
+                      ("datacube_filepath", os.path.join(expected, "datacube.npy"))):
+        if col not in row.index or pd.isna(row[col]):
+            return False
+        if str(row[col]) != want:
             return False
     return True
 
@@ -470,6 +577,8 @@ def build_shortfall_only(
                     row, bands=bands, mosaic_days=mosaic_days, startdate=startdate,
                     enddate=enddate, mosaic_scheme=mosaic_scheme,
                     scl_mask_classes=scl_mask_classes,
+                ) and _row_matches_path(
+                    row, run_folderpath=run_folderpath, window_segment=window_segment,
                 ),
                 axis=1,
             )
@@ -480,6 +589,20 @@ def build_shortfall_only(
         if len(existing_df) and COL_ID in existing_df.columns:
             existing_ids = set(existing_df[COL_ID].astype(str))
 
+    # ONE presence sweep for the whole request, up front -- a listing where the backend
+    # allows it, concurrent+ticked checks otherwise. This used to be two separate serial
+    # walks (once in the loop below, once for the plan line), each four blob round-trips
+    # per cell: ~3600 sequential round-trips at 900 cells, silent, ~20 min over the WAN.
+    cube_filepaths = {
+        str(srow[id_col]): os.path.join(
+            cube_export_folderpath(run_folderpath, window_segment, srow[id_col]),
+            "datacube.npy",
+        )
+        for _, srow in shapes_gdf.iterrows()
+    }
+    presence = _presence_for_paths(cube_filepaths.values(), label="plan")
+    cube_ids = {id_value for id_value, path in cube_filepaths.items() if presence.get(path)}
+
     present_ids: list[str] = []
     missing_srows: list = []
     for _, srow in shapes_gdf.iterrows():
@@ -487,14 +610,13 @@ def build_shortfall_only(
         if id_value in existing_ids:
             present_ids.append(id_value)
             continue
-        cube_folder = cube_export_folderpath(run_folderpath, window_segment, srow[id_col])
-        datacube_filepath = os.path.join(cube_folder, "datacube.npy")
-        if _cube_present(datacube_filepath):
+        if id_value in cube_ids:
             # F1: a cube with no row is not "satisfied" -- nothing downstream (the
             # build leg, flatten) ever looks at the cube directly, only at
             # `input.csv` rows, and nothing else ever calls `setup` for this id. Route
             # it through `setup` (idempotent, and `_build_shortfall` still skips the
-            # cube itself) so the row comes back.
+            # cube itself) so the row comes back. A real cube also overrules a stale
+            # known-empty record, which is why this branch is tested first.
             missing_srows.append(srow)
         elif id_value in known_empty:
             pass  # D5: known-empty, satisfied -- never rediscovered
@@ -507,12 +629,7 @@ def build_shortfall_only(
     # row with no cube behind it yet; count that as missing for the printed line
     # without changing whether `setup` reruns for it (it doesn't need to -- the row is
     # already correct, only the runner needs to build the cube).
-    cube_missing_ids = {
-        id_value for id_value in present_ids
-        if not _cube_present(os.path.join(
-            cube_export_folderpath(run_folderpath, window_segment, id_value), "datacube.npy"
-        ))
-    }
+    cube_missing_ids = {i for i in present_ids if i not in cube_ids}
     n_total = len(shapes_gdf)
     n_missing = len(missing_srows)
     n_known_empty = n_total - len(present_ids) - n_missing
@@ -591,7 +708,8 @@ def _build_shortfall(csv_filepath: str, *, force: bool) -> tuple[str, int, int]:
     n_total = len(df)
     if force:
         return csv_filepath, n_total, n_total
-    missing_mask = ~df["datacube_filepath"].apply(_cube_present)
+    presence = _presence_for_paths(df["datacube_filepath"], label="build")
+    missing_mask = ~df["datacube_filepath"].map(lambda p: presence.get(p, False))
     n_missing = int(missing_mask.sum())
     if n_missing in (0, n_total):
         return csv_filepath, n_total, n_missing

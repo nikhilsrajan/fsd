@@ -28,6 +28,30 @@ def _write_cube(folder, *, empty_metadata=False):
         fs.save_npy(os.path.join(folder, "metadata.pickle.npy"), {"a": 1}, allow_pickle=True)
 
 
+_WINDOW = dict(startdate="2018-01-01", enddate="2018-02-01", bands=["B04"],
+               scl_mask_classes=[0], mosaic_days=20)
+
+
+def _cube_dir(run_folder, id_value):
+    """The folder THIS request derives for `id_value` (spec 50 D6, plus the 2026-08-21
+    fix that makes a row current only if it names that path). These tests used to
+    hand-build `run_folder/<id>/`, which a real `setup` has never written -- such a row
+    is now purged as stale, so the fixtures use the derived path like everything else."""
+    from fsd import config
+    segment = cd.window_folder_segment(
+        _WINDOW["startdate"], _WINDOW["enddate"], _WINDOW["mosaic_days"],
+        bands=_WINDOW["bands"], mosaic_scheme=config.MOSAIC_SCHEME,
+        scl_mask_classes=_WINDOW["scl_mask_classes"],
+    )
+    return cd.cube_export_folderpath(str(run_folder), segment, id_value)
+
+
+def _row(run_folder, id_value):
+    folder = _cube_dir(run_folder, id_value)
+    return {"id": id_value, "export_folderpath": folder,
+            "datacube_filepath": os.path.join(folder, "datacube.npy")}
+
+
 def _write_csv(tmp_path, rows, name="input.csv"):
     csv_fp = str(tmp_path / name)
     pd.DataFrame(rows).to_csv(csv_fp, index=False)
@@ -67,11 +91,9 @@ def _call(csv_fp, run_folder, *, ids=(), **kw):
 
 def test_build_skip_when_all_cubes_present(tmp_path, monkeypatch, capsys):
     run_folder = tmp_path / "run"
-    cube_dir = run_folder / "cellA"
+    cube_dir = _cube_dir(run_folder, "cellA")
     _write_cube(cube_dir)
-    csv_fp = _write_csv(tmp_path, [
-        {"id": "cellA", "datacube_filepath": str(cube_dir / "datacube.npy")},
-    ])
+    csv_fp = _write_csv(tmp_path, [_row(run_folder, "cellA")])
 
     called = []
     monkeypatch.setattr(cd.runners, "run_local", lambda *a, **kw: called.append(a))
@@ -87,13 +109,8 @@ def test_build_skip_when_all_cubes_present(tmp_path, monkeypatch, capsys):
 
 def test_build_skip_partial_dispatches_only_missing(tmp_path, monkeypatch, capsys):
     run_folder = tmp_path / "run"
-    present_dir = run_folder / "present"
-    _write_cube(present_dir)
-    missing_dir = run_folder / "missing"
-    csv_fp = _write_csv(tmp_path, [
-        {"id": "present", "datacube_filepath": str(present_dir / "datacube.npy")},
-        {"id": "missing", "datacube_filepath": str(missing_dir / "datacube.npy")},
-    ])
+    _write_cube(_cube_dir(run_folder, "present"))
+    csv_fp = _write_csv(tmp_path, [_row(run_folder, "present"), _row(run_folder, "missing")])
 
     seen = {}
 
@@ -114,10 +131,7 @@ def test_build_full_dispatch_when_nothing_present_prints_nothing(tmp_path, monke
     """D1: shortfall == total (today's full-dispatch shape) prints nothing -- mirrors
     spec 47's `_mpc_catalog_shortfall` call site exactly."""
     run_folder = tmp_path / "run"
-    csv_fp = _write_csv(tmp_path, [
-        {"id": "a", "datacube_filepath": str(run_folder / "a" / "datacube.npy")},
-        {"id": "b", "datacube_filepath": str(run_folder / "b" / "datacube.npy")},
-    ])
+    csv_fp = _write_csv(tmp_path, [_row(run_folder, "a"), _row(run_folder, "b")])
     seen = {}
 
     def fake_run_local(dispatch_csv, **kw):
@@ -149,11 +163,9 @@ def test_cube_present_requires_both_files_non_empty(tmp_path):
 
 def test_overwrite_forces_full_rebuild(tmp_path, monkeypatch):
     run_folder = tmp_path / "run"
-    cube_dir = run_folder / "cellA"
+    cube_dir = _cube_dir(run_folder, "cellA")
     _write_cube(cube_dir)
-    csv_fp = _write_csv(tmp_path, [
-        {"id": "cellA", "datacube_filepath": str(cube_dir / "datacube.npy")},
-    ])
+    csv_fp = _write_csv(tmp_path, [_row(run_folder, "cellA")])
 
     dispatched = []
 
@@ -166,8 +178,8 @@ def test_overwrite_forces_full_rebuild(tmp_path, monkeypatch):
     _call(csv_fp, run_folder, ids=["cellA"], overwrite=True)
     assert dispatched == [csv_fp]  # every row dispatched again
     # the stale artifacts were cleared, not merely ignored.
-    assert not os.path.exists(cube_dir / "datacube.npy")
-    assert not os.path.exists(cube_dir / "metadata.pickle.npy")
+    assert not os.path.exists(os.path.join(cube_dir, "datacube.npy"))
+    assert not os.path.exists(os.path.join(cube_dir, "metadata.pickle.npy"))
 
 
 # --- AC6: no modification time is read anywhere in the build-skip logic ------
@@ -176,7 +188,8 @@ def test_no_mtime_read_in_build_skip_logic():
     src = "".join(inspect.getsource(fn) for fn in (
         cd._cube_present, cd._build_shortfall, cd._force_rebuild, cd.run_create_datacube,
         cd.build_shortfall_only, cd._read_known_empty, cd._record_known_empty,
-        cd._row_matches_window,
+        cd._row_matches_window, cd._row_matches_path, cd._present_cube_ids_at,
+        cd._presence_for_paths, cd._cube_present_many,
     ))
     for forbidden in ("getmtime", "st_mtime", "os.stat", ".stat()"):
         assert forbidden not in src
