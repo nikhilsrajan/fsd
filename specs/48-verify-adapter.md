@@ -19,8 +19,16 @@ was returned but never written to `export_folderpath` (D8 lists it as an artifac
 24's run-book protocol is the user pasting that file back), and the cube landing used
 `_land_local(force=False)`, so a cube sitting in `export_folderpath` without a matching stamp
 was skipped as "already landed" and then stamped with the NEW request's identity — existence
-standing in for identity, the exact substitution D5 exists to prevent. Both carry red-first
-regression tests.
+standing in for identity, the exact substitution D5 exists to prevent. A third defect surfaced
+2026-08-21 while wiring this verb into `notebooks/e2e_austria_aml.ipynb`: **`runner="aml"` could
+not have worked at all.** The build used `export_folderpath/_build` as its `run_folderpath`, and
+`create_datacube.setup` turns a local `run_folderpath` into an absolute *driver* path before
+writing it into `input.csv` — so the node was told to write the cube to a path that does not exist
+on it. AC1 did not catch it because its test monkeypatches `run_create_datacube` wholesale, and
+AC10's real end-to-end runs `runner="local"`. The build now roots on
+`runner_kwargs["root"]/runs/<run_id>/_verify_adapter` (blob), exactly as `create_training_data`
+roots its own run, and the cube is transferred DOWN into the local `export_folderpath` per D5.
+All three carry red-first regression tests.
 
 > **The one sentence:** every gate fsd has today asks *"would the adapter import?"*; none asks
 > *"does `predict` produce sensible output on real pixels?"* — and the first thing that does is a

@@ -17,7 +17,11 @@ carried over (renames, restructures, behavioral tweaks). Pure removals go in
   trusted. Returns a `_result.json`-shaped verdict naming what it did NOT check (the image, scale,
   any other cell) — and **writes that verdict to `export_folderpath/_result.json`** on every exit,
   passing or failing, so it can be pasted back into a run-book (spec 24) rather than dying with the
-  process.
+  process. On `runner="aml"` the one cell is built under
+  `runner_kwargs["root"]/runs/<run_id>/_verify_adapter` on blob (so `runner_kwargs["root"]` is now
+  required for `runner="aml"`, as it already was for `create_training_data`) and transferred DOWN
+  into the local `export_folderpath` — building under the local folder would have written an
+  absolute *driver* path into `input.csv` for the node to write the cube to.
 - **Cell selection is deterministic by default** (largest in-window catalog coverage, tie-broken by
   id) so two runs over the same roi/window pick the same cell; `cell="random"` opts in to a random
   pick and prints the chosen id so it can be pinned back with `cell=`. `grids.geojson` is always

@@ -383,3 +383,70 @@ def test_cube_without_a_matching_stamp_is_relanded_not_reused(tmp_path, monkeypa
     fsd.verify_adapter(_FakeAdapter(), **kwargs)
     assert calls["build"] == 2                       # no stamp -> rebuild
     assert float(fs.load_npy(landed).max()) == 0.0   # and the sentinel was overwritten
+
+
+# --- D4/D5: runner="aml" builds where the NODE can write, not on the driver ----
+
+def _patch_build_capturing_paths(monkeypatch):
+    """Like `_patch_build_and_infer`'s build half, but records the run/csv paths the verb
+    hands to the per-cell unit -- what the NODE would be told to write."""
+    seen = {}
+
+    def fake_run_create_datacube(*, csv_filepath, run_folderpath, shapefilepath, **kw):
+        seen["csv_filepath"] = csv_filepath
+        seen["run_folderpath"] = run_folderpath
+        seen["shapefilepath"] = shapefilepath
+        cube_dir = os.path.join(os.path.dirname(csv_filepath), "cellbuild")
+        fs.makedirs(cube_dir)
+        fs.save_npy(os.path.join(cube_dir, "datacube.npy"),
+                    np.zeros((T, 2, 2, len(BANDS)), dtype="float32"))
+        fs.save_npy(os.path.join(cube_dir, "metadata.pickle.npy"),
+                    {"timestamps": list(range(T)), "bands": BANDS}, allow_pickle=True)
+        pd.DataFrame(
+            {"datacube_filepath": [os.path.join(cube_dir, "datacube.npy")]}
+        ).to_csv(csv_filepath, index=False)
+
+    monkeypatch.setattr(_create_datacube, "run_create_datacube", fake_run_create_datacube)
+    return seen
+
+
+def test_aml_builds_under_the_blob_root_not_the_local_export(tmp_path, monkeypatch):
+    """`create_datacube.setup` turns a LOCAL `run_folderpath` into an absolute DRIVER path
+    and writes it into `input.csv`; on `runner="aml"` the node reads that csv, so the build
+    must be rooted on blob (`runner_kwargs["root"]`) or the node is sent to write the cube
+    at a path that does not exist on it. `export_folderpath` stays local -- it is where the
+    cube is LANDED, never where it is built."""
+    _patch_grid(monkeypatch)
+    _patch_build_and_infer(monkeypatch)          # installs the inference fake
+    seen = _patch_build_capturing_paths(monkeypatch)   # ... then override the build half
+    cat = _catalog(tmp_path)
+    export = str(tmp_path / "export")
+    root = str(tmp_path / "blobroot")
+
+    result = fsd.verify_adapter(
+        _FakeAdapter(), roi=ROI, catalog_filepath=cat,
+        startdate=JAN1, enddate=JAN60, mosaic_days=20, bands=BANDS,
+        export_folderpath=export, cell="cell_a",
+        runner="aml", runner_kwargs={"root": root, "run_id": "RUNID"},
+    )
+
+    assert seen["run_folderpath"] == f"{root}/runs/RUNID/_verify_adapter"
+    assert not seen["run_folderpath"].startswith(export)
+    assert seen["csv_filepath"].startswith(root)
+    # and the cube still LANDS locally, in export_folderpath (D5/D8)
+    assert os.path.exists(os.path.join(export, "datacube.npy"))
+    assert os.path.exists(os.path.join(export, "metadata.pickle.npy"))
+    assert result["metrics"]["cube_filepath"] == os.path.join(export, "datacube.npy")
+
+
+def test_aml_without_root_raises_naming_it(tmp_path, monkeypatch):
+    _patch_grid(monkeypatch)
+    _patch_build_and_infer(monkeypatch)
+    cat = _catalog(tmp_path)
+    with pytest.raises(api.PreflightError, match=r"root"):
+        fsd.verify_adapter(
+            _FakeAdapter(), roi=ROI, catalog_filepath=cat,
+            startdate=JAN1, enddate=JAN60, mosaic_days=20, bands=BANDS,
+            export_folderpath=str(tmp_path / "export"), cell="cell_a",
+            runner="aml", runner_kwargs={"cluster": "c"},
+        )

@@ -1645,7 +1645,11 @@ def verify_adapter(
     `runner="local"` (default) builds from a local catalog end-to-end, no network -- what the
     test suite uses. `runner="aml"` (the case that matters in practice) builds the ONE
     cell's datacube through the same per-cell unit of work `create_training_data` fans out
-    (`fsd.workflows.create_datacube.run_create_datacube`, D4) -- no new build path, and the
+    (`fsd.workflows.create_datacube.run_create_datacube`, D4), under
+    `runner_kwargs["root"]/runs/<run_id>/_verify_adapter` on blob (required for
+    `runner="aml"`: the node has to be able to write the cube, and a local build folder
+    would name a driver path it cannot reach) -- the cube is then transferred DOWN into the
+    local `export_folderpath`. No new build path, and the
     inference leg is a one-row call into `fsd.workflows.infer_only_task.run_infer_only` (D6)
     -- the SAME unit the cluster runs, so no branch anywhere may special-case this verb.
 
@@ -1669,6 +1673,8 @@ def verify_adapter(
         errs.append("export_folderpath is required.")
     if cell is not None and not isinstance(cell, str):
         errs.append(f"cell must be a string id, 'random', or None (got {cell!r}).")
+    if runner == "aml" and not (runner_kwargs or {}).get("root"):
+        errs.append("runner_kwargs['root'] (the blob working root) is required for runner='aml'.")
 
     spec = _model_spec(model)
     required = set(spec.get("required_bands") or [])
@@ -1782,7 +1788,24 @@ def verify_adapter(
         with fs.open(cell_filepath, "w") as f:
             f.write(cell_row.to_json(default=str))
 
-        build_folderpath = os.path.join(export_folderpath, "_build")
+        # D4/D5: the cube is built by the existing per-cell unit of work, so the BUILD has
+        # to live somewhere that unit's WORKER can write. For runner="aml" that is the blob
+        # working root, laid out exactly as `create_training_data` lays out its own run --
+        # `create_datacube.setup` turns a local `run_folderpath` into an ABSOLUTE DRIVER
+        # path (`os.path.abspath`, create_datacube.py) and writes it into `input.csv`, so a
+        # local build folder would send the node off to write the cube at a path that does
+        # not exist on it. `export_folderpath` stays local throughout: it is where the cube
+        # is LANDED (D5's `storage.transfer`), never where it is built.
+        if runner == "aml":
+            rk = runner_kwargs or {}
+            build_run_id = rk.get("run_id") or pd.Timestamp.now(tz="UTC").strftime(
+                "%Y%m%dT%H%M%SZ"
+            )
+            build_folderpath = (
+                f"{str(rk['root']).rstrip('/')}/runs/{build_run_id}/_verify_adapter"
+            )
+        else:
+            build_folderpath = os.path.join(export_folderpath, "_build")
         build_csv_filepath = os.path.join(build_folderpath, "input.csv")
         try:
             _create_datacube.run_create_datacube(
