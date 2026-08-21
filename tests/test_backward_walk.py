@@ -300,6 +300,34 @@ def test_top_level_short_circuit_prints_plan_and_fetch(tmp_path, monkeypatch, ca
     assert "[fetch] export ->" in out
 
 
+def test_stale_target_prints_plan_before_any_work(tmp_path, monkeypatch, capsys):
+    """AC9/D7, the other branch: the FIRST call (nothing built yet) prints `[plan]
+    target: ... -> STALE (...)`, the flatten cube count, and `[plan] will run: ...`
+    before `run_create_datacube` is ever invoked."""
+    cat = tmp_path / "catalog.parquet"
+    cat.write_text("")
+    export = tmp_path / "export"
+
+    monkeypatch.setattr(api._create_datacube, "run_create_datacube", _fake_run_create_datacube)
+    monkeypatch.setattr(api, "flatten_training_data", _fake_flatten_training_data)
+
+    gdf = gpd.GeoDataFrame(
+        {"fid": [0], "crop": ["a"], "geometry": [box(0, 0, 1, 1)]}, crs="EPSG:4326",
+    )
+    api.create_training_data(
+        label_polygons=gdf, catalog_filepath=str(cat),
+        startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
+        mosaic_days=20, bands=["B04"], id_col="fid", label_col="crop",
+        export_folderpath=str(export),
+    )
+    out = capsys.readouterr().out
+    assert "[plan] target:" in out and "STALE" in out and "no stamp" in out
+    assert "[plan]   flatten: 1 cubes required" in out
+    assert "[plan] will run: build -> flatten -> land" in out
+    # D7: announced before any work -- the STALE line precedes the will-run line.
+    assert out.index("STALE") < out.index("[plan] will run")
+
+
 # --- Step 4 / phase 2: the full backward walk (D2/D4/D5/D7) ---------------------------
 
 def _walk_kwargs(cat, run_folder, csv_fp, **extra):
