@@ -175,6 +175,19 @@ def ls(url: str, **storage_options: Any) -> list[str]:
     return fs.ls(p, detail=False)
 
 
+def find_sizes(url: str, **storage_options: Any) -> dict[str, int]:
+    """Recursively list `url`, returning `{path: size_in_bytes}` for every FILE under it.
+
+    One paginated directory walk instead of an `exists` + `size` round-trip per file. At
+    900 cells x 2 files that is ~2 requests rather than ~3600 sequential ones over the
+    WAN, which is the difference between a progress bar and an apparent hang (2026-08-21:
+    the driver-side cube-presence sweep). Raises if `url` does not exist -- callers that
+    treat "no folder yet" as "nothing present" must handle that themselves.
+    """
+    fs, p = _fs_and_path(url, storage_options)
+    return {k: int(v.get("size") or 0) for k, v in fs.find(p, detail=True).items()}
+
+
 def glob(pattern: str, **storage_options: Any) -> list[str]:
     fs, p = _fs_and_path(pattern, storage_options)
     return fs.glob(p)

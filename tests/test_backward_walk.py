@@ -733,3 +733,94 @@ def test_forced_rebuild_clears_a_stale_known_empty_entry(tmp_path):
         cores=1, overwrite_setup_csv=True, dry_run=True,
     )
     assert create_datacube._read_known_empty(str(run_folder), window_segment) == set()
+
+
+# --- 2026-08-21, first real AML run after D6: stale rows + the silent sweep -----------
+
+def test_a_row_naming_the_old_path_shape_is_purged_and_regenerated(tmp_path, capsys):
+    """Spec 50 D6 changed the cube path shape (`<window>` gained a `_<params_key>`
+    digest). A row written BEFORE that change matches on every run PARAMETER and still
+    names the OLD folder, so matching on params alone adopts it: the plan then announces
+    a full rebuild while `_build_shortfall`, reading the row's own stale
+    `datacube_filepath`, finds the old cube present and dispatches nothing -- and the
+    flatten stamp records paths the request-derived identity can never reproduce, killing
+    the short-circuit for good. The path is part of what makes a row current."""
+    cat = tmp_path / "catalog.parquet"
+    shapes = tmp_path / "shapes.geojson"
+    _make_catalog(cat, tmp_path)
+    _shapes(shapes, [0, 1])
+    run_folder = tmp_path / "runs" / "train"
+    csv_fp = str(run_folder / "input.csv")
+    kwargs = _walk_kwargs(cat, run_folder, csv_fp, shapefilepath=str(shapes))
+
+    # A pre-D6 input.csv: identical params, OLD path shape, cubes really there.
+    old_rows = []
+    for i in (0, 1):
+        folder = os.path.abspath(os.path.join(str(run_folder), "20180101_20190101_m20", str(i)))
+        fs.makedirs(folder)
+        fs.save_npy(os.path.join(folder, "datacube.npy"), np.zeros((1, 1, 1, 1, 1)))
+        fs.save_npy(os.path.join(folder, "metadata.pickle.npy"),
+                    {"timestamps": [0], "bands": ["B04"]}, allow_pickle=True)
+        old_rows.append({
+            "id": i, "label": f"l{i}", "export_folderpath": folder,
+            "datacube_filepath": os.path.join(folder, "datacube.npy"),
+            "startdate": pd.Timestamp("2018-01-01", tz="UTC"),
+            "enddate": pd.Timestamp("2019-01-01", tz="UTC"),
+            "mosaic_days": 20, "mosaic_scheme": config.MOSAIC_SCHEME,
+            "scl_mask_classes": "8,9", "bands": "B04",
+            "added_on": pd.Timestamp.now(tz="UTC"), "images_count": 1,
+        })
+    fs.makedirs(str(run_folder))
+    with fs.open(csv_fp, "w") as f:
+        pd.DataFrame(old_rows).to_csv(f, index=False)
+
+    create_datacube.build_shortfall_only(**kwargs)
+    plan = capsys.readouterr().out
+
+    window_segment = create_datacube.window_folder_segment(
+        kwargs["startdate"], kwargs["enddate"], kwargs["mosaic_days"],
+        bands=kwargs["bands"], mosaic_scheme=config.MOSAIC_SCHEME,
+        scl_mask_classes=kwargs["scl_mask_classes"])
+    with fs.open(csv_fp, "r") as f:
+        after = pd.read_csv(f)
+    assert len(after) == 2
+    for path in after["datacube_filepath"]:
+        assert window_segment in path, f"row still names the old path shape: {path}"
+
+    # ...and the announced plan agrees with what the build leg will actually dispatch.
+    _, n_total, n_missing = create_datacube._build_shortfall(csv_fp, force=False)
+    assert (n_total, n_missing) == (2, 2)
+    assert "2 missing" in plan and "will build 2" in plan
+
+
+def test_presence_is_resolved_by_listing_not_one_path_at_a_time(tmp_path, monkeypatch):
+    """The presence sweep must not be a per-path walk: at 900 cells `_cube_present` is
+    ~3600 sequential blob round-trips (~20 min over the WAN) with no output, which is
+    indistinguishable from a hang. One recursive listing answers it instead, compared in
+    memory by the `<id>` path leaf."""
+    run_folder = tmp_path / "runs" / "train"
+    folders = []
+    for i in range(4):
+        folder = os.path.join(str(run_folder), "win", str(i))
+        fs.makedirs(folder)
+        folders.append(folder)
+        if i < 3:  # id 3 is deliberately un-built
+            fs.save_npy(os.path.join(folder, "datacube.npy"), np.zeros((1, 1, 1, 1, 1)))
+            fs.save_npy(os.path.join(folder, "metadata.pickle.npy"), {"a": 1},
+                        allow_pickle=True)
+
+    def _boom(*a, **kw):
+        raise AssertionError("per-path _cube_present must not be reached when listing works")
+
+    monkeypatch.setattr(create_datacube, "_cube_present", _boom)
+    presence = create_datacube._presence_for_paths(
+        [os.path.join(f, "datacube.npy") for f in folders], label="plan")
+    assert [presence[os.path.join(f, "datacube.npy")] for f in folders] == \
+        [True, True, True, False]
+
+
+def test_presence_falls_back_to_per_path_checks_when_the_folder_is_unlistable(tmp_path):
+    """The listing is a fast path, never a new source of truth: nothing built yet (so
+    nothing to list) must still resolve, via the concurrent per-path fallback."""
+    missing = os.path.join(str(tmp_path), "runs", "train", "win", "0", "datacube.npy")
+    assert create_datacube._presence_for_paths([missing], label="plan") == {missing: False}

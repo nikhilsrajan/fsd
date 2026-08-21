@@ -108,6 +108,28 @@ carried over (renames, restructures, behavioral tweaks). Pure removals go in
     itself — `setup` cannot tell an authoritative full pass from a scoped shortfall one. Calling
     `setup` directly (below that layer) does not update it, the same way it does not do the
     window-scoped `input.csv` purge.
+- **First real AML run after D6, 2026-08-21 — 2 more**:
+  - **A pre-D6 `input.csv` row was adopted even though it named the OLD path.** A row is only
+    current if its `export_folderpath`/`datacube_filepath` are the ones THIS request derives —
+    matching on the run *parameters* alone is not enough, because D6 changed the path shape and a
+    row written before it matches every parameter while still pointing at the pre-digest folder.
+    Adopting it meant the new addressing silently never took effect: the plan announced a full
+    rebuild while the build leg, reading the row's own stale path, found the old cube present and
+    dispatched **nothing** — and the flatten stamp then recorded paths the request-derived identity
+    can never reproduce, so the top-level short-circuit was dead for that request forever. Such
+    rows are now purged and their ids go back into the shortfall, which regenerates them at the
+    right path. Effect on an existing run folder: the first call after upgrading rebuilds its
+    cubes once, which is the migration note above actually happening.
+  - **The driver-side cube-presence sweep was a silent serial walk.** `_cube_present` costs four
+    blob round-trips per cell (`exists` + `size`, twice), and it ran per cell, serially, in two
+    separate places (the announced plan and the dispatch decision) with no progress output: ~3600
+    sequential round-trips at 900 cells, ~20 minutes over the WAN, indistinguishable from a hang —
+    while `setup`, doing the same class of I/O, has used 16 threads since spec 47. Presence is now
+    resolved by **one recursive listing per `<window>` folder** (`storage.fs.find_sizes`), compared
+    in memory by the `<id>` path leaf so it never has to reconcile local `abspath` against a
+    backend's own path spelling. Folders that cannot be listed — including the ordinary "nothing
+    built yet" case — fall back to per-path checks that are now concurrent and ticked, so no sweep
+    is silent either way.
 
 ## `fsd.verify_adapter`: one real cube, locally, before the fan-out (spec 48, 2026-08-20)
 
