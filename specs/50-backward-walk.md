@@ -38,6 +38,17 @@ if not fs.exists(csv_filepath):
     setup(...)
 ```
 
+**Where that delete came from (traced 2026-08-21, at the user's request):** nowhere in fsd. The
+line is inherited verbatim from `fetch_satdata/src/fetch_satdata/workflows/create_datacube.py`,
+and spec 08 carried it across under an explicit *"Entry point (preserve signature shape)"*
+instruction — it was transcribed, not designed. Spec 08 gives a careful rationale for **`setup`
+itself** (pre-slicing the large catalog per shape so parallel build jobs do not contend on one
+file) and **none at all** for regenerating its output every call. Two further signs it was never
+reasoned about in fsd: the legacy line is `os.remove(csv_filepath)` with no existence check, so it
+raised `FileNotFoundError` on any first run — fsd silently fixed that by adding
+`and fs.exists(...)` — and **no production caller passes the flag**; the only caller that has ever
+set it is one test. See §7 Q3, which this changes.
+
 `setup` reads the catalog, filters it per shape, and writes **two files per shape** to
 `export_folderpath` — `geometry.geojson` and `catalog.parquet` (`create_datacube.py`). At 900
 shapes that is **1800 blob round-trips** before `_build_shortfall` is even called. Measured on the
@@ -287,9 +298,31 @@ that would have made #83 self-evident in one line instead of two full cluster ru
 2. **Where is the known-empty record kept (D5)?** A sibling `_manifest.json` in the run folder, or
    extra rows in `input.csv` flagged empty. *Default proposed: sibling file — `input.csv` is the
    build unit's input contract and should not grow rows that are not work.*
-3. **Does `overwrite_setup_csv` survive (D4)?** With `setup` scoped to the shortfall its
-   delete-then-regenerate default is close to meaningless. *Default proposed: deprecate it,
-   `overwrite=` is the one control.*
+3. **Does `overwrite_setup_csv` survive (D4)?** The history (§1) reframes this from "is the flag
+   still useful?" to "was the mechanism ever right?". The flag is not arbitrary — it is a crude
+   answer to a **real** question: `input.csv` is derived from the catalog, the shapes, the window
+   and the run parameters, so a *cached* one can silently describe a **different request** than the
+   one being made. Deleting it unconditionally guarantees that never happens. That is the
+   pre-identity answer: always redo, never check.
+
+   fsd has since grown the precise answer to exactly that question, and already applies it on the
+   other side of the pipeline. `run_inference` calls `_check_resume_identity` on its cached
+   `cells/input.csv`, compares the cell-id set against the freshly tiled grids, and **raises
+   `PreflightError` on any drift** rather than regenerating blindly (spec 47 D1, #66). The build
+   leg of `create_training_data` never got that upgrade — it still uses the sledgehammer.
+
+   *Default proposed: **replace, do not merely deprecate.** `overwrite_setup_csv` goes away and its
+   real concern is served by D3's request-derived identity: a cached `input.csv` whose identity
+   matches is reused, one that does not match is refused the way `run_inference` refuses (or
+   regenerated, §7 Q3a). This makes the two halves of the pipeline answer the staleness question
+   the same way, which spec 47 D1 already established as the house style.*
+
+   **Q3a, following from that: on a mismatch, refuse or regenerate?** `run_inference` refuses
+   because rewriting `input.csv` would orphan per-cell outputs already written under the old ids
+   (spec 47 D1). The build leg has no such orphaning problem — cubes are addressed by id, and a
+   changed request simply needs different cubes. *Default proposed: regenerate for the build leg,
+   and say so in the `[plan]` block; the asymmetry with `run_inference` is real and comes from
+   there being outputs to orphan there and none here.*
 4. **Does the download leg join the walk, or keep its own catalog diff?** Its diff already works and
    is cheap (one catalog read). *Default proposed: keep spec 47 D8 as-is, and have the walk simply
    not reach it when the cubes are satisfied — the win is skipping the leg entirely, not
@@ -352,7 +385,15 @@ recursion.
 - `specs/49-skip-work-already-done.md` D6 + its status quote: the acceptance sentence this spec
   finishes. Its §6 supplied D1's constraint (the AML runner has no DAG) and its §7 Q2 supplied the
   digest deferral this spec does not reopen.
-- `specs/47-driver-side-honesty.md` D5: D7's printed-plan requirement.
+- `specs/47-driver-side-honesty.md` D5: D7's printed-plan requirement. Its **D1** +
+  `api.py::_check_resume_identity` supplied §7 Q3's reframing: fsd already answers "does this
+  cached work list describe THIS request?" precisely, on `run_inference`, by comparing the cached
+  id set and refusing on drift. `overwrite_setup_csv` is the same question answered by demolition.
+- `fetch_satdata/src/fetch_satdata/workflows/create_datacube.py` (read-only legacy) and
+  `specs/08-workflows.md`'s *"preserve signature shape"*: together they establish that
+  `overwrite_setup_csv` was **inherited, never designed for fsd** — §1. Spec 08 documents why
+  `setup` pre-slices the catalog (parallel build jobs must not contend on one large file) and is
+  silent on why its output is thrown away each run.
 - **#83**: D6's precondition. **#54**: the per-shape control-file write cost D4 reduces. **#76**:
   §5's first risk. **#77**: why `run_inference` is out of scope.
 - `tests/test_build_skip.py` (2026-08-21): already characterises the timestamped default, so AC7
