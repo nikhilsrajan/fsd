@@ -83,6 +83,31 @@ carried over (renames, restructures, behavioral tweaks). Pure removals go in
     match its own freshly-written window/params and every row was dropped and (with the F1 bug)
     the file ended up empty. Fixed: NaN/empty are now normalized consistently everywhere a
     `scl_mask_classes` (or similarly-joined) field is compared or re-derived.
+- **Opus re-review, 2026-08-21 — 2 defects the fixes above introduced**:
+  - **The duplicate-`id_col` guard was being silently swallowed.** The fix for the crashing
+    out-of-coverage shortfall caught a bare `ValueError`, but `setup` raises `ValueError` for a
+    second, unrelated reason: its deliberate refusal of a shapefile with duplicate ids (added
+    2026-07-28, after a multi-polygon ROI made `roi_to_s2_grids` repeat cell ids). A duplicated
+    shapefile therefore stopped raising and was recorded as "no imagery" instead, printing a false
+    reason and dropping those shapes from `input.csv` — a loud refusal turned into quietly missing
+    training data. Fixed: `setup` now raises a dedicated `NoWorkUnitsError` (a `ValueError`
+    subclass, so every existing `except ValueError` caller is unaffected) and only that is caught.
+  - **The known-empty manifest was write-only, so a recovered cell stayed subtracted forever.**
+    Excluding known-empty ids from the request-side identity made the manifest load-bearing for
+    identity equality, but nothing ever removed an id from it. Once a cell was recorded empty, a
+    later forced rebuild (`overwrite="datacubes"`/`True`, the legacy full-`setup` pass — which is
+    D5's documented escape hatch from a stale manifest) legitimately gave it an `input.csv` row
+    again, while the request-side identity kept subtracting it: the two identities could never
+    agree and the top-level short-circuit was dead for that request forever. The same failure the
+    known-empty exclusion was introduced to remove, relocated. Fixed: ids that regain a row are
+    forgotten, and a forced rebuild clears that window's entry outright — so the escape hatch
+    actually escapes. (The *scoped* walk still never rediscovers a known-empty cell; that is D5
+    working as designed, and D5's own risk note says a re-ingested archive under an unchanged
+    request needs the forced rebuild.)
+  - Note: the manifest is maintained by `run_create_datacube`, not by `create_datacube.setup`
+    itself — `setup` cannot tell an authoritative full pass from a scoped shortfall one. Calling
+    `setup` directly (below that layer) does not update it, the same way it does not do the
+    window-scoped `input.csv` purge.
 
 ## `fsd.verify_adapter`: one real cube, locally, before the fan-out (spec 48, 2026-08-20)
 

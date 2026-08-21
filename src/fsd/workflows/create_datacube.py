@@ -40,6 +40,18 @@ _UNIT_IDENTITY_COLS = (
 )
 
 
+class NoWorkUnitsError(ValueError):
+    """`setup` was handed shapes but none of them had tiles in range/overlap.
+
+    A `ValueError` subclass so every existing `except ValueError` caller (notably
+    `api.verify_adapter`, which turns it into an actionable `PreflightError`) keeps
+    working unchanged. It exists so `build_shortfall_only` can catch THIS condition --
+    an entirely out-of-coverage shortfall, D5's known-empty case -- without also
+    swallowing `setup`'s OTHER `ValueError`, the duplicate-`id_col` guard, which is a
+    loud refusal that must never be silently reinterpreted as "no imagery".
+    """
+
+
 def params_key(bands: list[str], mosaic_scheme: str, scl_mask_classes: list[int]) -> str:
     """Spec 50 D6: a short digest of the params EVERY cell in a run shares (never the
     set of ids -- that is the thing Q1 rejected). Folded into the `<window>` path
@@ -240,7 +252,7 @@ def setup(
     _tick(n_shapes, force=True)
 
     if not rows:
-        raise ValueError("setup produced no work-units (no shape had tiles in range).")
+        raise NoWorkUnitsError("setup produced no work-units (no shape had tiles in range).")
 
     input_df = pd.DataFrame(rows)
     input_df["added_on"] = pd.Timestamp.now(tz="UTC")
@@ -361,24 +373,61 @@ def _read_known_empty(run_folderpath: str, window_segment: str) -> set[str]:
     return {str(v) for v in entry.get("ids", [])}
 
 
+def _load_manifest(run_folderpath: str) -> dict:
+    path = _manifest_filepath(run_folderpath)
+    if not fs.exists(path):
+        return {}
+    try:
+        with fs.open(path, "r") as f:
+            loaded = json.load(f)
+    except Exception:  # noqa: BLE001 - a corrupt manifest is replaced, not fatal
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _write_known_empty(run_folderpath: str, window_segment: str, ids: set[str]) -> None:
+    manifest = _load_manifest(run_folderpath)
+    if ids:
+        manifest[window_segment] = {"ids": sorted(ids)}
+    else:
+        manifest.pop(window_segment, None)
+    fs.write_text(_manifest_filepath(run_folderpath),
+                  json.dumps(manifest, indent=2, sort_keys=True))
+
+
 def _record_known_empty(run_folderpath: str, window_segment: str, new_ids) -> None:
     if not new_ids:
         return
-    path = _manifest_filepath(run_folderpath)
-    manifest: dict = {}
-    if fs.exists(path):
-        try:
-            with fs.open(path, "r") as f:
-                loaded = json.load(f)
-            if isinstance(loaded, dict):
-                manifest = loaded
-        except Exception:  # noqa: BLE001 - a corrupt manifest is replaced, not fatal
-            manifest = {}
-    entry = manifest.get(window_segment)
-    existing = set(entry.get("ids", [])) if isinstance(entry, dict) else set()
-    existing |= {str(v) for v in new_ids}
-    manifest[window_segment] = {"ids": sorted(existing)}
-    fs.write_text(path, json.dumps(manifest, indent=2, sort_keys=True))
+    existing = _read_known_empty(run_folderpath, window_segment)
+    _write_known_empty(run_folderpath, window_segment,
+                       existing | {str(v) for v in new_ids})
+
+
+def _forget_known_empty(run_folderpath: str, window_segment: str, recovered_ids) -> None:
+    """The manifest must not be write-only. An id recorded known-empty that LATER gets
+    an `input.csv` row -- because the archive was re-ingested, or because a forced
+    rebuild (`overwrite="datacubes"`/`True`) re-derived every shape from the catalog --
+    is no longer empty, and leaving it recorded makes `api._flatten_identity_from_request`
+    subtract an id that `input.csv` genuinely names. The two identities could then never
+    agree again and the top-level short-circuit would be dead for that request forever:
+    the exact failure D5's manifest was introduced to remove, relocated (Opus re-review
+    2026-08-21).
+    """
+    recovered = {str(v) for v in recovered_ids}
+    if not recovered:
+        return
+    existing = _read_known_empty(run_folderpath, window_segment)
+    remaining = existing - recovered
+    if remaining != existing:
+        _write_known_empty(run_folderpath, window_segment, remaining)
+
+
+def _clear_known_empty(run_folderpath: str, window_segment: str) -> None:
+    """Drop this window's whole known-empty entry -- for a caller that has just
+    re-derived every shape from the catalog and whose `input.csv` is therefore the
+    authority. See `_forget_known_empty`."""
+    if _read_known_empty(run_folderpath, window_segment):
+        _write_known_empty(run_folderpath, window_segment, set())
 
 
 def build_shortfall_only(
@@ -495,13 +544,18 @@ def build_shortfall_only(
                 csv_filepath=csv_filepath, label_col=label_col, mosaic_scheme=mosaic_scheme,
                 max_concurrent=max_concurrent,
             )
-        except ValueError:
+        except NoWorkUnitsError:
             # F2: `setup` raises when NONE of the shapes it was handed have tiles in
             # range -- reachable here because this call is scoped to just the
             # shortfall, unlike the old whole-shapefile path where one out-of-coverage
             # polygon among hundreds could never trigger it. Record the whole
             # shortfall as known-empty (D5) and let the caller's request converge,
             # rather than crashing the entire `create_training_data` call.
+            #
+            # Deliberately NOT `except ValueError`: `setup`'s duplicate-`id_col` guard
+            # raises that too, and swallowing it would silently record a caller's
+            # duplicated shapes as "no imagery" -- turning a loud refusal into missing
+            # training data (Opus re-review 2026-08-21).
             newly_empty = [str(srow[id_col]) for srow in missing_srows]
             _record_known_empty(run_folderpath, window_segment, newly_empty)
             print(f"[setup] shortfall of {len(missing_srows)} had no tiles in range/overlap "
@@ -514,6 +568,8 @@ def build_shortfall_only(
     newly_empty = [str(srow[id_col]) for srow in missing_srows
                    if str(srow[id_col]) not in built_ids]
     _record_known_empty(run_folderpath, window_segment, newly_empty)
+    # ...and the converse: anything that now HAS a row is not empty any more.
+    _forget_known_empty(run_folderpath, window_segment, built_ids)
 
     return len(present_ids), n_missing, n_known_empty
 
@@ -614,6 +670,17 @@ def run_create_datacube(
                 startdate=startdate, enddate=enddate, bands=bands,
                 scl_mask_classes=scl_mask_classes, mosaic_days=mosaic_days,
                 csv_filepath=csv_filepath, label_col=label_col, mosaic_scheme=mosaic_scheme,
+            )
+            # This pass just re-derived every shape straight from the catalog, so any
+            # known-empty record for this window is superseded by what `input.csv` now
+            # says. Clearing it here is what makes a forced rebuild the escape hatch
+            # from a stale manifest (D5's risk note) rather than a way to leave the
+            # manifest disagreeing with `input.csv` (Opus re-review 2026-08-21).
+            _clear_known_empty(
+                run_folderpath,
+                window_folder_segment(startdate, enddate, mosaic_days, bands=bands,
+                                      mosaic_scheme=mosaic_scheme,
+                                      scl_mask_classes=scl_mask_classes),
             )
     else:
         build_shortfall_only(

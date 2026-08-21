@@ -632,3 +632,104 @@ def test_known_empty_recorded_once_and_shortfall_converges_to_zero(tmp_path):
 
     n_present3, n_missing3, n_known_empty3 = create_datacube.build_shortfall_only(**kwargs)
     assert n_missing3 == 0  # converges: stays 0, never rediscovered
+
+
+# --- Opus re-review 2026-08-21: two defects introduced by the F2/F4 fixes -------------
+
+def test_duplicate_ids_still_raise_and_are_not_recorded_as_known_empty(tmp_path):
+    """F2's catch must be `NoWorkUnitsError`, not a bare `ValueError`: `setup`'s
+    duplicate-`id_col` guard raises `ValueError` too, and swallowing it would silently
+    record the caller's duplicated shapes as "no imagery" -- turning a deliberate loud
+    refusal (added 2026-07-28, after a multi-polygon ROI repeated cell ids) into missing
+    training data."""
+    cat = tmp_path / "catalog.parquet"
+    _make_catalog(cat, tmp_path)
+    shapes = tmp_path / "dupes.geojson"
+    gpd.GeoDataFrame(
+        {"id": [7, 7], "label": ["a", "b"], "geometry": [box(1, 1, 2, 2), box(3, 3, 4, 4)]},
+        crs="EPSG:4326",
+    ).to_file(shapes, driver="GeoJSON")
+    run_folder = tmp_path / "run"
+    csv_fp = str(run_folder / "input.csv")
+
+    with pytest.raises(ValueError, match="duplicate"):
+        create_datacube.build_shortfall_only(
+            **_walk_kwargs(cat, run_folder, csv_fp, shapefilepath=str(shapes)))
+    assert not create_datacube._read_known_empty(
+        str(run_folder),
+        create_datacube.window_folder_segment(
+            datetime.datetime(2018, 1, 1), datetime.datetime(2019, 1, 1), 20,
+            bands=["B04"], mosaic_scheme=config.MOSAIC_SCHEME, scl_mask_classes=[8, 9]),
+    )
+
+
+def test_known_empty_is_forgotten_once_the_cell_has_a_row_again(tmp_path):
+    """F4's subtraction makes the manifest load-bearing for identity equality, so it
+    must not be write-only. A cell recorded known-empty that later gains an `input.csv`
+    row must be forgotten -- otherwise `_flatten_identity_from_request` subtracts an id
+    `input.csv` genuinely names, the two identities can never agree again, and the
+    top-level short-circuit is dead for that request forever: F4 relocated, not fixed.
+
+    The route that regains the row is the forced rebuild (`overwrite="datacubes"`/`True`
+    -> the legacy full-`setup` pass), which is D5's documented escape hatch from a stale
+    manifest. The scoped walk deliberately does NOT rediscover a known-empty cell -- that
+    is D5 working as designed, and D5's own risk note says so."""
+    cat = tmp_path / "catalog.parquet"
+    shapes = tmp_path / "shapes.geojson"
+    _make_catalog(cat, tmp_path)
+    _shapes(shapes, [0, 1], outside_ids=[1])  # id 1 has no imagery yet
+    run_folder = tmp_path / "run"
+    csv_fp = str(run_folder / "input.csv")
+    kwargs = _walk_kwargs(cat, run_folder, csv_fp, shapefilepath=str(shapes))
+
+    create_datacube.build_shortfall_only(**kwargs)
+    create_datacube.build_shortfall_only(**kwargs)  # id 1 now recorded known-empty
+
+    _shapes(shapes, [0, 1])  # "re-ingest": id 1 now overlaps the catalog
+    create_datacube.run_create_datacube(**kwargs, cores=1, overwrite_setup_csv=True,
+                                        dry_run=True)
+
+    from_request = api._flatten_identity_from_request(
+        gpd.read_file(shapes), id_col="id", run_folderpath=str(run_folder),
+        mosaic_scheme=config.MOSAIC_SCHEME, adapter=None, feature_sequence=None,
+        aggregate=None, startdate=kwargs["startdate"], enddate=kwargs["enddate"],
+        mosaic_days=kwargs["mosaic_days"], bands=kwargs["bands"],
+        scl_mask_classes=kwargs["scl_mask_classes"],
+    )
+    with fs.open(csv_fp, "r") as f:
+        from_csv = api._flatten_identity(
+            pd.read_csv(f), id_col="id", filepath_col="datacube_filepath",
+            adapter=None, feature_sequence=None, aggregate=None,
+        )
+    assert [c[0] for c in from_request["cubes"]] == ["0", "1"]
+    assert from_request == from_csv
+
+
+def test_forced_rebuild_clears_a_stale_known_empty_entry(tmp_path):
+    """D5's risk note names `overwrite="datacubes"`/`True` (the legacy full-`setup`
+    path) as the escape hatch from a stale manifest. That only holds if the escape hatch
+    actually clears it: that pass re-derives every shape from the catalog, so
+    `input.csv` becomes the authority and any surviving known-empty record would leave
+    the manifest disagreeing with it."""
+    cat = tmp_path / "catalog.parquet"
+    shapes = tmp_path / "shapes.geojson"
+    _make_catalog(cat, tmp_path)
+    _shapes(shapes, [0, 1], outside_ids=[1])
+    run_folder = tmp_path / "run"
+    csv_fp = str(run_folder / "input.csv")
+    window_segment = create_datacube.window_folder_segment(
+        datetime.datetime(2018, 1, 1), datetime.datetime(2019, 1, 1), 20,
+        bands=["B04"], mosaic_scheme=config.MOSAIC_SCHEME, scl_mask_classes=[8, 9])
+
+    create_datacube.build_shortfall_only(
+        **_walk_kwargs(cat, run_folder, csv_fp, shapefilepath=str(shapes)))
+    create_datacube.build_shortfall_only(
+        **_walk_kwargs(cat, run_folder, csv_fp, shapefilepath=str(shapes)))
+    assert create_datacube._read_known_empty(str(run_folder), window_segment) == {"1"}
+
+    _shapes(shapes, [0, 1])  # id 1 has imagery again
+    create_datacube.run_create_datacube(
+        **_walk_kwargs(cat, run_folder, csv_fp, shapefilepath=str(shapes)),
+        cores=1, overwrite_setup_csv=True, dry_run=True,
+    )
+    assert create_datacube._read_known_empty(str(run_folder), window_segment) == set()

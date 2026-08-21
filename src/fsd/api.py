@@ -711,8 +711,14 @@ def _flatten_identity_from_request(
     """D3 (spec 50) -- **the load-bearing decision**: the same identity `_flatten_identity`
     computes, but from the REQUEST rather than from `input.csv` (which is `setup`'s
     OUTPUT -- that is the knot §1 describes). A cube's path is derivable from
-    `(run_folderpath, window, id)` and nothing else (§3 D3), so this reads zero files: no
-    catalog, no `input.csv`, no `setup`.
+    `(run_folderpath, window, id)` and nothing else (§3 D3), so naming the targets costs
+    no catalog read, no `input.csv` read, and no `setup` call (AC4/AC5).
+
+    It does read one small file: D5's `_manifest.json`, to subtract the known-empty ids
+    (F4). That is not the knot D3 unties -- the manifest is not produced by the rule this
+    identity decides about, it is a cheap sibling record -- but it does mean the manifest
+    and `input.csv` must agree about which ids have rows, which is why
+    `create_datacube._forget_known_empty`/`_clear_known_empty` exist.
 
     Produces the exact same dict shape as `_flatten_identity(input_df, ...)` -- same
     `cubes` list, same `params` keys, same string forms -- so a caller can compare the two
