@@ -34,9 +34,27 @@ def _write_csv(tmp_path, rows, name="input.csv"):
     return csv_fp
 
 
-def _call(csv_fp, run_folder, **kw):
+def _shapefile_with_ids(tmp_path, ids, name="shapes.geojson"):
+    """A real shapefile naming exactly `ids` -- spec 50's `build_shortfall_only` (reached
+    via `overwrite_setup_csv=False`, below) enumerates its targets from the REQUEST (D3),
+    so it always reads `shapefilepath`; `overwrite_setup_csv=False` no longer means "input
+    .csv is already complete, don't look at the shapefile at all" the way it did under
+    spec 49's dispatch-only test isolation."""
+    import geopandas as gpd
+    import shapely.geometry
+
+    fp = str(tmp_path / name)
+    gpd.GeoDataFrame(
+        {"id": list(ids), "geometry": [shapely.geometry.box(i, 0, i + 1, 1) for i in range(len(ids))]},
+        crs="EPSG:4326",
+    ).to_file(fp, driver="GeoJSON")
+    return fp
+
+
+def _call(csv_fp, run_folder, *, ids=(), **kw):
     defaults = dict(
-        catalog_filepath="unused", timestamp_col="timestamp", shapefilepath="unused",
+        catalog_filepath="unused", timestamp_col="timestamp",
+        shapefilepath=_shapefile_with_ids(run_folder.parent, ids) if ids else "unused",
         id_col="id", run_folderpath=str(run_folder), startdate="2018-01-01",
         enddate="2018-02-01", bands=["B04"], scl_mask_classes=[0], mosaic_days=20,
         csv_filepath=csv_fp, label_col=None, cores=1, overwrite_setup_csv=False,
@@ -59,7 +77,7 @@ def test_build_skip_when_all_cubes_present(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cd.runners, "run_local", lambda *a, **kw: called.append(a))
     monkeypatch.setattr(cd.runners, "run_aml", lambda *a, **kw: called.append(a))
 
-    result = _call(csv_fp, run_folder)
+    result = _call(csv_fp, run_folder, ids=["cellA"])
     assert result is None
     assert called == []
     assert "[build] 0 of 1 cubes missing; nothing to build" in capsys.readouterr().out
@@ -86,7 +104,7 @@ def test_build_skip_partial_dispatches_only_missing(tmp_path, monkeypatch, capsy
 
     monkeypatch.setattr(cd.runners, "run_local", fake_run_local)
 
-    _call(csv_fp, run_folder)
+    _call(csv_fp, run_folder, ids=["present", "missing"])
     assert list(seen["csv"]["id"]) == ["missing"]
     out = capsys.readouterr().out
     assert "[build] 1 of 2 cubes missing; dispatching 1" in out
@@ -107,7 +125,7 @@ def test_build_full_dispatch_when_nothing_present_prints_nothing(tmp_path, monke
         return None
 
     monkeypatch.setattr(cd.runners, "run_local", fake_run_local)
-    _call(csv_fp, run_folder)
+    _call(csv_fp, run_folder, ids=["a", "b"])
     assert seen["csv"] == csv_fp  # dispatched the ORIGINAL csv, no shortfall temp file
     assert "[build]" not in capsys.readouterr().out
 
@@ -145,7 +163,7 @@ def test_overwrite_forces_full_rebuild(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cd.runners, "run_local", fake_run_local)
 
-    _call(csv_fp, run_folder, overwrite=True)
+    _call(csv_fp, run_folder, ids=["cellA"], overwrite=True)
     assert dispatched == [csv_fp]  # every row dispatched again
     # the stale artifacts were cleared, not merely ignored.
     assert not os.path.exists(cube_dir / "datacube.npy")
@@ -157,6 +175,8 @@ def test_overwrite_forces_full_rebuild(tmp_path, monkeypatch):
 def test_no_mtime_read_in_build_skip_logic():
     src = "".join(inspect.getsource(fn) for fn in (
         cd._cube_present, cd._build_shortfall, cd._force_rebuild, cd.run_create_datacube,
+        cd.build_shortfall_only, cd._read_known_empty, cd._record_known_empty,
+        cd._row_matches_window,
     ))
     for forbidden in ("getmtime", "st_mtime", "os.stat", ".stat()"):
         assert forbidden not in src
@@ -224,19 +244,20 @@ def test_local_runner_addresses_the_same_cube_paths_twice(tmp_path, monkeypatch)
     assert a == b
 
 
-def test_aml_run_folderpath_is_derived_from_the_clock(tmp_path, monkeypatch):
-    """#83, characterised. `run_folderpath` defaults to `{root}/runs/{run_id}` where run_id is
-    a fresh UTC timestamp, so two calls seconds apart address different cubes, the shortfall is
-    always N of N, and the build/flatten skips can never fire. Locked in deliberately: whoever
-    makes the default deterministic must come here and say so."""
+def test_aml_run_folderpath_no_longer_derived_from_the_clock(tmp_path, monkeypatch):
+    """#83, fixed by spec 50 D6. `run_folderpath` used to default to `{root}/runs/{run_id}`
+    where run_id was a fresh UTC timestamp, so two calls seconds apart addressed different
+    cubes, the shortfall was always N of N, and the build/flatten skips could never fire.
+    Flipped deliberately (not deleted) per the spec 50 handoff: the default is now a plain
+    stable name ("train"), not a hash of the request (Q1 rejected set-level addressing) and
+    not the clock."""
     a, b = _run_folderpaths_of_two_calls(
         tmp_path, monkeypatch,
         runner="aml",
         runner_kwargs={"root": str(tmp_path / "root"), "cluster": "c",
                        "environment": "e:1", "identity_client_id": "i"},
     )
-    assert a.rsplit("/", 1)[0] == b.rsplit("/", 1)[0] == f"{tmp_path}/root/runs"
-    assert a.rsplit("/", 1)[1].endswith("Z")   # the leaf is a UTC timestamp, not the request
+    assert a == b == f"{tmp_path}/root/runs/train"
 
 
 def test_aml_is_stable_when_run_folderpath_is_given(tmp_path, monkeypatch):

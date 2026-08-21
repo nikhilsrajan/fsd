@@ -13,8 +13,11 @@ from __future__ import annotations
 
 import concurrent.futures
 import datetime
+import hashlib
 import io
+import json
 import os
+import tempfile
 
 import geopandas as gpd
 import pandas as pd
@@ -35,6 +38,47 @@ COL_LABEL = "label"
 _UNIT_IDENTITY_COLS = (
     COL_ID, "startdate", "enddate", "bands", "mosaic_days", "mosaic_scheme", "scl_mask_classes",
 )
+
+
+def params_key(bands: list[str], mosaic_scheme: str, scl_mask_classes: list[int]) -> str:
+    """Spec 50 D6: a short digest of the params EVERY cell in a run shares (never the
+    set of ids -- that is the thing Q1 rejected). Folded into the `<window>` path
+    segment so path granularity matches `_UNIT_IDENTITY_COLS`: two requests differing
+    only in `bands` must resolve to different paths, or the second silently overwrites
+    the first and the build skip reads the wrong-band cube as "present" (D6). Same
+    string form `setup` already writes to `input.csv` (`",".join(...)`), so a digest
+    computed here and one computed from a read-back `input.csv` row agree byte-for-byte."""
+    raw = "|".join([
+        ",".join(bands), mosaic_scheme, ",".join(str(v) for v in scl_mask_classes),
+    ])
+    return hashlib.sha1(raw.encode()).hexdigest()[:8]
+
+
+def window_folder_segment(
+    startdate: datetime.datetime, enddate: datetime.datetime, mosaic_days: int, *,
+    bands: list[str], mosaic_scheme: str, scl_mask_classes: list[int],
+) -> str:
+    """The one run-folder segment shared by every cell of a request (spec 46 D1/D2,
+    extended by spec 50 D6): `<startdate>_<enddate>_m<mosaic_days>_<params_key>`. Callers
+    that need to name an expected cube path WITHOUT running `setup` (D3/D4) call this with
+    the same arguments `setup` was given -- same inputs, same string, no catalog access."""
+    startdate = pd.to_datetime(startdate, utc=True)
+    enddate = pd.to_datetime(enddate, utc=True)
+    key = params_key(bands, mosaic_scheme, scl_mask_classes)
+    return f"{startdate.strftime('%Y%m%d')}_{enddate.strftime('%Y%m%d')}_m{mosaic_days}_{key}"
+
+
+def cube_export_folderpath(run_folderpath: str, window_segment: str, id_value) -> str:
+    """A cube's `export_folderpath` is derivable from `(run_folderpath, window, id)` and
+    NOTHING else (spec 50 D3) -- no catalog access is needed to NAME it, only to BUILD it.
+    Shared by `setup`'s `_prepare` and by `api._flatten_identity_from_request`, which must
+    compute the exact same string without reading `input.csv`."""
+    export_folderpath = os.path.join(run_folderpath, window_segment, str(id_value))
+    if fs.is_local(export_folderpath):
+        # os.path.abspath is only meaningful (and safe) for a local path — on a
+        # URL (e.g. abfss://...) it would corrupt the host/scheme (specs/31 §6).
+        export_folderpath = os.path.abspath(export_folderpath)
+    return export_folderpath
 
 
 def setup(
@@ -110,6 +154,10 @@ def setup(
     # round-trips) before a single job was submitted. Same rows out, one read in.
     catalog_gdf = TileCatalog(catalog_filepath).read()
 
+    window_segment = window_folder_segment(startdate, enddate, mosaic_days,
+                                            bands=bands, mosaic_scheme=mosaic_scheme,
+                                            scl_mask_classes=scl_mask_classes)
+
     n_shapes = len(shapes_gdf)
     print(f"[setup] catalog read once: {len(catalog_gdf)} rows, for {n_shapes} shapes",
           flush=True)
@@ -136,15 +184,7 @@ def setup(
             print(f"[setup] skip id={srow[id_col]}: no tiles in range/overlap", flush=True)
             return None
 
-        export_folderpath = os.path.join(
-            run_folderpath,
-            f"{startdate.strftime('%Y%m%d')}_{enddate.strftime('%Y%m%d')}_m{mosaic_days}",
-            str(srow[id_col]),
-        )
-        if fs.is_local(export_folderpath):
-            # os.path.abspath is only meaningful (and safe) for a local path — on a
-            # URL (e.g. abfss://...) it would corrupt the host/scheme (specs/31 §6).
-            export_folderpath = os.path.abspath(export_folderpath)
+        export_folderpath = cube_export_folderpath(run_folderpath, window_segment, srow[id_col])
         fs.makedirs(export_folderpath)
         shape_path = os.path.join(export_folderpath, "geometry.geojson")
         catalog_path = os.path.join(export_folderpath, "catalog.parquet")
@@ -260,6 +300,188 @@ def _cube_present(datacube_filepath: str) -> bool:
     return True
 
 
+def _load_shapes_gdf(shapefilepath: str) -> gpd.GeoDataFrame:
+    with fs.open(shapefilepath, "rb") as f:
+        return gpd.read_file(io.BytesIO(f.read()))
+
+
+def _row_matches_window(
+    row, *, bands: list[str], mosaic_days: int, startdate, enddate,
+    mosaic_scheme: str, scl_mask_classes: list[int],
+) -> bool:
+    """Does an existing `input.csv` row belong to THIS request's window/params? Same
+    canonicalization `_dedupe_on_unit_identity` uses (dates -> comparable ISO strings)
+    so a row that round-tripped through CSV still compares correctly against in-memory
+    request values."""
+    want = {
+        "bands": ",".join(bands),
+        "mosaic_days": str(mosaic_days),
+        "startdate": str(pd.to_datetime(startdate, utc=True)),
+        "enddate": str(pd.to_datetime(enddate, utc=True)),
+        "mosaic_scheme": mosaic_scheme,
+        "scl_mask_classes": ",".join(str(v) for v in scl_mask_classes),
+    }
+    for col, want_val in want.items():
+        if col not in row.index:
+            continue
+        got = row[col]
+        if col in ("startdate", "enddate"):
+            got = str(pd.to_datetime(got, utc=True))
+        else:
+            got = str(got)
+        if got != want_val:
+            return False
+    return True
+
+
+def _manifest_filepath(run_folderpath: str) -> str:
+    return os.path.join(run_folderpath, "_manifest.json")
+
+
+def _read_known_empty(run_folderpath: str, window_segment: str) -> set[str]:
+    """D5/§7 Q2: the known-empty manifest, keyed to the window/params segment (which
+    already carries the request identity D6 needs -- reusing it here keeps ONE identity
+    granularity for both the cube path and the known-empty record, per D5's risk note: a
+    changed window or band set clears it automatically, because the key itself changes)."""
+    path = _manifest_filepath(run_folderpath)
+    if not fs.exists(path):
+        return set()
+    try:
+        with fs.open(path, "r") as f:
+            manifest = json.load(f)
+    except Exception:  # noqa: BLE001 - a corrupt manifest is "no information", not a crash
+        return set()
+    entry = manifest.get(window_segment) if isinstance(manifest, dict) else None
+    if not isinstance(entry, dict):
+        return set()
+    return {str(v) for v in entry.get("ids", [])}
+
+
+def _record_known_empty(run_folderpath: str, window_segment: str, new_ids) -> None:
+    if not new_ids:
+        return
+    path = _manifest_filepath(run_folderpath)
+    manifest: dict = {}
+    if fs.exists(path):
+        try:
+            with fs.open(path, "r") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                manifest = loaded
+        except Exception:  # noqa: BLE001 - a corrupt manifest is replaced, not fatal
+            manifest = {}
+    entry = manifest.get(window_segment)
+    existing = set(entry.get("ids", [])) if isinstance(entry, dict) else set()
+    existing |= {str(v) for v in new_ids}
+    manifest[window_segment] = {"ids": sorted(existing)}
+    fs.write_text(path, json.dumps(manifest, indent=2, sort_keys=True))
+
+
+def build_shortfall_only(
+    *, catalog_filepath: str, timestamp_col: str, shapefilepath: str, id_col: str,
+    run_folderpath: str, startdate, enddate, bands: list[str],
+    scl_mask_classes: list[int], mosaic_days: int, csv_filepath: str,
+    label_col: str | None, mosaic_scheme: str = config.MOSAIC_SCHEME,
+    max_concurrent: int = config.SETUP_MAX_CONCURRENT,
+) -> tuple[int, int, int]:
+    """D2/D3/D4/D5 (spec 50 §9 step 4) -- the backward walk's build leg. Every id's cube
+    target is named from the REQUEST alone (D3: `window_folder_segment` +
+    `cube_export_folderpath`), so `setup` is called only for shapes whose cube is
+    genuinely missing and not already recorded as known-empty (D5) -- not for the whole
+    shapefile every time (D4).
+
+    Rows in an existing `csv_filepath` for a DIFFERENT window/params are dropped before
+    anything else: this function only ever GROWS `input.csv` within ONE window. Full
+    cross-window accumulation is D9 (§9 step 3), deliberately BLOCKED on #84 (two
+    windows of one id would collide in `ids.npy`) -- this stays inside one window on
+    purpose, so it delivers D4's cost reduction without reaching into D9's territory.
+
+    Prints the D7 `[plan]` build line before any `setup` call. Returns
+    `(n_present, n_missing, n_known_empty)`.
+    """
+    shapes_gdf = _load_shapes_gdf(shapefilepath)
+    window_segment = window_folder_segment(
+        startdate, enddate, mosaic_days, bands=bands, mosaic_scheme=mosaic_scheme,
+        scl_mask_classes=scl_mask_classes,
+    )
+    known_empty = _read_known_empty(run_folderpath, window_segment)
+
+    existing_df = None
+    existing_ids: set[str] = set()
+    if fs.exists(csv_filepath):
+        with fs.open(csv_filepath, "r") as f:
+            existing_df = pd.read_csv(f)
+        if len(existing_df):
+            keep_mask = existing_df.apply(
+                lambda row: _row_matches_window(
+                    row, bands=bands, mosaic_days=mosaic_days, startdate=startdate,
+                    enddate=enddate, mosaic_scheme=mosaic_scheme,
+                    scl_mask_classes=scl_mask_classes,
+                ),
+                axis=1,
+            )
+            existing_df = existing_df.loc[keep_mask]
+        # `input.csv` rows are always written under `COL_ID` ("id") by `setup`,
+        # regardless of the caller's own `id_col` name (e.g. "fid") -- `shapes_gdf`
+        # below is the only frame that still uses the caller's `id_col`.
+        if len(existing_df) and COL_ID in existing_df.columns:
+            existing_ids = set(existing_df[COL_ID].astype(str))
+
+    present_ids: list[str] = []
+    missing_srows: list = []
+    for _, srow in shapes_gdf.iterrows():
+        id_value = str(srow[id_col])
+        if id_value in existing_ids:
+            present_ids.append(id_value)
+            continue
+        cube_folder = cube_export_folderpath(run_folderpath, window_segment, srow[id_col])
+        datacube_filepath = os.path.join(cube_folder, "datacube.npy")
+        if _cube_present(datacube_filepath):
+            present_ids.append(id_value)
+        elif id_value in known_empty:
+            pass  # D5: known-empty, satisfied -- never rediscovered
+        else:
+            missing_srows.append(srow)
+
+    n_total = len(shapes_gdf)
+    n_missing = len(missing_srows)
+    n_known_empty = n_total - len(present_ids) - n_missing
+    print(f"[plan]   build: {len(present_ids)} present, {n_missing} missing, "
+          f"{n_known_empty} known-empty -> will build {n_missing}", flush=True)
+
+    # Persist the window-scoped purge even when nothing is missing -- an existing
+    # `input.csv` carrying a DIFFERENT window's rows must never leak into this window's
+    # flatten (which requires every cube to share bands/timestamps).
+    if existing_df is not None:
+        with fs.open(csv_filepath, "w") as f:
+            existing_df.to_csv(f, index=False)
+
+    if not missing_srows:
+        return len(present_ids), n_missing, n_known_empty
+
+    shortfall_gdf = gpd.GeoDataFrame(missing_srows, crs=shapes_gdf.crs)
+    with tempfile.TemporaryDirectory() as tmp:
+        shortfall_shapefilepath = os.path.join(tmp, "shortfall.geojson")
+        shortfall_gdf.to_file(shortfall_shapefilepath, driver="GeoJSON")
+        setup(
+            catalog_filepath=catalog_filepath, timestamp_col=timestamp_col,
+            shapefilepath=shortfall_shapefilepath, id_col=id_col,
+            run_folderpath=run_folderpath, startdate=startdate, enddate=enddate,
+            bands=bands, scl_mask_classes=scl_mask_classes, mosaic_days=mosaic_days,
+            csv_filepath=csv_filepath, label_col=label_col, mosaic_scheme=mosaic_scheme,
+            max_concurrent=max_concurrent,
+        )
+
+    with fs.open(csv_filepath, "r") as f:
+        after_df = pd.read_csv(f)
+    built_ids = set(after_df[COL_ID].astype(str)) if len(after_df) else set()
+    newly_empty = [str(srow[id_col]) for srow in missing_srows
+                   if str(srow[id_col]) not in built_ids]
+    _record_known_empty(run_folderpath, window_segment, newly_empty)
+
+    return len(present_ids), n_missing, n_known_empty
+
+
 def _build_shortfall(csv_filepath: str, *, force: bool) -> tuple[str, int, int]:
     """D1 (spec 49): which `input.csv` rows still need a cube built -- the driver-side
     analogue of spec 47 D8's download diff, one level up. Returns `(dispatch_csv_filepath,
@@ -337,12 +559,28 @@ def run_create_datacube(
     single job; a partial shortfall dispatches only the missing rows. No modification time
     is read anywhere in this decision (D3/AC6) -- presence is `datacube.npy` +
     `metadata.pickle.npy`, both non-empty (D2).
-    """
-    if overwrite_setup_csv and fs.exists(csv_filepath):
-        fs.rm(csv_filepath)
 
-    if not fs.exists(csv_filepath):
-        setup(
+    `overwrite_setup_csv` (spec 50 D4/§9 step 4): `True` (default, unchanged -- no
+    production caller sets this) keeps the legacy behaviour, delete-then-regenerate the
+    whole `input.csv` every call. `False` -- which is what `create_training_data` now
+    passes -- runs `build_shortfall_only` instead: `setup` is called ONLY for shapes
+    whose cube target (named from the request, D3, no catalog access) is missing and not
+    already known-empty (D5). `overwrite_setup_csv` itself is not removed here -- that is
+    D9/§9 step 3, blocked on #84.
+    """
+    if overwrite_setup_csv:
+        if fs.exists(csv_filepath):
+            fs.rm(csv_filepath)
+        if not fs.exists(csv_filepath):
+            setup(
+                catalog_filepath=catalog_filepath, timestamp_col=timestamp_col,
+                shapefilepath=shapefilepath, id_col=id_col, run_folderpath=run_folderpath,
+                startdate=startdate, enddate=enddate, bands=bands,
+                scl_mask_classes=scl_mask_classes, mosaic_days=mosaic_days,
+                csv_filepath=csv_filepath, label_col=label_col, mosaic_scheme=mosaic_scheme,
+            )
+    else:
+        build_shortfall_only(
             catalog_filepath=catalog_filepath, timestamp_col=timestamp_col,
             shapefilepath=shapefilepath, id_col=id_col, run_folderpath=run_folderpath,
             startdate=startdate, enddate=enddate, bands=bands,

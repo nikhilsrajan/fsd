@@ -498,47 +498,64 @@ def create_training_data(
     if runner == "aml" and not root:
         errs.append("runner_kwargs['root'] (the blob working root) is required for runner='aml'.")
 
-    if download:
-        if source not in ("cdse", "mpc"):
-            errs.append(f"source={source!r} must be one of 'cdse', 'mpc'.")
-        if max_tiles is None or max_tiles < 1:
-            errs.append(f"max_tiles (>= 1) is required when download=True (got {max_tiles!r}).")
-        if runner == "local" and source == "cdse" and creds is None:
-            errs.append("creds (CdseCredentials) required for source='cdse' with runner='local'.")
-    else:
-        catalog_present = fs.exists(catalog_filepath)
-        if not catalog_present:
-            errs.append(
-                f"catalog_filepath does not exist: {catalog_filepath} "
-                "— run fsd.download first, or pass download=True (compute never fetches "
-                "from a provider implicitly; spec 23 D13)."
-            )
-        # D13 guardrail: catalog exists but covers NONE of the fields in-window -> actionable
-        # download plan (the offline .filter is cheap; the STAC-backed plan only fires on the
-        # empty case). Only meaningful when NOT auto-downloading.
-        if catalog_present and gdf is not None and len(gdf) and not gdf.geometry.isna().any():
-            try:
-                covered = TileCatalog(catalog_filepath).filter(gdf, startdate, enddate)
-            except Exception:  # noqa: BLE001 - a bad filter just means "skip the coverage hint"
-                covered = None
-            if covered is not None and len(covered) == 0:
-                errs.append(_imagery_missing_message(
-                    gdf, startdate, enddate, bands, catalog_filepath=catalog_filepath,
-                    why="no catalog tiles intersect the label polygons in-window",
-                ))
+    # D2 (spec 50): raise the STRUCTURAL preflight errors now, before any catalog access.
+    # The top-level short-circuit below must be reachable without `catalog_filepath` even
+    # existing -- catalog/download preflight (wave 2, below) only runs when it is not.
     _raise_preflight(errs)
 
     _configure_storage(storage)
 
     run_id = None
     if runner == "aml":
+        # D6 (spec 50/#83): `run_id` stays fresh per SUBMISSION -- it names `shards/` +
+        # `_status/` under `run_aml`'s own run_root, and that identifies a dispatch, which
+        # is the right thing for it to identify. Only ARTIFACT paths (this run_folderpath)
+        # become deterministic: a fresh run_id every call is exactly #83 (every target
+        # missing on every call, no skip can ever fire). "train" is a plain stable name,
+        # not a hash of the request -- Q1 rejected addressing the group; `<params>/<id>`
+        # below still carries per-cell granularity.
         run_id = (runner_kwargs or {}).get("run_id") or pd.Timestamp.now(tz="UTC").strftime(
             "%Y%m%dT%H%M%SZ"
         )
         if run_folderpath is None:
-            run_folderpath = f"{root.rstrip('/')}/runs/{run_id}"
+            run_folderpath = f"{root.rstrip('/')}/runs/train"
     elif run_folderpath is None:
         run_folderpath = os.path.join(export_folderpath, "run")
+
+    # D2/D3 (spec 50 §9 step 2): phase 1, the top-level short-circuit. The target is the
+    # landed arrays; its identity is computed from the REQUEST (D3), never from
+    # `input.csv` -- so checking it costs zero catalog access, zero `setup`, zero
+    # dispatch, even on a call whose `input.csv` has never been written. `overwrite`
+    # anything other than `False` is a forced rebuild (D8) and must never short-circuit.
+    if overwrite is False:
+        want_features = adapter is not None or feature_sequence is not None or aggregate is not None
+        identity = _flatten_identity_from_request(
+            gdf, id_col=id_col, run_folderpath=run_folderpath,
+            startdate=startdate, enddate=enddate, mosaic_days=mosaic_days,
+            bands=bands, scl_mask_classes=scl_mask_classes,
+            mosaic_scheme=config.MOSAIC_SCHEME,
+            adapter=adapter, feature_sequence=feature_sequence, aggregate=aggregate,
+        )
+        stamp_filepath = os.path.join(export_folderpath, _FLATTEN_STAMP_NAME)
+        if _stamp.matches_stamp(stamp_filepath, identity) and _flatten_outputs_present(
+            export_folderpath, label_col=label_col, want_features=want_features,
+        ):
+            print(f"[plan] target: {export_folderpath} arrays -> CURRENT "
+                  f"(stamp matches this request)", flush=True)
+            return _land_current_training_data(
+                export_folderpath, run_folderpath, label_col=label_col,
+                want_features=want_features,
+            )
+
+    # D7 (spec 50): the walk announces what it resolved, before it runs anything. Reached
+    # only when the top-level short-circuit above did NOT fire.
+    if overwrite is not False:
+        stale_reason = f"overwrite={overwrite!r} forces a rebuild"
+    else:
+        stamp = _stamp.read_stamp(os.path.join(export_folderpath, _FLATTEN_STAMP_NAME))
+        stale_reason = "no stamp" if stamp is None else "stamp does not match this request"
+    print(f"[plan] target: {export_folderpath} arrays -> STALE ({stale_reason})", flush=True)
+    print(f"[plan]   flatten: {len(gdf)} cubes required", flush=True)
 
     fs.makedirs(run_folderpath)
     fs.makedirs(export_folderpath)
@@ -557,6 +574,44 @@ def create_training_data(
     else:
         shapefilepath = label_polygons
 
+    # D2 (spec 50): wave 2 -- catalog/download preflight. Unreachable when the
+    # short-circuit above already fired, which is the point: a satisfied re-run needs
+    # `catalog_filepath` to exist no more than it needs `setup` to run.
+    catalog_errs: list[str] = []
+    if download:
+        if source not in ("cdse", "mpc"):
+            catalog_errs.append(f"source={source!r} must be one of 'cdse', 'mpc'.")
+        if max_tiles is None or max_tiles < 1:
+            catalog_errs.append(
+                f"max_tiles (>= 1) is required when download=True (got {max_tiles!r})."
+            )
+        if runner == "local" and source == "cdse" and creds is None:
+            catalog_errs.append(
+                "creds (CdseCredentials) required for source='cdse' with runner='local'."
+            )
+    else:
+        catalog_present = fs.exists(catalog_filepath)
+        if not catalog_present:
+            catalog_errs.append(
+                f"catalog_filepath does not exist: {catalog_filepath} "
+                "— run fsd.download first, or pass download=True (compute never fetches "
+                "from a provider implicitly; spec 23 D13)."
+            )
+        # D13 guardrail: catalog exists but covers NONE of the fields in-window -> actionable
+        # download plan (the offline .filter is cheap; the STAC-backed plan only fires on the
+        # empty case). Only meaningful when NOT auto-downloading.
+        if catalog_present and len(gdf) and not gdf.geometry.isna().any():
+            try:
+                covered = TileCatalog(catalog_filepath).filter(gdf, startdate, enddate)
+            except Exception:  # noqa: BLE001 - a bad filter just means "skip the coverage hint"
+                covered = None
+            if covered is not None and len(covered) == 0:
+                catalog_errs.append(_imagery_missing_message(
+                    gdf, startdate, enddate, bands, catalog_filepath=catalog_filepath,
+                    why="no catalog tiles intersect the label polygons in-window",
+                ))
+    _raise_preflight(catalog_errs)
+
     if download:
         dst_folderpath = os.path.dirname(catalog_filepath.rstrip("/")) or "."
         _download_verb(
@@ -574,6 +629,8 @@ def create_training_data(
     build_overwrite = overwrite in (True, "datacubes")
     flatten_overwrite = overwrite in (True, "flatten", "datacubes")
 
+    print("[plan] will run: build -> flatten -> land", flush=True)
+
     csv_filepath = os.path.join(run_folderpath, "input.csv")
     _create_datacube.run_create_datacube(
         catalog_filepath=catalog_filepath, timestamp_col="timestamp",
@@ -581,6 +638,12 @@ def create_training_data(
         startdate=startdate, enddate=enddate, bands=bands,
         scl_mask_classes=scl_mask_classes, mosaic_days=mosaic_days,
         csv_filepath=csv_filepath, label_col=label_col, cores=cores,
+        # D4/§9 step 4: setup is scoped to the shortfall (`build_shortfall_only`) unless
+        # the caller explicitly forces a cube rebuild -- a forced rebuild also forces
+        # setup to re-read the catalog, so a stale per-shape `catalog.parquet` slice is
+        # never rebuilt from. Ordinary re-runs (the case D4 exists for) and
+        # `overwrite="flatten"` (cubes NOT forced) both take the scoped path.
+        overwrite_setup_csv=build_overwrite,
         overwrite=build_overwrite, runner=runner, runner_kwargs=runner_kwargs,
     )
 
@@ -636,6 +699,49 @@ def _flatten_identity(input_df: pd.DataFrame, *, id_col, filepath_col, adapter, 
     return json.loads(json.dumps(identity, default=str))
 
 
+def _flatten_identity_from_request(
+    gdf: gpd.GeoDataFrame, *, id_col: str, run_folderpath: str,
+    startdate, enddate, mosaic_days: int, bands: list[str],
+    scl_mask_classes: list[int], mosaic_scheme: str,
+    adapter, feature_sequence, aggregate,
+) -> dict:
+    """D3 (spec 50) -- **the load-bearing decision**: the same identity `_flatten_identity`
+    computes, but from the REQUEST rather than from `input.csv` (which is `setup`'s
+    OUTPUT -- that is the knot §1 describes). A cube's path is derivable from
+    `(run_folderpath, window, id)` and nothing else (§3 D3), so this reads zero files: no
+    catalog, no `input.csv`, no `setup`.
+
+    Produces the exact same dict shape as `_flatten_identity(input_df, ...)` -- same
+    `cubes` list, same `params` keys, same string forms -- so a caller can compare the two
+    or (once something depends on this, step 2/4) use this one alone. `gdf[id_col]` is the
+    caller's own label polygons, sorted for a stable `cubes` order regardless of shapefile
+    row order (mirrors `sorted(...)` in `_flatten_identity`)."""
+    window_segment = _create_datacube.window_folder_segment(
+        startdate, enddate, mosaic_days, bands=bands, mosaic_scheme=mosaic_scheme,
+        scl_mask_classes=scl_mask_classes,
+    )
+    ids = sorted(str(v) for v in gdf[id_col])
+    cubes = sorted(
+        [id_value, os.path.join(
+            _create_datacube.cube_export_folderpath(run_folderpath, window_segment, id_value),
+            "datacube.npy",
+        )]
+        for id_value in ids
+    )
+    params = {
+        "bands": [",".join(bands)],
+        "mosaic_days": [str(mosaic_days)],
+        "startdate": [str(pd.to_datetime(startdate, utc=True))],
+        "enddate": [str(pd.to_datetime(enddate, utc=True))],
+        "scl_mask_classes": [",".join(str(v) for v in scl_mask_classes)],
+        "mosaic_scheme": [mosaic_scheme],
+        "aggregate": _fingerprint_aggregate(aggregate),
+        "features": _fingerprint_features(adapter, feature_sequence),
+    }
+    identity = {"cubes": cubes, "params": params}
+    return json.loads(json.dumps(identity, default=str))
+
+
 def _fingerprint_aggregate(aggregate):
     if aggregate is None:
         return None
@@ -663,10 +769,7 @@ def _fingerprint_features(adapter, feature_sequence) -> dict | None:
     return None
 
 
-def _flatten_outputs_present(export_folderpath: str, *, label_col, want_features: bool) -> bool:
-    """D6: the arrays a skip would reuse must actually be there -- a matching stamp with a
-    missing file (e.g. a half-cleaned export_folderpath) must fail towards running, never
-    towards a skip that then can't load."""
+def _flatten_output_names(*, label_col, want_features: bool) -> list[str]:
     names = ["data.npy", "coords.npy", "ids.npy", "metadata.pickle.npy"]
     if label_col is not None:
         names.append("labels.npy")
@@ -674,7 +777,48 @@ def _flatten_outputs_present(export_folderpath: str, *, label_col, want_features
         names += ["features.npy", "feature_ids.npy"]
         if label_col is not None:
             names.append("feature_labels.npy")
+    return names
+
+
+def _flatten_outputs_present(export_folderpath: str, *, label_col, want_features: bool) -> bool:
+    """D6: the arrays a skip would reuse must actually be there -- a matching stamp with a
+    missing file (e.g. a half-cleaned export_folderpath) must fail towards running, never
+    towards a skip that then can't load."""
+    names = _flatten_output_names(label_col=label_col, want_features=want_features)
     return _artifacts_present(export_folderpath, names)
+
+
+def _load_landed_arrays(export_folderpath: str):
+    """`data.npy` + `metadata.pickle.npy`, loaded off `fsd.storage` -- the two files every
+    landed `TrainingData` needs, shared by `flatten_training_data`'s tail and spec 50's
+    top-level short-circuit."""
+    data = fs.load_npy(os.path.join(export_folderpath, "data.npy"))
+    metadata = fs.load_npy(
+        os.path.join(export_folderpath, "metadata.pickle.npy"), allow_pickle=True
+    )[()]
+    return data, metadata
+
+
+def _land_current_training_data(
+    export_folderpath: str, run_folderpath: str, *, label_col, want_features: bool,
+) -> TrainingData:
+    """D2/D7 (spec 50): the target is already CURRENT -- print the `[fetch]` line and
+    return the arrays, without touching the catalog, `setup`, or a runner. `want_features`
+    only tells us which files to report; nothing here recomputes them (the stamp match
+    already proved they match this exact request, D3)."""
+    data, metadata = _load_landed_arrays(export_folderpath)
+    names = _flatten_output_names(label_col=label_col, want_features=want_features)
+    total_bytes = sum(
+        fs.size(os.path.join(export_folderpath, n))
+        for n in names if fs.exists(os.path.join(export_folderpath, n))
+    )
+    print(f"[fetch] export -> {export_folderpath} | {len(names)} files, "
+          f"{total_bytes / 1e6:.1f} MB", flush=True)
+    return TrainingData(
+        export_folderpath=export_folderpath, run_folderpath=run_folderpath,
+        n_pixels=int(data.shape[0]), n_timestamps=len(metadata["timestamps"]),
+        bands=list(metadata["bands"]), feature_bands=metadata.get("feature_bands"),
+    )
 
 
 def flatten_training_data(
@@ -786,10 +930,7 @@ def flatten_training_data(
             )
         _stamp.write_stamp(stamp_filepath, identity)
 
-    data = fs.load_npy(os.path.join(export_folderpath, "data.npy"))
-    metadata = fs.load_npy(
-        os.path.join(export_folderpath, "metadata.pickle.npy"), allow_pickle=True
-    )[()]
+    data, metadata = _load_landed_arrays(export_folderpath)
 
     feature_bands = metadata.get("feature_bands")
     if not skip and want_features:
