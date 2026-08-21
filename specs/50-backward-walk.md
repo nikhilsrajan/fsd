@@ -5,9 +5,13 @@ summary: Resolve create_training_data backwards from the artifact the caller ask
 
 # Spec 50 — resolve backwards from the target: the `create_training_data` walk
 
-**Status: 🟡 DRAFT 2026-08-21 — awaiting sign-off.** Raised by the user 2026-08-21 after
+**Status: ✅ SIGNED OFF 2026-08-21 — NOT YET IMPLEMENTED.** Raised by the user 2026-08-21 after
 observing that a fully-resumed `create_training_data` still paid a full `setup` pass before any
-skip could fire. Nothing in `src/` is touched yet.
+skip could fire. **All six §7 questions answered by the user at sign-off**, two of them against the
+draft's proposal: **Q1** rejected a set-hash run folder in favour of per-path addressing (D6
+rewritten), and **Q3** recovered the actual historical rationale, which turned out to be a
+*designed* capability rather than an accident (D9, new). §8's cross-validation was run at draft and
+is complete. Nothing in `src/` is touched yet.
 
 > **The one sentence:** spec 49 taught each leg to skip finished work, but each leg still runs its
 > own preflight *before* its skip can be evaluated — so the cheapest question ("are the arrays
@@ -86,7 +90,11 @@ target's identity computable **without** running the rule that produces it (D3);
 the shortfall (D4); recording known-empty cells (D5); a deterministic default run folder, which is
 **#83** and is a precondition rather than an option (D6).
 
-**Out:** `run_inference` (its per-cell skip is decided on the node — **#77**, its own spec);
+**Out:** **multi-window training data (#84)** — D9 restores the accumulation that makes it
+*reachable*, and it is broken at the array layer once it is (duplicate ids, and `median_per_id`
+silently medianing two windows of the same field into one sample). Filed rather than fixed here:
+it is an array/API design question, not a control-flow one. **The two must land together or in that
+order**, since D9 is what exposes it; `run_inference` (its per-cell skip is decided on the node — **#77**, its own spec);
 a general DAG engine spanning every verb; **delegating to Snakemake** (D1); content digests of
 cubes (spec 49 §7 Q2's default stands — this spec changes control flow, not the staleness
 predicate); changing artifact formats; `fsd.download` as a standalone verb (unchanged).
@@ -177,15 +185,43 @@ to **no imagery**. The walk then distinguishes:
 This is new state and it can itself go stale (§5). It is the price of naming targets without
 reading the catalog, and it is cheaper than the alternative, which is reading the catalog.
 
-### D6 — the default run folder becomes deterministic (this is #83, and it is a precondition)
+### D6 — the run folder is stable and addressing is PER PATH, never per set [Q1: user, 2026-08-21]
 
 `run_folderpath` currently defaults to `{root}/runs/{run_id}` with `run_id` a fresh UTC timestamp
 (**#83**), so every target is missing on every call and no walk — backward or forward — can ever be
-satisfied. The default must derive from the **request**, not the clock.
+satisfied. The default must not come from the clock.
+
+**The draft proposed hashing the request (including the sorted shape ids) into the folder name. The
+user rejected it, and was right:** a set hash makes the *group* the unit of addressing, so adding a
+single polygon — or a single grid cell, for inference — changes the hash and invalidates **all 900**
+cubes. The correct granularity is the one the pipeline already has:
+
+> *"look at all the datacube paths individually … so adding a new polygon / grid only triggers
+> running of that new polygon / grid instead of the whole group."*
+
+So: **no set hash anywhere.** The run folder is a plain stable name, and the addressing granularity
+comes from the path segments `setup` already builds, `run_folderpath/<params>/<id>/`. Adding a
+polygon adds one `<id>` leaf and builds exactly one cube; everything else remains present and is
+skipped.
+
+**One correction the path needs to make this sound.** Today the middle segment is
+`<startdate>_<enddate>_m<mosaic_days>` (spec 46 D1/D2) but the *row* identity is
+`_UNIT_IDENTITY_COLS` = `(id, startdate, enddate, bands, mosaic_days, mosaic_scheme,
+scl_mask_classes)`. Two requests differing only in `bands` are therefore two distinct rows that
+resolve to **the same path** — the second silently overwrites the first, and the build skip reads
+the wrong-band cube as "present". So the middle segment is extended so that **path granularity
+equals row-identity granularity**: `<startdate>_<enddate>_m<mosaic_days>_<key>`, where `<key>` is a
+short digest of `(bands, mosaic_scheme, scl_mask_classes)`.
+
+That is a digest, but it is not the thing Q1 rejected, and the distinction is the whole point: it
+digests **parameters every cell in the run shares**, never the *set of cells*. Changing `bands`
+moves the whole run folder, which is correct — those are different cubes. Adding a polygon touches
+nothing but its own leaf, which is what Q1 asked for. Old cubes stay addressable, so switching a
+parameter back reuses them instead of rebuilding.
 
 The AML `run_id` used for `shards/` and `_status/` stays fresh per submission: it identifies a
-*submission*, which is the right thing for it to identify. Only the **artifact** paths become
-deterministic. §7 Q1 asks what the derived name should be.
+*submission*, which is the right thing for it to identify. Only **artifact** paths become
+deterministic.
 
 ### D7 — the walk announces what it resolved, before it runs anything
 
@@ -221,6 +257,55 @@ that would have made #83 self-evident in one line instead of two full cluster ru
 - `overwrite=True` → force the whole plan;
 - `overwrite=False` → the walk decides.
 
+### D9 — `input.csv` accumulates: append and dedupe, never delete [Q3: user, 2026-08-21]
+
+The draft proposed deleting `overwrite_setup_csv` as a meaningless inherited flag. The user
+recovered the actual rationale, and it inverts the finding — **the delete was a workaround for a
+missing dedupe, guarding a capability that was deliberately designed:**
+
+> *"when setup was run there were two things that was allowed to happen. if an input.csv didn't
+> exist, the file was created. if input.csv existed then new rows were appended. the reason
+> appending was helpful was because that allowed for creation of training data with different start
+> and end dates … I had not implemented a way to check if the exact entry existed within the
+> input csv and skip it — which is the true solution."*
+
+**That true solution already exists in fsd.** `create_datacube._dedupe_on_unit_identity` (spec 38
+D13, #53) collapses rows sharing `_UNIT_IDENTITY_COLS`, keeping the newest, and its docstring states
+the intent exactly: *"an idempotent re-run of setup (which appends unconditionally) must not grow
+input.csv by one duplicate copy of every unit each time. A re-run adding a genuinely new shape (or a
+changed window/params for an existing id) still adds a distinct row — this is a dedupe, not a 'one
+row per id' collapse."*
+
+So the inherited `overwrite_setup_csv=True` does not merely predate the fix — **it actively defeats
+it.** Deleting `input.csv` leaves nothing to append to and nothing to dedupe against, which is why
+the accumulate-across-windows capability has been unreachable in fsd since day one, and why nobody
+noticed the mechanism that would have supported it was already written.
+
+Therefore: `overwrite_setup_csv` is **removed**, `setup` appends, and `_dedupe_on_unit_identity`
+does what it was built to do. Staleness is served by D3's identity, not by demolition.
+
+**Consequence, and why #84 is filed:** this makes multi-window training data *reachable*, and it is
+broken one layer up — `ids.npy` carries no window component, so two windows of one field collide,
+and `median_per_id` then medians them into a single sample without a word. D9 must not land ahead of
+that fix, or the pipeline will start quietly producing wrong training sets in a case it currently
+just refuses to produce at all.
+
+### D10 — `verify_adapter` always verifies; only its cube may resume [Q6: user, 2026-08-21]
+
+The draft proposed leaving `verify_adapter` out of scope. The user's answer is sharper and becomes a
+decision rather than an omission: *"verify_adapter must run because its purpose is to verify."*
+
+A verb whose entire job is to answer "does this adapter compute the right thing?" must never answer
+from cache. The distinction the walk has to respect:
+
+- the **cube** is an *input* — resuming it is legitimate, is what makes the iterate-on-the-adapter
+  loop fast, and is already spec 48 D5;
+- the **adapter run** is the *work* — it re-runs every time, unconditionally.
+
+This is what `verify_adapter` already does (`run_infer_only(..., overwrite=True)`), so no code
+changes. It is recorded here so a later "optimisation" that notices `output.tif` already exists has
+a decision to argue with rather than a gap to fill.
+
 ---
 
 ## 4. Acceptance criteria
@@ -237,9 +322,16 @@ that would have made #83 self-evident in one line instead of two full cluster ru
 5. Cube paths are enumerated with **no catalog access** — asserted by test.
 6. A cell with no in-window imagery is recorded once and reported as known-empty on the next run;
    two consecutive identical runs both report a shortfall of 0 (D5, the non-convergence case).
-7. `run_folderpath` defaults to a value derived from the request: two identical calls seconds apart
-   address identical cube paths (#83; `tests/test_build_skip.py`'s characterisation test flips from
-   asserting a timestamp leaf to asserting equality).
+7. `run_folderpath` carries no clock: two identical calls seconds apart address identical cube
+   paths (#83; `tests/test_build_skip.py`'s characterisation test flips from asserting a timestamp
+   leaf to asserting equality).
+7a. **Adding one polygon rebuilds exactly one cube** (D6/Q1): 900 shapes built, then 901 requested →
+   the shortfall is 1 and `setup` receives 1 shape. No set-level hash appears in any path.
+7b. Two requests differing only in `bands` resolve to **different** cube paths, and neither is read
+   as "present" for the other (D6).
+7c. `setup` run twice with **different windows** against the same `run_folderpath` yields
+   `input.csv` with both sets of rows and **no duplicates**; run twice with the *same* window it
+   yields one set (D9, `_dedupe_on_unit_identity`). `overwrite_setup_csv` no longer exists.
 8. `overwrite="datacubes"` forces cubes and flatten; `overwrite="flatten"` forces flatten only;
    `overwrite=True` forces all; an invalid value raises naming the valid ones (spec 49 AC7/AC8
    carried forward).
@@ -288,16 +380,16 @@ that would have made #83 self-evident in one line instead of two full cluster ru
 
 ---
 
-## 7. Questions for sign-off
+## 7. Questions at sign-off — ALL RESOLVED (user, 2026-08-21)
 
-1. **What is the deterministic run-folder name (D6/#83)?** Options: `runs/<window>_<hash of sorted
-   shape ids + params>` (fully derived, collision-safe, opaque); or a caller-supplied `run_name=`
-   defaulting to something stable like `runs/train` (readable, but two different polygon sets
-   collide unless the caller is careful). *Default proposed: derived hash, with the readable prefix
-   in front of it (`runs/20180401_20180930_m20_a1b2c3d4`), so it is both diagnosable and safe.*
-2. **Where is the known-empty record kept (D5)?** A sibling `_manifest.json` in the run folder, or
-   extra rows in `input.csv` flagged empty. *Default proposed: sibling file — `input.csv` is the
-   build unit's input contract and should not grow rows that are not work.*
+1. **[RESOLVED — default OVERTURNED]** **What is the deterministic run-folder name (D6/#83)?**
+   → **no set hash.** A hash over the shape ids makes the group the unit of addressing, so one new
+   polygon invalidates all 900. Address per path instead, letting `<params>/<id>` carry the
+   granularity it already carries. The params segment is extended so path granularity matches
+   `_UNIT_IDENTITY_COLS`. Folded into **D6**.
+2. **[RESOLVED — default stands]** **Where is the known-empty record kept (D5)?** → a sibling
+   `_manifest.json` in the run folder. `input.csv` is the build unit's input contract and should not
+   grow rows that are not work.
 3. **Does `overwrite_setup_csv` survive (D4)?** The history (§1) reframes this from "is the flag
    still useful?" to "was the mechanism ever right?". The flag is not arbitrary — it is a crude
    answer to a **real** question: `input.csv` is derived from the catalog, the shapes, the window
@@ -323,15 +415,15 @@ that would have made #83 self-evident in one line instead of two full cluster ru
    changed request simply needs different cubes. *Default proposed: regenerate for the build leg,
    and say so in the `[plan]` block; the asymmetry with `run_inference` is real and comes from
    there being outputs to orphan there and none here.*
-4. **Does the download leg join the walk, or keep its own catalog diff?** Its diff already works and
-   is cheap (one catalog read). *Default proposed: keep spec 47 D8 as-is, and have the walk simply
-   not reach it when the cubes are satisfied — the win is skipping the leg entirely, not
-   re-mechanising it.*
-5. **Phase 1 only, or both phases (§9)?** Phase 1 is small and reversible; phase 2 is the real
-   refactor. *Default proposed: land phase 1, measure a real re-run, then decide phase 2 on
-   evidence rather than on this spec's estimate.*
-6. **Does `verify_adapter` join the walk?** It has its own cube resume (spec 48 D5) that already
-   works. *Default proposed: out of scope, no change.*
+4. **[RESOLVED — default stands]** **Does the download leg join the walk, or keep its own catalog
+   diff?** → keep spec 47 D8 as-is; the walk simply does not reach it when the cubes are satisfied.
+   The win is skipping the leg entirely, not re-mechanising it.
+5. **[RESOLVED — default OVERTURNED]** **Phase 1 only, or both phases (§9)?** → **both.** The
+   phasing in §9 stays as the landing order, but phase 2 is committed rather than conditional: the
+   partial case is the one a real re-run hits, and it is the one phase 1 does nothing for.
+6. **[RESOLVED — sharpened]** **Does `verify_adapter` join the walk?** → **it always verifies.**
+   Not "out of scope" but a decision: the cube is an input and may resume; the adapter run is the
+   work and never does. Folded into **D10**.
 
 ---
 
@@ -394,8 +486,14 @@ recursion.
   `overwrite_setup_csv` was **inherited, never designed for fsd** — §1. Spec 08 documents why
   `setup` pre-slices the catalog (parallel build jobs must not contend on one large file) and is
   silent on why its output is thrown away each run.
+- `src/fsd/workflows/create_datacube.py::_dedupe_on_unit_identity` + `_UNIT_IDENTITY_COLS`
+  (spec 38 D13, #53): supplied **D9**. The append-without-duplicates mechanism the user described as
+  the "true solution" was already implemented; `overwrite_setup_csv` is what makes it unreachable.
+  Its column tuple is also what D6's path segment is corrected against.
+- `src/fsd/model/features.py::median_per_id`: supplied D9's consequence and **#84** — it groups by
+  `np.unique(ids)`, so two windows of one field become one medianed sample.
 - **#83**: D6's precondition. **#54**: the per-shape control-file write cost D4 reduces. **#76**:
-  §5's first risk. **#77**: why `run_inference` is out of scope.
+  §5's first risk. **#77**: why `run_inference` is out of scope. **#84**: D9's ordering constraint.
 - `tests/test_build_skip.py` (2026-08-21): already characterises the timestamped default, so AC7
   has a test to flip rather than one to write.
 
@@ -411,8 +509,11 @@ signed off. Phased so each step is independently revertible:
    computed early. Mirrors spec 49 §9's stamps-before-skips discipline.
 2. **Phase 1: the top-level short-circuit** (§6) — target satisfied → land and return. Small, and it
    is where the no-op case's 96 s goes away.
-3. **Phase 2: the full walk** — D2/D4/D5/D7, `setup` scoped to the shortfall. This is where the
-   *partial* case's cost goes away, and it is the step §7 Q5 may defer.
+3. **D9 — append + dedupe, `overwrite_setup_csv` removed.** Small, but sequence it **with or after
+   #84's array-layer fix**: this is the step that makes multi-window reachable, and reachable-and-
+   broken is worse than unreachable.
+4. **Phase 2: the full walk** — D2/D4/D5/D7, `setup` scoped to the shortfall. Committed at sign-off
+   (§7 Q5), and where the *partial* case's cost goes away.
 
-Steps 0 and 2 carry most of the measurable value; step 3 is what makes the shape principled rather
-than special-cased.
+Steps 0 and 2 carry most of the measurable value; step 4 is what makes the shape principled rather
+than special-cased. Step 3 is the one with an ordering constraint outside this spec.
