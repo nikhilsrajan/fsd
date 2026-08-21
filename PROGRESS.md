@@ -4,7 +4,7 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-21 (**specs 48 + 49 implemented, merged, and Opus-reviewed** — `fsd.verify_adapter` runs the adapter over ONE real cube locally before the fan-out; spec 49 stops `create_training_data` redoing finished cube builds and flattens. All 25 acceptance criteria across the two specs are met; the review found **2 defects in spec 48's verb**, both fixed with red-first regression tests, and filed the two issues spec 49's sign-off promised (**#76** atomic cube writes, **#77** `run_inference`'s build-leg skip). `main` is **3 commits ahead of `origin/main` and NOT pushed** — the push is the user's call.)_
+_Last updated: 2026-08-21 (**specs 48 + 49 implemented, merged, and Opus-reviewed** — `fsd.verify_adapter` runs the adapter over ONE real cube locally before the fan-out; spec 49 stops `create_training_data` redoing finished cube builds and flattens. All 25 acceptance criteria across the two specs are met; the review found **2 defects in spec 48's verb**, both fixed with red-first regression tests, and filed the two issues spec 49's sign-off promised (**#76** atomic cube writes, **#77** `run_inference`'s build-leg skip). `main` @ `0d9bfef` is **5 commits ahead of `origin/main` and NOT pushed** — the push is the user's call.)_
 
 ## Where things stand
 
@@ -202,8 +202,9 @@ Both regression tests were confirmed red on the unfixed code (`assert False` on 
 
 ### Gate
 
-`main` is **3 commits ahead of `origin/main` and unpushed** (`c0d9d17` implementation + merge,
-plus this review's fix commit and its merge). Pushing is the user's call.
+`main` @ `0d9bfef` is **5 commits ahead of `origin/main` and unpushed** — the implementation
+(`16f688c`) and its merge (`c0d9d17`), then this review's two commits (`4989025` fixes + tests +
+spec headers, `77c9ce0` this entry) and their merge. Pushing is the user's call.
 
 ## 2026-08-20 (later) — specs 48 + 49 signed off; notebooks made public; **NEXT: Sonnet implements both**
 
