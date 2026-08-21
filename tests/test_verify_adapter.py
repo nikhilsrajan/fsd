@@ -153,6 +153,12 @@ def test_verify_adapter_happy_path_report_shape(tmp_path, monkeypatch):
     assert os.path.exists(os.path.join(export, "grids.geojson"))
     assert result["metrics"]["grids_filepath"] == os.path.join(export, "grids.geojson")
 
+    # The auto-saved bundle is reported, and is a real persistent bundle on disk -- not a
+    # temp one -- so "reuse the bundle gate 1 verified" is a supported move rather than a
+    # guess at the folder layout.
+    assert result["metrics"]["bundle_path"] == os.path.join(export, "_bundle")
+    assert os.path.exists(os.path.join(export, "_bundle", "bundle.json"))
+
     # AC14: no flattened/feature array.
     assert not os.path.exists(os.path.join(export, "features.npy"))
     assert not os.path.exists(os.path.join(export, "data.npy"))
