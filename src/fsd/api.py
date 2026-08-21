@@ -643,6 +643,49 @@ def _flatten_identity(input_df: pd.DataFrame, *, id_col, filepath_col, adapter, 
     return json.loads(json.dumps(identity, default=str))
 
 
+def _flatten_identity_from_request(
+    gdf: gpd.GeoDataFrame, *, id_col: str, run_folderpath: str,
+    startdate, enddate, mosaic_days: int, bands: list[str],
+    scl_mask_classes: list[int], mosaic_scheme: str,
+    adapter, feature_sequence, aggregate,
+) -> dict:
+    """D3 (spec 50) -- **the load-bearing decision**: the same identity `_flatten_identity`
+    computes, but from the REQUEST rather than from `input.csv` (which is `setup`'s
+    OUTPUT -- that is the knot §1 describes). A cube's path is derivable from
+    `(run_folderpath, window, id)` and nothing else (§3 D3), so this reads zero files: no
+    catalog, no `input.csv`, no `setup`.
+
+    Produces the exact same dict shape as `_flatten_identity(input_df, ...)` -- same
+    `cubes` list, same `params` keys, same string forms -- so a caller can compare the two
+    or (once something depends on this, step 2/4) use this one alone. `gdf[id_col]` is the
+    caller's own label polygons, sorted for a stable `cubes` order regardless of shapefile
+    row order (mirrors `sorted(...)` in `_flatten_identity`)."""
+    window_segment = _create_datacube.window_folder_segment(
+        startdate, enddate, mosaic_days, bands=bands, mosaic_scheme=mosaic_scheme,
+        scl_mask_classes=scl_mask_classes,
+    )
+    ids = sorted(str(v) for v in gdf[id_col])
+    cubes = sorted(
+        [id_value, os.path.join(
+            _create_datacube.cube_export_folderpath(run_folderpath, window_segment, id_value),
+            "datacube.npy",
+        )]
+        for id_value in ids
+    )
+    params = {
+        "bands": [",".join(bands)],
+        "mosaic_days": [str(mosaic_days)],
+        "startdate": [str(pd.to_datetime(startdate, utc=True))],
+        "enddate": [str(pd.to_datetime(enddate, utc=True))],
+        "scl_mask_classes": [",".join(str(v) for v in scl_mask_classes)],
+        "mosaic_scheme": [mosaic_scheme],
+        "aggregate": _fingerprint_aggregate(aggregate),
+        "features": _fingerprint_features(adapter, feature_sequence),
+    }
+    identity = {"cubes": cubes, "params": params}
+    return json.loads(json.dumps(identity, default=str))
+
+
 def _fingerprint_aggregate(aggregate):
     if aggregate is None:
         return None

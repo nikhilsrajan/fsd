@@ -66,6 +66,19 @@ def window_folder_segment(
     return f"{startdate.strftime('%Y%m%d')}_{enddate.strftime('%Y%m%d')}_m{mosaic_days}_{key}"
 
 
+def cube_export_folderpath(run_folderpath: str, window_segment: str, id_value) -> str:
+    """A cube's `export_folderpath` is derivable from `(run_folderpath, window, id)` and
+    NOTHING else (spec 50 D3) -- no catalog access is needed to NAME it, only to BUILD it.
+    Shared by `setup`'s `_prepare` and by `api._flatten_identity_from_request`, which must
+    compute the exact same string without reading `input.csv`."""
+    export_folderpath = os.path.join(run_folderpath, window_segment, str(id_value))
+    if fs.is_local(export_folderpath):
+        # os.path.abspath is only meaningful (and safe) for a local path — on a
+        # URL (e.g. abfss://...) it would corrupt the host/scheme (specs/31 §6).
+        export_folderpath = os.path.abspath(export_folderpath)
+    return export_folderpath
+
+
 def setup(
     catalog_filepath: str,
     timestamp_col: str,
@@ -169,11 +182,7 @@ def setup(
             print(f"[setup] skip id={srow[id_col]}: no tiles in range/overlap", flush=True)
             return None
 
-        export_folderpath = os.path.join(run_folderpath, window_segment, str(srow[id_col]))
-        if fs.is_local(export_folderpath):
-            # os.path.abspath is only meaningful (and safe) for a local path — on a
-            # URL (e.g. abfss://...) it would corrupt the host/scheme (specs/31 §6).
-            export_folderpath = os.path.abspath(export_folderpath)
+        export_folderpath = cube_export_folderpath(run_folderpath, window_segment, srow[id_col])
         fs.makedirs(export_folderpath)
         shape_path = os.path.join(export_folderpath, "geometry.geojson")
         catalog_path = os.path.join(export_folderpath, "catalog.parquet")
