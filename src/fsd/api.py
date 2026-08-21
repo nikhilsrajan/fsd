@@ -1775,10 +1775,18 @@ def verify_adapter(
     2. `fsd.model.verify_image` -- will the IMAGE run it? One AML node, ~40-380s.
     3. `fsd.run_inference` -- the fan-out, N nodes.
 
-    `model` is a live adapter or a bundle path; a live adapter is auto-saved to a temp
-    bundle first (`_ensure_bundle`, as `run_inference` already does) -- so this run also
-    exercises bundling itself, and the bundle produced is the same one `run_inference`
-    would use.
+    `model` is a live adapter or a bundle path. A live adapter is auto-saved by
+    `_ensure_bundle` (the same call `run_inference` makes) to `export_folderpath/_bundle`
+    -- a real, persistent bundle, **not** a temp one: `code=None` auto-detects and embeds
+    the adapter's local module, so it is cluster-loadable, and its path comes back as
+    `metrics["bundle_path"]`.
+
+    It is still not a substitute for your own `bundle.save`. `_ensure_bundle` passes no
+    `requirements=`, and those are what `verify_image` checks the image against at gate 2
+    -- which this verb never reaches, since its inference leg runs in-process on the
+    driver. Bundle deliberately for anything you intend to deploy; this one exists so
+    gate 1 can run at all, and it lives inside a verify output folder that is safe to
+    delete.
 
     `cell=`: an explicit grid-cell id uses it (`PreflightError`, naming the available ids
     bounded, if it is not in this roi); `None` (default) picks DETERMINISTICALLY -- largest
@@ -2043,6 +2051,10 @@ def verify_adapter(
             "required_bands": sorted(required),
             "output_filepath": output_filepath if written else None,
             "grids_filepath": grids_filepath,
+            # The bundle gate 1 actually ran, so reusing it is a supported move rather
+            # than a guess at the folder layout. Note it carries no `requirements=`
+            # (`_ensure_bundle`), which gate 2 wants -- see this verb's docstring.
+            "bundle_path": bundle_path,
         },
         "expected": {"n_timestamps": want_t, "required_bands": sorted(required)},
         "error": None,
