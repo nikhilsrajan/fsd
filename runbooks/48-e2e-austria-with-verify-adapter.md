@@ -120,16 +120,32 @@ and runs your adapter over it through the same unit the cluster runs.
 
 ## Pass B — resumed run (this is the spec 49 test)
 
-**Do not restart the kernel into a fresh `RUN`.** Restart the kernel, set `RESUME_RUN` in cell 3
-to the value you recorded in step A1, and run the notebook from the top again.
+**Two variables have to be pinned, not one.** Pinning only `RESUME_RUN` makes `[download]` skip
+while the build and flatten legs still redo all 900 — which is exactly what happened on the first
+attempt at this run-book (2026-08-21) and is now **#83**.
+
+Restart the kernel and set both in cell 3:
 
 ```python
-RESUME_RUN = "demo-2026...Z"   # <- the RUN from step A1
+RESUME_RUN = "demo-2026...Z"   # <- the RUN from step A1: pins ROOT, i.e. the IMAGERY
+TRAIN_RUN  = "train"           # <- pins the CUBE folder: {ROOT}/runs/train
 ```
+
+**Why `TRAIN_RUN` exists.** `create_training_data`'s `run_folderpath` defaults to
+`{root}/runs/{run_id}`, and `run_id` is a **fresh UTC timestamp on every call**. So by default
+every re-run addresses cube paths that have never existed: the shortfall is always 900 of 900 and
+no stamp can ever match. Worse, `_build_shortfall` prints nothing in the N-of-N case (a full
+dispatch is not a skip), so it fails **silently** — you see a fan-out and no explanation. The
+notebook now passes `run_folderpath=f"{ROOT}/runs/{TRAIN_RUN}"` explicitly.
+
+**Pass A must have used the same `TRAIN_RUN`** for Pass B to have anything to skip. If Pass A ran
+with the default timestamp folder, set `TRAIN_RUN` to that run's id (the `run_root` line in A2
+names it: `.../runs/<id>`) to adopt the cubes it already built.
 
 ### Step B1 — Setup (cells 0–7)
 
-- **PASS if:** `RUN = demo-... (resumed)` and it is the **same string** you recorded.
+- **PASS if:** `RUN = demo-... (resumed)` and it is the **same string** you recorded, **and**
+  `cube folder = .../runs/<TRAIN_RUN>` names the folder whose cubes you expect to reuse.
 
 ### Step B2 — `create_training_data` again (cell 8) ← the point of Pass B
 
@@ -147,8 +163,10 @@ RESUME_RUN = "demo-2026...Z"   # <- the RUN from step A1
 - **PASS if:** the `[build]` line says `0 of 900 ... nothing to build` **and** the whole cell
   returns in **well under 5 minutes** (versus ~21 min in A2), **and** `td.load()` in cell 12
   returns arrays of the same shape as Pass A.
-- **FAIL and stop if:** `[build]` reports a non-zero shortfall on an unchanged request — that
-  means the skip is not keying on the paths you expect. Paste the line.
+- **FAIL and stop if:** `[build]` reports a non-zero shortfall on an unchanged request, **or
+  prints no line at all and dispatches a fan-out** — the silent case means the shortfall was
+  900 of 900, i.e. the cube folder is not the one you think it is (#83). Check the
+  `cube folder =` line from B1 against the `run_root` in A2 before re-running.
 - **RECORD:**
   ```
   {"step":"B2_resume","download_line":"...","build_line":"...","flatten_line":"...",
@@ -194,5 +212,8 @@ The run passes when **all** of:
   would fix it. If a cube looks wrong, `overwrite="datacubes"` is the hammer.
 - **#77** — cell 30's per-cell skip is still decided on the node, after dispatch. A 95%-complete
   re-run of the fan-out still starts ~299 tasks.
+- **#83** — spec 49's skips are unreachable without an explicit `run_folderpath`, and the N-of-N
+  shortfall prints nothing, so the failure is silent. `TRAIN_RUN` is the workaround; the fix
+  (deterministic default, or at least printing the full-dispatch line) is undecided.
 - **A `verify_adapter` cube does not know which archive it came from** — the resume stamp covers
   the request, not `catalog_filepath`. This is why `export_folderpath` is keyed to `RUN`.
