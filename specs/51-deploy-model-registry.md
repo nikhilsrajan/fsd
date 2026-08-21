@@ -6,11 +6,16 @@ supersedes: specs/44-bundle-carried-adapter-code.md D7, D8 (phase 2, proposed an
 
 # Spec 51 — `fsd.deploy`: a verified bundle+image pair, under one name (P6)
 
-**Status: 🟡 DRAFT — NOT SIGNED OFF.** Three structural questions were put to the user before
-drafting (2026-08-22) and answered: the registry is a **storage-seam prefix** (not ACR/ORAS, not
-the AML registry); `deploy()` **requires a verified image** rather than building one; versioning is
-**immutable versions + mutable aliases**, the shape MLflow moved to after stages. Those are D1, D5
-and D3 below. §7 carries what is still open.
+**Status: 🟡 ALL QUESTIONS RESOLVED — AWAITING FINAL SIGN-OFF, NOT IMPLEMENTED.** Three structural
+questions were put to the user before drafting (2026-08-22) and answered: the registry is a
+**storage-seam prefix** (not ACR/ORAS, not the AML registry); `deploy()` **requires a verified
+image** rather than building one; versioning is **immutable versions + mutable aliases**, the shape
+MLflow moved to after stages. Those are D1, D5 and D3. **All seven §7 questions were then answered
+(user, 2026-08-22)** — one against the draft's proposal (**Q4**: `deploy` takes a saved bundle only,
+never a live adapter, rewriting D6), one reframed into a new decision (**Q6**: the central location
+is undecided *on purpose*, so **D11** makes the registry relocatable instead of blocking on it), and
+**Q7** finally answering the MLflow question spec 44 left open in July. Nothing in `src/` is touched
+yet.
 
 > **⚠️ This spec supersedes `specs/44-bundle-carried-adapter-code.md` D7 and D8**, which proposed
 > phase-2 `deploy` registration and were explicitly left un-signed-off ("*Sign this off separately
@@ -199,11 +204,23 @@ fsd.deploy(bundle_or_adapter, name="crop-rf", registry=..., environment="fsd-inf
 `deploy` an enforcement point rather than a filing cabinet: the registry's guarantee is not "these
 bytes exist" but "**this image ran this bundle**".
 
-### D6 — a registered bundle must declare its dependencies
+### D6 — `deploy` takes a SAVED bundle only, and it must declare its dependencies
+[Q4: user, 2026-08-22 — default overturned]
 
-`deploy` refuses a bundle whose manifest has no `requirements`, with an error naming the fix
-(`bundle.save(..., requirements=[...])`). It also refuses one with no `code` block, which
-`verify_image` already treats as fatal on a node.
+`deploy(bundle_path, ...)`. **A live adapter is refused**, with an error naming
+`fsd.model.bundle.save`. The draft proposed accepting both via `_ensure_bundle`; the user overturned
+it, and the result is simpler than the thing it replaces:
+
+- no `requirements=` passthrough on `deploy` (the draft's own §7 Q4 noted it would be needed,
+  because an auto-saved bundle can never satisfy the rule below);
+- one obvious place where a deployable bundle is constructed, and it is the place that already takes
+  `code=` and `requirements=`;
+- `deploy` keeps exactly one job. Auto-saving is a convenience for *running* something now
+  (`_ensure_bundle`, gate 1); publishing something others will fetch by name is a deliberate act.
+
+`deploy` then refuses a bundle whose manifest has no `requirements`, naming the fix
+(`bundle.save(..., requirements=[...])`), and one with no `code` block, which `verify_image` already
+treats as fatal on a node.
 
 This closes H3, and it is the reason the notebook's separate `bundle.save` cell stops looking
 redundant: `_ensure_bundle`'s auto-bundle is fine for gate 1, which runs in-process on the driver
@@ -271,6 +288,37 @@ behind the backend interface of D10, not in `fsd.api.deploy`.
 resolving a model — off any listing call, which is the same reasoning spec 50 applied to the cube
 presence sweep after a per-cell walk turned into ~3600 sequential round-trips.
 
+### D11 — the registry is RELOCATABLE: nothing inside it names where it lives [Q6: user, 2026-08-22]
+
+The final home of the shared registry is not agreed yet, so the spec must not make choosing it
+irreversible. It does not have to, provided one invariant holds:
+
+> **No file the registry writes may contain an absolute path, a URL, or the registry root.**
+
+Then relocation is a copy. `storage.transfer` the tree to the new prefix, hand callers a different
+`registry=`, and every ref that worked before works after — because a ref is
+`<name>:<version>` / `<name>@<alias>`, resolved *against* a root supplied at call time (D4), never
+baked into an artifact.
+
+What this constrains, concretely:
+
+- `_deploy.json` (D7) records `name`, `version`, `digest`, `environment`, the verification result —
+  all location-free. The verification's own `metrics` may carry paths from the machine that ran it;
+  those are **evidence, not references**, and resolution must never read them.
+- `_aliases.json` (D3) maps alias -> version **integer**. Never a path.
+- `bundle.json` already stores **relative** artifact hrefs (spec 18 / F5), which is what makes the
+  bundle itself relocatable and is why this invariant is cheap to keep.
+- The **content digest (D2) is what makes a move verifiable**: re-computing it after a copy proves
+  the tree arrived intact, so migration is checkable rather than hopeful.
+
+`fsd.model.registry.migrate(src, dst)` is therefore a thin helper — copy, re-digest each version,
+refuse on any mismatch — not a schema rewrite. It is a §9 step 0 deliverable, because a migration
+tool written *after* the first non-relocatable file is added is a rewrite instead of a copy.
+
+**Consequence for §7 Q6:** the notebook can point at `{AZ_ROOT}/models` now, and moving to whatever
+central location is agreed later costs a copy plus one changed `registry=` argument. Choosing the
+location is explicitly *not* a precondition for implementing this spec.
+
 ### D10 — the layout is the contract, so a second backend is additive
 
 Resolution goes through one function (`fsd.model.registry.resolve`) and publication through one
@@ -311,7 +359,17 @@ and Harbor all implement (§8), so that backend is the one with a genuine anti-l
 12. Behaviour is identical for a local registry path and a URL registry (D1), and identical under
     `runner="local"` and `runner="aml"` for everything except the verification step, which is
     AML-only by `verify_image`'s own design.
-13. `pytest -q` and `ruff check src/ tests/ demos/ examples/` clean; no network in unit tests
+13. **The registry is relocatable (D11)** — asserted two ways, because this is what makes §7 Q6's
+    "decide the location later" safe:
+    a. **No file the registry writes contains the registry root, an absolute path, or a URL** — a
+       test scans every written file (`_aliases.json`, `_deploy.json`) for the root string.
+    b. `migrate(src, dst)` copies a registry with several versions and aliases; every ref that
+       resolved against `src` resolves identically against `dst`, and each version's re-computed
+       digest matches (D2). A corrupted copy is refused, not silently accepted.
+14. `deploy` **refuses a live adapter**, naming `fsd.model.bundle.save` (D6/Q4), and refuses
+    `verify_adapter`'s auto-saved bundle for the same reason (Q5) — the latter asserted through the
+    real `metrics["bundle_path"]`, not a hand-built folder.
+15. `pytest -q` and `ruff check src/ tests/ demos/ examples/` clean; no network in unit tests
     (verification mocked at the AML-client boundary, as spec 38/48 already do).
 
 ---
@@ -365,52 +423,77 @@ and Harbor all implement (§8), so that backend is the one with a genuine anti-l
   studio UI, all solved (§8). **Rejected on the runner seam**, following spec 44 D7: a model ref
   resolvable only through an `MLClient` cannot be resolved by a Batch runner, a local run, or any
   future backend. It *"can be added later as a storage backend, not as `deploy`'s definition."*
-- **Overwrite in place** (what `bundle.save` does today) — rejected: it is H1, and a registry whose
-  names do not identify content is not a registry.
+- **Public model hosting (Hugging Face Hub or similar)** — raised by the user at sign-off,
+  2026-08-22, and **not an alternative to D1 at all**: it answers a different question. D1's
+  registry is *operational* — private, next to the data, read by every node of a fan-out, and
+  carrying an image binding (`fsd-infer-sklearn:6`) that is meaningless outside this organisation.
+  Public hosting is *distribution*: discovery, citation, and third-party reproduction. The two do
+  not substitute for each other, and a bundle published publicly while advertising a private image
+  ref would promise a binding nobody outside can act on.
+
+  The good news is that fsd is already shaped for it, and **spec 44 phase 1 is what made it
+  possible**: a bundle that carries its own adapter source is exactly what an outsider needs, where
+  a bundle that imports a private module would be useless to them. So this is plausibly a small
+  follow-on verb (`fsd.publish`, stripping `_deploy.json`'s image binding and emitting a model card
+  from `bundle.json`'s spec) rather than a D10 backend. Deliberately **not specified here** — see
+  §7's closing note for what would have to be settled first.
 - **Lifecycle stages instead of aliases** — rejected on MLflow's own experience of deprecating them
   (§8, D3).
 - **`deploy` builds the image too** — deferred to a later spec, D8; the coupling argument is in §8.
 
 ---
 
-## 7. Questions at sign-off
+## 7. Questions at sign-off — ALL RESOLVED (user, 2026-08-22)
 
-1. **Is `registry=` a parameter, or does it belong in `runner_kwargs`?** D4 makes it an explicit
-   argument on `deploy`/`run_inference`/`verify_adapter`. It could instead ride in `runner_kwargs`
-   next to `root`, since for `runner="aml"` it will almost always be `{root}/models`.
-   *Default proposed: an explicit `registry=`.* It is not a runner concern — a local run resolves
-   models too — and `runner_kwargs` is already the grab-bag parameter most likely to accumulate
-   unrelated keys.
-2. **On an environment mismatch at run time, warn or refuse (D7)?** *Default proposed: warn.*
-   Refusing makes "I rebuilt the image, re-verify later" impossible without a re-deploy, and the
-   printed line makes the mismatch visible. The counter-argument is that this is exactly the class
-   of silent-drift bug spec 47 D1 chose to refuse on for `run_inference`'s cached cell ids.
-3. **Is the content digest checked on every load, or only by `deploy`?** *Default proposed: only by
-   `deploy`* — a load-time check re-reads every artifact byte on every node of a fan-out, which is
-   the same cost argument spec 49 §7 Q2 used to reject per-cube content digests. A `verify=True`
-   opt-in on `bundle.load` would cover the paranoid case.
-4. **Does `deploy` accept a live adapter, or only an already-saved bundle?** *Default proposed:
-   accept both*, via `_ensure_bundle` — but note the tension with D6: an auto-saved bundle has no
-   `requirements`, so `deploy(adapter, …)` would always fail D6 unless `deploy` grows its own
-   `requirements=` passthrough. Adding that passthrough is probably the right answer and would make
-   the notebook's separate `bundle.save` cell genuinely optional.
-5. **Should `verify_adapter`'s auto-bundle be publishable at all?** Gate 1's bundle now reports its
-   path (`metrics["bundle_path"]`, 2026-08-22). D6 would refuse it. *Default proposed: yes, refuse
-   it* — gate 1's bundle is a means to run gate 1, and promoting it silently would defeat D6's
-   purpose.
-6. **Where does the default registry live for the e2e notebook?** `{ROOT}/models` sits inside the
-   per-run archive, which would make models disappear with a run folder. *Default proposed:
-   `{AZ_ROOT}/models`* — one level up, sibling to the runs, since a model outlives the run that
-   trained it.
-7. **[INHERITED, still unanswered] Should MLflow-via-the-AML-workspace be specified as an
-   alternative backend?** This is spec 44 §7 Q7 verbatim, asked at that spec's sign-off and never
-   answered, which is part of why D7/D8 stayed proposed. It is the one place a library would save
-   real work (§6). *Default proposed: not now, and not never* — ship D1's store, and revisit when
-   there is a second consumer of the registry or a concrete need for lineage in the AML UI. Signing
-   this spec off without answering Q7 repeats exactly what left spec 44 phase 2 in limbo, so it
-   should be answered either way rather than deferred silently a second time.
+1. **[RESOLVED — default stands]** **Is `registry=` a parameter, or does it ride in
+   `runner_kwargs`?** → an **explicit `registry=`** on `deploy`/`run_inference`/`verify_adapter`.
+   Resolving a model is not a runner concern (a local run resolves models too), and `runner_kwargs`
+   is already the parameter most likely to accumulate unrelated keys. Folded into **D4**.
+2. **[RESOLVED — default stands]** **On an environment mismatch at run time, warn or refuse?** →
+   **warn, loudly, and continue.** Refusing would make "I rebuilt the image, I will re-verify
+   later" impossible without a re-deploy, and D7's printed line makes the mismatch visible. The
+   counter-argument is recorded rather than dismissed: spec 47 D1 chose to *refuse* on the
+   analogous cached-cell-id drift, because there it would orphan outputs already written. Nothing
+   is orphaned here. Folded into **D7**.
+3. **[RESOLVED — default stands]** **Is the content digest checked on every load, or only by
+   `deploy`?** → **only by `deploy`** (and by `migrate`, D11). A load-time check re-reads every
+   artifact byte on every node of a fan-out — the same cost argument spec 49 §7 Q2 used to reject
+   per-cube content digests. A `verify=True` opt-in on `bundle.load` covers the paranoid case.
+   Folded into **D2**.
+4. **[RESOLVED — default OVERTURNED]** **Does `deploy` accept a live adapter, or only a saved
+   bundle?** → **a saved bundle only.** The draft proposed accepting both. The user's answer is
+   narrower and removes the tension the draft had already noticed: an auto-saved bundle carries no
+   `requirements`, so accepting one would have forced a `requirements=` passthrough on `deploy` and
+   split bundle construction across two places. Auto-saving stays what it is — a convenience for
+   *running* something now — while publishing stays a deliberate act. Folded into **D6**.
+5. **[RESOLVED — default stands]** **Should `verify_adapter`'s auto-bundle be publishable?** →
+   **no.** Gate 1's bundle is a means to run gate 1; it reports its path
+   (`metrics["bundle_path"]`, 2026-08-22) so it can be *inspected*, not promoted. D6's saved-bundle
+   rule now refuses it structurally rather than by a special case, which is the better shape.
+6. **[RESOLVED — reframed into a constraint]** **Where does the registry live?** → **not decided,
+   and deliberately not a precondition.** Deployed models need a *centralised* home; that location
+   is not agreed yet. Rather than block on it, the spec makes relocation cheap: **D11** requires
+   that nothing the registry writes names where it lives, so moving is a copy plus a changed
+   `registry=` argument, with the D2 digest making the move verifiable. The notebook uses
+   `{AZ_ROOT}/models` in the meantime — sibling to the runs, since a model outlives the run that
+   trained it. `migrate` ships in §9 step 0, not later.
+7. **[RESOLVED — spec 44's Q7 finally answered]** **Should MLflow-via-the-AML-workspace be an
+   alternative backend?** → **no, and not within this scope.** This closes the question spec 44
+   §6.3 raised on 2026-07-23 and left open, which is part of why its phase 2 stalled. The analysis
+   in §6 stands on the record — an AML workspace is an MLflow server for free, and self-hosting
+   costs a Postgres-backed store — so a future spec can reopen it with the reasoning already done,
+   but it is out of scope here and D10's backend interface is the only accommodation made for it.
 
----
+### Raised at sign-off, not yet a decision
+
+**Public model hosting (e.g. Hugging Face Hub).** Asked by the user, 2026-08-22. Not folded into a
+decision because it answers a *different question* from this spec's: the registry in D1 is
+**operational** (private, next to the data, read by nodes, carrying an image binding that is
+meaningless outside this org), whereas public hosting is **distribution** — discovery, citation and
+third-party reproduction. Recorded as §6's last entry and as a candidate follow-on verb
+(`fsd.publish`), explicitly *not* as a D10 backend, since a publicly hosted bundle whose
+`_deploy.json` names a private `fsd-infer-sklearn:6` would advertise a binding nobody outside can
+act on. Worth its own spec if it becomes a goal.
 
 ## 8. Best-practice alignment / sources
 
@@ -491,8 +574,10 @@ image-build coupling and digest pinning.
 Per CLAUDE.md's model split, implementation is a **Sonnet session at `/effort medium`** once signed
 off. Phased so each step is independently revertible and useful:
 
-0. **`fsd.model.registry`** — layout, `publish`, `resolve`, `_aliases.json`, the digest. Pure
-   local-filesystem unit tests, no verbs touched. This is most of D1/D2/D3/D9.
+0. **`fsd.model.registry`** — layout, `publish`, `resolve`, `migrate`, `_aliases.json`, the digest.
+   Pure local-filesystem unit tests, no verbs touched. This is most of D1/D2/D3/D9/D11.
+   **`migrate` ships here, not later:** the moment one non-relocatable file exists, migration stops
+   being a copy and becomes a rewrite (D11).
 1. **`_ensure_bundle` resolution (D4)** — one function, one new branch, plus the `PreflightError`.
    Makes refs usable before anything produces them.
 2. **`deploy` (D5/D6/D7)** — the enforcement and the record. Depends on 0 and on `verify_image`,
