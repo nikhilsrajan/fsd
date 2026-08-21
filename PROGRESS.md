@@ -4,7 +4,7 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-21 (**spec 50 SIGNED OFF** — resolve `create_training_data` backwards from the target, so `setup` never runs to discover it had nothing to do. Same session: specs 48 + 49 Opus-reviewed and **3 defects fixed** (including `verify_adapter(runner="aml")`, which could not have worked); `verify_adapter` wired into the AML e2e notebook; **#83** (spec 49's skips cannot fire by default — the run folder is timestamped) and **#84** (multi-window training data is silently merged by `median_per_id`) filed, and **#84 gates spec 50's D9**. **NEXT: a Sonnet session implements spec 50 §9 steps 0/1/2/4.** `main` is **18 commits ahead of `origin/main`, unpushed**.)_
+_Last updated: 2026-08-21 (**spec 50 §9 steps 0/1/2/4 IMPLEMENTED, reviewed-worthy and merged to `main`** — `create_training_data` now resolves backwards from the target: a fully-resumed call performs zero catalog reads, zero `setup` calls, zero dispatch; a partial re-run's `setup` runs only for the missing shapes; `run_folderpath` (#83) is no longer clock-based, and the window path segment carries a digest of (bands, mosaic_scheme, scl_mask_classes) so path granularity matches row identity. Step 3 (D9) deliberately NOT done — still blocked on #84. All spec 50 §4 acceptance criteria met except AC7c (depends on step 3). Full suite 860 passed / 92 skipped / 1 pre-existing failure, ruff clean. **NEXT: hand back to Opus for review** (an authoring session cannot review itself). `main` is **7 commits ahead of `origin/main`, unpushed**.)_
 
 ## Where things stand
 
@@ -143,6 +143,62 @@ items are the rslearn Plan B/C decision and spec 43 (`docs/history.md`, deferred
 ---
 
 ## Most recent entry
+
+## 2026-08-21 (latest) — spec 50 §9 steps 0/1/2/4 implemented and merged; hand back to Opus for review
+
+A Sonnet session (`/effort medium`) implemented spec 50 against the signed-off spec, per
+`HANDOFF-spec-50.md`. Steps landed in order, each its own commit, `--no-ff` merged to `main`
+(worktree pruned per standing practice):
+
+- **Step 0 (D6/#83).** `run_folderpath` no longer defaults to a fresh UTC timestamp for
+  `runner="aml"` — the default is now the plain stable name `{root}/runs/train` (never a hash of
+  the request/shape-id set, per Q1). The window path segment
+  (`<startdate>_<enddate>_m<mosaic_days>`) gained a `_<params_key>` suffix, a short digest of
+  `(bands, mosaic_scheme, scl_mask_classes)`, so two requests differing only in `bands` resolve to
+  different cube paths instead of silently colliding. `test_build_skip.py`'s characterisation test
+  for #83 is flipped (its own docstring's instruction), not deleted.
+- **Step 1 (D3).** New `api._flatten_identity_from_request` computes the same identity
+  `_flatten_identity` computes from `input.csv`, but from the request (label polygon ids, window,
+  params) with zero file reads — a cube's path is derivable from `(run_folderpath, window, id)`
+  alone. Written and compared (a test proves the two identities agree given equivalent inputs);
+  nothing short-circuits on it yet.
+- **Step 2 (D2, §9 phase 1).** `create_training_data`'s preflight splits into two waves: structural
+  checks raise first, then the target (arrays + `_flatten_stamp.json`) is checked BEFORE the
+  catalog/download preflight wave — a fully-resumed call now needs `catalog_filepath` to exist no
+  more than it needs `setup` to run. Prints the D7 `[plan] ... CURRENT` / `[fetch] ...` lines.
+- **Step 4 (D2/D4/D5/D7, §9 phase 2).** New `create_datacube.build_shortfall_only`: cube targets are
+  enumerated from the request alone (no catalog access), so `setup` runs only for shapes whose cube
+  is missing and not already known-empty. A sibling `_manifest.json`, keyed to the window/params
+  segment, records known-empty cells so they are never rediscovered (two identical re-runs both
+  converge to a shortfall of 0). Existing `input.csv` rows for a DIFFERENT window/params are purged
+  first — deliberately narrower than D9 (which would let rows from different windows coexist
+  forever, exactly what makes #84 possible): this only ever grows `input.csv` within one window.
+  `run_create_datacube` gains this as an alternative to `overwrite_setup_csv`'s legacy path (kept,
+  unremoved — that removal is step 3); `create_training_data` opts in unless the caller explicitly
+  forces a cube rebuild.
+- **A real bug caught by `test_tutorial_fixture.py`** (id_col=`"fid"`, not `"id"`): `setup` always
+  writes the id column as `COL_ID` ("id"), never the caller's own `id_col` name — reading back
+  `input.csv` via the caller's `id_col` crashed with `KeyError`. Fixed in `build_shortfall_only`.
+
+**Step 3 (D9, `overwrite_setup_csv` removal) deliberately NOT done** — the spec's own ordering
+constraint: D9 makes multi-window training data reachable, and it is broken one layer up (`ids.npy`
+has no window component, `median_per_id` silently medians two windows of one field into one sample)
+until #84 is fixed. `overwrite_setup_csv` still exists in the signature.
+
+**Spec 50 §4 acceptance criteria: all met except AC7c** (its `input.csv` accumulate-across-windows
+assertion depends on step 3). 24 new/updated tests in `tests/test_backward_walk.py` +
+`tests/test_build_skip.py`, including AC11 (identical behaviour under `runner="local"`/`"aml"`,
+parametrized). `runbooks/48-e2e-austria-with-verify-adapter.md` updated: the `TRAIN_RUN` pin is now
+an optional override, not a requirement, since #83 is fixed.
+
+**Gate:** full suite 860 passed / 92 skipped / 1 pre-existing failure (`planetary_computer` missing
+from `.venv`, reproduces on unmodified `main`), `ruff check src/ tests/ demos/ examples/` clean.
+`main` is **7 commits ahead of `origin/main`, unpushed** — pushing is the user's call.
+
+**NEXT:** hand back to an Opus session for review (an authoring session cannot review itself, per
+the definition of done) — in particular the design call in step 4 (purge-other-window-rows to stay
+narrower than D9) and the `overwrite_setup_csv=build_overwrite` wiring are the two judgment calls
+most worth a second look.
 
 ## 2026-08-21 (latest) — **spec 50 signed off**: resolve backwards from the target; #83/#84 filed
 
