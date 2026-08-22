@@ -20,6 +20,7 @@ Spec: specs/10-storage-and-scale.md
 
 from __future__ import annotations
 
+import errno
 import io
 import json
 import os
@@ -147,10 +148,26 @@ def rename(src_path: str, dst_path: str, **storage_options: Any) -> None:
     The atomic-publish primitive: on an HNS Azure account this is one metadata
     operation and locally it is `os.rename`, so a writer that saves to `src_path` and
     renames at the end leaves no window where a reader sees a partial artifact.
+
+    Locally it calls `os.rename` **directly** rather than fsspec's `LocalFileSystem.mv`,
+    which is `shutil.move` -- and `shutil.move` moves the source *inside* `dst_path` when
+    that already exists as a directory, instead of failing. For a caller staging a
+    directory and renaming it onto its final name (spec 51 D2's publish), that silently
+    turns a lost race into a corrupted destination rather than an error it can retry.
+    `os.rename` gives the documented semantics: atomic replace for a file, `EEXIST`/
+    `ENOTEMPTY` for a non-empty directory. Cross-device moves have no atomic form at all,
+    so those fall back to fsspec's copy-and-delete.
     """
     fs, spath = _fs_and_path(src_path, storage_options)
     _, dpath = _fs_and_path(dst_path, storage_options)
     _ensure_parent(fs, dpath)
+    if is_local(src_path) and is_local(dst_path):
+        try:
+            os.rename(spath, dpath)
+            return
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise
     fs.mv(spath, dpath)
 
 

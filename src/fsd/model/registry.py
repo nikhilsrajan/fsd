@@ -13,6 +13,15 @@ pointer (D3). `publish` is idempotent by content digest (D2) and atomic via
 every version, so a ref that resolves against one root resolves identically against a
 copy of it (D11).
 
+**Concurrency, stated rather than implied.** There is no lock (spec 51 §5). What IS
+guaranteed: a reader never sees a half-written version or a half-written `_aliases.json`
+(both are staged and renamed), and `publish` never returns a version whose bytes are not
+the ones it was given -- it re-digests what landed and retries at `v<N+1>` if it lost a
+race. What is NOT guaranteed: two concurrent `set_alias` calls can lose an update, two
+concurrent `publish` calls can leave a gap in the version sequence, and on a backend whose
+`mv` merges into an existing prefix rather than refusing, two writers' files can interleave
+at one version -- see `_write_new_version`.
+
 `resolve`/`publish` are the interface; the storage-seam layout is v1's only backend, but
 a second one can be added without either signature changing (D10).
 
@@ -124,6 +133,12 @@ def set_alias(
     Refuses an alias shaped `v<digits>`: that spelling is reserved for the `name@vN`
     version-pin shorthand (D9), so an alias with that name could never be reached by
     `resolve` -- it would silently pin the literal version number instead.
+
+    The new `_aliases.json` is staged and renamed rather than written in place, because
+    `resolve` reads that one file (D9) and a fan-out resolving `@champion` while someone
+    promotes must never read a half-written one. Two *concurrent* `set_alias` calls can
+    still lose an update -- the registry has no lock (spec 51 §5) -- but no reader ever
+    sees a torn file.
     """
     if _VERSION_ALIAS_RE.match(alias):
         raise ValueError(
@@ -143,7 +158,13 @@ def set_alias(
     except FileNotFoundError:
         aliases = {}
     aliases[alias] = version
-    fs.write_text(path, json.dumps(aliases, indent=2, sort_keys=True), **opts)
+    stage = os.path.join(name_root, f"{_STAGING_PREFIX}{uuid.uuid4().hex}.json")
+    try:
+        fs.write_text(stage, json.dumps(aliases, indent=2, sort_keys=True), **opts)
+        fs.rename(stage, path, **opts)
+    except BaseException:
+        _discard(stage, opts)
+        raise
 
 
 # --- content digest (D2) -------------------------------------------------------
@@ -221,15 +242,46 @@ def _list_versions(name_root: str, storage_options: dict) -> list[int]:
     return sorted(versions)
 
 
+def _discard(path: str, storage_options: dict) -> None:
+    """Best-effort removal of an abandoned staging tree. A leftover is harmless -- it is
+    never visible as a version (`_list_versions` matches `v<N>` only) -- so a failure to
+    clean up must not mask the error that caused it."""
+    with contextlib.suppress(Exception):
+        fs.rm(path, recursive=True, **storage_options)
+
+
+def _holds_content(path: str, digest: str, storage_options: dict) -> bool:
+    """True if `path` is a bundle directory whose content is exactly `digest`. Anything
+    unreadable is "not ours", never an error: this only runs on the retry path, where the
+    single question is whether to claim `path` or move on to the next version."""
+    try:
+        return content_digest(path, storage_options=storage_options) == digest
+    except Exception:
+        return False
+
+
 def _write_new_version(
-    name_root: str, files: list[tuple[str, bytes]], storage_options: dict,
+    name_root: str, files: list[tuple[str, bytes]], digest: str, storage_options: dict,
 ) -> int:
-    """Stage `files` and rename onto the next free `v<N>` (D2). A losing racer retries at
-    `v<N+1>` rather than corrupting the winner's directory -- but note the local backend's
-    `mv` is `shutil.move`, which nests the source INSIDE an existing destination directory
-    rather than raising, so this only catches a race in the (small) window the `exists`
-    pre-check leaves open, not one that lands between the check and the rename. The
-    registry has no lock service by design (spec 51 §5); this is the accepted gap."""
+    """Stage `files` and rename onto the next free `v<N>`, returning the version that
+    actually holds them (D2). A losing racer retries at `v<N+1>` rather than corrupting
+    the winner's directory.
+
+    The `exists` pre-check is not a lock, so the loop does not trust it: another writer
+    can complete `v<N>` in the window before the rename. Two things close that window.
+    `storage.fs.rename` is a real `os.rename` locally, so a rename onto a finished version
+    directory *fails* and is retried (fsspec's `LocalFileSystem.mv` is `shutil.move`, which
+    would instead nest this bundle inside the winner's directory and report success -- see
+    that function's docstring). And because no such guarantee exists for every backend, the
+    version that lands is re-digested before it is returned: publishing is only complete
+    once the bytes at `v<N>` are provably the caller's, the same proof `migrate` uses to
+    accept a copy (D11). If a concurrent writer put *identical* content there first, the
+    digest matches and that version is returned -- which is exactly D2's idempotency.
+
+    What is still not handled, per spec 51 §5's "not worth a lock service": a backend whose
+    `mv` merges a prefix into an existing one leaves both writers' files interleaved at the
+    target, which no cleanup here can separate. The registry has no lock by design.
+    """
     version = max(_list_versions(name_root, storage_options), default=0) + 1
     while True:
         target = os.path.join(name_root, f"v{version}")
@@ -242,18 +294,27 @@ def _write_new_version(
             for rel, data in files:
                 fs.write_bytes(os.path.join(stage, rel), data, **storage_options)
         except BaseException:
-            with contextlib.suppress(Exception):
-                fs.rm(stage, recursive=True, **storage_options)
+            _discard(stage, storage_options)
             raise
 
         try:
             fs.rename(stage, target, **storage_options)
         except OSError:
-            with contextlib.suppress(Exception):
-                fs.rm(stage, recursive=True, **storage_options)
+            # The rename refused, which is what a local `os.rename` does when a competitor
+            # finished `target` first. If they published the same content we were about to,
+            # their version IS the answer (D2's idempotency, reached by another route).
+            _discard(stage, storage_options)
+            if _holds_content(target, digest, storage_options):
+                return version
             version += 1
             continue
-        return version
+
+        if content_digest(target, storage_options=storage_options) == digest:
+            return version
+        # We lost the race and the backend's `mv` did not refuse. Undo the nesting a
+        # `shutil.move`-style `mv` leaves behind, then try the next version.
+        _discard(os.path.join(target, os.path.basename(stage)), storage_options)
+        version += 1
 
 
 def publish(
@@ -275,6 +336,17 @@ def publish(
 
     `storage_options` reaches the registry; `bundle_storage_options` reaches
     `bundle_path` (only needed when the bundle itself is not local).
+
+    Cost, and why it is accepted here: the idempotency check re-reads every existing
+    version's content, because step 0 stores no digest anywhere -- D2 says the digest is
+    "recorded alongside" the version, and that is `_deploy.json`, which `deploy` writes
+    (D7, §9 step 2). So publishing into a registry with N versions costs N bundle reads.
+    That is deliberate rather than overlooked: `publish` is a rare, deliberate act (once
+    per retrain), it is not the hot path D9 constrains (resolution, which reads at most one
+    small file), and the bundles are code plus model artifacts, not imagery. **When step 2
+    lands `_deploy.json`, this loop should read its stored digest first and fall back to
+    recomputing** -- turning N content reads into N small metadata reads. Doing it now
+    would mean inventing a second digest-bearing file that D7 then supersedes.
     """
     files = _read_bundle_content(bundle_path, bundle_storage_options)
     digest = _digest_of(files)
@@ -287,7 +359,7 @@ def publish(
                 set_alias(name, alias, v, registry, storage_options=storage_options)
             return v
 
-    version = _write_new_version(name_root, files, opts)
+    version = _write_new_version(name_root, files, digest, opts)
     if alias:
         set_alias(name, alias, version, registry, storage_options=storage_options)
     return version

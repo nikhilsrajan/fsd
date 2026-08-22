@@ -4,15 +4,15 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-22 (**spec 51 §9 step 0 (`fsd.model.registry`) implemented by a Sonnet
-`/effort medium` session** — `publish`/`resolve`/`migrate`/`set_alias`/`content_digest` per
-D1-D3/D9/D11, 12 new tests covering AC1-5/11/13, no verb touched. Lives on worktree branch
-`worktree-spec51-step0-registry` @ `c0290fb`, branched from `main` @ `82c8e28` — **NOT merged, NOT
-pushed**. Suite 885 passed / 91 skipped / 1 pre-existing failure (`planetary_computer` absent),
-ruff clean. **NEXT: an Opus review + debug session** (handoff:
-`handoff-spec51-step0-opus-review.md`, workspace root) — three design calls the spec left implicit
-need a sign-off-or-overturn read before steps 1-3 build on them. See the 2026-08-22 (later) entry
-below.)_
+_Last updated: 2026-08-22 (**spec 51 §9 step 0 (`fsd.model.registry`) implemented, REVIEWED and
+merged into `main`** — the Opus review found and fixed a real defect: `storage.fs.rename` was
+`shutil.move` locally, so a `publish` losing a version race nested its bundle inside the winner's
+directory and **returned the winner's version number**. Fixed at the seam (`fs.rename` is now a
+real `os.rename` locally) plus a re-digest of what actually landed, and `_aliases.json` is now
+written by rename too. Suite **890 passed / 91 skipped / 1 pre-existing failure**
+(`planetary_computer` absent), ruff clean. `main` is **AHEAD of `origin/main` — the push is the
+user's to make**. **NEXT: spec 51 §9 steps 1-3** (`_ensure_bundle` resolution → `deploy` →
+the `[model]` line). See the 2026-08-22 (later still) entry below.)_
 
 _Previously: 2026-08-22 (**spec 50 fully landed + PUSHED; spec 51 (P6 `deploy`) SIGNED OFF, not
 implemented** — `main` @ `6e163c5`, **level with `origin/main`, nothing unpushed**, tree clean.
@@ -157,6 +157,68 @@ items are the rslearn Plan B/C decision and spec 43 (`docs/history.md`, deferred
 ---
 
 ## Most recent entry
+
+## 2026-08-22 (later still) — the Opus review of step 0: one real defect, fixed; merged to `main`
+
+Opus `/effort high` review of `c0290fb` against spec 51 D1-D3/D9/D11 + AC1-5/11/13. Verdict on the
+three flagged calls: **1 confirmed, 1 confirmed, 1 overturned and fixed** — plus one defect of the
+same class the review found on its own. Suite **890 passed / 91 skipped / 1 pre-existing failure**,
+ruff clean. Merged `--no-ff` into `main`; worktree pruned. **`main` is ahead of `origin/main` —
+the push is the user's call.**
+
+**Call 3 OVERTURNED — and the consequence was worse than the handoff described.** Reproduced
+against the real code, not reasoned about: when a competitor completes `v1` in the TOCTOU window,
+`publish` did not merely leave a confusing gap — it **returned `1`**, while `v1` held the
+*competitor's* bundle and the caller's staged copy sat nested inside it as `v1/.staging-<uuid>/`.
+A caller resolving `crop-rf:1` would have run a model it never published. That is not §5's
+signed-off "gap in the sequence"; it is a silent wrong answer, and it also breaks D2's "a version
+directory, once written, is never rewritten".
+
+The root cause was **one level below the registry**: `storage/fs.py::rename` documents itself as
+"`os.rename` locally" — the exact property D2 cites when it calls `fs.rename` the atomic-publish
+primitive — but it delegated to fsspec's `LocalFileSystem.mv`, which is `shutil.move`, which
+**nests** rather than raising. The spec was signed off on a premise about fs.py that was false.
+Three fixes, smallest first:
+
+- `fs.rename` now calls `os.rename` directly when both ends are local, falling back to fsspec's
+  copy-and-delete only on `EXDEV`. A directory rename onto a non-empty directory now raises; a
+  *file* rename still replaces atomically, so `datacube/builder.py`'s sidecar write is unchanged.
+  (`CHANGES.md` records the behavior change.)
+- `_write_new_version` no longer trusts the rename to have told the truth: it **re-digests what
+  landed** before returning, and retries at `v<N+1>` if the directory is not its own — the same
+  proof `migrate` already used to accept a copy (D11). If the winner published *identical* bytes,
+  the digest matches and that version is returned, which is D2's idempotency reached by another
+  route. The residual limit is stated in the docstring rather than implied: a backend whose `mv`
+  merges prefixes can still interleave two writers, and that would need the lock §5 declines.
+- **Found in review, same class:** `set_alias` rewrote `_aliases.json` **in place**, so a fan-out
+  resolving `@champion` (D9's one read) could observe a half-written file mid-promotion. It now
+  stages and renames. Concurrent `set_alias` calls can still lose an update — no lock — but no
+  reader sees a torn file.
+
+**Call 1 CONFIRMED (deferred, reason recorded in `publish`'s docstring).** The O(N-versions)
+content re-read at publish time is accepted: `publish` is rare and deliberate, and it is not the
+hot path D9 constrains. **Step 2 should make this loop read `_deploy.json`'s stored digest first**
+and fall back to recomputing — turning N content reads into N small metadata reads. Doing it in
+step 0 would have meant inventing a second digest-bearing file that D7 then supersedes.
+
+**Call 2 CONFIRMED.** The `^v(\d+)$` refusal is exactly right and the edge shapes check out: `"v"`
+alone does not match, so it stays a usable alias and resolves as one; `"v007"` is refused and
+`@v007` pins v7; `"V3"` is neither. One residual, not worth code: `migrate` copies `_aliases.json`
+verbatim, so a hand-edited `v3` alias would survive and be unreachable — the file is not a
+supported edit surface.
+
+**Tests: +5 (12 → 15 registry, +2 storage).** All three regression tests were confirmed to **fail
+on `c0290fb`** before the fixes landed, not just pass after. The race is exercised by injecting a
+competitor into the rename window, which is deterministic — the handoff had assumed it needed real
+inter-process parallelism.
+
+**NEXT: spec 51 §9 steps 1-3** — `_ensure_bundle` resolution (D4), then `deploy` (D5/D6/D7), then
+the `[model]` line. Step 1 will need to decide how a `name@ref` is told apart from a bundle *path*:
+`parse_ref` currently accepts `abfss://…` as name `abfss` + version `//…` and fails on the version
+check, which is a confusing error rather than a wrong answer, but D4's table wants it routed by
+`registry=` being present.
+
+---
 
 ## 2026-08-22 (later) — spec 51 §9 step 0 implemented (`fsd.model.registry`); hand back to Opus
 

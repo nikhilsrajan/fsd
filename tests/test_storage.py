@@ -309,3 +309,43 @@ def test_the_three_todo_47_sites_accept_a_non_local_url():
     assert len(grid._as_gdf_4326(p)) == 2                # site 3
     # site 2 shares _as_gdf_4326 via roi_to_s2_grids -- the path run_inference re-tiles on
     assert len(grid.roi_to_s2_grids(p, grid_size_km=5, scale_fact=1.1)) > 0
+
+
+# --- rename: the atomic-publish primitive (spec 51 D2) ----------------------
+
+
+def test_rename_refuses_to_nest_a_directory_into_an_existing_one(tmp_path):
+    """`fs.rename` documents itself as `os.rename` locally, and spec 51 D2 leans on that
+    to make a lost publish race *fail* instead of corrupting the winner. fsspec's
+    `LocalFileSystem.mv` is `shutil.move`, which would move `src` INSIDE `dst` and report
+    success -- pin that fsd does not inherit that."""
+    import pytest
+
+    src = tmp_path / "stage"
+    src.mkdir()
+    (src / "bundle.json").write_text("loser")
+    dst = tmp_path / "v1"
+    dst.mkdir()
+    (dst / "bundle.json").write_text("winner")
+
+    with pytest.raises(OSError):
+        fs.rename(str(src), str(dst))
+
+    assert sorted(p.name for p in dst.iterdir()) == ["bundle.json"]
+    assert (dst / "bundle.json").read_text() == "winner"
+    assert src.exists()  # the loser's staged copy is left intact for it to clean up
+
+
+def test_rename_replaces_an_existing_file_atomically(tmp_path):
+    """The other half of `os.rename` semantics, relied on by the datacube sidecar write
+    (`datacube/builder.py`) and by `set_alias`: a *file* destination is replaced, not
+    refused."""
+    src = tmp_path / "tmp.json"
+    src.write_text("new")
+    dst = tmp_path / "final.json"
+    dst.write_text("old")
+
+    fs.rename(str(src), str(dst))
+
+    assert dst.read_text() == "new"
+    assert not src.exists()

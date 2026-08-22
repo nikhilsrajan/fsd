@@ -286,3 +286,99 @@ def test_migrate_refuses_a_corrupted_copy(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="digest mismatch"):
         registry.migrate(src_root, dst_root)
+
+
+# --- publish races: a loser must never be handed the winner's version ------------------
+
+
+def _publish_racing_with(monkeypatch, competitor, mine, registry_root, name="crop-rf"):
+    """Run `publish(mine)` while a competitor completes the version `publish` is about to
+    claim, in the window the `exists` pre-check leaves open. The competitor publishes ONCE
+    (a real one is not an infinite adversary). Returns the reported version."""
+    real_rename = fs.rename
+    raced = []
+
+    def racy_rename(src, dst, **kw):
+        if not raced:
+            raced.append(dst)
+            for rel, data in registry._read_bundle_content(competitor, None):
+                fs.write_bytes(os.path.join(dst, rel), data)
+        return real_rename(src, dst, **kw)
+
+    monkeypatch.setattr(registry.fs, "rename", racy_rename)
+    return registry.publish(mine, name, registry_root)
+
+
+def test_publish_losing_a_race_retries_instead_of_returning_the_winners_version(
+    tmp_path, monkeypatch,
+):
+    """The `exists` check is not a lock. If a competitor finishes v1 before our rename,
+    `publish` must not report v1 -- v1 holds their bundle, and a caller that then resolved
+    `crop-rf:1` would run a model it never published (D2, and §5's "fail rather than
+    corrupt")."""
+    registry_root = str(tmp_path / "registry")
+    theirs = _make_bundle(tmp_path, "theirs")
+    mine = _make_bundle(tmp_path, "mine")
+    _rewrite_bundle_field(mine, feature={"kind": "callable", "steps": ["mine"]})
+
+    version = _publish_racing_with(monkeypatch, theirs, mine, registry_root)
+
+    assert version == 2
+    mine_path = registry.version_path(registry_root, "crop-rf", version)
+    assert registry.content_digest(mine_path) == registry.content_digest(mine)
+
+    v1 = registry.version_path(registry_root, "crop-rf", 1)
+    assert registry.content_digest(v1) == registry.content_digest(theirs)
+    assert not any(registry._STAGING_PREFIX in entry for entry in fs.ls(v1))
+
+
+def test_publish_losing_a_race_to_identical_content_is_still_idempotent(
+    tmp_path, monkeypatch,
+):
+    """Same race, but the competitor published the same bytes -- that is D2's idempotency
+    arriving by another route, so their version is the right answer to return."""
+    registry_root = str(tmp_path / "registry")
+    src = _make_bundle(tmp_path, "src")
+
+    version = _publish_racing_with(monkeypatch, src, src, registry_root)
+
+    assert version == 1
+    assert fs.ls(os.path.join(registry_root, "crop-rf")) == [
+        registry.version_path(registry_root, "crop-rf", 1)
+    ]
+
+
+# --- alias writes are never observed half-written --------------------------------------
+
+
+def test_set_alias_publishes_by_rename_so_a_reader_never_sees_a_partial_file(
+    tmp_path, monkeypatch,
+):
+    """`resolve` reads `_aliases.json` and nothing else (D9), so promoting against a live
+    fan-out must leave no window where that read sees a half-written file: the new content
+    is staged and renamed onto the name, never written over it in place."""
+    registry_root = str(tmp_path / "registry")
+    src = _make_bundle(tmp_path)
+    registry.publish(src, "crop-rf", registry_root)
+    registry.set_alias("crop-rf", "champion", 1, registry_root)
+
+    aliases_path = os.path.join(registry_root, "crop-rf", registry.ALIASES_FILE)
+    written = []
+    real_write_bytes = fs.write_bytes
+
+    def spy_write_bytes(path, data, **kw):
+        written.append(path)
+        return real_write_bytes(path, data, **kw)
+
+    monkeypatch.setattr(registry.fs, "write_bytes", spy_write_bytes)
+    registry.set_alias("crop-rf", "current", 1, registry_root)
+    monkeypatch.undo()
+
+    assert aliases_path not in written
+    assert any(registry._STAGING_PREFIX in p for p in written)
+    with fs.open(aliases_path, "r") as f:
+        assert json.load(f) == {"champion": 1, "current": 1}
+    assert not any(
+        registry._STAGING_PREFIX in entry
+        for entry in fs.ls(os.path.join(registry_root, "crop-rf"))
+    )
