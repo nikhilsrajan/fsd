@@ -4,7 +4,37 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-22 (**spec 51 §9 step 1 (`_ensure_bundle` ref resolution) implemented and
+_Last updated: 2026-08-22 (**spec 51 §9 step 2 (`fsd.deploy`, D5/D6/D7) implemented — Sonnet
+`/effort medium`, NOT YET REVIEWED by Opus, NOT merged.** Work is on worktree branch
+`worktree-spec51-step2-deploy`, based on `main` @ `6b3fcae` (steps 0-1 merged + pushed). `deploy`
+now: refuses a live adapter (naming `fsd.model.bundle.save`, D6) and a bundle whose manifest lacks
+`requirements`/`code` (naming the fix); establishes the bundle↔image pairing before recording it,
+either by running `fsd.model.verify_image` itself or by accepting a prior `verified=<_result.json
+path or dict>` **only if** its own recorded `metrics["bundle_path"]` — re-digested now — and
+`metrics["environment"]` both match this call (a `pass=False` result that DOES match is still
+honoured and refused with its own `error`; one that does NOT match is refused as "stale or does not
+match", never silently re-verified, D5); on `pass=True` calls `registry.publish` (idempotent, D2)
+and writes `_deploy.json` beside `bundle.json` (`name`/`version`/`digest`/`environment`/`verified`/
+`deployed_at`/`fsd_version`, D7) via a new `registry.write_deploy_record` (staged + renamed, like
+`set_alias`). Two follow-on fixes to `registry.py` made as part of this step: `publish`'s own
+idempotency loop now reads a version's `_deploy.json` digest first and only recomputes when absent
+(the "N content reads → N metadata reads" optimization `publish`'s docstring flagged as step-2's
+job), and `migrate` now carries `_deploy.json` across a relocation (it isn't part of the content
+digest, so a naive migrate would have silently dropped every version's deploy record). New
+`tests/test_deploy.py` (15 tests, AC1/2/3/5/7/8/9/10/13a + D6) plus two new `test_registry.py`
+tests for the two follow-on fixes; the AC7 pass/fail tests exercise the real `verify_image` call
+through the same fake-`MLClient`/`azure.ai.ml.command` injection seam spec 45's tests use — no
+network. Removed the now-obsolete `tests/test_api.py::test_deploy_is_stub` (asserted the old
+`NotImplementedError` stub signature). Suite **920 passed / 91 skipped / 1 pre-existing failure**
+(`planetary_computer` absent), ruff clean (`src/ tests/ demos/ examples/`). **Open, not yet filed:
+a URL registry has no credentials for WRITE either** — `deploy` doesn't call `configure_storage`
+(matching `run_inference`/`verify_adapter`'s existing non-call, issue #86), so `registry="abfss://…"`
+would need real credentials this step deliberately does not add; tested only against a local
+registry root. **NEXT: hand to Opus `/effort high` for review, then step 3** (the `[model] name@ref
+-> vN (verified against <env>)` line + the environment-mismatch warning, D7/AC10's print half —
+small, deliberately out of step 2's scope). Previous entry: step 1.)_
+
+_Previously: 2026-08-22 (**spec 51 §9 step 1 (`_ensure_bundle` ref resolution) implemented and
 REVIEWED**, merged into `main` (`--no-ff`) and **PUSHED — `main` @ `b85924b`, level with
 `origin/main`, nothing unpushed**, worktree pruned. The Opus review
 found a real defect the unit tests could not see: resolution sat at `_ensure_bundle`, but

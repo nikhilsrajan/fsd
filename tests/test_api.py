@@ -179,14 +179,6 @@ def test_apply_training_features_keeps_every_pixel_when_aggregate_is_none(tmp_pa
     assert written["aggregate"] is None
 
 
-# --- stubs -------------------------------------------------------------------
-
-def test_deploy_is_stub():
-    # run_inference is no longer a stub (P0.5); its engine is exercised in test_model.py.
-    with pytest.raises(NotImplementedError, match="deploy lands in P6"):
-        fsd.deploy(model_bundle=None)
-
-
 # --- orchestration wiring (build + flatten monkeypatched) --------------------
 
 def test_create_training_data_orchestration(tmp_path, monkeypatch):

@@ -50,9 +50,11 @@ __all__ = [
     "resolve",
     "set_alias",
     "version_path",
+    "write_deploy_record",
 ]
 
 ALIASES_FILE = "_aliases.json"
+DEPLOY_FILE = "_deploy.json"
 _STAGING_PREFIX = ".staging-"
 
 _REF_RE = re.compile(r"^(?P<name>[^:@]+)(?P<sep>[:@])(?P<value>.+)$")
@@ -215,6 +217,44 @@ def content_digest(bundle_path: str, *, storage_options: dict | None = None) -> 
     return _digest_of(_read_bundle_content(bundle_path, storage_options))
 
 
+# --- the deploy record (D7) ------------------------------------------------------
+
+
+def _read_deploy_digest(version_dir: str, storage_options: dict) -> str | None:
+    """The `digest` field of `version_dir`'s `_deploy.json`, or `None` if there is no such
+    file (a version published before step 2, or by a caller that never called `deploy`).
+    `publish`'s idempotency loop reads this first (a small metadata read) and falls back to
+    recomputing the content digest only when it is absent."""
+    path = os.path.join(version_dir, DEPLOY_FILE)
+    try:
+        with fs.open(path, "r", **storage_options) as f:
+            return json.load(f).get("digest")
+    except FileNotFoundError:
+        return None
+
+
+def write_deploy_record(
+    name: str, version: int, record: dict, registry: str, *, storage_options: dict | None = None,
+) -> None:
+    """Write `_deploy.json` beside `bundle.json` in `<registry>/<name>/v<version>/` (D7) --
+    the binding between this version, the image that was proven to run it, and the
+    verification result. Staged and renamed like `_aliases.json` (`set_alias`), so a reader
+    never observes a half-written record; writing it does not touch the version's
+    manifest-declared content, so it never changes the content digest (D2)."""
+    opts = storage_options or {}
+    vpath = version_path(registry, name, version)
+    if not fs.exists(vpath, **opts):
+        raise ValueError(f"cannot write deploy record: {vpath!r} does not exist")
+    stage = os.path.join(vpath, f"{_STAGING_PREFIX}{uuid.uuid4().hex}.json")
+    target = os.path.join(vpath, DEPLOY_FILE)
+    try:
+        fs.write_text(stage, json.dumps(record, indent=2, sort_keys=True), **opts)
+        fs.rename(stage, target, **opts)
+    except BaseException:
+        _discard(stage, opts)
+        raise
+
+
 # --- publish (D2) ---------------------------------------------------------------
 
 
@@ -337,16 +377,12 @@ def publish(
     `storage_options` reaches the registry; `bundle_storage_options` reaches
     `bundle_path` (only needed when the bundle itself is not local).
 
-    Cost, and why it is accepted here: the idempotency check re-reads every existing
-    version's content, because step 0 stores no digest anywhere -- D2 says the digest is
-    "recorded alongside" the version, and that is `_deploy.json`, which `deploy` writes
-    (D7, §9 step 2). So publishing into a registry with N versions costs N bundle reads.
-    That is deliberate rather than overlooked: `publish` is a rare, deliberate act (once
-    per retrain), it is not the hot path D9 constrains (resolution, which reads at most one
-    small file), and the bundles are code plus model artifacts, not imagery. **When step 2
-    lands `_deploy.json`, this loop should read its stored digest first and fall back to
-    recomputing** -- turning N content reads into N small metadata reads. Doing it now
-    would mean inventing a second digest-bearing file that D7 then supersedes.
+    Cost: the idempotency check reads each existing version's stored digest from its
+    `_deploy.json` (a small metadata read) and falls back to recomputing the content
+    digest only for a version that has none -- e.g. one published before step 2 landed
+    `_deploy.json`, or by a direct `publish` call that was never `deploy`ed. `publish`
+    itself never writes `_deploy.json` (that is `deploy`'s job, D7); this is just where
+    it reads one if a prior `deploy` left it behind.
     """
     files = _read_bundle_content(bundle_path, bundle_storage_options)
     digest = _digest_of(files)
@@ -354,7 +390,11 @@ def publish(
     opts = storage_options or {}
     name_root = _name_root(registry, name)
     for v in _list_versions(name_root, opts):
-        if content_digest(version_path(registry, name, v), storage_options=storage_options) == digest:
+        vpath = version_path(registry, name, v)
+        existing_digest = _read_deploy_digest(vpath, opts)
+        if existing_digest is None:
+            existing_digest = content_digest(vpath, storage_options=storage_options)
+        if existing_digest == digest:
             if alias:
                 set_alias(name, alias, v, registry, storage_options=storage_options)
             return v
@@ -413,3 +453,12 @@ def _migrate_version(vsrc: str, vdst: str, src_opts: dict, dst_opts: dict) -> No
             f"migrate: {vsrc} -> {vdst} digest mismatch after copy (source {before}, "
             f"copied {after}) -- refusing a possibly-corrupted copy."
         )
+    # `_deploy.json` (D7) is not manifest-declared content -- it never affects the digest
+    # above -- but it is the durable fact a `deploy` produced, and dropping it silently on
+    # a relocation would defeat D11's promise that a move is "a copy plus a changed
+    # registry= argument", not a loss of every version's binding record.
+    deploy_src = os.path.join(vsrc, DEPLOY_FILE)
+    if fs.exists(deploy_src, **src_opts):
+        with fs.open(deploy_src, "r", **src_opts) as f:
+            raw = f.read()
+        fs.write_text(os.path.join(vdst, DEPLOY_FILE), raw, **dst_opts)
