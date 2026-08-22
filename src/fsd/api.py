@@ -37,6 +37,7 @@ from fsd.catalog.catalog import filter_gdf as _filter_gdf
 from fsd.datacube import flatten as _flatten
 from fsd.model import bundle as _bundle
 from fsd.model import engine as _engine
+from fsd.model import registry as registry_mod
 from fsd.model.features import apply_features as _apply_features
 from fsd.model.features import resolve_aggregate as _resolve_aggregate
 from fsd.raster.cog import to_cog as _to_cog
@@ -1021,6 +1022,63 @@ def _apply_training_features(export_folderpath, metadata, *, adapter, feature_se
     return feature_bands
 
 
+def _is_ref_shaped(model: str) -> bool:
+    """Is this string shaped like a registry ref (`"name:N"` / `"name@alias"`)? A ref's two
+    halves are a bare name and a bare version/alias, so **anything carrying a path separator is
+    a path**, never a ref -- which is what keeps every URL out (`abfss://<fs>@<account>...`,
+    which embeds "@" legitimately, `s3://`, `https://`) along with local paths that happen to
+    contain "@" (`/data/rf@2026/`). A bare `rf@v1` in the cwd is genuinely indistinguishable
+    from a ref and is treated as one; `./rf@v1` says "path, literally"."""
+    if "/" in model or "\\" in model:
+        return False
+    try:
+        registry_mod.parse_ref(model)
+    except ValueError:
+        return False
+    return True
+
+
+def _resolve_model_ref(model, registry, *, why):
+    """`model` -> the same thing with any registry ref replaced by its version path (spec 51 D4).
+
+    **Idempotent and shape-gated, deliberately.** Two call sites read `model` as a path --
+    `_model_spec` (which reads `bundle.json` to preflight bands/T) and `_ensure_bundle` (which
+    hands a path to a subprocess) -- and `_model_spec` runs FIRST, so resolving only at
+    `_ensure_bundle` left a ref failing preflight before it was ever resolved. Rather than order
+    the two, this is safe to call at both: a string that is not ref-shaped (an already-resolved
+    path included) comes back untouched, so a third call site cannot reintroduce that bug.
+
+    `registry=` absent + a `"name@alias"`-shaped string is a `PreflightError` naming the missing
+    argument, never a silent fallback to treating it as a path (AC6). `":"` is never sniffed --
+    it collides with URL schemes and Windows drive letters -- so a `"name:N"`-shaped path with no
+    `registry=` passes through unchanged, as it always has.
+    """
+    if not isinstance(model, str):
+        if registry is not None:
+            raise PreflightError(
+                f"{why}: registry={registry!r} was given but model is a live adapter, not a ref "
+                "string ('name:version' or 'name@alias'). registry= only applies when model is a "
+                "ref; pass the adapter without registry= to auto-save it, or pass a ref string."
+            )
+        return model
+    if not _is_ref_shaped(model):
+        return model
+    if registry is not None:
+        try:
+            return registry_mod.resolve(model, registry).path
+        except ValueError as exc:
+            raise PreflightError(f"{why}: cannot resolve model={model!r} against "
+                                 f"registry={registry!r} -- {exc}") from exc
+    if registry_mod.parse_ref(model)[1] == "@":
+        raise PreflightError(
+            f"{why}: model={model!r} looks like a registry ref ('name@alias') but no "
+            "registry= was given. Pass registry=<path or URL> to resolve it, or write "
+            f"the path with a directory component (e.g. './{model}') if that string is "
+            "meant literally."
+        )
+    return model
+
+
 def _model_spec(model) -> dict:
     """Read the declared spec (required_bands, n_timestamps, output_*) from a live adapter or,
     for a bundle path, from `bundle.json` alone (model-free — no import, no model load)."""
@@ -1374,6 +1432,8 @@ def run_inference(
     if not roi_mode and inference_datacubes is None:
         errs.append("pass roi= (ROI mode) or inference_datacubes= (pre-built cubes).")
 
+    # a ref must become a version path BEFORE `_model_spec` reads `bundle.json` off it (D4).
+    model = _resolve_model_ref(model, registry, why="run_inference")
     spec = _model_spec(model)
 
     if roi_mode:
@@ -1433,52 +1493,13 @@ def _ensure_bundle(model, output_folderpath, *, why, registry=None):
     """Return a bundle path for `model`, auto-saving a live adapter (needs an importable class),
     resolving a registry ref (`"name:N"` / `"name@alias"`), or passing a bundle path through.
 
-    `registry=` given is what tells a ref apart from a path (spec 51 D4): fsd names its inputs
-    explicitly rather than guessing from the string's shape, so `model` is only ever parsed as a
-    ref when the caller also names the registry to resolve it against. `registry=` absent means
-    `model` is used as a path/URL as before, even if it happens to look like `"name@alias"`.
+    Ref resolution is `_resolve_model_ref` (spec 51 D4) -- called here so a direct caller of
+    `_ensure_bundle` resolves too, and called again at `_model_spec`'s call sites, which read a
+    bundle path FIRST; it is idempotent, so both are safe.
     """
+    model = _resolve_model_ref(model, registry, why=why)
     if isinstance(model, str):
-        if registry is not None:
-            from fsd.model import registry as _registry
-
-            try:
-                return _registry.resolve(model, registry).path
-            except ValueError as exc:
-                raise PreflightError(f"{why}: cannot resolve model={model!r} against "
-                                     f"registry={registry!r} -- {exc}") from exc
-        # AC6: "name@alias" without registry= must not silently become a (nonexistent) path.
-        # The one signal used is the SHAPE OF A NAME: a ref's two halves are a bare name and a
-        # bare alias, so anything carrying a path separator is a path, not a ref -- which is
-        # what keeps this off abfss URLs (they embed "@" legitimately:
-        # `abfss://<fs>@<account>.dfs.core.windows.net/...`, storage/azure.py's own _ABFSS_RE),
-        # off s3/https URLs, and off local paths that happen to contain "@" (`/data/rf@2026/`).
-        # A bare `rf@v1` in the cwd is genuinely indistinguishable from a ref, so it errors --
-        # the message names `./rf@v1` as the way to say "path, literally".
-        # ":" is never sniffed: it collides with URL schemes and Windows drive letters (the
-        # confusing case the spec's own design note calls out), so a "name:N"-shaped path is
-        # passed through unchanged, as it always has been.
-        if "@" in model and "/" not in model and "\\" not in model:
-            from fsd.model.registry import parse_ref
-
-            try:
-                _, sep, _ = parse_ref(model)
-            except ValueError:
-                sep = None
-            if sep == "@":
-                raise PreflightError(
-                    f"{why}: model={model!r} looks like a registry ref ('name@alias') but no "
-                    "registry= was given. Pass registry=<path or URL> to resolve it, or write "
-                    f"the path with a directory component (e.g. './{model}') if that string is "
-                    "meant literally."
-                )
         return model
-    if registry is not None:
-        raise PreflightError(
-            f"{why}: registry={registry!r} was given but model is a live adapter, not a ref "
-            "string ('name:version' or 'name@alias'). registry= only applies when model is a "
-            "ref; pass the adapter without registry= to auto-save it, or pass a ref string."
-        )
     try:
         return _bundle.save(
             model, getattr(model, "artifacts", {}) or {},
@@ -1895,6 +1916,8 @@ def verify_adapter(
     if runner == "aml" and not (runner_kwargs or {}).get("root"):
         errs.append("runner_kwargs['root'] (the blob working root) is required for runner='aml'.")
 
+    # as in `run_inference`: resolve before `_model_spec` reads `bundle.json` off it (D4).
+    model = _resolve_model_ref(model, registry, why="verify_adapter")
     spec = _model_spec(model)
     required = set(spec.get("required_bands") or [])
     missing = required - set(bands)

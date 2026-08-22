@@ -98,6 +98,57 @@ def test_ensure_bundle_passes_through_a_path_containing_at_sign_without_registry
 # --- registry= given but the ref is bad: a PreflightError naming the verb, not a raw ValueError ---
 
 
+def test_ensure_bundle_leaves_an_already_resolved_path_alone_when_registry_is_given(tmp_path):
+    # `_resolve_model_ref` runs at BOTH `_model_spec`'s call sites and `_ensure_bundle`, so the
+    # second call sees a path, not a ref -- it must pass through, not fail to "resolve".
+    src = _make_bundle(tmp_path)
+    registry_root = str(tmp_path / "registry")
+    registry.publish(src, "crop-rf", registry_root)
+    resolved = registry.version_path(registry_root, "crop-rf", 1)
+
+    assert api._ensure_bundle(
+        resolved, str(tmp_path / "out"), why="test", registry=registry_root,
+    ) == resolved
+
+
+def test_run_inference_resolves_a_ref_before_reading_the_model_spec(tmp_path):
+    # AC1: `run_inference(model=ref)` accepts a ref unchanged. `_model_spec` reads `bundle.json`
+    # off `model` BEFORE any dispatch, so an unresolved ref died there with a FileNotFoundError
+    # naming `<ref>/bundle.json`. Reaching the *datacube* preflight is the proof it resolved.
+    src = _make_bundle(tmp_path)
+    registry_root = str(tmp_path / "registry")
+    registry.publish(src, "crop-rf", registry_root, alias="champion")
+    cubes = tmp_path / "cubes"
+    cubes.mkdir()
+
+    with pytest.raises(api.PreflightError, match="no inference datacubes"):
+        api.run_inference(
+            model="crop-rf@champion",
+            registry=registry_root,
+            inference_datacubes=str(cubes),
+            output_folderpath=str(tmp_path / "out"),
+        )
+
+
+def test_verify_adapter_resolves_a_ref_before_reading_the_model_spec(tmp_path):
+    # same for the other `_model_spec` call site: the error must be about the CALL (a missing
+    # export_folderpath), never about `crop-rf@champion/bundle.json`.
+    src = _make_bundle(tmp_path)
+    registry_root = str(tmp_path / "registry")
+    registry.publish(src, "crop-rf", registry_root, alias="champion")
+
+    with pytest.raises(api.PreflightError, match="export_folderpath"):
+        api.verify_adapter(
+            model="crop-rf@champion",
+            registry=registry_root,
+            roi=str(tmp_path / "roi.geojson"),
+            catalog_filepath=str(tmp_path / "catalog.parquet"),
+            startdate="2018-04-01", enddate="2018-09-01",
+            mosaic_days=20, bands=["B04", "B08", "SCL"],
+            export_folderpath="",
+        )
+
+
 def test_ensure_bundle_wraps_an_unresolvable_ref_in_a_preflight_error(tmp_path):
     src = _make_bundle(tmp_path)
     registry_root = str(tmp_path / "registry")

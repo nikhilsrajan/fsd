@@ -4,7 +4,24 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-22 (**spec 51 §9 step 0 (`fsd.model.registry`) implemented, REVIEWED and
+_Last updated: 2026-08-22 (**spec 51 §9 step 1 (`_ensure_bundle` ref resolution) implemented and
+REVIEWED** on `worktree-spec51-step1-ensure-bundle`, **not merged, not pushed**. The Opus review
+found a real defect the unit tests could not see: resolution sat at `_ensure_bundle`, but
+`api._model_spec` reads `bundle.json` off `model` **first** in both `run_inference` and
+`verify_adapter` (and `cores=1` pre-built cubes never calls `_ensure_bundle` at all), so
+`run_inference(model="crop-rf@champion", registry=…)` still died with
+`FileNotFoundError: crop-rf@champion/bundle.json` — proven by running it. **D4 amended (user chose
+"Option A", 2026-08-22):** resolution is now one idempotent, shape-gated helper
+`api._resolve_model_ref`, called at every site that reads `model` as a path; a string carrying a
+path separator is never a ref (keeps it off `abfss://<fs>@<account>…`), and an already-resolved
+path passes through, so a later call site cannot reintroduce the bug. Also tightened the AC6
+`"@"`-without-`registry=` check (it had refused legitimate paths like `/data/rf@2026/bundle`),
+wrapped `resolve` failures as `PreflightError`, dropped the dead `storage_options=`. **Open, not
+yet filed: a URL registry has no credentials** — `run_inference`/`verify_adapter` never call
+`configure_storage`, so `registry="abfss://…"` resolves anonymously (AC12 unmet; step-2 work).
+**NEXT: merge this branch, then spec 51 §9 steps 2-3.** Previous entry: step 0.)_
+
+_Previously: 2026-08-22 (**spec 51 §9 step 0 (`fsd.model.registry`) implemented, REVIEWED and
 merged into `main`** — the Opus review found and fixed a real defect: `storage.fs.rename` was
 `shutil.move` locally, so a `publish` losing a version race nested its bundle inside the winner's
 directory and **returned the winner's version number**. Fixed at the seam (`fs.rename` is now a
