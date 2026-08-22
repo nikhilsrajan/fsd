@@ -5,11 +5,9 @@
 state plus the most recent entry, not the log.
 
 _Last updated: 2026-08-22 (**spec 51 §9 step 2 (`fsd.deploy`) REVIEWED by Opus `/effort high` —
-one real defect found, reproduced and fixed; branch green; NOT merged, NOT pushed, awaiting the
-user's go.** Review work is on `worktree-spec51-step2-review` (worktree
-`.claude/worktrees/spec51-step2-review`), branched from `72b56ce` because the original
-`worktree-spec51-step2-deploy` is **locked by a still-running Sonnet session** — merge/prune both
-once that session is closed.
+one real defect found, reproduced and fixed; MERGED into `main` (`--no-ff`, `main` @ `37124c5`)
+and both per-spec worktrees pruned. NOT PUSHED — `main` is 3 commits ahead of `origin/main`,
+awaiting the user's go.**
 **The defect (D5's whole guarantee, silently void):** `deploy(verified=...)` matched a prior
 verification by re-digesting the result's own `metrics["bundle_path"]` **at deploy time**, but
 `verify_image` recorded no digest of what it had verified. Since `bundle.save` overwrites in place
