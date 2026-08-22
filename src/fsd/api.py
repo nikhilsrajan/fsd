@@ -1429,7 +1429,7 @@ def run_inference(
                              merge_crs=merge_crs, geometries=geometries)
 
 
-def _ensure_bundle(model, output_folderpath, *, why, registry=None, storage_options=None):
+def _ensure_bundle(model, output_folderpath, *, why, registry=None):
     """Return a bundle path for `model`, auto-saving a live adapter (needs an importable class),
     resolving a registry ref (`"name:N"` / `"name@alias"`), or passing a bundle path through.
 
@@ -1442,15 +1442,23 @@ def _ensure_bundle(model, output_folderpath, *, why, registry=None, storage_opti
         if registry is not None:
             from fsd.model import registry as _registry
 
-            resolved = _registry.resolve(model, registry, storage_options=storage_options)
-            return resolved.path
-        # AC6: "name@alias" without registry= must not silently become a (nonexistent) path --
-        # excluding "://" keeps this off abfss URLs, which embed "@" legitimately
-        # (`abfss://<fs>@<account>.dfs.core.windows.net/...`, storage/azure.py's own _ABFSS_RE).
-        # ":" is not checked here: it collides with URL schemes and Windows drive letters (the
-        # confusing case this spec's own design note calls out), so a "name:N"-shaped path is
+            try:
+                return _registry.resolve(model, registry).path
+            except ValueError as exc:
+                raise PreflightError(f"{why}: cannot resolve model={model!r} against "
+                                     f"registry={registry!r} -- {exc}") from exc
+        # AC6: "name@alias" without registry= must not silently become a (nonexistent) path.
+        # The one signal used is the SHAPE OF A NAME: a ref's two halves are a bare name and a
+        # bare alias, so anything carrying a path separator is a path, not a ref -- which is
+        # what keeps this off abfss URLs (they embed "@" legitimately:
+        # `abfss://<fs>@<account>.dfs.core.windows.net/...`, storage/azure.py's own _ABFSS_RE),
+        # off s3/https URLs, and off local paths that happen to contain "@" (`/data/rf@2026/`).
+        # A bare `rf@v1` in the cwd is genuinely indistinguishable from a ref, so it errors --
+        # the message names `./rf@v1` as the way to say "path, literally".
+        # ":" is never sniffed: it collides with URL schemes and Windows drive letters (the
+        # confusing case the spec's own design note calls out), so a "name:N"-shaped path is
         # passed through unchanged, as it always has been.
-        if "@" in model and "://" not in model:
+        if "@" in model and "/" not in model and "\\" not in model:
             from fsd.model.registry import parse_ref
 
             try:
@@ -1460,8 +1468,9 @@ def _ensure_bundle(model, output_folderpath, *, why, registry=None, storage_opti
             if sep == "@":
                 raise PreflightError(
                     f"{why}: model={model!r} looks like a registry ref ('name@alias') but no "
-                    "registry= was given. Pass registry=<path or URL> to resolve it, or use a "
-                    "bundle path/URL without '@' if that string is meant literally."
+                    "registry= was given. Pass registry=<path or URL> to resolve it, or write "
+                    f"the path with a directory component (e.g. './{model}') if that string is "
+                    "meant literally."
                 )
         return model
     if registry is not None:

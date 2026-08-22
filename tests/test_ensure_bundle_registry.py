@@ -82,3 +82,28 @@ def test_ensure_bundle_passes_through_an_abfss_url_containing_at_sign_without_re
     # storage/azure.py's _ABFSS_RE) -- must not be mistaken for a "name@alias" ref.
     url = "abfss://models@myaccount.dfs.core.windows.net/crop-rf/v1"
     assert api._ensure_bundle(url, "/tmp/out", why="test") == url
+
+
+@pytest.mark.parametrize("path", [
+    "/data/bundles/rf@2026-08/bundle",   # local path whose directory name contains "@"
+    "s3://bucket@weird/crop-rf",         # any URL: the "//" alone settles it
+    "relative/rf@v1",                    # relative path, "@" in the last component
+])
+def test_ensure_bundle_passes_through_a_path_containing_at_sign_without_registry(path):
+    # only a SEPARATOR-FREE "name@alias" is ref-shaped; anything with a path component is a
+    # path, so AC6's error can never refuse a legitimate bundle location.
+    assert api._ensure_bundle(path, "/tmp/out", why="test") == path
+
+
+# --- registry= given but the ref is bad: a PreflightError naming the verb, not a raw ValueError ---
+
+
+def test_ensure_bundle_wraps_an_unresolvable_ref_in_a_preflight_error(tmp_path):
+    src = _make_bundle(tmp_path)
+    registry_root = str(tmp_path / "registry")
+    registry.publish(src, "crop-rf", registry_root)
+
+    with pytest.raises(api.PreflightError, match="cannot resolve"):
+        api._ensure_bundle(
+            "crop-rf@nosuchalias", str(tmp_path / "out"), why="test", registry=registry_root,
+        )
