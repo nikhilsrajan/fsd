@@ -4,25 +4,21 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-22 (**spec 50 fully landed + PUSHED; spec 51 (P6 `deploy`) SIGNED OFF, not
+_Last updated: 2026-08-22 (**spec 51 §9 step 0 (`fsd.model.registry`) implemented, REVIEWED and
+merged into `main`** — the Opus review found and fixed a real defect: `storage.fs.rename` was
+`shutil.move` locally, so a `publish` losing a version race nested its bundle inside the winner's
+directory and **returned the winner's version number**. Fixed at the seam (`fs.rename` is now a
+real `os.rename` locally) plus a re-digest of what actually landed, and `_aliases.json` is now
+written by rename too. Suite **890 passed / 91 skipped / 1 pre-existing failure**
+(`planetary_computer` absent), ruff clean. `main` is **AHEAD of `origin/main` — the push is the
+user's to make**. **NEXT: spec 51 §9 steps 1-3** (`_ensure_bundle` resolution → `deploy` →
+the `[model]` line). See the 2026-08-22 (later still) entry below.)_
+
+_Previously: 2026-08-22 (**spec 50 fully landed + PUSHED; spec 51 (P6 `deploy`) SIGNED OFF, not
 implemented** — `main` @ `6e163c5`, **level with `origin/main`, nothing unpushed**, tree clean.
 Suite 870 passed / 90 skipped / 1 pre-existing failure (`planetary_computer` absent), ruff clean.
-**NEXT: a Sonnet `/effort medium` session implements spec 51 §9 step 0.** See the 2026-08-22 entry
-below for the full state, including two defects found on the first real AML run and the
-comment-convention work.)_
-
-_Previously: 2026-08-21 (**spec 50 review'd by Opus, 5 bugs fixed by Sonnet in a worktree** —
-`/tmp/review-fsd-spec-50.md` found 2 blockers + 3 more (F1 a cube with no `input.csv` row was
-never rebuilt, worse under the D6 shared `runs/train` folder; F2 a shortfall entirely lacking
-imagery crashed `create_training_data` instead of converging via D5; F3 the `[plan] build:` line
-could claim `0 missing` while the build leg dispatched every row; F4 a known-empty cell made the
-top-level short-circuit unmatchable forever; F5 `scl_mask_classes=[]` round-tripped to NaN and
-purged every row). All 5 fixed in `src/fsd/workflows/create_datacube.py` +
-`src/fsd/api.py`, 6 new tests added to `tests/test_backward_walk.py`, CHANGES.md's spec 50 entry
-updated with the fixes + the two pre-push migration notes (path-shape change orphans old cubes on
-disk; preflight error-batching change). Full suite 864 passed / 90 skipped / 1 pre-existing
-failure (`planetary_computer` absent), ruff clean. **NEXT: Opus re-review**, then push. `main` was
-**7 commits ahead of `origin/main`, unpushed** before this session's fix commit(s).)_
+See the 2026-08-22 entry below for the full state, including two defects found on the first real
+AML run and the comment-convention work.)_
 
 ## Where things stand
 
@@ -161,6 +157,108 @@ items are the rslearn Plan B/C decision and spec 43 (`docs/history.md`, deferred
 ---
 
 ## Most recent entry
+
+## 2026-08-22 (later still) — the Opus review of step 0: one real defect, fixed; merged to `main`
+
+Opus `/effort high` review of `c0290fb` against spec 51 D1-D3/D9/D11 + AC1-5/11/13. Verdict on the
+three flagged calls: **1 confirmed, 1 confirmed, 1 overturned and fixed** — plus one defect of the
+same class the review found on its own. Suite **890 passed / 91 skipped / 1 pre-existing failure**,
+ruff clean. Merged `--no-ff` into `main`; worktree pruned. **`main` is ahead of `origin/main` —
+the push is the user's call.**
+
+**Call 3 OVERTURNED — and the consequence was worse than the handoff described.** Reproduced
+against the real code, not reasoned about: when a competitor completes `v1` in the TOCTOU window,
+`publish` did not merely leave a confusing gap — it **returned `1`**, while `v1` held the
+*competitor's* bundle and the caller's staged copy sat nested inside it as `v1/.staging-<uuid>/`.
+A caller resolving `crop-rf:1` would have run a model it never published. That is not §5's
+signed-off "gap in the sequence"; it is a silent wrong answer, and it also breaks D2's "a version
+directory, once written, is never rewritten".
+
+The root cause was **one level below the registry**: `storage/fs.py::rename` documents itself as
+"`os.rename` locally" — the exact property D2 cites when it calls `fs.rename` the atomic-publish
+primitive — but it delegated to fsspec's `LocalFileSystem.mv`, which is `shutil.move`, which
+**nests** rather than raising. The spec was signed off on a premise about fs.py that was false.
+Three fixes, smallest first:
+
+- `fs.rename` now calls `os.rename` directly when both ends are local, falling back to fsspec's
+  copy-and-delete only on `EXDEV`. A directory rename onto a non-empty directory now raises; a
+  *file* rename still replaces atomically, so `datacube/builder.py`'s sidecar write is unchanged.
+  (`CHANGES.md` records the behavior change.)
+- `_write_new_version` no longer trusts the rename to have told the truth: it **re-digests what
+  landed** before returning, and retries at `v<N+1>` if the directory is not its own — the same
+  proof `migrate` already used to accept a copy (D11). If the winner published *identical* bytes,
+  the digest matches and that version is returned, which is D2's idempotency reached by another
+  route. The residual limit is stated in the docstring rather than implied: a backend whose `mv`
+  merges prefixes can still interleave two writers, and that would need the lock §5 declines.
+- **Found in review, same class:** `set_alias` rewrote `_aliases.json` **in place**, so a fan-out
+  resolving `@champion` (D9's one read) could observe a half-written file mid-promotion. It now
+  stages and renames. Concurrent `set_alias` calls can still lose an update — no lock — but no
+  reader sees a torn file.
+
+**Call 1 CONFIRMED (deferred, reason recorded in `publish`'s docstring).** The O(N-versions)
+content re-read at publish time is accepted: `publish` is rare and deliberate, and it is not the
+hot path D9 constrains. **Step 2 should make this loop read `_deploy.json`'s stored digest first**
+and fall back to recomputing — turning N content reads into N small metadata reads. Doing it in
+step 0 would have meant inventing a second digest-bearing file that D7 then supersedes.
+
+**Call 2 CONFIRMED.** The `^v(\d+)$` refusal is exactly right and the edge shapes check out: `"v"`
+alone does not match, so it stays a usable alias and resolves as one; `"v007"` is refused and
+`@v007` pins v7; `"V3"` is neither. One residual, not worth code: `migrate` copies `_aliases.json`
+verbatim, so a hand-edited `v3` alias would survive and be unreachable — the file is not a
+supported edit surface.
+
+**Tests: +5 (12 → 15 registry, +2 storage).** All three regression tests were confirmed to **fail
+on `c0290fb`** before the fixes landed, not just pass after. The race is exercised by injecting a
+competitor into the rename window, which is deterministic — the handoff had assumed it needed real
+inter-process parallelism.
+
+**NEXT: spec 51 §9 steps 1-3** — `_ensure_bundle` resolution (D4), then `deploy` (D5/D6/D7), then
+the `[model]` line. Step 1 will need to decide how a `name@ref` is told apart from a bundle *path*:
+`parse_ref` currently accepts `abfss://…` as name `abfss` + version `//…` and fails on the version
+check, which is a confusing error rather than a wrong answer, but D4's table wants it routed by
+`registry=` being present.
+
+---
+
+## 2026-08-22 (later) — spec 51 §9 step 0 implemented (`fsd.model.registry`); hand back to Opus
+
+Sonnet `/effort medium` session, against `specs/51-deploy-model-registry.md` §9 step 0 alone
+(handoff: `handoff-spec51-step0-registry.md`, workspace root). Worktree branch
+`worktree-spec51-step0-registry` @ `c0290fb`, off `main` @ `82c8e28`. **Not merged, not pushed.**
+Suite **885 passed / 91 skipped / 1 pre-existing failure** (same `planetary_computer`-absent one),
+`ruff check src/ tests/ demos/ examples/` clean.
+
+**Built `src/fsd/model/registry.py`**: `publish` (idempotent by content digest, atomic via
+`storage.fs.rename` from a staging prefix), `resolve` (`name:version` / `name@alias` / `name@vN`,
+zero reads for a version pin, one `_aliases.json` read for an alias), `migrate` (relocate + re-digest
+every version, refuses a mismatch), `set_alias`, `content_digest`. No verb touched —
+`api._ensure_bundle`/`deploy` resolution is steps 1–3. `tests/test_registry.py`, 12 tests, one per
+AC1-5/11/13.
+
+**Three design calls the spec left implicit, flagged for review rather than silently decided:**
+
+1. **No `_deploy.json`-shaped file invented for step 0.** D2 says the digest is "recorded
+   alongside" the version in `_deploy.json` (D7), which doesn't exist until step 2. `publish`'s
+   idempotency check and `migrate`'s corruption check both **recompute** the digest live from
+   `bundle.json`'s declared files instead of persisting one anywhere — keeps the on-disk layout
+   exactly D1's diagram, costs more reads at publish time (bounded by version count, never on the
+   resolution hot path D9 protects).
+2. **`set_alias` refuses an alias shaped `v<digits>`** (e.g. `"champion"` is fine, `"v7"` is
+   refused) — it would be permanently shadowed by the `name@vN` version-pin shorthand in `resolve`
+   and could never be reached. Not addressed anywhere in the spec.
+3. **A race hazard past what §5 signs off on.** Version allocation pre-checks `exists(target)`
+   before staging + rename, but the local backend's `fs.rename` is `shutil.move`, which — if two
+   publishers land in the TOCTOU window between that check and the rename — nests the loser's
+   staged content *inside* the winner's already-published version directory instead of raising.
+   §5 explicitly accepts "a confusing gap in the sequence" from a race; this is closer to
+   corrupting the winner's directory, a step beyond what was signed off. Documented as a hazard
+   comment in `registry._write_new_version`, not fixed — a real fix needs a lock, which the spec
+   explicitly says is "not worth" building for v1.
+
+**NEXT: Opus review + debug**, per the working style's model split (implementation-session can't
+review itself, and spec 50's history — a green suite + two review rounds still missing what the
+first real cluster run found — is why). Sign off or overturn the three calls above before steps 1–3
+(`_ensure_bundle` resolution, `deploy` itself, the `[model]` print) build on this layout.
 
 ## 2026-08-22 — spec 50 landed + pushed; **spec 51 (P6 `deploy`) signed off**; comment convention
 

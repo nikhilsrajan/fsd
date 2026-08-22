@@ -6,9 +6,10 @@ Public surface:
     infer_datacube, run_local                — the inference engine (engine.py).
     bundle                                   — save/load the self-describing model bundle.
     verify_image                             — does an inference image run this bundle? (spec 45 D4)
+    registry                                 — a resolvable name for a published bundle (spec 51)
 """
 
-from fsd.model import bundle
+from fsd.model import bundle, registry
 from fsd.model.adapter import BaseModelAdapter, ModelAdapter, Output
 from fsd.model.engine import infer_datacube, infer_datacube_to_cog, run_local
 from fsd.model.features import apply_features, median_per_id, resolve_aggregate
@@ -31,4 +32,5 @@ __all__ = [
     "load_bundle",
     "save_bundle",
     "verify_image",
+    "registry",
 ]

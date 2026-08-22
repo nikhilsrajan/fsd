@@ -4,6 +4,23 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## `storage.fs.rename` is a real `os.rename` locally (spec 51 step 0 review, 2026-08-22)
+
+- **`fs.rename` no longer inherits `shutil.move`'s directory semantics.** fsspec's
+  `LocalFileSystem.mv` is `shutil.move`, which moves the source *inside* the destination when
+  that already exists as a directory, and reports success. `fs.rename`'s own docstring had
+  always claimed "locally it is `os.rename`" — it now is one, falling back to fsspec's
+  copy-and-delete only on `EXDEV` (a cross-device move, which has no atomic form anyway).
+  **Behavior change:** renaming a directory onto an existing non-empty directory now raises
+  `OSError` instead of silently nesting. Renaming a *file* onto an existing file still replaces
+  it atomically, so the datacube sidecar write (`datacube/builder.py`) is unaffected.
+- **Why it mattered:** spec 51 D2 makes `fs.rename` the atomic-publish primitive, so a
+  `publish` that lost a version race did not fail-and-retry as §5 promises — it nested its
+  staged bundle inside the winner's version directory and **returned that version number**.
+  A caller resolving `crop-rf:1` would then have run a model it never published. Found in
+  review of `c0290fb`, reproduced, and pinned by
+  `tests/test_storage.py::test_rename_refuses_to_nest_a_directory_into_an_existing_one`.
+
 ## `create_training_data` resolves backwards from the target (spec 50, 2026-08-21)
 
 - **A re-run stops paying for `setup` before it can even be skipped.** Spec 49 taught each leg to
