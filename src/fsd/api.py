@@ -40,6 +40,7 @@ from fsd.model import engine as _engine
 from fsd.model import registry as registry_mod
 from fsd.model.features import apply_features as _apply_features
 from fsd.model.features import resolve_aggregate as _resolve_aggregate
+from fsd.model.verify_image import verify_image as _verify_image
 from fsd.raster.cog import to_cog as _to_cog
 from fsd.sources.cdse import CdseCredentials
 from fsd.sources.cdse import download as _cdse_download
@@ -2178,15 +2179,176 @@ def verify_adapter(
     return _finish_verify_adapter(export_folderpath, result)
 
 
-def deploy(model_bundle, *, storage=None, **kw):
-    """Register a self-describing model bundle for scaled inference. Lands in P6.
+def _load_verified_result(verified) -> dict:
+    """`verified=` is either the dict `verify_image` returned or a path/URL to the
+    `_result.json` it was written to. A path that is not there, or is not JSON, is caller
+    error and gets the verb's own `PreflightError` rather than a bare `FileNotFoundError`
+    from the storage seam."""
+    if isinstance(verified, dict):
+        return verified
+    try:
+        with fs.open(str(verified), "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, ValueError) as exc:
+        raise PreflightError(
+            f"fsd.deploy(verified={verified!r}): cannot read that as a verify_image "
+            f"_result.json -- {exc}. Pass the dict verify_image returned, the path it was "
+            "written to, or verified=None to let deploy run the verification itself."
+        ) from exc
 
-    The bundle format is pinned now (spec 18, F5): a folder with `bundle.json` (adapter
-    `module:attr` ref + relative artifact hrefs + the spec) that `fsd.model.bundle.load` turns
-    back into a live adapter. P6 adds *registration/push* (to ACR/blob/a registry) so cloud
-    workers can fetch it; the format does not change.
+
+def _verified_matches(result: dict, *, digest: str, environment: str) -> bool:
+    """Does `result` (a `_result.json`-shaped `verify_image` output) actually speak to THIS
+    deploy call -- same `environment`, and the bundle content it RECORDS having verified
+    (`metrics["bundle_digest"]`, written by `verify_image` at verification time) is the
+    content being deployed (D5/AC8)?
+
+    It must be that recorded digest, never a re-digest of `metrics["bundle_path"]`: the path
+    says where the bundle was, not what it held, and `bundle.save` overwrites in place (spec
+    51 §1 H1). Verify `./demo_bundle`, retrain, re-save over it, then deploy it with the old
+    `_result.json`, and a path re-digest compares the new content with itself -- a tautology
+    that passes, registering "this image ran this bundle" for content the image never saw.
+    Matching on the recorded digest also makes a `_result.json` portable: a colleague's result
+    stays honourable on a machine where their `bundle_path` does not exist.
+
+    A result carrying no `bundle_digest` is a mismatch, not a pass -- it cannot say what it
+    verified.
+
+    This says nothing about `pass`: a matched-but-failing result is still "honoured" (it flows
+    on to the `pass=False` refusal below, with its own `error`) -- what gets refused HERE is a
+    result that does not even speak to this bundle/environment pair. D5 says refuse that, not
+    ignore it -- so this never falls back to running `verify_image` itself; the caller does
+    that only when `verified=` was never given."""
+    metrics = result.get("metrics") or {}
+    if metrics.get("environment") != environment:
+        return False
+    return bool(metrics.get("bundle_digest")) and metrics["bundle_digest"] == digest
+
+
+def deploy(
+    bundle_path: str,
+    *,
+    name: str,
+    registry: str,
+    environment: str,
+    runner: str = "aml",
+    runner_kwargs: dict | None = None,
+    alias: str | None = None,
+    verified: str | dict | None = None,
+    storage=None,
+) -> str:
+    """Publish a SAVED bundle into `registry` under `name`, refusing unless `environment` has
+    been proven to run it (spec 51). Returns a ref `run_inference(model=ref, registry=registry)`
+    accepts unchanged: `"<name>:<version>"`.
+
+    `deploy` establishes the bundle<->image pairing before it records it (D5), one of two ways:
+
+    * the default -- runs `fsd.model.verify_image(bundle_path, environment=environment,
+      runner=runner, runner_kwargs=runner_kwargs)` itself, one real AML node; or
+    * `verified=<_result.json path or dict>` -- accepts a PRIOR verification, honoured only if
+      the bundle content it RECORDS having verified (`metrics["bundle_digest"]`) and its
+      `environment` both match what is being deployed here. A stale or mismatched result is
+      refused outright, never silently re-verified.
+
+    Either way, `pass=False` refuses the deployment and raises with that result's own `error`.
+    No version directory is created on refusal (AC7).
+
+    `bundle_path` must be a SAVED bundle (D6) -- a live adapter is refused, naming
+    `fsd.model.bundle.save`, because publishing something another machine will fetch by name is
+    a deliberate act, distinct from `_ensure_bundle`'s auto-save convenience for running
+    something now. The bundle's manifest must declare `requirements` and carry a `code` block;
+    missing either is refused, naming the `bundle.save(...)` fix.
+
+    `alias` (e.g. `"champion"`) publishes and repoints the alias in one call (D3) -- promotion
+    is an alias reassignment, never a state transition, and multiple aliases may point at one
+    version.
+
+    Idempotent: deploying identical bundle content again returns the same version and writes
+    nothing new (`fsd.model.registry.publish`, D2) -- safe to re-run from a notebook cell.
+
+    `storage=` only reaches the same local/Azure "compute seam" gate `run_inference` and
+    `verify_adapter` use (non-local is refused for now, #86) -- it is unrelated to `registry=`,
+    which is resolved/written directly through the storage seam and may itself be a URL (D1).
     """
-    raise NotImplementedError(
-        "deploy lands in P6. The bundle format exists now (fsd.model.bundle.save/load); "
-        "deploy adds registration/push of that bundle for scaled inference (ROADMAP §3.4)."
-    )
+    errs = _check_local_seams(runner, storage, storage_allowed=False)
+    _raise_preflight(errs)
+
+    if not isinstance(bundle_path, str):
+        raise PreflightError(
+            "fsd.deploy(...) needs a SAVED bundle path, not a live adapter (spec 51 D6) -- "
+            "call fsd.model.bundle.save(adapter, artifacts, dst, requirements=[...]) first, "
+            "then pass the returned path to deploy. (Auto-saving is _ensure_bundle's job, a "
+            "convenience for running something now -- publishing something others will fetch "
+            "by name is a deliberate act.)"
+        )
+
+    # Checked HERE, not left to `publish` at the end: a name that cannot round-trip through a
+    # ref would otherwise surface only after a real verify_image node has been paid for.
+    try:
+        registry_mod.check_name(name)
+    except ValueError as exc:
+        raise PreflightError(f"fsd.deploy(name=...): {exc}") from exc
+
+    manifest = _bundle.read_spec(bundle_path)
+    if not manifest.get("requirements"):
+        raise PreflightError(
+            f"deploy refuses {bundle_path!r}: its manifest declares no `requirements`, so no "
+            "other machine can install what it needs (spec 51 D6). Fix: re-save it with "
+            "bundle.save(..., requirements=[...])."
+        )
+    if not _bundle.manifest_code_files(manifest):
+        raise PreflightError(
+            f"deploy refuses {bundle_path!r}: its manifest has no `code` block, so it does not "
+            "carry its adapter -- a generic image will fail with ModuleNotFoundError (spec 51 "
+            "D6). Fix: re-save it with bundle.save(..., code=...) (or the default auto-detect) "
+            "so the adapter's source is embedded."
+        )
+
+    digest = registry_mod.content_digest(bundle_path)
+
+    if verified is not None:
+        result = _load_verified_result(verified)
+        if not _verified_matches(result, digest=digest, environment=environment):
+            _vm = result.get("metrics") or {}
+            raise PreflightError(
+                f"deploy(verified=...) is stale or does not match this call: it verified "
+                f"bundle_digest={_vm.get('bundle_digest')!r} against "
+                f"environment={_vm.get('environment')!r}, but this call deploys {digest!r} "
+                f"against {environment!r} (spec 51 D5) -- a mismatched verification is "
+                "refused, not ignored. A result with bundle_digest=None predates spec 51 and "
+                "cannot say what it verified: re-run verify_image, or pass verified=None to "
+                "let deploy run it."
+            )
+    else:
+        result = _verify_image(
+            bundle_path, environment=environment, runner=runner, runner_kwargs=runner_kwargs,
+        )
+
+    if not result.get("pass"):
+        # D5 says "returns the verification's own error", and `verify_image` splits that in two:
+        # its top-level `error` is populated only for a DRIVER-detected failure (bad code, stale
+        # wheel, no status file). When the smoke job itself ran and reported a failure, `error`
+        # stays None and the diagnosis is `metrics["smoke_error"]` -- so read that too, rather
+        # than refusing with a literal "error: None" that tells the operator nothing.
+        why = result.get("error") or (result.get("metrics") or {}).get("smoke_error")
+        raise PreflightError(
+            f"deploy refuses to register {name!r}: {environment!r} has not been proven to run "
+            f"this bundle (spec 51 D5). verify_image says: {why}"
+        )
+
+    version = registry_mod.publish(bundle_path, name, registry, alias=alias)
+
+    import fsd as _fsd  # lazy: fsd/__init__.py imports this module, so a top-level import cycles
+
+    record = {
+        "name": name,
+        "version": version,
+        "digest": digest,
+        "environment": environment,
+        "verified": result,
+        "deployed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "fsd_version": _fsd.__version__,
+    }
+    registry_mod.write_deploy_record(name, version, record, registry)
+
+    return f"{name}:{version}"

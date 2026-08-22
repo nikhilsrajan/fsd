@@ -95,6 +95,53 @@ def test_publish_changed_content_creates_v2_and_leaves_v1_untouched(tmp_path):
     assert v1_manifest == src1_manifest
 
 
+# --- step 2 follow-through: publish's idempotency check reads a stored digest first ----
+
+
+def test_publish_idempotency_uses_stored_deploy_digest_without_recomputing_content(
+    tmp_path, monkeypatch,
+):
+    """Once a version carries `_deploy.json` (written by `deploy`, spec 51 D7), re-publishing
+    identical content must not re-digest that version's bytes -- it reads the small stored
+    digest instead (`registry.publish`'s own docstring, "known follow-through" in the step-2
+    handoff)."""
+    registry_root = str(tmp_path / "registry")
+    src = _make_bundle(tmp_path)
+    v1 = registry.publish(src, "crop-rf", registry_root)
+    v1_path = registry.version_path(registry_root, "crop-rf", v1)
+    digest = registry.content_digest(v1_path)
+    registry.write_deploy_record(
+        "crop-rf", v1, {"name": "crop-rf", "version": v1, "digest": digest}, registry_root,
+    )
+
+    def _forbidden(*a, **kw):
+        raise AssertionError("content_digest recomputed despite a stored _deploy.json digest")
+
+    monkeypatch.setattr(registry, "content_digest", _forbidden)
+
+    again = registry.publish(src, "crop-rf", registry_root)
+
+    assert again == v1
+
+
+# --- step 2 follow-through: migrate carries a version's _deploy.json across ------------
+
+
+def test_migrate_carries_the_deploy_record_across(tmp_path):
+    src_root = str(tmp_path / "src_registry")
+    dst_root = str(tmp_path / "dst_registry")
+    src = _make_bundle(tmp_path)
+    v1 = registry.publish(src, "crop-rf", src_root)
+    record = {"name": "crop-rf", "version": v1, "digest": "sha256:deadbeef"}
+    registry.write_deploy_record("crop-rf", v1, record, src_root)
+
+    registry.migrate(src_root, dst_root)
+
+    dst_version = registry.resolve("crop-rf:1", dst_root).path
+    with open(os.path.join(dst_version, registry.DEPLOY_FILE)) as f:
+        assert json.load(f) == record
+
+
 # --- AC4: atomic publish (staging + rename, no partial version) ------------------------
 
 

@@ -18,7 +18,7 @@ import types
 
 import pytest
 
-from fsd.model import bundle
+from fsd.model import bundle, registry
 from fsd.model.verify_image import verify_image
 from fsd.storage import fs
 from fsd.workflows import runners
@@ -313,6 +313,9 @@ def test_verify_image_passes_against_a_known_good_bundle(tmp_path, importable, f
     assert result["metrics"]["smoke_status"] == "ok"
     assert result["metrics"]["code_files_staged"].split("/")[0] == \
         result["metrics"]["code_files_staged"].split("/")[1]  # N/N landed
+    # WHAT was verified, not just where (spec 51 D5): `deploy(verified=...)` matches on this
+    # digest, because `bundle_path` alone cannot distinguish a bundle from its replacement.
+    assert result["metrics"]["bundle_digest"] == registry.content_digest(bdir)
 
 
 def test_verify_image_fails_with_populated_error_when_bundle_has_no_code(

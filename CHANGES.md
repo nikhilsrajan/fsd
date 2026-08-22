@@ -4,6 +4,34 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## `verify_image` records WHAT it verified, not just where (spec 51 step 2 review, 2026-08-22)
+
+- **`verify_image`'s `_result.json` gains `metrics["bundle_digest"]`** — the D2 content digest
+  of the bundle it verified, computed at verification time. Additive: every other field is
+  unchanged, and nothing that only reads `pass`/`error`/`smoke_*` is affected.
+- **`fsd.deploy(verified=...)` matches on that recorded digest**, where it previously
+  re-digested the result's own `metrics["bundle_path"]` at deploy time.
+  **Why it mattered:** `bundle.save` overwrites in place (spec 51 §1 H1), so the normal
+  verify → retrain → re-save → deploy loop hands `deploy` a `_result.json` naming the *right
+  path* holding the *wrong content*. Re-digesting the path then compared the new content with
+  itself — a tautology that always passed — and `_deploy.json` recorded "this image ran this
+  bundle" for content the image had never seen, which is the one guarantee D5 exists to make.
+  Found in review of `72b56ce`, reproduced, pinned by
+  `tests/test_deploy.py::test_deploy_refuses_a_verified_result_whose_bundle_was_overwritten_in_place`.
+  Side benefit: a `_result.json` is now portable — a colleague's result is honourable on a
+  machine where their `bundle_path` does not exist.
+- **A `verified=` result carrying no `bundle_digest` is refused**, not accepted: it cannot say
+  what it verified. Any `_result.json` produced before this change must be re-run.
+- **`deploy`'s refusal now reads `metrics["smoke_error"]` when the top-level `error` is `None`.**
+  `verify_image` populates `error` only for a *driver*-detected failure; a smoke job that ran and
+  reported a failure leaves it `None`, so the refusal used to read literally "verify_image error:
+  None" — D5's "the verification's own error" with the actual diagnosis dropped.
+- **`registry.publish` (and so `deploy`) refuses a model name carrying `/`, `\`, `:`, `@`, a
+  leading `.`, or nothing at all** (`registry.check_name`). Such a name published fine and
+  returned a ref nothing could resolve — `crop/rf:1` reads as a *path* to `api._is_ref_shaped`,
+  `crop:rf:1` re-splits at the wrong separator — breaking AC1's "a ref `run_inference` accepts
+  unchanged". `deploy` checks it up front, so a bad name costs no AML verification node.
+
 ## `storage.fs.rename` is a real `os.rename` locally (spec 51 step 0 review, 2026-08-22)
 
 - **`fs.rename` no longer inherits `shutil.move`'s directory semantics.** fsspec's
