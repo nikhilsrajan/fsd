@@ -43,6 +43,7 @@ from fsd.storage import fs
 
 __all__ = [
     "Resolved",
+    "check_name",
     "content_digest",
     "migrate",
     "parse_ref",
@@ -82,6 +83,37 @@ def parse_ref(ref: str) -> tuple[str, str, str]:
             "'name@alias' (e.g. 'crop-rf@champion')."
         )
     return m.group("name"), m.group("sep"), m.group("value")
+
+
+def check_name(name: str) -> None:
+    """Refuse a model name that cannot round-trip through a ref (AC1: `deploy` returns a ref
+    `run_inference` accepts unchanged).
+
+    `deploy` returns `f"{name}:{version}"`, and the reader of that string is `api._is_ref_shaped`
+    -> `parse_ref`. A name carrying `/` or `\\` makes the ref look like a *path*, so it is never
+    resolved and dies as `FileNotFoundError: crop/rf:1/bundle.json`; a name carrying `:` or `@`
+    re-splits at the wrong place (`'crop:rf:1'` -> name `'crop'`, version `'rf:1'`). Both would
+    publish successfully and hand back a ref nothing can resolve -- so they are refused here,
+    where the name is chosen, rather than surfacing at the first run.
+
+    A leading `.` is refused for a different reason: `_list_names` skips dot-entries (that is how
+    `.staging-*` stays invisible), so such a name would be silently dropped by `migrate` -- and
+    D11's "a move is a copy" would quietly lose it."""
+    if not name or not name.strip():
+        raise ValueError("model name must be a non-empty string.")
+    bad = [c for c in ("/", "\\", ":", "@") if c in name]
+    if bad:
+        raise ValueError(
+            f"model name {name!r} contains {bad!r}, which a ref cannot carry: deploy returns "
+            f"'{name}:<version>' and that string would parse as a path (/, \\) or split at the "
+            "wrong separator (:, @), so nothing could resolve it. Use letters, digits, '-' or "
+            "'_' (e.g. 'crop-rf')."
+        )
+    if name.startswith("."):
+        raise ValueError(
+            f"model name {name!r} starts with '.': the registry treats dot-entries as internal "
+            "(staging files), so this name would be invisible to migrate. Pick another."
+        )
 
 
 def version_path(registry: str, name: str, version: int) -> str:
@@ -384,6 +416,7 @@ def publish(
     itself never writes `_deploy.json` (that is `deploy`'s job, D7); this is just where
     it reads one if a prior `deploy` left it behind.
     """
+    check_name(name)
     files = _read_bundle_content(bundle_path, bundle_storage_options)
     digest = _digest_of(files)
 

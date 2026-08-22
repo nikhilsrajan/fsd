@@ -4,8 +4,60 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-22 (**spec 51 §9 step 2 (`fsd.deploy`, D5/D6/D7) implemented — Sonnet
-`/effort medium`, NOT YET REVIEWED by Opus, NOT merged.** Work is on worktree branch
+_Last updated: 2026-08-22 (**spec 51 §9 step 2 (`fsd.deploy`) REVIEWED by Opus `/effort high` —
+one real defect found, reproduced and fixed; branch green; NOT merged, NOT pushed, awaiting the
+user's go.** Review work is on `worktree-spec51-step2-review` (worktree
+`.claude/worktrees/spec51-step2-review`), branched from `72b56ce` because the original
+`worktree-spec51-step2-deploy` is **locked by a still-running Sonnet session** — merge/prune both
+once that session is closed.
+**The defect (D5's whole guarantee, silently void):** `deploy(verified=...)` matched a prior
+verification by re-digesting the result's own `metrics["bundle_path"]` **at deploy time**, but
+`verify_image` recorded no digest of what it had verified. Since `bundle.save` overwrites in place
+(spec 51 §1 H1), the normal verify → retrain → re-save → deploy loop hands `deploy` a
+`_result.json` naming the *right path* holding the *wrong content* — and re-digesting that path
+compares the new content **with itself**, a tautology that always passes. `_deploy.json` then
+recorded "this image ran this bundle" for content the image never saw, which is exactly what D5
+exists to prevent. Reproduced before fixing.
+**Fix (AC8 taken literally — "the result's *bundle digest*"):** `verify_image` now records
+`metrics["bundle_digest"]` at verification time (additive to its `_result.json`; the only change
+made to that module), and `_verified_matches` compares that recorded digest, never the path. A
+result carrying no `bundle_digest` is refused as a mismatch — it cannot say what it verified, so
+**every `_result.json` produced before today must be re-run**. Side benefit: a `_result.json` is
+now portable between machines. Pinned by
+`test_deploy_refuses_a_verified_result_whose_bundle_was_overwritten_in_place` +
+`..._records_no_bundle_digest`, plus a producer-side assertion in `test_bundle_transparency.py`.
+**Two smaller review fixes:** (a) `registry.check_name`, called by `publish` and up front by
+`deploy`, refuses a model name carrying `/`, `\`, `:`, `@`, a leading `.`, or nothing — such a name
+published fine and returned a ref nothing could resolve (`crop/rf:1` reads as a *path* to
+`api._is_ref_shaped`; `crop:rf:1` re-splits at the wrong separator), breaking AC1; checked before
+verification so a bad name costs no AML node. (b) `deploy(verified=<missing path>)` now raises the
+verb's `PreflightError` instead of a bare `FileNotFoundError`. (c) the `pass=False` refusal falls
+back to `metrics["smoke_error"]` when `verify_image`'s top-level `error` is `None` (it is populated
+only for *driver*-detected failures), so a failed smoke job no longer refuses with the useless
+literal "verify_image error: None" — the implementer flagged this in the handoff as an open
+question; D5's "the verification's own error" is better served by the actual diagnosis.
+**Reviewed and accepted as-is:** the ordering that guarantees AC7's "no version directory on
+refusal"; the `_verified_matches`-drops-the-`pass`-check call the implementer made (correct — `pass`
+is judged separately, so a matched-but-failing result surfaces its own `error`); the
+`publish`-reads-`_deploy.json`-first optimization and its monkeypatch test (which does prove what it
+claims — `publish` digests the *source* bundle via `_digest_of`, not the patched `content_digest`);
+`migrate` carrying `_deploy.json` across (an out-of-scope addition, but the right call: D11's "a
+move is a copy" would otherwise lose every binding record); the AC13a scan (`_deploy.json`'s
+embedded `verified.metrics.bundle_path` is D11-sanctioned *evidence*, not a reference, and deploy no
+longer reads it at all); and the removal of `test_deploy_is_stub`.
+**One design question left open, not filed as an issue yet (user's call):** re-deploying identical
+content **overwrites** that version's `_deploy.json` (new `deployed_at`, and a different
+`environment=` replaces the recorded binding), which sits against D2's "identical content → returns
+it, **writes nothing**". Arguably desirable (the version is now known to run the newer image) but it
+silently drops the older binding; the spec is silent. Also unaddressed, cosmetic: `deploy` digests
+the bundle twice (once itself, once inside `publish`).
+Suite **927 passed / 91 skipped / 1 pre-existing failure** (`planetary_computer` absent), ruff clean.
+**NEXT: user's go to merge + prune, then step 3** (the `[model] name@ref -> vN (verified against
+<env>)` line + the environment-mismatch warning, D7/AC10's print half). Previous entry: step 2's
+implementation session, below.)_
+
+_Previously: 2026-08-22 (**spec 51 §9 step 2 (`fsd.deploy`, D5/D6/D7) implemented — Sonnet
+`/effort medium`.** Work is on worktree branch
 `worktree-spec51-step2-deploy`, based on `main` @ `6b3fcae` (steps 0-1 merged + pushed). `deploy`
 now: refuses a live adapter (naming `fsd.model.bundle.save`, D6) and a bundle whose manifest lacks
 `requirements`/`code` (naming the fix); establishes the bundle↔image pairing before recording it,

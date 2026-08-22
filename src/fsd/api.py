@@ -2180,32 +2180,49 @@ def verify_adapter(
 
 
 def _load_verified_result(verified) -> dict:
+    """`verified=` is either the dict `verify_image` returned or a path/URL to the
+    `_result.json` it was written to. A path that is not there, or is not JSON, is caller
+    error and gets the verb's own `PreflightError` rather than a bare `FileNotFoundError`
+    from the storage seam."""
     if isinstance(verified, dict):
         return verified
-    with fs.open(str(verified), "r") as f:
-        return json.load(f)
+    try:
+        with fs.open(str(verified), "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, ValueError) as exc:
+        raise PreflightError(
+            f"fsd.deploy(verified={verified!r}): cannot read that as a verify_image "
+            f"_result.json -- {exc}. Pass the dict verify_image returned, the path it was "
+            "written to, or verified=None to let deploy run the verification itself."
+        ) from exc
 
 
 def _verified_matches(result: dict, *, digest: str, environment: str) -> bool:
     """Does `result` (a `_result.json`-shaped `verify_image` output) actually speak to THIS
-    deploy call -- same `environment`, and its own recorded `bundle_path` re-digested now is
-    the SAME content as what is being deployed (D5)? This says nothing about `pass`: a
-    matched-but-failing result is still "honoured" (it flows on to the `pass=False` refusal
-    below, with its own `error`) -- what gets refused HERE is a result that does not even
-    speak to this bundle/environment pair, stale or from a different deploy entirely. D5 says
-    refuse that, not ignore it -- so this never falls back to running `verify_image` itself;
-    the caller does that only when `verified=` was never given."""
+    deploy call -- same `environment`, and the bundle content it RECORDS having verified
+    (`metrics["bundle_digest"]`, written by `verify_image` at verification time) is the
+    content being deployed (D5/AC8)?
+
+    It must be that recorded digest, never a re-digest of `metrics["bundle_path"]`: the path
+    says where the bundle was, not what it held, and `bundle.save` overwrites in place (spec
+    51 §1 H1). Verify `./demo_bundle`, retrain, re-save over it, then deploy it with the old
+    `_result.json`, and a path re-digest compares the new content with itself -- a tautology
+    that passes, registering "this image ran this bundle" for content the image never saw.
+    Matching on the recorded digest also makes a `_result.json` portable: a colleague's result
+    stays honourable on a machine where their `bundle_path` does not exist.
+
+    A result carrying no `bundle_digest` is a mismatch, not a pass -- it cannot say what it
+    verified.
+
+    This says nothing about `pass`: a matched-but-failing result is still "honoured" (it flows
+    on to the `pass=False` refusal below, with its own `error`) -- what gets refused HERE is a
+    result that does not even speak to this bundle/environment pair. D5 says refuse that, not
+    ignore it -- so this never falls back to running `verify_image` itself; the caller does
+    that only when `verified=` was never given."""
     metrics = result.get("metrics") or {}
     if metrics.get("environment") != environment:
         return False
-    verified_bundle_path = metrics.get("bundle_path")
-    if not verified_bundle_path:
-        return False
-    try:
-        verified_digest = registry_mod.content_digest(verified_bundle_path)
-    except Exception:  # noqa: BLE001 - an unreadable prior bundle is a mismatch, not an error here
-        return False
-    return verified_digest == digest
+    return bool(metrics.get("bundle_digest")) and metrics["bundle_digest"] == digest
 
 
 def deploy(
@@ -2229,7 +2246,7 @@ def deploy(
     * the default -- runs `fsd.model.verify_image(bundle_path, environment=environment,
       runner=runner, runner_kwargs=runner_kwargs)` itself, one real AML node; or
     * `verified=<_result.json path or dict>` -- accepts a PRIOR verification, honoured only if
-      its recorded bundle content (re-digested from its own `metrics["bundle_path"]`) and
+      the bundle content it RECORDS having verified (`metrics["bundle_digest"]`) and its
       `environment` both match what is being deployed here. A stale or mismatched result is
       refused outright, never silently re-verified.
 
@@ -2265,6 +2282,13 @@ def deploy(
             "by name is a deliberate act.)"
         )
 
+    # Checked HERE, not left to `publish` at the end: a name that cannot round-trip through a
+    # ref would otherwise surface only after a real verify_image node has been paid for.
+    try:
+        registry_mod.check_name(name)
+    except ValueError as exc:
+        raise PreflightError(f"fsd.deploy(name=...): {exc}") from exc
+
     manifest = _bundle.read_spec(bundle_path)
     if not manifest.get("requirements"):
         raise PreflightError(
@@ -2285,11 +2309,15 @@ def deploy(
     if verified is not None:
         result = _load_verified_result(verified)
         if not _verified_matches(result, digest=digest, environment=environment):
+            _vm = result.get("metrics") or {}
             raise PreflightError(
-                f"deploy(verified=...) is stale or does not match this call: its recorded "
-                f"bundle content and/or environment={environment!r} disagree with what is "
-                f"being deployed (spec 51 D5) -- a mismatched verification is refused, not "
-                "ignored. Pass verified=None to let deploy run verify_image itself."
+                f"deploy(verified=...) is stale or does not match this call: it verified "
+                f"bundle_digest={_vm.get('bundle_digest')!r} against "
+                f"environment={_vm.get('environment')!r}, but this call deploys {digest!r} "
+                f"against {environment!r} (spec 51 D5) -- a mismatched verification is "
+                "refused, not ignored. A result with bundle_digest=None predates spec 51 and "
+                "cannot say what it verified: re-run verify_image, or pass verified=None to "
+                "let deploy run it."
             )
     else:
         result = _verify_image(
@@ -2297,9 +2325,15 @@ def deploy(
         )
 
     if not result.get("pass"):
+        # D5 says "returns the verification's own error", and `verify_image` splits that in two:
+        # its top-level `error` is populated only for a DRIVER-detected failure (bad code, stale
+        # wheel, no status file). When the smoke job itself ran and reported a failure, `error`
+        # stays None and the diagnosis is `metrics["smoke_error"]` -- so read that too, rather
+        # than refusing with a literal "error: None" that tells the operator nothing.
+        why = result.get("error") or (result.get("metrics") or {}).get("smoke_error")
         raise PreflightError(
             f"deploy refuses to register {name!r}: {environment!r} has not been proven to run "
-            f"this bundle (spec 51 D5). verify_image error: {result.get('error')}"
+            f"this bundle (spec 51 D5). verify_image says: {why}"
         )
 
     version = registry_mod.publish(bundle_path, name, registry, alias=alias)

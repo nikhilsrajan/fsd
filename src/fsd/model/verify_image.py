@@ -31,6 +31,7 @@ import uuid
 import zipfile
 
 from fsd.model import bundle as _bundle
+from fsd.model import registry as _registry
 from fsd.storage import fs
 
 __all__ = ["verify_image"]
@@ -87,7 +88,8 @@ def verify_image(
     enables the wheel-staleness gate (see `_check_wheel_has_spec44`).
 
     Returns a `_result.json`-shaped dict (spec 24): `{"step", "status", "pass", "metrics",
-    "expected", "error"}`. Every driver-detectable failure (no `code` block, a stale wheel, a
+    "expected", "error"}`. `metrics["bundle_digest"]` records the content digest of what was
+    verified, which is what `fsd.deploy(verified=...)` matches against (spec 51 D5). Every driver-detectable failure (no `code` block, a stale wheel, a
     partial stage, a missing node status file) sets `pass=False` with a populated `error`.
     `verify_image` raises only on caller misuse it cannot report as a verification result --
     a non-`"aml"` `runner`, or `runner_kwargs` missing `cluster`/`root`/`identity_client_id`.
@@ -126,6 +128,13 @@ def verify_image(
         code = manifest.get("code")
         result["metrics"].update({
             "bundle_path": str(bundle_path),
+            # WHAT was verified, not WHERE it was (spec 51 D5/AC8). `deploy(verified=...)`
+            # honours a prior result only if this digest matches the bundle being deployed;
+            # re-digesting `bundle_path` at deploy time instead would prove nothing, because
+            # `bundle.save` overwrites in place (spec 51 §1 H1) -- the same path can hold
+            # different content on different days, and a same-path comparison is a tautology.
+            # Recording it here also makes a `_result.json` portable between machines.
+            "bundle_digest": _registry.content_digest(bundle_path),
             "bundle_version": version,
             "adapter_ref": manifest.get("adapter"),
             "code_block_present": bool(code),

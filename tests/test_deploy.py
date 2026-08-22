@@ -80,10 +80,18 @@ def _deployable_bundle(tmp_path, importable, dst="b", requirements=("packaging",
 
 
 def _matching_verified(bundle_path: str, environment: str) -> dict:
-    """A `verified=` dict that D5 will accept for THIS bundle/environment -- no AML call."""
+    """A `verified=` dict that D5 will accept for THIS bundle/environment -- no AML call.
+
+    `bundle_digest` is what D5 matches on (`verify_image` records it at verification time);
+    `bundle_path` is evidence only, and deploy must never re-digest it -- see
+    `test_deploy_refuses_a_verified_result_whose_bundle_was_overwritten_in_place`."""
     return {
         "step": "verify_image", "status": "ok", "pass": True,
-        "metrics": {"bundle_path": bundle_path, "environment": environment},
+        "metrics": {
+            "bundle_path": bundle_path,
+            "bundle_digest": registry.content_digest(bundle_path),
+            "environment": environment,
+        },
         "expected": {}, "error": None,
     }
 
@@ -257,9 +265,9 @@ def test_deploy_refuses_on_verify_image_failure_and_creates_no_version(
     # verify_image only populates the top-level `error` on a driver-detected failure (bad
     # code, stale wheel, no status file) -- a smoke job that itself ran and reported
     # pass=False leaves `error=None` and the diagnosis in `metrics["smoke_error"]` instead.
-    # D5's contract is still "surfaces that result's own error" -- here that is None, and
-    # deploy must still refuse.
-    with pytest.raises(api.PreflightError, match="has not been proven to run this bundle"):
+    # D5's "surfaces that result's own error" therefore has to read BOTH, or the refusal
+    # says "error: None" and tells the operator nothing about why their model failed.
+    with pytest.raises(api.PreflightError, match=r"has not been proven.*predict\(\) raised"):
         api.deploy(
             bpath, name="crop-rf", registry=registry_root, environment="fsd-infer-sklearn:3",
             runner_kwargs=dict(cluster="c", root=aml_root, identity_client_id="x",
@@ -316,6 +324,64 @@ def test_deploy_refuses_a_verified_result_for_different_bundle_content(tmp_path,
     assert not fs.exists(os.path.join(registry_root, "crop-rf"))
 
 
+def test_deploy_refuses_a_verified_result_whose_bundle_was_overwritten_in_place(
+    tmp_path, importable,
+):
+    """The regression this whole check exists for. `bundle.save` overwrites in place (spec 51
+    §1 H1), so verify -> retrain -> re-save -> deploy leaves a `_result.json` that names the
+    RIGHT path holding the WRONG content. Matching on `metrics["bundle_path"]` re-digested at
+    deploy time compares the new content with itself and passes, registering "this image ran
+    this bundle" for content the image never saw. Matching on the RECORDED `bundle_digest`
+    catches it."""
+    importable("tdstale.py")
+    import tdstale
+    bpath = str(tmp_path / "demo_bundle")
+    try:
+        bundle.save(tdstale.TinyAdapter(), {}, bpath, requirements=["packaging"], verbose=False)
+        verified_old = _matching_verified(bpath, "env:6")          # verified content A
+        bundle.save(tdstale.TinyAdapter(), {}, bpath,              # retrain: same path, content B
+                    requirements=["packaging", "numpy"], verbose=False)
+    finally:
+        _purge("tdstale")
+    assert registry.content_digest(bpath) != verified_old["metrics"]["bundle_digest"]
+
+    registry_root = str(tmp_path / "registry")
+    with pytest.raises(api.PreflightError, match="stale or does not match"):
+        api.deploy(bpath, name="crop-rf", registry=registry_root, environment="env:6",
+                   verified=verified_old)
+    assert not fs.exists(os.path.join(registry_root, "crop-rf"))
+
+
+def test_deploy_reads_verified_from_a_result_json_path(tmp_path, importable):
+    """`verified=` takes the dict OR the path it was written to; a path that is not there is
+    the verb's own PreflightError, not a bare FileNotFoundError from the storage seam."""
+    bpath = _deployable_bundle(tmp_path, importable, modname="tdmodpath")
+    result_json = tmp_path / "_result.json"
+    with open(result_json, "w") as f:
+        json.dump(_matching_verified(bpath, "env:1"), f)
+    registry_root = str(tmp_path / "registry")
+
+    assert api.deploy(bpath, name="crop-rf", registry=registry_root, environment="env:1",
+                      verified=str(result_json)) == "crop-rf:1"
+
+    with pytest.raises(api.PreflightError, match="cannot read that as a verify_image"):
+        api.deploy(bpath, name="crop-rf", registry=registry_root, environment="env:1",
+                   verified=str(tmp_path / "nope.json"))
+
+
+def test_deploy_refuses_a_verified_result_that_records_no_bundle_digest(tmp_path, importable):
+    """A result that cannot say WHAT it verified is a mismatch, not a pass."""
+    bpath = _deployable_bundle(tmp_path, importable, modname="tdmod14")
+    no_digest = _matching_verified(bpath, "env:1")
+    del no_digest["metrics"]["bundle_digest"]
+    registry_root = str(tmp_path / "registry")
+
+    with pytest.raises(api.PreflightError, match="bundle_digest=None predates spec 51"):
+        api.deploy(bpath, name="crop-rf", registry=registry_root, environment="env:1",
+                   verified=no_digest)
+    assert not fs.exists(os.path.join(registry_root, "crop-rf"))
+
+
 def test_deploy_surfaces_a_matched_but_failing_verified_results_own_error(tmp_path, importable):
     """A `verified=` result that DOES match this bundle/environment but failed must still be
     honoured (D5) -- refused with ITS error, not folded into the generic mismatch message."""
@@ -323,7 +389,11 @@ def test_deploy_surfaces_a_matched_but_failing_verified_results_own_error(tmp_pa
     registry_root = str(tmp_path / "registry")
     failing = {
         "step": "verify_image", "status": "fail", "pass": False,
-        "metrics": {"bundle_path": bpath, "environment": "env:1"},
+        "metrics": {
+            "bundle_path": bpath,
+            "bundle_digest": registry.content_digest(bpath),
+            "environment": "env:1",
+        },
         "expected": {}, "error": "ModuleNotFoundError: no module named tinyadapter",
     }
 
@@ -361,6 +431,38 @@ def test_deploy_refuses_a_bundle_with_no_code_block(tmp_path):
         api.deploy(bpath, name="crop-rf", registry=registry_root, environment="env:1",
                   verified=_matching_verified(bpath, "env:1"))
     assert not fs.exists(os.path.join(registry_root, "crop-rf"))
+
+
+# --- AC1: a name that cannot round-trip through a ref is refused BEFORE verification -----
+
+
+@pytest.mark.parametrize("name", ["crop:rf", "crop@rf", "crop/rf", ".hidden", ""])
+def test_deploy_refuses_a_name_a_ref_cannot_carry(tmp_path, importable, name, monkeypatch):
+    """AC1 says the returned ref is one `run_inference` accepts unchanged. `crop/rf:1` is
+    path-shaped so `_is_ref_shaped` never resolves it; `crop:rf:1` re-splits at the wrong
+    separator. Both would publish fine and hand back an unusable ref -- refuse at the name.
+    And refuse before `verify_image`, so a bad name costs no AML node."""
+    bpath = _deployable_bundle(tmp_path, importable, modname="tdmodname")
+
+    def _forbidden(*a, **kw):
+        raise AssertionError("verify_image was called despite an unusable name")
+
+    monkeypatch.setattr(api, "_verify_image", _forbidden)
+    registry_root = str(tmp_path / "registry")
+
+    with pytest.raises(api.PreflightError, match="fsd.deploy"):
+        api.deploy(bpath, name=name, registry=registry_root, environment="env:1")
+    assert not fs.exists(registry_root)
+
+
+def test_a_deployed_ref_is_ref_shaped_so_run_inference_resolves_it(tmp_path, importable):
+    """The positive half: the string `deploy` returns really does pass the D4 shape gate."""
+    bpath = _deployable_bundle(tmp_path, importable, modname="tdmodshape")
+    registry_root = str(tmp_path / "registry")
+    ref = api.deploy(bpath, name="crop_rf-2026", registry=registry_root, environment="env:1",
+                     verified=_matching_verified(bpath, "env:1"))
+    assert api._is_ref_shaped(ref)
+    assert registry.parse_ref(ref)[0] == "crop_rf-2026"
 
 
 # --- D6: a live adapter is refused, naming fsd.model.bundle.save ------------------------
