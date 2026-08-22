@@ -1308,6 +1308,7 @@ def run_inference(
     collection_id: str = "fsd-inference",
     dt=None,
     progress: bool = True,
+    registry: str | None = None,
 ) -> InferenceResult:
     """Run a model over inference datacubes -> one COG per cube + a STAC catalog (+ optional merge).
 
@@ -1334,7 +1335,10 @@ def run_inference(
       exact ``roi``/``grid_size_km``/``scale_fact`` — reusing it for a different roi raises
       ``PreflightError`` (D1) rather than silently mixing work lists.
 
-    `model` is a live `ModelAdapter` or a **bundle path**; a bundle is required for ROI mode and for
+    `model` is a live `ModelAdapter`, a **bundle path**, or a **registry ref** (``"name:N"`` /
+    ``"name@alias"``) resolved against ``registry=`` (spec 51 D4) — a ref given without
+    ``registry=`` raises ``PreflightError`` naming the missing argument, never a silent fallback to
+    treating it as a path. A bundle is required for ROI mode and for
     ``cores>1`` (both cross a subprocess) — a live adapter is auto-saved to a temp bundle. Preflight
     (before any build) asserts bands ⊇ ``required_bands`` and ``T == n_timestamps``. Inference is
     **idempotent**: existing outputs are skipped unless ``overwrite=True`` (spec 22). ``merge``:
@@ -1381,6 +1385,7 @@ def run_inference(
             predict_batch_size=predict_batch_size, skip_nan=skip_nan, merge=merge,
             merge_crs=merge_crs, cores=cores, cubes_per_task=cubes_per_task, overwrite=overwrite,
             collection_id=collection_id, dt=dt, runner=runner, runner_kwargs=runner_kwargs,
+            registry=registry,
         )
 
     # --- pre-built cubes path (spec 18) ---
@@ -1413,6 +1418,7 @@ def run_inference(
         output_filepaths = _run_prebuilt_via_runner(
             model, pairs, output_folderpath, cores=pb_cores, cubes_per_task=pb_cubes_per_task,
             overwrite=overwrite, predict_batch_size=predict_batch_size, skip_nan=skip_nan,
+            registry=registry,
         )
     else:
         output_filepaths = _engine.run_local(
@@ -1423,10 +1429,47 @@ def run_inference(
                              merge_crs=merge_crs, geometries=geometries)
 
 
-def _ensure_bundle(model, output_folderpath, *, why):
-    """Return a bundle path for `model`, auto-saving a live adapter (needs an importable class)."""
+def _ensure_bundle(model, output_folderpath, *, why, registry=None, storage_options=None):
+    """Return a bundle path for `model`, auto-saving a live adapter (needs an importable class),
+    resolving a registry ref (`"name:N"` / `"name@alias"`), or passing a bundle path through.
+
+    `registry=` given is what tells a ref apart from a path (spec 51 D4): fsd names its inputs
+    explicitly rather than guessing from the string's shape, so `model` is only ever parsed as a
+    ref when the caller also names the registry to resolve it against. `registry=` absent means
+    `model` is used as a path/URL as before, even if it happens to look like `"name@alias"`.
+    """
     if isinstance(model, str):
+        if registry is not None:
+            from fsd.model import registry as _registry
+
+            resolved = _registry.resolve(model, registry, storage_options=storage_options)
+            return resolved.path
+        # AC6: "name@alias" without registry= must not silently become a (nonexistent) path --
+        # excluding "://" keeps this off abfss URLs, which embed "@" legitimately
+        # (`abfss://<fs>@<account>.dfs.core.windows.net/...`, storage/azure.py's own _ABFSS_RE).
+        # ":" is not checked here: it collides with URL schemes and Windows drive letters (the
+        # confusing case this spec's own design note calls out), so a "name:N"-shaped path is
+        # passed through unchanged, as it always has been.
+        if "@" in model and "://" not in model:
+            from fsd.model.registry import parse_ref
+
+            try:
+                _, sep, _ = parse_ref(model)
+            except ValueError:
+                sep = None
+            if sep == "@":
+                raise PreflightError(
+                    f"{why}: model={model!r} looks like a registry ref ('name@alias') but no "
+                    "registry= was given. Pass registry=<path or URL> to resolve it, or use a "
+                    "bundle path/URL without '@' if that string is meant literally."
+                )
         return model
+    if registry is not None:
+        raise PreflightError(
+            f"{why}: registry={registry!r} was given but model is a live adapter, not a ref "
+            "string ('name:version' or 'name@alias'). registry= only applies when model is a "
+            "ref; pass the adapter without registry= to auto-save it, or pass a ref string."
+        )
     try:
         return _bundle.save(
             model, getattr(model, "artifacts", {}) or {},
@@ -1441,11 +1484,11 @@ def _ensure_bundle(model, output_folderpath, *, why):
 
 
 def _run_prebuilt_via_runner(model, pairs, output_folderpath, *, cores, cubes_per_task,
-                             overwrite, predict_batch_size, skip_nan) -> list[str]:
+                             overwrite, predict_batch_size, skip_nan, registry=None) -> list[str]:
     """Fan out pre-built-cube inference through the Snakemake infer-only runner (spec 22)."""
     from fsd.workflows import runners as _runners
 
-    bundle_path = _ensure_bundle(model, output_folderpath, why="cores>1 inference")
+    bundle_path = _ensure_bundle(model, output_folderpath, why="cores>1 inference", registry=registry)
     run_dir = os.path.join(output_folderpath, "_infer_run")
     fs.makedirs(run_dir)
     csv_fp = os.path.join(run_dir, "input.csv")
@@ -1541,7 +1584,7 @@ def _run_inference_roi(
     catalog_filepath, startdate, enddate, mosaic_days, bands,
     grid_size_km, scale_fact, scl_mask_classes,
     predict_batch_size, skip_nan, merge, merge_crs, cores, cubes_per_task, overwrite,
-    collection_id, dt, runner="local", runner_kwargs=None,
+    collection_id, dt, runner="local", runner_kwargs=None, registry=None,
 ) -> InferenceResult:
     """ROI mode (spec 21): preflight -> tile -> per-cell setup -> runner build+infer -> STAC/merge."""
     from fsd import grid as _grid
@@ -1636,7 +1679,7 @@ def _run_inference_roi(
     fs.makedirs(output_folderpath)
 
     # model must be a bundle (it crosses a subprocess); auto-save a live adapter.
-    bundle_path = _ensure_bundle(model, output_folderpath, why="roi mode")
+    bundle_path = _ensure_bundle(model, output_folderpath, why="roi mode", registry=registry)
 
     grids_filepath = os.path.join(output_folderpath, "grids.geojson")
     # GDAL/pyogrio has no abfss:// write driver, so a blob output_folderpath makes
@@ -1757,6 +1800,7 @@ def verify_adapter(
     runner: str = "local",
     runner_kwargs: dict | None = None,
     storage=None,
+    registry: str | None = None,
 ) -> dict:
     """One real grid cell's datacube, built on `runner`, landed locally, run through the
     adapter's ACTUAL inference code -- so `output.tif` can be eyeballed in QGIS before
@@ -1775,7 +1819,9 @@ def verify_adapter(
     2. `fsd.model.verify_image` -- will the IMAGE run it? One AML node, ~40-380s.
     3. `fsd.run_inference` -- the fan-out, N nodes.
 
-    `model` is a live adapter or a bundle path. A live adapter is auto-saved by
+    `model` is a live adapter, a bundle path, or a registry ref (``"name:N"`` / ``"name@alias"``)
+    resolved against ``registry=`` (spec 51 D4) -- a ref given without ``registry=`` raises
+    ``PreflightError`` naming the missing argument. A live adapter is auto-saved by
     `_ensure_bundle` (the same call `run_inference` makes) to `export_folderpath/_bundle`
     -- a real, persistent bundle, **not** a temp one: `code=None` auto-detects and embeds
     the adapter's local module, so it is cluster-loadable, and its path comes back as
@@ -2004,7 +2050,7 @@ def verify_adapter(
         _stamp.write_stamp(stamp_filepath, identity)
 
     # --- D6: the inference leg IS infer_only_task.run_infer_only, unmodified -----------
-    bundle_path = _ensure_bundle(model, export_folderpath, why="verify_adapter")
+    bundle_path = _ensure_bundle(model, export_folderpath, why="verify_adapter", registry=registry)
     output_filepath = os.path.join(export_folderpath, "output.tif")
     infer_csv_filepath = os.path.join(export_folderpath, "_infer_input.csv")
     with fs.open(infer_csv_filepath, "w") as f:
