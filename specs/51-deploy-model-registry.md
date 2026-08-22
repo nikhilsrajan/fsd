@@ -169,11 +169,38 @@ QA is testing" (§8). fsd adopts the destination rather than repeating the journ
 The cost is honest and is §5's first risk: an alias makes a run's meaning time-dependent. D7's
 recorded resolution is the mitigation.
 
-### D4 — resolution happens at `_ensure_bundle`, the one chokepoint that already exists
+### D4 — resolution is one idempotent step, applied wherever `model` is first read as a path
 
-`api._ensure_bundle(model, ...)` is already the single place that turns "whatever the caller passed"
-into a bundle path — `run_inference`, `verify_adapter` and the `cores>1` fan-out all go through it.
-Resolution is added *there*, so no verb grows a branch:
+> **Amended 2026-08-22 (user, at step-1 review).** The original heading read "resolution happens at
+> `_ensure_bundle`, the one chokepoint that already exists", and its premise was **wrong**:
+> `_ensure_bundle` is the one place that turns `model` into a bundle path *for a subprocess*, but
+> it is **not** the first place a verb reads `model` as a path. `api._model_spec` — which reads
+> `bundle.json` to preflight `required_bands`/`n_timestamps` — runs **before** it in both
+> `run_inference` (`api.py`, pre-dispatch) and `verify_adapter`, and the `cores=1` pre-built-cubes
+> path hands `model` straight to `engine.run_local` without calling `_ensure_bundle` at all. Step 1
+> implemented resolution only at `_ensure_bundle` and was green in unit tests, yet
+> `run_inference(model="crop-rf@champion", registry=…)` still died with
+> `FileNotFoundError: crop-rf@champion/bundle.json` — proven by running it, not by reading it.
+> The fix below is what the user signed off ("Option A") at review.
+
+Resolution is therefore **one helper, `api._resolve_model_ref(model, registry, *, why)`, that is
+idempotent and shape-gated**, called at *every* site that reads `model` as a path — today
+`_model_spec`'s two call sites and `_ensure_bundle`:
+
+- **shape-gated:** a string is ref-shaped only if it carries **no path separator** (`/` or `\`) and
+  parses as `name:value` / `name@value`. That is what keeps resolution off `abfss://<fs>@<account>…`
+  (which embeds `@` legitimately), off `s3://`/`https://`, and off local paths that merely contain
+  `@` (`/data/rf@2026/bundle`). A bare `rf@v1` *is* ambiguous and is treated as a ref; `./rf@v1`
+  says "path, literally".
+- **idempotent:** an already-resolved version path is not ref-shaped, so a second call passes it
+  through untouched. This is the point of Option A — a fourth call site added later cannot
+  reintroduce the bug above by running before the resolving one.
+- The cost, accepted: `registry=` given alongside a real *path* is silently ignored rather than
+  refused, because "ignore what does not apply" is what makes repeat calls safe. `registry=` given
+  alongside a **live adapter** is still a `PreflightError` (nothing to resolve, and the combination
+  can only be a mistake).
+
+The behaviour table is unchanged:
 
 | `model=` | behaviour |
 |---|---|
@@ -345,7 +372,10 @@ and Harbor all implement (§8), so that backend is the one with a genuine anti-l
 5. `deploy(..., alias="champion")` writes `_aliases.json`; re-deploying with the same alias
    repoints it without touching either version (D3).
 6. `_ensure_bundle` resolves `"name@alias"` and `"name@vN"` when `registry=` is given; a `name@ref`
-   **without** `registry=` raises `PreflightError` naming the missing argument (D4).
+   **without** `registry=` raises `PreflightError` naming the missing argument (D4). Asserted
+   **through the public verbs**, not only on the helper: `run_inference(model=ref, registry=…)` and
+   `verify_adapter(model=ref, registry=…)` must get past `_model_spec`'s `bundle.json` read, which
+   is what the amended D4 records as the failure a helper-only test cannot see.
 7. `deploy` runs `verify_image` and **refuses** on `pass=False`, surfacing that result's own `error`
    (D5). No version directory is created on refusal.
 8. `deploy(verified=<prior result>)` skips re-verification **only** when the result's bundle digest

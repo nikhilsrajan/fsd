@@ -37,6 +37,7 @@ from fsd.catalog.catalog import filter_gdf as _filter_gdf
 from fsd.datacube import flatten as _flatten
 from fsd.model import bundle as _bundle
 from fsd.model import engine as _engine
+from fsd.model import registry as registry_mod
 from fsd.model.features import apply_features as _apply_features
 from fsd.model.features import resolve_aggregate as _resolve_aggregate
 from fsd.raster.cog import to_cog as _to_cog
@@ -1021,6 +1022,63 @@ def _apply_training_features(export_folderpath, metadata, *, adapter, feature_se
     return feature_bands
 
 
+def _is_ref_shaped(model: str) -> bool:
+    """Is this string shaped like a registry ref (`"name:N"` / `"name@alias"`)? A ref's two
+    halves are a bare name and a bare version/alias, so **anything carrying a path separator is
+    a path**, never a ref -- which is what keeps every URL out (`abfss://<fs>@<account>...`,
+    which embeds "@" legitimately, `s3://`, `https://`) along with local paths that happen to
+    contain "@" (`/data/rf@2026/`). A bare `rf@v1` in the cwd is genuinely indistinguishable
+    from a ref and is treated as one; `./rf@v1` says "path, literally"."""
+    if "/" in model or "\\" in model:
+        return False
+    try:
+        registry_mod.parse_ref(model)
+    except ValueError:
+        return False
+    return True
+
+
+def _resolve_model_ref(model, registry, *, why):
+    """`model` -> the same thing with any registry ref replaced by its version path (spec 51 D4).
+
+    **Idempotent and shape-gated, deliberately.** Two call sites read `model` as a path --
+    `_model_spec` (which reads `bundle.json` to preflight bands/T) and `_ensure_bundle` (which
+    hands a path to a subprocess) -- and `_model_spec` runs FIRST, so resolving only at
+    `_ensure_bundle` left a ref failing preflight before it was ever resolved. Rather than order
+    the two, this is safe to call at both: a string that is not ref-shaped (an already-resolved
+    path included) comes back untouched, so a third call site cannot reintroduce that bug.
+
+    `registry=` absent + a `"name@alias"`-shaped string is a `PreflightError` naming the missing
+    argument, never a silent fallback to treating it as a path (AC6). `":"` is never sniffed --
+    it collides with URL schemes and Windows drive letters -- so a `"name:N"`-shaped path with no
+    `registry=` passes through unchanged, as it always has.
+    """
+    if not isinstance(model, str):
+        if registry is not None:
+            raise PreflightError(
+                f"{why}: registry={registry!r} was given but model is a live adapter, not a ref "
+                "string ('name:version' or 'name@alias'). registry= only applies when model is a "
+                "ref; pass the adapter without registry= to auto-save it, or pass a ref string."
+            )
+        return model
+    if not _is_ref_shaped(model):
+        return model
+    if registry is not None:
+        try:
+            return registry_mod.resolve(model, registry).path
+        except ValueError as exc:
+            raise PreflightError(f"{why}: cannot resolve model={model!r} against "
+                                 f"registry={registry!r} -- {exc}") from exc
+    if registry_mod.parse_ref(model)[1] == "@":
+        raise PreflightError(
+            f"{why}: model={model!r} looks like a registry ref ('name@alias') but no "
+            "registry= was given. Pass registry=<path or URL> to resolve it, or write "
+            f"the path with a directory component (e.g. './{model}') if that string is "
+            "meant literally."
+        )
+    return model
+
+
 def _model_spec(model) -> dict:
     """Read the declared spec (required_bands, n_timestamps, output_*) from a live adapter or,
     for a bundle path, from `bundle.json` alone (model-free — no import, no model load)."""
@@ -1308,6 +1366,7 @@ def run_inference(
     collection_id: str = "fsd-inference",
     dt=None,
     progress: bool = True,
+    registry: str | None = None,
 ) -> InferenceResult:
     """Run a model over inference datacubes -> one COG per cube + a STAC catalog (+ optional merge).
 
@@ -1334,7 +1393,10 @@ def run_inference(
       exact ``roi``/``grid_size_km``/``scale_fact`` — reusing it for a different roi raises
       ``PreflightError`` (D1) rather than silently mixing work lists.
 
-    `model` is a live `ModelAdapter` or a **bundle path**; a bundle is required for ROI mode and for
+    `model` is a live `ModelAdapter`, a **bundle path**, or a **registry ref** (``"name:N"`` /
+    ``"name@alias"``) resolved against ``registry=`` (spec 51 D4) — a ref given without
+    ``registry=`` raises ``PreflightError`` naming the missing argument, never a silent fallback to
+    treating it as a path. A bundle is required for ROI mode and for
     ``cores>1`` (both cross a subprocess) — a live adapter is auto-saved to a temp bundle. Preflight
     (before any build) asserts bands ⊇ ``required_bands`` and ``T == n_timestamps``. Inference is
     **idempotent**: existing outputs are skipped unless ``overwrite=True`` (spec 22). ``merge``:
@@ -1370,6 +1432,8 @@ def run_inference(
     if not roi_mode and inference_datacubes is None:
         errs.append("pass roi= (ROI mode) or inference_datacubes= (pre-built cubes).")
 
+    # a ref must become a version path BEFORE `_model_spec` reads `bundle.json` off it (D4).
+    model = _resolve_model_ref(model, registry, why="run_inference")
     spec = _model_spec(model)
 
     if roi_mode:
@@ -1381,6 +1445,7 @@ def run_inference(
             predict_batch_size=predict_batch_size, skip_nan=skip_nan, merge=merge,
             merge_crs=merge_crs, cores=cores, cubes_per_task=cubes_per_task, overwrite=overwrite,
             collection_id=collection_id, dt=dt, runner=runner, runner_kwargs=runner_kwargs,
+            registry=registry,
         )
 
     # --- pre-built cubes path (spec 18) ---
@@ -1413,6 +1478,7 @@ def run_inference(
         output_filepaths = _run_prebuilt_via_runner(
             model, pairs, output_folderpath, cores=pb_cores, cubes_per_task=pb_cubes_per_task,
             overwrite=overwrite, predict_batch_size=predict_batch_size, skip_nan=skip_nan,
+            registry=registry,
         )
     else:
         output_filepaths = _engine.run_local(
@@ -1423,8 +1489,15 @@ def run_inference(
                              merge_crs=merge_crs, geometries=geometries)
 
 
-def _ensure_bundle(model, output_folderpath, *, why):
-    """Return a bundle path for `model`, auto-saving a live adapter (needs an importable class)."""
+def _ensure_bundle(model, output_folderpath, *, why, registry=None):
+    """Return a bundle path for `model`, auto-saving a live adapter (needs an importable class),
+    resolving a registry ref (`"name:N"` / `"name@alias"`), or passing a bundle path through.
+
+    Ref resolution is `_resolve_model_ref` (spec 51 D4) -- called here so a direct caller of
+    `_ensure_bundle` resolves too, and called again at `_model_spec`'s call sites, which read a
+    bundle path FIRST; it is idempotent, so both are safe.
+    """
+    model = _resolve_model_ref(model, registry, why=why)
     if isinstance(model, str):
         return model
     try:
@@ -1441,11 +1514,11 @@ def _ensure_bundle(model, output_folderpath, *, why):
 
 
 def _run_prebuilt_via_runner(model, pairs, output_folderpath, *, cores, cubes_per_task,
-                             overwrite, predict_batch_size, skip_nan) -> list[str]:
+                             overwrite, predict_batch_size, skip_nan, registry=None) -> list[str]:
     """Fan out pre-built-cube inference through the Snakemake infer-only runner (spec 22)."""
     from fsd.workflows import runners as _runners
 
-    bundle_path = _ensure_bundle(model, output_folderpath, why="cores>1 inference")
+    bundle_path = _ensure_bundle(model, output_folderpath, why="cores>1 inference", registry=registry)
     run_dir = os.path.join(output_folderpath, "_infer_run")
     fs.makedirs(run_dir)
     csv_fp = os.path.join(run_dir, "input.csv")
@@ -1541,7 +1614,7 @@ def _run_inference_roi(
     catalog_filepath, startdate, enddate, mosaic_days, bands,
     grid_size_km, scale_fact, scl_mask_classes,
     predict_batch_size, skip_nan, merge, merge_crs, cores, cubes_per_task, overwrite,
-    collection_id, dt, runner="local", runner_kwargs=None,
+    collection_id, dt, runner="local", runner_kwargs=None, registry=None,
 ) -> InferenceResult:
     """ROI mode (spec 21): preflight -> tile -> per-cell setup -> runner build+infer -> STAC/merge."""
     from fsd import grid as _grid
@@ -1636,7 +1709,7 @@ def _run_inference_roi(
     fs.makedirs(output_folderpath)
 
     # model must be a bundle (it crosses a subprocess); auto-save a live adapter.
-    bundle_path = _ensure_bundle(model, output_folderpath, why="roi mode")
+    bundle_path = _ensure_bundle(model, output_folderpath, why="roi mode", registry=registry)
 
     grids_filepath = os.path.join(output_folderpath, "grids.geojson")
     # GDAL/pyogrio has no abfss:// write driver, so a blob output_folderpath makes
@@ -1757,6 +1830,7 @@ def verify_adapter(
     runner: str = "local",
     runner_kwargs: dict | None = None,
     storage=None,
+    registry: str | None = None,
 ) -> dict:
     """One real grid cell's datacube, built on `runner`, landed locally, run through the
     adapter's ACTUAL inference code -- so `output.tif` can be eyeballed in QGIS before
@@ -1775,7 +1849,9 @@ def verify_adapter(
     2. `fsd.model.verify_image` -- will the IMAGE run it? One AML node, ~40-380s.
     3. `fsd.run_inference` -- the fan-out, N nodes.
 
-    `model` is a live adapter or a bundle path. A live adapter is auto-saved by
+    `model` is a live adapter, a bundle path, or a registry ref (``"name:N"`` / ``"name@alias"``)
+    resolved against ``registry=`` (spec 51 D4) -- a ref given without ``registry=`` raises
+    ``PreflightError`` naming the missing argument. A live adapter is auto-saved by
     `_ensure_bundle` (the same call `run_inference` makes) to `export_folderpath/_bundle`
     -- a real, persistent bundle, **not** a temp one: `code=None` auto-detects and embeds
     the adapter's local module, so it is cluster-loadable, and its path comes back as
@@ -1840,6 +1916,8 @@ def verify_adapter(
     if runner == "aml" and not (runner_kwargs or {}).get("root"):
         errs.append("runner_kwargs['root'] (the blob working root) is required for runner='aml'.")
 
+    # as in `run_inference`: resolve before `_model_spec` reads `bundle.json` off it (D4).
+    model = _resolve_model_ref(model, registry, why="verify_adapter")
     spec = _model_spec(model)
     required = set(spec.get("required_bands") or [])
     missing = required - set(bands)
@@ -2004,7 +2082,7 @@ def verify_adapter(
         _stamp.write_stamp(stamp_filepath, identity)
 
     # --- D6: the inference leg IS infer_only_task.run_infer_only, unmodified -----------
-    bundle_path = _ensure_bundle(model, export_folderpath, why="verify_adapter")
+    bundle_path = _ensure_bundle(model, export_folderpath, why="verify_adapter", registry=registry)
     output_filepath = os.path.join(export_folderpath, "output.tif")
     infer_csv_filepath = os.path.join(export_folderpath, "_infer_input.csv")
     with fs.open(infer_csv_filepath, "w") as f:
