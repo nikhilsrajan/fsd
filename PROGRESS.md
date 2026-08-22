@@ -10,9 +10,10 @@ merged into `main`** — the Opus review found and fixed a real defect: `storage
 directory and **returned the winner's version number**. Fixed at the seam (`fs.rename` is now a
 real `os.rename` locally) plus a re-digest of what actually landed, and `_aliases.json` is now
 written by rename too. Suite **890 passed / 91 skipped / 1 pre-existing failure**
-(`planetary_computer` absent), ruff clean. `main` is **AHEAD of `origin/main` — the push is the
-user's to make**. **NEXT: spec 51 §9 steps 1-3** (`_ensure_bundle` resolution → `deploy` →
-the `[model]` line). See the 2026-08-22 (later still) entry below.)_
+(`planetary_computer` absent), ruff clean. `main` @ `2b5ae4b`, **PUSHED — level with
+`origin/main`, nothing unpushed**, tree clean, no worktrees. **NEXT: spec 51 §9 steps 1-3**
+(`_ensure_bundle` resolution → `deploy` → the `[model]` line). See the 2026-08-22 (later still)
+entry below.)_
 
 _Previously: 2026-08-22 (**spec 50 fully landed + PUSHED; spec 51 (P6 `deploy`) SIGNED OFF, not
 implemented** — `main` @ `6e163c5`, **level with `origin/main`, nothing unpushed**, tree clean.
@@ -163,8 +164,8 @@ items are the rslearn Plan B/C decision and spec 43 (`docs/history.md`, deferred
 Opus `/effort high` review of `c0290fb` against spec 51 D1-D3/D9/D11 + AC1-5/11/13. Verdict on the
 three flagged calls: **1 confirmed, 1 confirmed, 1 overturned and fixed** — plus one defect of the
 same class the review found on its own. Suite **890 passed / 91 skipped / 1 pre-existing failure**,
-ruff clean. Merged `--no-ff` into `main`; worktree pruned. **`main` is ahead of `origin/main` —
-the push is the user's call.**
+ruff clean. Merged `--no-ff` into `main`; worktree pruned; **pushed at the user's request —
+`main` @ `2b5ae4b` is level with `origin/main`.**
 
 **Call 3 OVERTURNED — and the consequence was worse than the handoff described.** Reproduced
 against the real code, not reasoned about: when a competitor completes `v1` in the TOCTOU window,
