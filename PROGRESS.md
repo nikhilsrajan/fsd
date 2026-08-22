@@ -5,7 +5,8 @@
 state plus the most recent entry, not the log.
 
 _Last updated: 2026-08-22 (**spec 51 §9 step 1 (`_ensure_bundle` ref resolution) implemented and
-REVIEWED** on `worktree-spec51-step1-ensure-bundle`, **not merged, not pushed**. The Opus review
+REVIEWED**, merged into `main` (`--no-ff`) — **`main` is 4 ahead of `origin/main`, NOT pushed
+(push not asked for)**. The Opus review
 found a real defect the unit tests could not see: resolution sat at `_ensure_bundle`, but
 `api._model_spec` reads `bundle.json` off `model` **first** in both `run_inference` and
 `verify_adapter` (and `cores=1` pre-built cubes never calls `_ensure_bundle` at all), so
@@ -19,7 +20,8 @@ path passes through, so a later call site cannot reintroduce the bug. Also tight
 wrapped `resolve` failures as `PreflightError`, dropped the dead `storage_options=`. **Open, not
 yet filed: a URL registry has no credentials** — `run_inference`/`verify_adapter` never call
 `configure_storage`, so `registry="abfss://…"` resolves anonymously (AC12 unmet; step-2 work).
-**NEXT: merge this branch, then spec 51 §9 steps 2-3.** Previous entry: step 0.)_
+Suite **904 passed / 91 skipped / 1 pre-existing failure**, ruff clean.
+**NEXT: push `main` + prune the worktree, then spec 51 §9 steps 2-3.** Previous entry: step 0.)_
 
 _Previously: 2026-08-22 (**spec 51 §9 step 0 (`fsd.model.registry`) implemented, REVIEWED and
 merged into `main`** — the Opus review found and fixed a real defect: `storage.fs.rename` was
