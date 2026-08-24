@@ -4,7 +4,87 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-24 (**spec 51 §9 step 3 (the `[model]` print line, D7/AC10's print half) —
+_Last updated: 2026-08-24 (**SPEC 52 IMPLEMENTED (Sonnet `/effort medium`) and REVIEWED by Opus
+`/effort high` — four findings, all fixed in-branch; see the "Opus review" block below and spec 52
+§10.** Work is on worktree branch `worktree-spec52-registry-on-blob` (at `fsd/.claude/worktrees/`),
+based on `main` @ `7c3811c`.
+
+**Step 0 (registry core, D1/D2/D3/D5) — `fsd/model/registry.py`.** `_write_new_version` writes a
+version's files straight into `v<N>/` (no staging prefix, no directory rename), re-digests what
+landed, and writes `v<N>/_complete.json` last. `_list_versions` is now marker-aware, with a legacy
+carve-out (`bundle.json` present, no marker) for pre-spec content. The retry loop is bounded at
+`_MAX_PUBLISH_ATTEMPTS = 16` and retries only a genuine version collision.
+
+**A real D5-vs-AC2 conflict surfaced during implementation, not guessed around** (MEMORY
+`verify-the-primitive-a-spec-cites`-flavored: check it, don't code around it). D5's legacy rule
+(`bundle.json` present + no marker ⇒ complete) and AC2 (an interrupted publish must be invisible to
+`_list_versions`) contradict whenever `bundle.json` lands before the interruption — confirmed with
+a failing test, since `bundle.json` sorts alphabetically early among a bundle's files. Flagged to
+the Opus session; **adjudicated same-day, spec amended** (see spec 52 §3 D5's "Amendment" block and
+AC2's rewritten text): `_write_new_version` now writes `bundle.json` **last** among the content
+files, so an interruption during the write (where nearly all the risk is) leaves no manifest and
+is genuinely reusable; the one-object-write residual window (after the manifest, before the
+marker) is left to the legacy reading, on the reasoning that misreading real legacy content as
+incomplete can destroy a published version, while misreading a rare interrupted version as
+complete only strands a folder (a cost §5 already accepts). Same review pass found `migrate`
+never wrote `_complete.json` at all — fixed (new AC5a), so migrated content no longer depends on
+the legacy carve-out to be visible.
+
+**Step 1 (verb wiring, D4) — `fsd/api.py` + `fsd/model/verify_image.py`.** `deploy` drops
+`storage_allowed=False` (accepts `storage="azure"` now). `deploy`, `run_inference`,
+`verify_adapter` each call `configure_storage(storage)` right after preflight's cheap validation
+starts, before the first storage touch (`_resolve_model_ref`/`fs.read_geo`/`_bundle.read_spec`).
+`verify_image` gained a `storage=` kwarg it never had (#86 — it previously could not authenticate
+at all) plus the same call, placed after its own cheap arg checks.
+
+**Step 2 (end-to-end, AC8) — spec 51's AC12 unblocked.** `test_registry.py`'s skipped
+`test_publish_resolve_round_trip_against_a_url_registry` is unskipped (D1 removed the hang it was
+blocked on). Added `test_deploy.py::test_deploy_set_alias_resolve_run_inference_against_a_url_registry`
+for the fuller chain AC8 actually names (`deploy` → `set_alias` → `resolve` → `run_inference`), and
+a dedicated timeout-asserted test for AC1's literal wording (a background thread + `join(timeout=10)`,
+no new test dependency).
+
+**Opus review, 2026-08-24 — four findings, all fixed in-branch. The D5/AC2 amendment itself was
+re-derived independently and STANDS** (the handoff was right to ask for that; the one correction to
+it, #4 below, does not change its conclusion). Full account: spec 52 §10.
+(1) **`run_inference`/`verify_adapter` turned a preflight error into a bare `ValueError`.** D4's
+`configure_storage` call genuinely had to precede `_raise_preflight` — but `configure_storage`
+*raises* on an unsupported backend, so `storage="s3"` escaped as `ValueError` and discarded every
+other accumulated preflight error. And the side effect the handoff reasoned was absent is real: a
+call the seam *rejects* (`run_inference(storage="azure")` on the pre-built-cubes path) still flipped
+the process to authenticated adlfs first — the exact accident D4 exists to remove. The seam check
+now raises on its own first, matching `deploy`. (2) **Publishing into an incomplete version
+inherited the previous attempt's leftovers.** AC2 reuses an unmarked `v<N>` in place, and
+`content_digest` covers only *manifest-declared* files, so an undeclared artifact or `code/*.py`
+survived into the version and was then marked complete — and `bundle.load` puts `code/` on
+`sys.path`, so a stale module there is importable by the next adapter. `_write_new_version` now
+`_discard`s an incomplete target before writing; stage-then-rename got a clean directory for free.
+(3) **Four branches were unpinned — mutation testing found them, reading did not.** Deleting the
+idempotent-collision `return`, disabling the landed-digest guard, and replacing D5's legacy check
+with `return False` each left the suite green; the two rewritten "race" tests cannot reach
+`_write_new_version`'s collision branch at all (their competitor publishes *before* `_list_versions`
+runs). So the narrowing flagged at handoff did lose AC4's substance and left **AC5 with no test at
+all**. Five tests added, each verified to kill its mutation. (4) **The residual window is not "one
+object write wide"** — `content_digest(target)` re-reads the whole bundle inside it. Conclusion
+unaffected and actually stronger: everything in that window is post-write, so a version stranded
+there holds complete content; it is unverified, not partial.
+Suite **956 passed / 93 skipped**, ruff clean.
+
+**Run-book written, not run** (Claude never runs pipeline/networked scripts): `runbooks/52-registry-on-blob.md`
+— publish v1/v2 to a real `abfss://` registry, repoint an alias, run inference off the ref,
+confirm a re-publish of identical content is a no-op. Green tests do not finish this spec (MEMORY
+`real-run-beats-review`) — this is the part they cannot cover.
+
+**NEXT:** hand back to Opus `/effort high` for review (spec, tests, and the D5/AC2 amendment
+itself), then the user runs the run-book and pastes back its five printed results.
+
+**⚠️ `main` has an uncommitted `PROGRESS.md` edit that is now WRONG** — it records the blob registry
+as "a documented LIMITATION, not scheduled work", which the user reversed the same day. Discard it
+(`git checkout PROGRESS.md` on `main`) before merging this branch. `main` also carries an
+uncommitted one-character docstring change in `src/fsd/model/adapter.py` (an en-dash became a
+hyphen) that Claude did not make._
+
+_Previously: 2026-08-24 (**spec 51 §9 step 3 (the `[model]` print line, D7/AC10's print half) —
 IMPLEMENTED (Sonnet `/effort medium`) and REVIEWED by Opus `/effort high`: three findings, all
 fixed in-branch — see CHANGES.md's "Opus review" block.** Work is on worktree branch
 `spec51-step3-model-line`, based on `main` @ `88e8f11` (steps 0-2 merged + pushed). This is the

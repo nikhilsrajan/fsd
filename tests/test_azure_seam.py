@@ -138,8 +138,127 @@ def test_api_check_local_seams_runner_still_rejected():
     assert errs and "batch" in errs[0]
 
 
+# --- spec 52 AC6/AC7: deploy/run_inference/verify_adapter/verify_image each authenticate ----
+
+
+def test_deploy_calls_configure_storage_before_its_first_storage_access(_clean_fsspec_conf):
+    """AC6. `deploy` no longer refuses `storage='azure'` (D4 removes the old
+    `storage_allowed=False` gate); it must set up authenticated adlfs before it ever touches
+    `bundle_path` or `registry`. A bogus `name` (caught by `check_name`, after the
+    `configure_storage` call this spec adds but before any storage read) is the cheapest way
+    to reach a guaranteed raise without needing a real bundle."""
+    os.environ.pop("FSSPEC_ABFSS_ANON", None)
+    from fsd import api
+
+    with pytest.raises(api.PreflightError):
+        api.deploy(
+            "/nonexistent/bundle", name="bad/name", registry="/nonexistent/registry",
+            environment="fsd-infer-sklearn:1", storage="azure",
+        )
+    assert os.environ["FSSPEC_ABFSS_ANON"] == "false"
+
+
+def test_run_inference_calls_configure_storage_before_its_first_storage_access(
+    _clean_fsspec_conf,
+):
+    """AC7, in a process where no other verb has run first (the fixture resets the env).
+
+    Driven through **ROI mode on the AML runner**, the one `run_inference` shape where
+    `storage="azure"` is actually allowed (`storage_allowed=(roi_mode and runner == "aml")`).
+    Opus review, 2026-08-24: the first version of this test used the pre-built-cubes path,
+    where the seam check *rejects* `storage="azure"` outright -- so it asserted that a call
+    being refused for using blob storage had nonetheless flipped this process to
+    authenticated adlfs, which is the global side effect D4 exists to stop, not the
+    behavior D4 asks for. Storage is now configured only on a call the seam accepts."""
+    os.environ.pop("FSSPEC_ABFSS_ANON", None)
+    from fsd import api
+
+    with pytest.raises(Exception):  # noqa: B017 - any failure proves nothing else ran first
+        api.run_inference(
+            "/nonexistent/model.bundle", roi="/nonexistent/roi.geojson",
+            output_folderpath="/nonexistent/out", storage="azure", runner="aml",
+        )
+    assert os.environ["FSSPEC_ABFSS_ANON"] == "false"
+
+
+def test_run_inference_rejects_a_bad_backend_as_preflight_not_a_bare_value_error(
+    _clean_fsspec_conf,
+):
+    """Opus review, 2026-08-24. `_configure_storage` **raises** `ValueError` on an
+    unsupported backend, so calling it ahead of `_raise_preflight` replaced this verb's
+    collected `PreflightError` with a bare `ValueError` and threw away every other
+    preflight error alongside it. The seam check now raises on its own first, matching
+    `deploy`. Also pins the no-side-effect half: a refused call must not leave this
+    process switched to authenticated adlfs."""
+    os.environ.pop("FSSPEC_ABFSS_ANON", None)
+    from fsd import api
+
+    with pytest.raises(api.PreflightError, match="s3"):
+        api.run_inference(
+            "/nonexistent/model.bundle", roi="/nonexistent/roi.geojson",
+            output_folderpath=None, storage="s3", runner="aml",
+        )
+    assert "FSSPEC_ABFSS_ANON" not in os.environ
+
+
+def test_run_inference_refusing_azure_here_does_not_configure_storage(_clean_fsspec_conf):
+    """The pre-built-cubes path refuses `storage="azure"` (inference-on-blob is gated to
+    ROI+AML). Refusing it must also leave the process's fsspec state alone -- configuring
+    adlfs as a side effect of a rejected call is exactly the accident D4 removes."""
+    os.environ.pop("FSSPEC_ABFSS_ANON", None)
+    from fsd import api
+
+    with pytest.raises(api.PreflightError, match="not supported here yet"):
+        api.run_inference(
+            "/nonexistent/model.bundle", inference_datacubes="/nonexistent/cubes",
+            output_folderpath="/nonexistent/out", storage="azure",
+        )
+    assert "FSSPEC_ABFSS_ANON" not in os.environ
+
+
+def test_verify_adapter_calls_configure_storage_before_its_first_storage_access(
+    _clean_fsspec_conf,
+):
+    """AC7, in a process where no other verb has run first (the fixture resets the env).
+    `runner="aml"` because that is the shape where `verify_adapter` allows non-local
+    storage at all (`storage_allowed=(runner == "aml")`) -- see the `run_inference`
+    counterpart above for why a seam-rejected call must no longer configure storage."""
+    os.environ.pop("FSSPEC_ABFSS_ANON", None)
+    from fsd import api
+
+    with pytest.raises(Exception):  # noqa: B017 - any failure proves nothing else ran first
+        api.verify_adapter(
+            "/nonexistent/model.bundle", roi="/nonexistent/roi.geojson",
+            catalog_filepath="/nonexistent/catalog.parquet",
+            startdate=None, enddate=None, mosaic_days=None, bands=None,
+            export_folderpath="/nonexistent/export", storage="azure", runner="aml",
+        )
+    assert os.environ["FSSPEC_ABFSS_ANON"] == "false"
+
+
+def test_verify_image_calls_configure_storage_before_its_first_storage_access(
+    _clean_fsspec_conf,
+):
+    """AC7, in a process where no other verb has run first (the fixture resets the env).
+    `bundle_path` does not exist, so `verify_image` catches the read failure internally
+    (spec 24: always a shaped result, never a bare traceback) and returns `pass: False`
+    rather than raising -- either way, `configure_storage` must already have run."""
+    os.environ.pop("FSSPEC_ABFSS_ANON", None)
+    from fsd.model.verify_image import verify_image
+
+    result = verify_image(
+        "/nonexistent/bundle", environment="fsd-infer-sklearn:1", runner="aml",
+        runner_kwargs={"cluster": "c", "root": "r", "identity_client_id": "i"},
+        storage="azure",
+    )
+    assert result["pass"] is False
+    assert os.environ["FSSPEC_ABFSS_ANON"] == "false"
+
+
 def test_api_check_local_seams_storage_allowed_false_rejects_azure():
-    """run_inference/deploy pass storage_allowed=False — inference-on-blob stays out of P1."""
+    """`run_inference`'s pre-built-cubes / local-ROI paths pass storage_allowed=False --
+    inference-on-blob is spec 38 P4 scope, gated separately from `deploy`'s registry-on-blob
+    gate, which spec 52 D4 removed."""
     from fsd import api
 
     errs = api._check_local_seams("local", "azure", storage_allowed=False)

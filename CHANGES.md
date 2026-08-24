@@ -4,6 +4,64 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## The registry publishes in place, no directory rename (spec 52, 2026-08-24)
+
+- **`registry._write_new_version` no longer stages then renames.** It writes a version's files
+  straight into `v<N>/`, re-digests what landed against the caller's digest, and writes
+  `v<N>/_complete.json` last — a single-object write is atomic on every backend fsd targets, so
+  that marker is the all-or-nothing moment the directory rename used to provide. This fixes
+  [issue #88](https://github.com/nikhilsrajan/fsd/issues/88): `storage.fs.rename`'s directory move
+  falls back to fsspec's copy-then-`rm` on any non-local backend, which is not atomic, so the old
+  retry loop misread that deterministic failure as "lost a race" and looped forever. No file in
+  `storage/fs.py` changed — `registry.py:394` was the only directory rename in the codebase.
+- **`_list_versions` is now marker-aware**, with a legacy carve-out: a `v<N>` directory with
+  `bundle.json` but no marker still counts as complete, so a version published before this spec
+  (the old stage-then-rename protocol never left a partial `vN`) keeps resolving and keeps
+  migrating. `migrate` now writes `_complete.json` too, so migrated content no longer depends on
+  that carve-out to stay visible.
+- **A spec amendment landed mid-implementation, not silently coded around:** the legacy rule as
+  first written (D5) contradicted the "an interrupted publish is invisible" guarantee (AC2)
+  whenever `bundle.json` had already landed — which is most interruptions, since `bundle.json`
+  sorts alphabetically early among a bundle's files. `_write_new_version` now writes `bundle.json`
+  **last**, so an interruption during the write leaves no manifest at all; the one-object-write
+  residual window is deliberately resolved in favor of the legacy reading (destroying a real
+  published version is worse than stranding an unmarked folder, a cost spec 52 §5 already
+  accepts). See `specs/52-registry-on-blob.md` §3 D5's amendment block for the full reasoning.
+- **`deploy`, `run_inference`, `verify_adapter`, `verify_image` each call `configure_storage`
+  now** — fixing [issue #86](https://github.com/nikhilsrajan/fsd/issues/86): a blob registry was
+  read/written anonymously, because authentication worked only when some *earlier* verb in the
+  same process happened to set a process-global fsspec flag as a side effect. `deploy` also drops
+  its `storage_allowed=False` gate (a blob registry can now actually work); `verify_image` gained
+  a `storage=` kwarg it never had.
+
+**Opus review, 2026-08-24 — two behavior fixes on top of the above** (full account:
+`specs/52-registry-on-blob.md` §10):
+
+- **A bad `storage=` backend is a `PreflightError` again, not a bare `ValueError`.** D4's
+  `configure_storage` call had to sit *before* `run_inference`/`verify_adapter`'s
+  `_raise_preflight` (both touch storage earlier than the raise point) — but `configure_storage`
+  itself raises on an unsupported backend, so `storage="s3"` escaped as a `ValueError` and took
+  every other accumulated preflight error with it. The seam check now raises on its own first, as
+  `deploy` already did. Second half of the same fix: a call the seam *rejects* no longer switches
+  the process to authenticated adlfs on its way to being rejected — that global side effect is the
+  accident D4 exists to remove. `verify_adapter`'s date errors are no longer reported alongside
+  seam errors; a seam misconfiguration now raises by itself.
+- **Reusing an interrupted version clears it first.** AC2 has the next `publish` write into an
+  unmarked `v<N>` in place, and the re-digest cannot police what it inherits — `content_digest`
+  covers only *manifest-declared* files, so an artifact or a `code/*.py` the new bundle does not
+  declare survived into the version and was then marked complete. `bundle.load` puts a version's
+  `code/` on `sys.path`, so a stale module there is importable by the adapter that lands next.
+  `_write_new_version` now `_discard`s an existing incomplete target before writing (best-effort,
+  like every other `_discard`). The old stage-then-rename never had this problem — each attempt
+  got a fresh staging prefix.
+- **Five tests added for branches mutation testing showed were unpinned** — the
+  idempotent-collision return, the collision-with-different-content advance, the landed-digest
+  guard, D5's legacy carve-out (**which had no test at all**), and the leftovers fix above. Each
+  was verified to fail against a mutation of the line it covers. The two "race" tests rewritten
+  during implementation cannot reach `_write_new_version`'s collision branch — their competitor
+  publishes before `_list_versions` runs, so allocation starts past it — so the new pair simulates
+  the stale listing that *is* the race.
+
 ## A resolved model ref announces itself before dispatch (spec 51 step 3, 2026-08-24)
 
 - **`_resolve_model_ref` prints `[model] <ref> -> v<N> (verified against <env>)`** the moment a

@@ -124,6 +124,40 @@ def test_deploy_publishes_v1_and_run_inference_accepts_the_ref(tmp_path, importa
         )
 
 
+# --- spec 52 AC8: spec 51 AC12 holds for real, against a URL registry -------------------
+
+
+def test_deploy_set_alias_resolve_run_inference_against_a_url_registry(tmp_path, importable):
+    """spec 52 AC8: the full `deploy` -> `set_alias` -> `resolve` -> `run_inference` chain
+    behaves identically against a local registry path and a `memory://` one. This is spec 51
+    AC12 actually exercised end-to-end (not just `publish`/`resolve`, see
+    `test_registry.py::test_publish_resolve_round_trip_against_a_url_registry`) -- blocked by
+    #88 until spec 52 D1 removed the directory rename `_write_new_version` used to hang on
+    against any non-local backend."""
+    bpath = _deployable_bundle(tmp_path, importable)
+    registry_root = "memory://ac8-registry"
+
+    ref = api.deploy(
+        bpath, name="crop-rf", registry=registry_root, environment="fsd-infer-sklearn:6",
+        alias="champion", verified=_matching_verified(bpath, "fsd-infer-sklearn:6"),
+    )
+    assert ref == "crop-rf:1"
+
+    registry.set_alias("crop-rf", "staging", 1, registry_root)
+    resolved = registry.resolve("crop-rf@staging", registry_root)
+    assert resolved.version == 1
+    assert fs.exists(os.path.join(resolved.path, bundle.BUNDLE_MANIFEST))
+
+    # same proof pattern as AC1's local test: a LATER preflight error shows the ref resolved.
+    cubes = tmp_path / "cubes"
+    cubes.mkdir()
+    with pytest.raises(api.PreflightError, match="no inference datacubes"):
+        api.run_inference(
+            model="crop-rf@champion", registry=registry_root,
+            inference_datacubes=str(cubes), output_folderpath=str(tmp_path / "out"),
+        )
+
+
 # --- AC2: deploying identical content twice is idempotent -------------------------------
 
 

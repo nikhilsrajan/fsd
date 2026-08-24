@@ -33,6 +33,7 @@ import zipfile
 from fsd.model import bundle as _bundle
 from fsd.model import registry as _registry
 from fsd.storage import fs
+from fsd.storage.azure import configure_storage as _configure_storage
 
 __all__ = ["verify_image"]
 
@@ -66,11 +67,14 @@ def verify_image(
     runner: str = "aml",
     runner_kwargs: dict | None = None,
     build_context: str | None = None,
+    storage=None,
 ) -> dict:
     """Does `environment` actually run `bundle_path`? Submits one real node and reports.
 
-    `bundle_path` is a local bundle folder or an already-staged URL. `environment` is the
-    inference Environment reference to verify (e.g. `"fsd-infer-sklearn:3"`).
+    `bundle_path` is a local bundle folder or an already-staged URL -- `storage="azure"`
+    authenticates adlfs for that read (spec 52 D4, #86), the same `storage=` kwarg
+    `run_inference`/`verify_adapter`/`deploy` take. `environment` is the inference
+    Environment reference to verify (e.g. `"fsd-infer-sklearn:3"`).
 
     `runner` must be `"aml"` (D5) -- `runner="local"` **raises** rather than returning a pass,
     because "verified locally" is the exact false positive this helper exists to prevent: the
@@ -108,6 +112,8 @@ def verify_image(
         raise ValueError(
             f"verify_image(runner='aml') requires runner_kwargs{sorted(missing_kwargs)!r}."
         )
+    # spec 52 D4: before the first storage access -- `_bundle.read_spec(bundle_path)` below.
+    _configure_storage(storage)
     # D11: a caller who passes build_context has asserted the folder holds the wheel -- an
     # absent wheel is caller misuse and must raise here, before the try, not become pass=False.
     wheel = _find_wheel(build_context) if build_context else None
