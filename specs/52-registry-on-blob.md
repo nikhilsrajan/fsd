@@ -1,3 +1,8 @@
+---
+status: current
+summary: A registry version is published in place with a completion marker written last (D1), no directory rename -- fixing #88's infinite retry loop against a non-local backend. `_list_versions` becomes marker-aware with a legacy carve-out for pre-spec content (D2/D5). `deploy`, `run_inference`, `verify_adapter` and `verify_image` gain `configure_storage` calls so a blob registry actually authenticates (D4, #86). Amends spec 51 D2; completes spec 51 AC12.
+---
+
 # Spec 52 — the registry on blob: `fsd.deploy` publishes to the cloud
 
 **Status:** **SIGNED OFF (user, 2026-08-24)** — all four §7 questions resolved at their proposed
@@ -139,19 +144,47 @@ D11 guarantees every ref still resolves; `registry.migrate` re-digests to prove 
 The legacy rule is a small permanent cost — an unfinished *legacy* version cannot be told from a
 finished one — and it is bounded: everything published after this spec carries a marker.
 
+> **Amendment (raised in implementation, 2026-08-24 — resolved by Opus review, pending the
+> user's confirmation).** D5 as originally written conflicted with AC2: `_list_versions`'
+> legacy rule (`bundle.json` present, no marker ⇒ complete) would have counted a freshly
+> interrupted *post-spec-52* publish too, since an interruption anywhere after `bundle.json`
+> landed left exactly that on-disk shape. Resolved as follows.
+>
+> **The residual window, stated plainly.** `bundle.json` with no marker means one of two
+> things: content published before this spec (guaranteed complete — the old stage-then-rename
+> either landed a whole version or nothing), or a post-spec publish interrupted between its
+> manifest write and its marker write. Nothing on disk separates them. D1 orders the writes so
+> the second case is one object write wide, and where the two still collide **the legacy
+> reading wins**: reading legacy content as incomplete would hide a real published version and
+> let the next `publish` allocate over it, losing a model, whereas reading an interrupted
+> version as complete strands a folder and burns a version number. Strand the folder.
+>
+> **`migrate` is not legacy.** `_migrate_version` already performs D1's steps 1 and 2, so it
+> writes `_complete.json` last as well. Migrated content is first-class marked, and the legacy
+> rule's only remaining job is genuinely pre-spec-52 registries.
+
 ---
 
 ## 4. Acceptance criteria
 
 1. `registry.publish` against `memory://` returns a version — **and does so in seconds**, asserted
    with a timeout so a regression to #88's hang fails rather than stalls the suite.
-2. Interrupting a publish after the files land but before the marker leaves a version that
-   `_list_versions` does not count, and that the next `publish` may reuse.
+2. Interrupting a publish **before its `bundle.json` lands** leaves a version that
+   `_list_versions` does not count and that the next `publish` reuses in place.
+   `_write_new_version` writes `bundle.json` last of the content files precisely so this
+   covers every interruption during the write — all the bytes and all the elapsed time are
+   in the artifacts. An interruption in the remaining window (after `bundle.json`, before
+   `_complete.json`) leaves a stranded unmarked version indistinguishable from legacy
+   content; D5 accepts that deliberately, and §5 already accepts such strays consuming
+   version numbers.
 3. `_complete.json` is written only after the landed content re-digests to the caller's digest; a
    version whose bytes do not match never gets a marker.
 4. `_write_new_version` retries only a genuine version collision, re-raises everything else, and
    is bounded at 16 attempts.
 5. A version published before this spec (no marker, has `bundle.json`) still resolves — D5.
+5a. `migrate` writes `_complete.json` for every version it copies (the amendment to D5): a
+   migrated registry's versions list identically even with the legacy rule hypothetically
+   removed, because they are marked, not merely legacy-complete.
 6. `deploy(..., storage="azure")` is accepted, and `deploy` calls `configure_storage` before its
    first storage access.
 7. `run_inference`, `verify_adapter` and `verify_image` each call `configure_storage`, asserted in

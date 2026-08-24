@@ -142,12 +142,23 @@ def test_migrate_carries_the_deploy_record_across(tmp_path):
         assert json.load(f) == record
 
 
-# --- AC4: atomic publish (staging + rename, no partial version) ------------------------
+# --- spec 52 AC2/AC3: a write interrupted before the manifest lands is invisible + reusable
 
 
-def test_publish_leaves_no_partial_version_if_the_copy_fails_midway(tmp_path, monkeypatch):
+def test_publish_leaves_an_unmarked_invisible_version_if_interrupted_before_the_manifest_lands(
+    tmp_path, monkeypatch,
+):
+    """D1 + the D5 amendment (2026-08-24): `_write_new_version` writes `bundle.json` last
+    among the content files, specifically so that an interruption *during* the write --
+    where all the bytes and all the elapsed time are -- leaves no manifest on disk.
+    `_is_version_complete`'s legacy check is "does `bundle.json` exist", so no manifest
+    means invisible to `_list_versions` (D2) and reusable in place by the next `publish`
+    (AC2). This test's simulated failure lands on `bundle.json`'s own write -- the last of
+    the two -- so the manifest never lands, unlike the residual (accepted) window between
+    the manifest landing and `_complete.json` landing."""
     # An artifact is added so the bundle has 2 files (bundle.json + artifact) -- the
-    # simulated failure below must land on the SECOND write for this test to mean anything.
+    # simulated failure below must land on the write of bundle.json itself, now last in
+    # write order, for this test to mean what its name says.
     artifact = tmp_path / "model.bin"
     artifact.write_bytes(b"weights")
     src = bundle.save(
@@ -157,12 +168,12 @@ def test_publish_leaves_no_partial_version_if_the_copy_fails_midway(tmp_path, mo
     registry_root = str(tmp_path / "registry")
 
     real_write_bytes = fs.write_bytes
-    calls = {"n": 0}
+    failed = {"once": False}
 
     def flaky_write_bytes(path, data, **kw):
-        calls["n"] += 1
-        if calls["n"] == 2:
-            raise OSError("simulated failure mid-copy")
+        if not failed["once"] and os.path.basename(path) == bundle.BUNDLE_MANIFEST:
+            failed["once"] = True
+            raise OSError("simulated failure writing the manifest")
         return real_write_bytes(path, data, **kw)
 
     monkeypatch.setattr(registry.fs, "write_bytes", flaky_write_bytes)
@@ -170,11 +181,15 @@ def test_publish_leaves_no_partial_version_if_the_copy_fails_midway(tmp_path, mo
     with pytest.raises(OSError):
         registry.publish(src, "crop-rf", registry_root)
 
-    assert not fs.exists(registry.version_path(registry_root, "crop-rf", 1))
-    # no leftover staging directory either
-    if fs.exists(os.path.join(registry_root, "crop-rf")):
-        leftovers = fs.ls(os.path.join(registry_root, "crop-rf"))
-        assert not any(".staging-" in entry for entry in leftovers)
+    v1 = registry.version_path(registry_root, "crop-rf", 1)
+    assert not fs.exists(os.path.join(v1, bundle.BUNDLE_MANIFEST))
+    assert not fs.exists(os.path.join(v1, registry._COMPLETE_FILE))
+    assert registry._list_versions(os.path.join(registry_root, "crop-rf"), {}) == []
+
+    # the next publish reuses v1 rather than skipping to v2
+    version = registry.publish(src, "crop-rf", registry_root)
+    assert version == 1
+    assert fs.exists(os.path.join(v1, registry._COMPLETE_FILE))
 
 
 # --- AC5: alias set on publish; re-deploy with same alias just repoints ----------------
@@ -314,6 +329,28 @@ def test_migrate_copies_registry_and_refs_resolve_identically(tmp_path):
         assert got_digest == want_digest
 
 
+def test_migrate_marks_every_copied_version_complete(tmp_path):
+    """spec 52 D5 amendment (2026-08-24): `migrate` already performs D1's write + re-digest
+    steps, so its output must be marked complete, not merely legacy-complete via
+    `bundle.json`'s presence -- otherwise every migrated version depends forever on the
+    leniency D5 exists to grandfather in, not on the marker migrate could easily write. The
+    test that actually proves this: strip `bundle.json` from consideration by checking
+    `_list_versions` directly, which would only see a marked (or legacy) version either way
+    -- so instead assert the marker file exists, which the legacy path never writes."""
+    src_root = str(tmp_path / "src_registry")
+    dst_root = str(tmp_path / "dst_registry")
+    b1 = _make_bundle(tmp_path, "b1")
+    registry.publish(b1, "crop-rf", src_root)
+
+    registry.migrate(src_root, dst_root)
+
+    dst_v1 = registry.version_path(dst_root, "crop-rf", 1)
+    assert fs.exists(os.path.join(dst_v1, registry._COMPLETE_FILE))
+    with fs.open(os.path.join(dst_v1, registry._COMPLETE_FILE), "r") as f:
+        marker = json.load(f)
+    assert marker["digest"] == registry.content_digest(dst_v1)
+
+
 def test_migrate_refuses_a_corrupted_copy(tmp_path, monkeypatch):
     src_root = str(tmp_path / "src_registry")
     dst_root = str(tmp_path / "dst_registry")
@@ -338,37 +375,21 @@ def test_migrate_refuses_a_corrupted_copy(tmp_path, monkeypatch):
 # --- publish races: a loser must never be handed the winner's version ------------------
 
 
-def _publish_racing_with(monkeypatch, competitor, mine, registry_root, name="crop-rf"):
-    """Run `publish(mine)` while a competitor completes the version `publish` is about to
-    claim, in the window the `exists` pre-check leaves open. The competitor publishes ONCE
-    (a real one is not an infinite adversary). Returns the reported version."""
-    real_rename = fs.rename
-    raced = []
-
-    def racy_rename(src, dst, **kw):
-        if not raced:
-            raced.append(dst)
-            for rel, data in registry._read_bundle_content(competitor, None):
-                fs.write_bytes(os.path.join(dst, rel), data)
-        return real_rename(src, dst, **kw)
-
-    monkeypatch.setattr(registry.fs, "rename", racy_rename)
-    return registry.publish(mine, name, registry_root)
-
-
-def test_publish_losing_a_race_retries_instead_of_returning_the_winners_version(
-    tmp_path, monkeypatch,
+def test_publish_a_genuine_collision_retries_instead_of_returning_the_winners_version(
+    tmp_path,
 ):
-    """The `exists` check is not a lock. If a competitor finishes v1 before our rename,
-    `publish` must not report v1 -- v1 holds their bundle, and a caller that then resolved
-    `crop-rf:1` would run a model it never published (D2, and §5's "fail rather than
-    corrupt")."""
+    """D3: `_write_new_version`'s target-exists check is not a lock, but once a target IS
+    complete -- whether from a real race or (as here, for determinism) a competitor that
+    simply finished first -- `publish` must not report it as ours. `v1` holds their bundle,
+    and a caller that then resolved `crop-rf:1` would run a model it never published (D2,
+    and §5's "fail rather than corrupt")."""
     registry_root = str(tmp_path / "registry")
     theirs = _make_bundle(tmp_path, "theirs")
     mine = _make_bundle(tmp_path, "mine")
     _rewrite_bundle_field(mine, feature={"kind": "callable", "steps": ["mine"]})
 
-    version = _publish_racing_with(monkeypatch, theirs, mine, registry_root)
+    registry.publish(theirs, "crop-rf", registry_root)  # claims v1, complete
+    version = registry.publish(mine, "crop-rf", registry_root)
 
     assert version == 2
     mine_path = registry.version_path(registry_root, "crop-rf", version)
@@ -376,18 +397,17 @@ def test_publish_losing_a_race_retries_instead_of_returning_the_winners_version(
 
     v1 = registry.version_path(registry_root, "crop-rf", 1)
     assert registry.content_digest(v1) == registry.content_digest(theirs)
-    assert not any(registry._STAGING_PREFIX in entry for entry in fs.ls(v1))
 
 
-def test_publish_losing_a_race_to_identical_content_is_still_idempotent(
-    tmp_path, monkeypatch,
-):
-    """Same race, but the competitor published the same bytes -- that is D2's idempotency
-    arriving by another route, so their version is the right answer to return."""
+def test_publish_a_competitors_identical_content_is_still_idempotent(tmp_path):
+    """Same collision, but the competitor published the same bytes -- that is D2's
+    idempotency arriving by another route, so their version is the right answer to
+    return, and nothing new is written."""
     registry_root = str(tmp_path / "registry")
     src = _make_bundle(tmp_path, "src")
 
-    version = _publish_racing_with(monkeypatch, src, src, registry_root)
+    registry.publish(src, "crop-rf", registry_root)  # claims v1, complete
+    version = registry.publish(src, "crop-rf", registry_root)
 
     assert version == 1
     assert fs.ls(os.path.join(registry_root, "crop-rf")) == [
@@ -431,21 +451,16 @@ def test_set_alias_publishes_by_rename_so_a_reader_never_sees_a_partial_file(
     )
 
 
-# --- AC12: a URL registry behaves like a local one -- BLOCKED, kept visible ------------
+# --- AC12: a URL registry behaves like a local one --------------------------------------
 
 
-@pytest.mark.skip(
-    reason="blocked on issue #88: registry.publish hangs forever on any non-local backend. "
-           "storage.fs.rename falls back to fsspec's mv (copy + non-recursive rm) for "
-           "non-local paths; on a directory that rm raises ENOTEMPTY, and "
-           "_write_new_version treats every OSError from rename as 'lost a race' and retries "
-           "at v<N+1> -- but this failure is deterministic, so the loop never terminates. "
-           "Unskip when #88 is fixed; do NOT unskip to 'see what happens' (it hangs the suite)."
-)
 def test_publish_resolve_round_trip_against_a_url_registry(tmp_path):
-    """AC12: behaviour is identical for a local registry path and a URL registry. No test
-    anywhere uses a URL registry today -- this is that gap, written down rather than left
-    absent, so `pytest -q`'s skip line keeps naming it until #88 lands."""
+    """AC12: behaviour is identical for a local registry path and a URL registry. Unblocked
+    by spec 52 D1 (#88): `_write_new_version` no longer renames a directory onto `v<N>`, so
+    there is nothing left that hangs against a non-local backend. See also
+    `test_deploy.py::test_deploy_set_alias_resolve_run_inference_against_a_url_registry`
+    (spec 52 AC8) for the full `deploy` -> `set_alias` -> `resolve` -> `run_inference` chain,
+    not just `publish`/`resolve`."""
     src = _make_bundle(tmp_path)
     registry_root = "memory://ac12-registry"
     v = registry.publish(src, "crop-rf", registry_root, alias="champion")
@@ -453,3 +468,38 @@ def test_publish_resolve_round_trip_against_a_url_registry(tmp_path):
     assert registry.resolve("crop-rf:1", registry_root).path == registry.version_path(
         registry_root, "crop-rf", 1,
     )
+
+
+# --- AC1: publish against a non-local backend returns in seconds, not forever ----------
+
+
+def test_publish_against_a_url_registry_returns_within_a_timeout(tmp_path):
+    """AC1's literal wording: a regression to #88 (the infinite retry loop against a
+    non-local backend) must fail this test, not hang the suite. `registry.publish` runs on
+    a background thread so the test can assert on wall-clock time rather than trust that the
+    call returns at all -- `thread.is_alive()` after the join is the failure signal for a
+    hang; a raised exception inside the thread is re-raised here so a real bug still reports
+    normally instead of just timing out."""
+    import threading
+
+    src = _make_bundle(tmp_path)
+    registry_root = "memory://ac1-timeout-registry"
+    result: dict = {}
+
+    def _publish():
+        try:
+            result["version"] = registry.publish(src, "crop-rf", registry_root)
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the main thread below
+            result["error"] = exc
+
+    thread = threading.Thread(target=_publish, daemon=True)
+    thread.start()
+    thread.join(timeout=10)
+
+    assert not thread.is_alive(), (
+        "registry.publish did not return within 10s against memory:// -- this is #88's "
+        "infinite retry loop, back."
+    )
+    if "error" in result:
+        raise result["error"]
+    assert result["version"] == 1

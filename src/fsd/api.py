@@ -1435,6 +1435,9 @@ def run_inference(
     # pre-built-cubes path and for local ROI mode.
     roi_mode = roi is not None
     errs = _check_local_seams(runner, storage, storage_allowed=(roi_mode and runner == "aml"))
+    # spec 52 D4: before the first storage access -- `_resolve_model_ref` below can resolve a
+    # registry ref (a read against `registry=`), and ROI mode reads `roi` itself off storage.
+    _configure_storage(storage)
     if output_folderpath is None:
         errs.append("output_folderpath is required.")
     if merge not in (False, True, "reproject"):
@@ -1928,6 +1931,9 @@ def verify_adapter(
 
     startdate, enddate, date_errs = _normalize_window(startdate, enddate)
     errs = _check_local_seams(runner, storage, storage_allowed=(runner == "aml")) + date_errs
+    # spec 52 D4: before the first storage access -- `_resolve_model_ref` and `fs.read_geo`
+    # below both touch storage.
+    _configure_storage(storage)
     if not date_errs:
         errs += _check_window(startdate, enddate, mosaic_days, bands)
     if not export_folderpath:
@@ -2286,12 +2292,16 @@ def deploy(
     Idempotent: deploying identical bundle content again returns the same version and writes
     nothing new (`fsd.model.registry.publish`, D2) -- safe to re-run from a notebook cell.
 
-    `storage=` only reaches the same local/Azure "compute seam" gate `run_inference` and
-    `verify_adapter` use (non-local is refused for now, #86) -- it is unrelated to `registry=`,
-    which is resolved/written directly through the storage seam and may itself be a URL (D1).
+    `storage=` reaches the same local/Azure "compute seam" gate `run_inference` and
+    `verify_adapter` use -- `storage="azure"` is accepted (spec 52 D4, #86 fixed: a blob
+    registry can now actually authenticate) -- it is unrelated to `registry=`, which is
+    resolved/written directly through the storage seam and may itself be a URL (D1).
     """
-    errs = _check_local_seams(runner, storage, storage_allowed=False)
+    errs = _check_local_seams(runner, storage)
     _raise_preflight(errs)
+    # spec 52 D4: before the first storage access -- `_bundle.read_spec` below reads
+    # `bundle_path`, and `publish` writes into `registry` further down.
+    _configure_storage(storage)
 
     if not isinstance(bundle_path, str):
         raise PreflightError(

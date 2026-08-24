@@ -138,8 +138,81 @@ def test_api_check_local_seams_runner_still_rejected():
     assert errs and "batch" in errs[0]
 
 
+# --- spec 52 AC6/AC7: deploy/run_inference/verify_adapter/verify_image each authenticate ----
+
+
+def test_deploy_calls_configure_storage_before_its_first_storage_access(_clean_fsspec_conf):
+    """AC6. `deploy` no longer refuses `storage='azure'` (D4 removes the old
+    `storage_allowed=False` gate); it must set up authenticated adlfs before it ever touches
+    `bundle_path` or `registry`. A bogus `name` (caught by `check_name`, after the
+    `configure_storage` call this spec adds but before any storage read) is the cheapest way
+    to reach a guaranteed raise without needing a real bundle."""
+    os.environ.pop("FSSPEC_ABFSS_ANON", None)
+    from fsd import api
+
+    with pytest.raises(api.PreflightError):
+        api.deploy(
+            "/nonexistent/bundle", name="bad/name", registry="/nonexistent/registry",
+            environment="fsd-infer-sklearn:1", storage="azure",
+        )
+    assert os.environ["FSSPEC_ABFSS_ANON"] == "false"
+
+
+def test_run_inference_calls_configure_storage_before_its_first_storage_access(
+    _clean_fsspec_conf,
+):
+    """AC7, in a process where no other verb has run first (the fixture resets the env)."""
+    os.environ.pop("FSSPEC_ABFSS_ANON", None)
+    from fsd import api
+
+    with pytest.raises(Exception):  # noqa: B017 - any failure proves nothing else ran first
+        api.run_inference(
+            "/nonexistent/model.bundle", inference_datacubes="/nonexistent/cubes",
+            output_folderpath=None, storage="azure",
+        )
+    assert os.environ["FSSPEC_ABFSS_ANON"] == "false"
+
+
+def test_verify_adapter_calls_configure_storage_before_its_first_storage_access(
+    _clean_fsspec_conf,
+):
+    """AC7, in a process where no other verb has run first (the fixture resets the env)."""
+    os.environ.pop("FSSPEC_ABFSS_ANON", None)
+    from fsd import api
+
+    with pytest.raises(Exception):  # noqa: B017 - any failure proves nothing else ran first
+        api.verify_adapter(
+            "/nonexistent/model.bundle", roi="/nonexistent/roi.geojson",
+            catalog_filepath="/nonexistent/catalog.parquet",
+            startdate=None, enddate=None, mosaic_days=None, bands=None,
+            export_folderpath="/nonexistent/export", storage="azure",
+        )
+    assert os.environ["FSSPEC_ABFSS_ANON"] == "false"
+
+
+def test_verify_image_calls_configure_storage_before_its_first_storage_access(
+    _clean_fsspec_conf,
+):
+    """AC7, in a process where no other verb has run first (the fixture resets the env).
+    `bundle_path` does not exist, so `verify_image` catches the read failure internally
+    (spec 24: always a shaped result, never a bare traceback) and returns `pass: False`
+    rather than raising -- either way, `configure_storage` must already have run."""
+    os.environ.pop("FSSPEC_ABFSS_ANON", None)
+    from fsd.model.verify_image import verify_image
+
+    result = verify_image(
+        "/nonexistent/bundle", environment="fsd-infer-sklearn:1", runner="aml",
+        runner_kwargs={"cluster": "c", "root": "r", "identity_client_id": "i"},
+        storage="azure",
+    )
+    assert result["pass"] is False
+    assert os.environ["FSSPEC_ABFSS_ANON"] == "false"
+
+
 def test_api_check_local_seams_storage_allowed_false_rejects_azure():
-    """run_inference/deploy pass storage_allowed=False — inference-on-blob stays out of P1."""
+    """`run_inference`'s pre-built-cubes / local-ROI paths pass storage_allowed=False --
+    inference-on-blob is spec 38 P4 scope, gated separately from `deploy`'s registry-on-blob
+    gate, which spec 52 D4 removed."""
     from fsd import api
 
     errs = api._check_local_seams("local", "azure", storage_allowed=False)

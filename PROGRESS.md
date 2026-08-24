@@ -4,50 +4,53 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-24 (**SPEC 52 SIGNED OFF — the registry on blob. Nothing implemented yet;
-next session is a Sonnet `/effort medium` implementation against `specs/52-registry-on-blob.md`.**
-Work is on worktree branch `worktree-spec52-registry-on-blob` (at `fsd/.claude/worktrees/`), based
-on `main` @ `7c3811c`. Four commits, spec only, no source touched.
+_Last updated: 2026-08-24 (**SPEC 52 IMPLEMENTED (Sonnet `/effort medium`) — all three §9 steps
+done, `pytest -q` and `ruff` clean; PENDING Opus `/effort high` review before merge.** Work is on
+worktree branch `worktree-spec52-registry-on-blob` (at `fsd/.claude/worktrees/`), based on `main`
+@ `7c3811c`.
 
-**What spec 52 is.** `fsd.deploy` publishes into a registry folder; that folder could not live on
-blob, so it lives on the user's laptop and the registry is private to one machine. #88:
-`registry.publish` loops forever against any non-local backend. #86: `deploy` never calls
-`configure_storage`, so a blob registry would be read/written anonymously — and neither do
-`run_inference`, `verify_adapter` or `verify_image`; today's notebook works only because an earlier
-verb set a process-global flag as a side effect.
+**Step 0 (registry core, D1/D2/D3/D5) — `fsd/model/registry.py`.** `_write_new_version` writes a
+version's files straight into `v<N>/` (no staging prefix, no directory rename), re-digests what
+landed, and writes `v<N>/_complete.json` last. `_list_versions` is now marker-aware, with a legacy
+carve-out (`bundle.json` present, no marker) for pre-spec content. The retry loop is bounded at
+`_MAX_PUBLISH_ATTEMPTS = 16` and retries only a genuine version collision.
 
-**The design, after the user asked whether it was over-engineered — it was.** The first draft
-reproduced Azure's native atomic directory rename (`DataLakeDirectoryClient.rename_directory`) to
-preserve race arbitration between concurrent publishers — a guarantee the user had already said
-does not occur in this team. That needed conditional headers (`Path::Create` OVERWRITES by
-default), continuation tokens, file-vs-directory dispatch and a new dependency. **Rewritten around
-a completion marker:** write the version's files in place, re-digest what landed, write
-`_complete.json` LAST. Ordering the marker after the digest check (which `publish` already does at
-`registry.py:405`) makes the marker mean "these bytes were verified" — an interrupted upload or two
-interleaved writers leave a version that is simply invisible.
+**A real D5-vs-AC2 conflict surfaced during implementation, not guessed around** (MEMORY
+`verify-the-primitive-a-spec-cites`-flavored: check it, don't code around it). D5's legacy rule
+(`bundle.json` present + no marker ⇒ complete) and AC2 (an interrupted publish must be invisible to
+`_list_versions`) contradict whenever `bundle.json` lands before the interruption — confirmed with
+a failing test, since `bundle.json` sorts alphabetically early among a bundle's files. Flagged to
+the Opus session; **adjudicated same-day, spec amended** (see spec 52 §3 D5's "Amendment" block and
+AC2's rewritten text): `_write_new_version` now writes `bundle.json` **last** among the content
+files, so an interruption during the write (where nearly all the risk is) leaves no manifest and
+is genuinely reusable; the one-object-write residual window (after the manifest, before the
+marker) is left to the legacy reading, on the reasoning that misreading real legacy content as
+incomplete can destroy a published version, while misreading a rare interrupted version as
+complete only strands a folder (a cost §5 already accepts). Same review pass found `migrate`
+never wrote `_complete.json` at all — fixed (new AC5a), so migrated content no longer depends on
+the legacy carve-out to be visible.
 
-**Two probes cut more scope than the redesign did — do not re-derive:** (1) a single-FILE
-`fs.rename` already works on a non-local backend, including onto an existing target, so
-`set_alias`, `write_deploy_record` and `builder.py:365` were never broken; `registry.py:394` is the
-ONLY directory rename in the codebase. Therefore **`storage.fs.rename` is not touched by this spec
-at all** and no Azure-specific code is added anywhere. (2) `adlfs 2026.8.0` implements neither
-`_rename` nor `_mv` — its `mv` is fsspec's `copy()`+`rm()` — so `fs.rename`'s docstring claim that
-the move is "one metadata operation on an HNS Azure account" is FALSE for adlfs, though ADLS Gen2
-itself does have the operation.
+**Step 1 (verb wiring, D4) — `fsd/api.py` + `fsd/model/verify_image.py`.** `deploy` drops
+`storage_allowed=False` (accepts `storage="azure"` now). `deploy`, `run_inference`,
+`verify_adapter` each call `configure_storage(storage)` right after preflight's cheap validation
+starts, before the first storage touch (`_resolve_model_ref`/`fs.read_geo`/`_bundle.read_spec`).
+`verify_image` gained a `storage=` kwarg it never had (#86 — it previously could not authenticate
+at all) plus the same call, placed after its own cheap arg checks.
 
-**Accepted cost, stated not buried:** two simultaneous publishers can strand a corrupt, unmarked
-version. Invisible, never served, never cleaned up. Spec §6 keeps the rejected Azure-rename design
-in full so reinstating it is a decision, not a rediscovery.
+**Step 2 (end-to-end, AC8) — spec 51's AC12 unblocked.** `test_registry.py`'s skipped
+`test_publish_resolve_round_trip_against_a_url_registry` is unskipped (D1 removed the hang it was
+blocked on). Added `test_deploy.py::test_deploy_set_alias_resolve_run_inference_against_a_url_registry`
+for the fuller chain AC8 actually names (`deploy` → `set_alias` → `resolve` → `run_inference`), and
+a dedicated timeout-asserted test for AC1's literal wording (a background thread + `join(timeout=10)`,
+no new test dependency).
 
-**All four §7 questions signed off at their proposed defaults** (user, 2026-08-24):
-`_MAX_PUBLISH_ATTEMPTS = 16`; `run_inference` KEEPS staging per run (explicitly out of scope — do
-not "fix" the per-run `[stage]` line); `deploy` keeps an explicit `storage=` kwarg rather than
-inferring from the URL scheme; `_complete.json`'s digest does NOT yet replace the `_deploy.json`
-digest read in publish's idempotency scan.
+**Run-book written, not run** (Claude never runs pipeline/networked scripts): `runbooks/52-registry-on-blob.md`
+— publish v1/v2 to a real `abfss://` registry, repoint an alias, run inference off the ref,
+confirm a re-publish of identical content is a no-op. Green tests do not finish this spec (MEMORY
+`real-run-beats-review`) — this is the part they cannot cover.
 
-**NEXT: implement spec 52 §9's three steps** (registry core → verb wiring → end-to-end on
-`memory://`), then write the run-book the USER executes against real `abfss://` — green tests do
-not finish this spec (MEMORY `real-run-beats-review`).
+**NEXT:** hand back to Opus `/effort high` for review (spec, tests, and the D5/AC2 amendment
+itself), then the user runs the run-book and pastes back its five printed results.
 
 **⚠️ `main` has an uncommitted `PROGRESS.md` edit that is now WRONG** — it records the blob registry
 as "a documented LIMITATION, not scheduled work", which the user reversed the same day. Discard it

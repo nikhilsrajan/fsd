@@ -4,6 +4,36 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## The registry publishes in place, no directory rename (spec 52, 2026-08-24)
+
+- **`registry._write_new_version` no longer stages then renames.** It writes a version's files
+  straight into `v<N>/`, re-digests what landed against the caller's digest, and writes
+  `v<N>/_complete.json` last — a single-object write is atomic on every backend fsd targets, so
+  that marker is the all-or-nothing moment the directory rename used to provide. This fixes
+  [issue #88](https://github.com/nikhilsrajan/fsd/issues/88): `storage.fs.rename`'s directory move
+  falls back to fsspec's copy-then-`rm` on any non-local backend, which is not atomic, so the old
+  retry loop misread that deterministic failure as "lost a race" and looped forever. No file in
+  `storage/fs.py` changed — `registry.py:394` was the only directory rename in the codebase.
+- **`_list_versions` is now marker-aware**, with a legacy carve-out: a `v<N>` directory with
+  `bundle.json` but no marker still counts as complete, so a version published before this spec
+  (the old stage-then-rename protocol never left a partial `vN`) keeps resolving and keeps
+  migrating. `migrate` now writes `_complete.json` too, so migrated content no longer depends on
+  that carve-out to stay visible.
+- **A spec amendment landed mid-implementation, not silently coded around:** the legacy rule as
+  first written (D5) contradicted the "an interrupted publish is invisible" guarantee (AC2)
+  whenever `bundle.json` had already landed — which is most interruptions, since `bundle.json`
+  sorts alphabetically early among a bundle's files. `_write_new_version` now writes `bundle.json`
+  **last**, so an interruption during the write leaves no manifest at all; the one-object-write
+  residual window is deliberately resolved in favor of the legacy reading (destroying a real
+  published version is worse than stranding an unmarked folder, a cost spec 52 §5 already
+  accepts). See `specs/52-registry-on-blob.md` §3 D5's amendment block for the full reasoning.
+- **`deploy`, `run_inference`, `verify_adapter`, `verify_image` each call `configure_storage`
+  now** — fixing [issue #86](https://github.com/nikhilsrajan/fsd/issues/86): a blob registry was
+  read/written anonymously, because authentication worked only when some *earlier* verb in the
+  same process happened to set a process-global fsspec flag as a side effect. `deploy` also drops
+  its `storage_allowed=False` gate (a blob registry can now actually work); `verify_image` gained
+  a `storage=` kwarg it never had.
+
 ## A resolved model ref announces itself before dispatch (spec 51 step 3, 2026-08-24)
 
 - **`_resolve_model_ref` prints `[model] <ref> -> v<N> (verified against <env>)`** the moment a

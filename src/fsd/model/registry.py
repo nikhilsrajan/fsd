@@ -3,29 +3,31 @@
     <registry>/
       <name>/
         _aliases.json          {"champion": 3, "current": 4}
-        v1/  bundle.json, code/, artifacts...   [+ _deploy.json, step 2]
+        v1/  bundle.json, code/, artifacts..., _complete.json   [+ _deploy.json, step 2]
         v2/  ...
 
 Everything reads and writes through `fsd.storage.fs`, so a local registry and a blob
 registry are the same code. Versions are immutable; `_aliases.json` is the only mutable
-pointer (D3). `publish` is idempotent by content digest (D2) and atomic via
-`storage.fs.rename` from a staging prefix. `migrate` relocates a registry and re-digests
-every version, so a ref that resolves against one root resolves identically against a
-copy of it (D11).
+pointer (D3). `publish` is idempotent by content digest (D2). A version is published **in
+place** (spec 52 D1) -- no staging prefix, no directory rename -- and re-digested before
+`v<N>/_complete.json` is written last, which is the all-or-nothing moment a directory
+rename used to provide. `migrate` relocates a registry and re-digests every version, so a
+ref that resolves against one root resolves identically against a copy of it (D11).
 
 **Concurrency, stated rather than implied.** There is no lock (spec 51 §5). What IS
-guaranteed: a reader never sees a half-written version or a half-written `_aliases.json`
-(both are staged and renamed), and `publish` never returns a version whose bytes are not
-the ones it was given -- it re-digests what landed and retries at `v<N+1>` if it lost a
-race. What is NOT guaranteed: two concurrent `set_alias` calls can lose an update, two
-concurrent `publish` calls can leave a gap in the version sequence, and on a backend whose
-`mv` merges into an existing prefix rather than refusing, two writers' files can interleave
-at one version -- see `_write_new_version`.
+guaranteed: a reader never sees a half-written `_aliases.json` (staged and renamed), and
+`publish` never returns a version whose bytes are not the ones it was given -- it
+re-digests what landed before marking it complete, and retries at `v<N+1>` on a genuine
+collision. What is NOT guaranteed: two concurrent `set_alias` calls can lose an update,
+two concurrent `publish` calls can leave a gap in the version sequence, and two
+simultaneous publishers writing the same `v<N>` can interleave their files -- neither one
+marks the result complete, so the damage is a stranded, unmarked directory rather than a
+bad model being served (spec 52 §5). See `_write_new_version`.
 
 `resolve`/`publish` are the interface; the storage-seam layout is v1's only backend, but
 a second one can be added without either signature changing (D10).
 
-Spec: specs/51-deploy-model-registry.md
+Spec: specs/51-deploy-model-registry.md, specs/52-registry-on-blob.md
 """
 
 from __future__ import annotations
@@ -57,7 +59,9 @@ __all__ = [
 
 ALIASES_FILE = "_aliases.json"
 DEPLOY_FILE = "_deploy.json"
+_COMPLETE_FILE = "_complete.json"
 _STAGING_PREFIX = ".staging-"
+_MAX_PUBLISH_ATTEMPTS = 16
 
 _REF_RE = re.compile(r"^(?P<name>[^:@]+)(?P<sep>[:@])(?P<value>.+)$")
 _VERSION_ALIAS_RE = re.compile(r"^v(\d+)$")
@@ -323,6 +327,21 @@ def _list_names(registry: str, storage_options: dict) -> list[str]:
     return sorted(names)
 
 
+def _is_version_complete(version_dir: str, storage_options: dict) -> bool:
+    """A version counts once `_complete.json` is there (D2), or -- for content that
+    predates this marker -- once `bundle.json` is there with no marker at all (D5's
+    legacy rule). A version published by the pre-spec-52 code was staged under a temp
+    prefix and only ever became `v<N>` via a directory rename that lands-or-doesn't, so
+    `bundle.json`'s presence there already proves completeness; the cost is that a
+    freshly interrupted (post-spec-52) publish is indistinguishable from legacy content
+    once its files have landed -- accepted in spec 52 §5 as a stranded, harmless
+    directory, never served because nothing resolves "the latest version" through this
+    function (`resolve` doesn't call it -- D2)."""
+    if fs.exists(os.path.join(version_dir, _COMPLETE_FILE), **storage_options):
+        return True
+    return fs.exists(os.path.join(version_dir, bundle_mod.BUNDLE_MANIFEST), **storage_options)
+
+
 def _list_versions(name_root: str, storage_options: dict) -> list[int]:
     if not fs.exists(name_root, **storage_options):
         return []
@@ -330,7 +349,7 @@ def _list_versions(name_root: str, storage_options: dict) -> list[int]:
     for entry in fs.ls(name_root, **storage_options):
         leaf = entry.rstrip("/").rsplit("/", 1)[-1]
         m = _VERSION_DIR_RE.match(leaf)
-        if m:
+        if m and _is_version_complete(os.path.join(name_root, leaf), storage_options):
             versions.append(int(m.group(1)))
     return sorted(versions)
 
@@ -356,58 +375,79 @@ def _holds_content(path: str, digest: str, storage_options: dict) -> bool:
 def _write_new_version(
     name_root: str, files: list[tuple[str, bytes]], digest: str, storage_options: dict,
 ) -> int:
-    """Stage `files` and rename onto the next free `v<N>`, returning the version that
-    actually holds them (D2). A losing racer retries at `v<N+1>` rather than corrupting
-    the winner's directory.
+    """Write `files` directly under the next free `v<N>` and mark it complete last,
+    returning the version that actually holds them (spec 52 D1, D3). No staging prefix,
+    no directory rename -- `storage.fs.rename` is unchanged by this and is not used here.
 
-    The `exists` pre-check is not a lock, so the loop does not trust it: another writer
-    can complete `v<N>` in the window before the rename. Two things close that window.
-    `storage.fs.rename` is a real `os.rename` locally, so a rename onto a finished version
-    directory *fails* and is retried (fsspec's `LocalFileSystem.mv` is `shutil.move`, which
-    would instead nest this bundle inside the winner's directory and report success -- see
-    that function's docstring). And because no such guarantee exists for every backend, the
-    version that lands is re-digested before it is returned: publishing is only complete
-    once the bytes at `v<N>` are provably the caller's, the same proof `migrate` uses to
-    accept a copy (D11). If a concurrent writer put *identical* content there first, the
-    digest matches and that version is returned -- which is exactly D2's idempotency.
+    Three steps land in order: (1) write every file straight into `v<N>/`; (2) re-digest
+    what actually landed and confirm it equals the caller's digest -- publishing is only
+    complete once the bytes are provably the caller's, the same proof `migrate` uses to
+    accept a copy (D11); (3) write `v<N>/_complete.json` **last**, carrying that digest.
+    A single-object write is atomic on every backend fsd targets, so step 3 is the
+    all-or-nothing moment the directory rename used to provide.
 
-    What is still not handled, per spec 51 §5's "not worth a lock service": a backend whose
-    `mv` merges a prefix into an existing one leaves both writers' files interleaved at the
-    target, which no cleanup here can separate. The registry has no lock by design.
+    A target that already exists and is complete (`_is_version_complete`) is a genuine
+    collision only if it does not hold the caller's digest, in which case it retries at
+    `v<N+1>` -- D2's idempotency, reached without writing anything. A target that exists
+    but is *not* complete (an interrupted publish, D1's step 3 never ran) is safe to
+    (re)write into: nothing has claimed it. A target where the freshly landed bytes do not
+    match the caller's digest (two publishers interleaved their files at the same `v<N>`,
+    spec 52 §5) is left unmarked and the loop moves to `v<N+1>` rather than claiming it.
+
+    `bundle.json` is written **last** among the content files, deliberately out of the
+    caller's `files` order (D5 amendment, 2026-08-24): `_is_version_complete`'s legacy
+    check is "does `bundle.json` exist", so writing it last means an interruption *during*
+    the write -- where all the bytes and all the elapsed time are -- leaves no manifest,
+    stays invisible to `_list_versions`, and is reused in place by the next `publish`. Only
+    the one-object-write window between the manifest landing and `_complete.json` landing
+    is left indistinguishable from legacy content, and D5 resolves that window in favor of
+    treating it as complete: misreading real legacy content as incomplete would hide a
+    published version and let a later `publish` allocate over it, destroying a model, which
+    is strictly worse than the alternative -- stranding a folder, a cost spec 52 §5 already
+    accepts in writing.
+
+    Bounded at `_MAX_PUBLISH_ATTEMPTS` (D3): the loop retries only genuine version
+    collisions, so an unbounded run here would mean something is structurally wrong, not a
+    transient race.
     """
     version = max(_list_versions(name_root, storage_options), default=0) + 1
-    while True:
+    manifest_rel = bundle_mod.BUNDLE_MANIFEST
+    ordered_files = sorted(files, key=lambda item: (item[0] == manifest_rel, item[0]))
+    for _ in range(_MAX_PUBLISH_ATTEMPTS):
         target = os.path.join(name_root, f"v{version}")
-        if fs.exists(target, **storage_options):
-            version += 1
-            continue
-
-        stage = os.path.join(name_root, f"{_STAGING_PREFIX}{uuid.uuid4().hex}")
-        try:
-            for rel, data in files:
-                fs.write_bytes(os.path.join(stage, rel), data, **storage_options)
-        except BaseException:
-            _discard(stage, storage_options)
-            raise
-
-        try:
-            fs.rename(stage, target, **storage_options)
-        except OSError:
-            # The rename refused, which is what a local `os.rename` does when a competitor
-            # finished `target` first. If they published the same content we were about to,
-            # their version IS the answer (D2's idempotency, reached by another route).
-            _discard(stage, storage_options)
+        if _is_version_complete(target, storage_options):
             if _holds_content(target, digest, storage_options):
                 return version
             version += 1
             continue
 
-        if content_digest(target, storage_options=storage_options) == digest:
-            return version
-        # We lost the race and the backend's `mv` did not refuse. Undo the nesting a
-        # `shutil.move`-style `mv` leaves behind, then try the next version.
-        _discard(os.path.join(target, os.path.basename(stage)), storage_options)
-        version += 1
+        try:
+            for rel, data in ordered_files:
+                fs.write_bytes(os.path.join(target, rel), data, **storage_options)
+            landed_digest = content_digest(target, storage_options=storage_options)
+        except OSError as exc:
+            raise OSError(
+                f"publish: writing v{version} under {name_root!r} failed: {exc}"
+            ) from exc
+
+        if landed_digest != digest:
+            # Someone else's bytes are interleaved with ours at this target (spec 52 §5).
+            # Leaving it unmarked is correct -- it stays invisible (D2) -- but claiming it
+            # as ours would be wrong, so move on rather than retry the same target.
+            version += 1
+            continue
+
+        fs.write_text(
+            os.path.join(target, _COMPLETE_FILE),
+            json.dumps({"digest": digest}, indent=2, sort_keys=True),
+            **storage_options,
+        )
+        return version
+
+    raise RuntimeError(
+        f"publish: exhausted {_MAX_PUBLISH_ATTEMPTS} attempts allocating a version under "
+        f"{name_root!r} -- repeated version collisions."
+    )
 
 
 def publish(
@@ -425,7 +465,8 @@ def publish(
     Idempotent by content digest (D2): if a version with identical content already
     exists, it is returned and nothing is written -- `publish` is safe to call again
     from a re-run notebook cell. Otherwise the next integer version is allocated and
-    published atomically (`storage.fs.rename` from a staging prefix).
+    published in place, marked complete only once its bytes are re-digested and confirmed
+    (spec 52 D1).
 
     `storage_options` reaches the registry; `bundle_storage_options` reaches
     `bundle_path` (only needed when the bundle itself is not local).
@@ -507,6 +548,14 @@ def _migrate_version(vsrc: str, vdst: str, src_opts: dict, dst_opts: dict) -> No
             f"migrate: {vsrc} -> {vdst} digest mismatch after copy (source {before}, "
             f"copied {after}) -- refusing a possibly-corrupted copy."
         )
+    # Marked last, same as `_write_new_version`'s step 3 (D1): migrate already performs
+    # D1's steps 1 and 2 above (write, re-digest-and-confirm), so its output is first-class
+    # marked content, not something that has to fall back on D5's legacy rule to be seen.
+    fs.write_text(
+        os.path.join(vdst, _COMPLETE_FILE),
+        json.dumps({"digest": after}, indent=2, sort_keys=True),
+        **dst_opts,
+    )
     # `_deploy.json` (D7) is not manifest-declared content -- it never affects the digest
     # above -- but it is the durable fact a `deploy` produced, and dropping it silently on
     # a relocation would defeat D11's promise that a move is "a copy plus a changed
