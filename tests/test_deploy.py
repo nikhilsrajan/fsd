@@ -479,6 +479,106 @@ def test_deploy_refuses_a_live_adapter(tmp_path, importable):
         _purge("tdlivemod")
 
 
+# --- AC14 second half: deploy refuses verify_adapter's REAL auto-saved bundle -----------
+
+
+def test_deploy_refuses_verify_adapters_real_auto_saved_bundle(tmp_path, importable, monkeypatch):
+    """AC14 second half: D6's refusal must hold against `verify_adapter`'s real, on-disk
+    auto-saved bundle -- reached through `result["metrics"]["bundle_path"]`, not a hand-built
+    folder standing in for it (`_ensure_bundle` passes no `requirements=`, so this bundle
+    genuinely lacks them)."""
+    import geopandas as gpd
+    import numpy as np
+    import pandas as pd
+    import shapely.geometry
+
+    import fsd
+    import fsd.grid as grid_mod
+    from fsd.workflows import create_datacube as _create_datacube
+    from fsd.workflows import infer_only_task as _infer_only_task
+
+    modname = "tdac14adapter"
+    importable(f"{modname}.py", src="""
+from fsd.model.adapter import BaseModelAdapter
+
+
+class TinyAdapter(BaseModelAdapter):
+    required_bands = ["B04", "B08"]
+    n_timestamps = 0
+    output_dtype = "uint8"
+    output_nodata = 255
+    output_band_names = ["klass"]
+
+    def features(self, data5d, band_indices):
+        return data5d, band_indices
+
+    def predict(self, X_chunk):
+        return np.zeros(X_chunk.shape[0], dtype="uint8")
+""")
+    mod = __import__(modname)
+
+    roi = gpd.GeoDataFrame({"geometry": [shapely.geometry.box(0, 0, 1, 1)]}, crs="EPSG:4326")
+    grids = gpd.GeoDataFrame(
+        {"id": ["cell_a"]}, geometry=[shapely.geometry.box(0, 0, 1, 1)], crs="EPSG:4326",
+    )
+    monkeypatch.setattr(grid_mod, "roi_to_s2_grids", lambda *a, **kw: grids.copy())
+
+    catalog_gdf = gpd.GeoDataFrame(
+        {"geometry": [shapely.geometry.box(0, 0, 1, 1)]}, crs="EPSG:4326",
+    )
+    catalog_gdf["timestamp"] = pd.to_datetime(["2018-01-01"], utc=True)
+    cat = str(tmp_path / "catalog.parquet")
+    fs.write_parquet(cat, catalog_gdf)
+
+    def fake_run_create_datacube(*, csv_filepath, **kw):
+        cube_dir = os.path.join(os.path.dirname(csv_filepath), "cellbuild")
+        fs.makedirs(cube_dir)
+        fs.save_npy(os.path.join(cube_dir, "datacube.npy"),
+                    np.zeros((3, 2, 2, 2), dtype="float32"))
+        fs.save_npy(os.path.join(cube_dir, "metadata.pickle.npy"),
+                    {"timestamps": list(range(3)), "bands": ["B04", "B08"]}, allow_pickle=True)
+        pd.DataFrame(
+            {"datacube_filepath": [os.path.join(cube_dir, "datacube.npy")]}
+        ).to_csv(csv_filepath, index=False)
+
+    def fake_run_infer_only(input_csv, rows, bundle_path, **kw):
+        import rasterio
+        from rasterio.transform import from_origin
+
+        df = pd.read_csv(input_csv)
+        out_fp = str(df["output_filepath"].iloc[0])
+        os.makedirs(os.path.dirname(out_fp), exist_ok=True)
+        profile = {
+            "driver": "GTiff", "height": 2, "width": 2, "count": 1, "dtype": "uint8",
+            "crs": "EPSG:4326", "transform": from_origin(0, 1, 0.5, 0.5), "nodata": 255,
+        }
+        with rasterio.open(out_fp, "w", **profile) as dst:
+            dst.write(np.zeros((1, 2, 2), dtype="uint8"))
+        return [out_fp]
+
+    monkeypatch.setattr(_create_datacube, "run_create_datacube", fake_run_create_datacube)
+    monkeypatch.setattr(_infer_only_task, "run_infer_only", fake_run_infer_only)
+
+    export = str(tmp_path / "export")
+    try:
+        result = fsd.verify_adapter(
+            mod.TinyAdapter(), roi=roi, catalog_filepath=cat,
+            startdate="2018-01-01", enddate="2018-03-02", mosaic_days=20,
+            bands=["B04", "B08"], export_folderpath=export, cell="cell_a",
+        )
+    finally:
+        _purge(modname)
+
+    assert result["pass"] is True
+    bundle_path = result["metrics"]["bundle_path"]
+    assert bundle_path == os.path.join(export, "_bundle")
+    assert os.path.exists(os.path.join(bundle_path, "bundle.json"))
+
+    with pytest.raises(api.PreflightError, match="requirements"):
+        api.deploy(bundle_path, name="crop-rf", registry=str(tmp_path / "registry"),
+                  environment="env:1")
+
+
 # --- AC10 (record half): _deploy.json records name/version/digest/environment/verified --
 
 

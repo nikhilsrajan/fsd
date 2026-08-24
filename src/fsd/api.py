@@ -1053,6 +1053,18 @@ def _resolve_model_ref(model, registry, *, why):
     argument, never a silent fallback to treating it as a path (AC6). `":"` is never sniffed --
     it collides with URL schemes and Windows drive letters -- so a `"name:N"`-shaped path with no
     `registry=` passes through unchanged, as it always has.
+
+    **Prints `[model] <ref> -> v<N> (verified against <env>)` here, once (spec 51 D7, step 3).**
+    This is the only branch where a ref actually resolves -- a non-string `model`, an
+    already-resolved path, or a `"name:N"` path with no `registry=` prints nothing, because
+    nothing was resolved. It fires exactly once per verb call even though both `run_inference`
+    and `_ensure_bundle` call this function: after the first call `model` is a version path,
+    which is not ref-shaped, so the second call returns early above and never reaches here.
+    The `_deploy.json` read this adds is a second small read on top of `registry_mod.resolve`'s
+    own -- acceptable per D9 because D9's hot-path guard protects N nodes each resolving a model
+    in a fan-out, and this happens once, on the driver, before dispatch (confirmed above: no
+    runner or node calls `_resolve_model_ref` itself). It must never raise: a missing, empty, or
+    malformed `_deploy.json` degrades to the shorter line, never to a failed run.
     """
     if not isinstance(model, str):
         if registry is not None:
@@ -1066,10 +1078,18 @@ def _resolve_model_ref(model, registry, *, why):
         return model
     if registry is not None:
         try:
-            return registry_mod.resolve(model, registry).path
+            resolved = registry_mod.resolve(model, registry)
         except ValueError as exc:
             raise PreflightError(f"{why}: cannot resolve model={model!r} against "
                                  f"registry={registry!r} -- {exc}") from exc
+        record = registry_mod.read_deploy_record(resolved.path)
+        environment = (record or {}).get("environment")
+        if environment:
+            print(f"[model] {model} -> v{resolved.version} (verified against {environment})",
+                  flush=True)
+        else:
+            print(f"[model] {model} -> v{resolved.version}", flush=True)
+        return resolved.path
     if registry_mod.parse_ref(model)[1] == "@":
         raise PreflightError(
             f"{why}: model={model!r} looks like a registry ref ('name@alias') but no "

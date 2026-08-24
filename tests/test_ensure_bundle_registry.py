@@ -158,3 +158,194 @@ def test_ensure_bundle_wraps_an_unresolvable_ref_in_a_preflight_error(tmp_path):
         api._ensure_bundle(
             "crop-rf@nosuchalias", str(tmp_path / "out"), why="test", registry=registry_root,
         )
+
+
+# --- spec 51 step 3: the `[model]` print line (D7's print half, AC10's print half) -----
+
+
+def test_run_inference_prints_the_model_line_exactly_once_with_environment(
+    tmp_path, capsys, monkeypatch,
+):
+    """The double-print trap: `run_inference` hits `_resolve_model_ref` at BOTH its own call
+    site and `_ensure_bundle`'s (via the `cores>1` fan-out). Only the first sees a ref; the
+    second sees an already-resolved version path, which is not ref-shaped, so it returns early
+    and the line appears once.
+
+    This test **asserts that the second call site actually ran** (`seen`), because the obvious
+    way to write it -- an empty `inference_datacubes` folder -- dies at `_raise_preflight`
+    *before* `_ensure_bundle` is ever reached, and would pass with only one call site executed.
+    So: a real datacube, `cores=2` to force the runner path, and a stubbed runner/finalizer so
+    no snakemake or STAC work happens.
+    """
+    import types
+
+    import numpy as np
+
+    from fsd.storage import fs
+    from fsd.workflows import runners as _runners
+
+    src = _make_bundle(tmp_path)
+    registry_root = str(tmp_path / "registry")
+    v1 = registry.publish(src, "crop-rf", registry_root, alias="champion")
+    registry.write_deploy_record(
+        "crop-rf", v1,
+        {"name": "crop-rf", "version": v1, "environment": "fsd-infer-sklearn:6"},
+        registry_root,
+    )
+
+    cell = tmp_path / "cubes" / "cell_a"
+    cell.mkdir(parents=True)
+    fs.save_npy(str(cell / "datacube.npy"), np.zeros((1, 2, 2, 2), dtype="float32"))
+    fs.save_npy(str(cell / "metadata.pickle.npy"),
+                {"timestamps": [0, 1], "bands": ["B04", "B08"]}, allow_pickle=True)
+
+    seen = []
+    real_ensure_bundle = api._ensure_bundle
+
+    def spy_ensure_bundle(model, *a, **kw):
+        seen.append(model)
+        return real_ensure_bundle(model, *a, **kw)
+
+    monkeypatch.setattr(api, "_ensure_bundle", spy_ensure_bundle)
+    monkeypatch.setattr(_runners, "run_local_infer_only",
+                        lambda *a, **kw: types.SimpleNamespace(returncode=0))
+    monkeypatch.setattr(api, "_finalize_outputs", lambda *a, **kw: [])
+
+    api.run_inference(
+        model="crop-rf@champion",
+        registry=registry_root,
+        inference_datacubes=str(tmp_path / "cubes"),
+        output_folderpath=str(tmp_path / "out"),
+        cores=2,
+    )
+
+    # the second call site genuinely ran, and it received an already-resolved path
+    assert seen == [registry.version_path(registry_root, "crop-rf", 1)]
+
+    out = capsys.readouterr().out
+    line = "[model] crop-rf@champion -> v1 (verified against fsd-infer-sklearn:6)"
+    assert out.count(line) == 1
+    assert out.count("[model]") == 1
+
+
+def test_ensure_bundle_prints_the_shorter_line_when_deploy_json_is_absent(tmp_path, capsys):
+    src = _make_bundle(tmp_path)
+    registry_root = str(tmp_path / "registry")
+    registry.publish(src, "crop-rf", registry_root, alias="champion")
+
+    api._ensure_bundle(
+        "crop-rf@champion", str(tmp_path / "out"), why="test", registry=registry_root,
+    )
+
+    out = capsys.readouterr().out
+    assert "[model] crop-rf@champion -> v1\n" in out
+    assert "verified against" not in out
+
+
+def test_ensure_bundle_prints_the_shorter_line_when_deploy_json_has_no_environment(
+    tmp_path, capsys,
+):
+    src = _make_bundle(tmp_path)
+    registry_root = str(tmp_path / "registry")
+    v1 = registry.publish(src, "crop-rf", registry_root, alias="champion")
+    registry.write_deploy_record(
+        "crop-rf", v1, {"name": "crop-rf", "version": v1}, registry_root,
+    )
+
+    api._ensure_bundle(
+        "crop-rf@champion", str(tmp_path / "out"), why="test", registry=registry_root,
+    )
+
+    out = capsys.readouterr().out
+    assert "[model] crop-rf@champion -> v1\n" in out
+    assert "verified against" not in out
+
+
+def test_ensure_bundle_prints_the_shorter_line_when_deploy_json_is_malformed(tmp_path, capsys):
+    from fsd.storage import fs
+
+    src = _make_bundle(tmp_path)
+    registry_root = str(tmp_path / "registry")
+    v1 = registry.publish(src, "crop-rf", registry_root, alias="champion")
+    deploy_path = f"{registry.version_path(registry_root, 'crop-rf', v1)}/_deploy.json"
+    fs.write_text(deploy_path, "{not valid json")
+
+    resolved = api._ensure_bundle(
+        "crop-rf@champion", str(tmp_path / "out"), why="test", registry=registry_root,
+    )
+
+    assert resolved == registry.version_path(registry_root, "crop-rf", 1)
+    out = capsys.readouterr().out
+    assert "[model] crop-rf@champion -> v1\n" in out
+    assert "verified against" not in out
+
+
+def test_ensure_bundle_survives_a_byte_corrupt_deploy_record(tmp_path, capsys):
+    # "must never raise" has to cover a record that is not valid UTF-8, not just one that is
+    # not valid JSON: a truncated or byte-corrupted `_deploy.json` raises `UnicodeDecodeError`
+    # (a `ValueError`, NOT a `json.JSONDecodeError`) out of `json.load`. Catching only
+    # `JSONDecodeError`/`OSError` let it escape and kill a run whose model had already resolved.
+    src = _make_bundle(tmp_path)
+    registry_root = str(tmp_path / "registry")
+    v1 = registry.publish(src, "crop-rf", registry_root, alias="champion")
+    deploy_path = f"{registry.version_path(registry_root, 'crop-rf', v1)}/_deploy.json"
+    with open(deploy_path, "wb") as f:
+        f.write(b'{"environment": "img\xff\xfe:6"}')
+
+    resolved = api._ensure_bundle(
+        "crop-rf@champion", str(tmp_path / "out"), why="test", registry=registry_root,
+    )
+
+    assert resolved == registry.version_path(registry_root, "crop-rf", 1)
+    out = capsys.readouterr().out
+    assert "[model] crop-rf@champion -> v1\n" in out
+    assert "verified against" not in out
+
+
+def test_read_deploy_record_returns_none_for_every_unreadable_shape(tmp_path):
+    # the contract in one place, at the function itself: absent, empty, non-JSON, non-UTF-8,
+    # and a valid-JSON-but-not-a-dict payload all degrade to None, none of them raise.
+    vdir = tmp_path / "v1"
+    vdir.mkdir()
+    deploy_path = vdir / "_deploy.json"
+
+    assert registry.read_deploy_record(str(vdir)) is None       # absent
+    deploy_path.write_text("")
+    assert registry.read_deploy_record(str(vdir)) is None       # empty
+    deploy_path.write_text("{not valid json")
+    assert registry.read_deploy_record(str(vdir)) is None       # non-JSON
+    deploy_path.write_bytes(b"\xff\xfe\x00binary")
+    assert registry.read_deploy_record(str(vdir)) is None       # non-UTF-8
+    deploy_path.write_text('["a", "list"]')
+    assert registry.read_deploy_record(str(vdir)) is None       # JSON, but not an object
+    deploy_path.write_text('{"environment": "img:6"}')
+    assert registry.read_deploy_record(str(vdir)) == {"environment": "img:6"}
+
+
+def test_ensure_bundle_prints_nothing_for_a_plain_bundle_path(tmp_path, capsys):
+    src = _make_bundle(tmp_path)
+    api._ensure_bundle(src, str(tmp_path / "out"), why="test")
+    out = capsys.readouterr().out
+    assert "[model]" not in out
+
+
+def test_verify_adapter_gets_the_model_line_too(tmp_path, capsys):
+    # D7's print rule is not verb-specific (spec 47 D5): `verify_adapter` resolves refs too,
+    # and it hits the same resolve-succeeded branch.
+    src = _make_bundle(tmp_path)
+    registry_root = str(tmp_path / "registry")
+    registry.publish(src, "crop-rf", registry_root, alias="champion")
+
+    with pytest.raises(api.PreflightError, match="export_folderpath"):
+        api.verify_adapter(
+            model="crop-rf@champion",
+            registry=registry_root,
+            roi=str(tmp_path / "roi.geojson"),
+            catalog_filepath=str(tmp_path / "catalog.parquet"),
+            startdate="2018-04-01", enddate="2018-09-01",
+            mosaic_days=20, bands=["B04", "B08", "SCL"],
+            export_folderpath="",
+        )
+
+    out = capsys.readouterr().out
+    assert "[model] crop-rf@champion -> v1\n" in out

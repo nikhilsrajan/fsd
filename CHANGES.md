@@ -4,6 +4,50 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## A resolved model ref announces itself before dispatch (spec 51 step 3, 2026-08-24)
+
+- **`_resolve_model_ref` prints `[model] <ref> -> v<N> (verified against <env>)`** the moment a
+  registry ref actually resolves — once per `run_inference`/`verify_adapter` call, even though
+  both can reach `_resolve_model_ref` twice (`run_inference` itself, then `_ensure_bundle`): the
+  second call sees an already-resolved path, which is not ref-shaped, and returns early before
+  the print. Nothing is printed for a plain bundle path or a live adapter, since nothing was
+  resolved. `registry.read_deploy_record` (new, public) reads `_deploy.json`'s `environment`
+  for the parenthetical; a missing, empty, or malformed `_deploy.json` degrades to the shorter
+  `[model] <ref> -> v<N>` line rather than failing the run.
+- **Deferred, deliberately: the environment-mismatch warning (D7's other half, §7 Q2).**
+  `_deploy.json`'s `environment` field is last-writer-wins, so it can only ever name the most
+  recently verified image — implementing the warning today would fire falsely for every other
+  image that has genuinely run a version. Shipping the print line only, deciding the warning
+  from real notebook evidence. Tracked as
+  [issue #87](https://github.com/nikhilsrajan/fsd/issues/87).
+- **Found, not fixed here:** `registry._write_new_version`'s retry loop hangs forever when
+  `storage.fs.rename` can't atomically move a staged directory on a non-local fsspec backend
+  (confirmed for `memory://`, likely `abfss://`/`s3://` too) — `MemoryFileSystem.mv`'s
+  copy-then-`rm` leaves the source non-empty, `fs.rename` raises `OSError`, and
+  `_write_new_version` treats every `OSError` as "lost a race" and retries at `v<N+1>` forever,
+  since the real cause recurs identically on every attempt. Surfaced while writing an AC12 test
+  (a `memory://` registry through `deploy`/`resolve`/`run_inference`); that test is not included
+  because it would run forever; it is present as a **skipped** test
+  (`test_publish_resolve_round_trip_against_a_url_registry`) so `pytest -q`'s skip line keeps
+  naming the gap. Tracked as [issue #88](https://github.com/nikhilsrajan/fsd/issues/88).
+
+**Opus review, 2026-08-24 — three fixes on top of the above:**
+
+- **`read_deploy_record` no longer raises on a byte-corrupt record.** It caught
+  `(json.JSONDecodeError, OSError)`, which misses `UnicodeDecodeError` — a truncated or
+  byte-corrupted `_deploy.json` decodes as neither JSON nor UTF-8, so it escaped and killed a
+  run whose model had already resolved, breaking the function's own never-raise contract. The
+  catch is now `(ValueError, OSError)`; `ValueError` is `UnicodeDecodeError`'s and
+  `JSONDecodeError`'s common base.
+- **The once-per-call test was vacuous.** It drove `run_inference` with an *empty*
+  `inference_datacubes` folder, which dies at `_raise_preflight` **before** `_ensure_bundle` is
+  ever reached — so it asserted "printed once" while only one of the two call sites had run, and
+  could never have caught a double print. It now supplies a real datacube with `cores=2` (stubbed
+  runner + finalizer), and asserts that the second call site genuinely executed and received an
+  already-resolved path. Mutation-checked: re-introducing a print in `_ensure_bundle` fails it.
+- **`registry.__all__` gained `read_deploy_record`** — the module lists every public name and the
+  new one was missing.
+
 ## `verify_image` records WHAT it verified, not just where (spec 51 step 2 review, 2026-08-22)
 
 - **`verify_image`'s `_result.json` gains `metrics["bundle_digest"]`** — the D2 content digest

@@ -429,3 +429,27 @@ def test_set_alias_publishes_by_rename_so_a_reader_never_sees_a_partial_file(
         registry._STAGING_PREFIX in entry
         for entry in fs.ls(os.path.join(registry_root, "crop-rf"))
     )
+
+
+# --- AC12: a URL registry behaves like a local one -- BLOCKED, kept visible ------------
+
+
+@pytest.mark.skip(
+    reason="blocked on issue #88: registry.publish hangs forever on any non-local backend. "
+           "storage.fs.rename falls back to fsspec's mv (copy + non-recursive rm) for "
+           "non-local paths; on a directory that rm raises ENOTEMPTY, and "
+           "_write_new_version treats every OSError from rename as 'lost a race' and retries "
+           "at v<N+1> -- but this failure is deterministic, so the loop never terminates. "
+           "Unskip when #88 is fixed; do NOT unskip to 'see what happens' (it hangs the suite)."
+)
+def test_publish_resolve_round_trip_against_a_url_registry(tmp_path):
+    """AC12: behaviour is identical for a local registry path and a URL registry. No test
+    anywhere uses a URL registry today -- this is that gap, written down rather than left
+    absent, so `pytest -q`'s skip line keeps naming it until #88 lands."""
+    src = _make_bundle(tmp_path)
+    registry_root = "memory://ac12-registry"
+    v = registry.publish(src, "crop-rf", registry_root, alias="champion")
+    assert registry.resolve("crop-rf@champion", registry_root).version == v
+    assert registry.resolve("crop-rf:1", registry_root).path == registry.version_path(
+        registry_root, "crop-rf", 1,
+    )
