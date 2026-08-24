@@ -2,7 +2,8 @@
 
 **Status:** DRAFT, awaiting sign-off · **Opened:** 2026-08-24 · **Amends:** spec 51 D2, spec 31
 **Closes:** [#86](https://github.com/nikhilsrajan/fsd/issues/86),
-[#88](https://github.com/nikhilsrajan/fsd/issues/88) · **Completes:** spec 51 AC12
+[#88](https://github.com/nikhilsrajan/fsd/issues/88) · **Completes spec 51 AC12 for `abfss://`;
+narrows it for every other URL scheme** (see D5)
 
 ---
 
@@ -87,8 +88,24 @@ instead of staging per run (§7 Q3).
 | source + destination | mechanism | atomic? | arbitrates a race? |
 |---|---|---|---|
 | both local | `os.rename` (today, unchanged) | yes | yes — `EEXIST`/`ENOTEMPTY` |
-| both `abfss://` | `DataLakeDirectoryClient.rename_directory`, **conditional** (see below) | yes | yes — `409 PathAlreadyExists` |
+| both `abfss://`, source is a **directory** | `DataLakeDirectoryClient.rename_directory`, **conditional** | yes | yes — `409 PathAlreadyExists` |
+| both `abfss://`, source is a **file** | `DataLakeFileClient.rename_file`, **conditional** | yes | yes — `409 PathAlreadyExists` |
 | anything else | **raise**, naming the backend | — | — |
+
+**Both file and directory renames are required, and the file case is the majority.** Three of the
+registry's four `fs.rename` calls move a single FILE, not a directory:
+
+| call site | what is renamed | shape |
+|---|---|---|
+| `set_alias` (`registry.py:199`) | `.staging-<uuid>.json` → `_aliases.json` | **file** |
+| `write_deploy_record` (`registry.py:305`) | `.staging-<uuid>.json` → `_deploy.json` | **file** |
+| `_write_new_version` (`registry.py:394`) | `.staging-<uuid>/` → `v<N>/` | directory |
+
+A `fs.rename` that only handled directories would publish a version and then fail to write its
+alias or its deploy record — i.e. it would break promotion and the bundle↔image binding, which is
+most of what makes a registry worth having. `fs.rename` therefore dispatches on the source's
+shape. It must decide that **without** a `fs.isdir`-per-rename tax on the local path, which is the
+hot one: check the shape only on the `abfss://` branch, where a round-trip is already being paid.
 
 The third branch is the behavioural change that matters most: today it hangs, and after this it
 fails in one line saying why. A backend without an atomic directory move cannot host a registry,
@@ -217,8 +234,13 @@ already re-digests every version to prove the copy landed intact.
    first storage access.
 6. `run_inference`, `verify_adapter` and `verify_image` each call `configure_storage`, asserted by
    a test that runs the verb in a process where no other verb has run.
-7. Spec 51 AC12 holds: `deploy` → `resolve` → `run_inference` behave identically for a local
-   registry path and a URL registry, for every backend D1 supports.
+7. Spec 51 AC12 holds **for `abfss://`**: `deploy` → `resolve` → `run_inference` behave
+   identically for a local registry path and an `abfss://` one. For every other URL scheme the
+   criterion is deliberately **narrowed**, not met: those raise (AC2). Say so in spec 51's AC12
+   rather than marking it green — "identical for a URL registry" was written before anyone knew
+   only one URL scheme could support it.
+   - **7b.** `set_alias` and `write_deploy_record` work against an `abfss://` registry — the file
+     renames, not just the version publish. A test that only publishes would miss both.
 8. `azure-storage-file-datalake` is declared in the `[azure]` extra.
 9. A local registry copied to a blob root resolves identically at both (spec 51 D11/AC13b,
    re-asserted here because it is now reachable).
@@ -239,6 +261,14 @@ what the first real AML run found.
 blob account it is not available in the same form. The `rise` storage account is HNS (fsd already
 depends on that for `/vsiadls/` reads), but the failure must be a clear error, not a silent
 fallback to copy-and-delete. The run-book confirms which kind of account is in play.
+
+**Abandoned staging trees will accumulate on blob.** `_discard` cleans up a failed publish with
+`fs.rm(path, recursive=True)`, which is documented as unreliable on `abfss://` (#50). It is
+best-effort by design — wrapped in `contextlib.suppress(Exception)` precisely so a cleanup failure
+never masks the error that caused it — and a leftover is invisible to `_list_versions` (which
+matches `v<N>` only), so this is **not** a correctness problem. It is a tidiness one: a blob
+registry will slowly collect `.staging-*` prefixes that nothing removes. Out of scope here; noted
+so it is not rediscovered as a bug.
 
 **Credentials at rename time.** `DataLakeDirectoryClient` needs its own credential; it does not
 inherit adlfs's. It must resolve `DefaultAzureCredential` the same way `fsd/storage/azure.py`
