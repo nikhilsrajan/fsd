@@ -154,7 +154,10 @@ finished one — and it is bounded: everything published after this spec carries
 > things: content published before this spec (guaranteed complete — the old stage-then-rename
 > either landed a whole version or nothing), or a post-spec publish interrupted between its
 > manifest write and its marker write. Nothing on disk separates them. D1 orders the writes so
-> the second case is one object write wide, and where the two still collide **the legacy
+> the second case is as narrow as this design can make it (**Opus review, 2026-08-24: narrow, but
+> not the "one object write" originally claimed — `content_digest(target)` re-reads the whole
+> bundle inside that window. See §10.4; the conclusion is unaffected**), and where the two still
+> collide **the legacy
 > reading wins**: reading legacy content as incomplete would hide a real published version and
 > let the next `publish` allocate over it, losing a model, whereas reading an interrupted
 > version as complete strands a folder and burns a version number. Strand the folder.
@@ -201,8 +204,14 @@ finished one — and it is bounded: everything published after this spec carries
 
 **Two simultaneous publishers can corrupt a version, and nothing prevents it.** Both write into
 `v1/`, their files interleave, and neither set of bytes is intact. D1 step 2 means neither writer
-*marks* it, so the corrupt directory stays invisible and both move on — the damage is a stranded,
-unmarked folder rather than a bad model being served. This is the guarantee the rename used to
+*marks* it, so neither claims it and both move on — the damage is a stranded folder rather than a
+bad model being *returned by `publish`*. **Corrected by Opus review, 2026-08-24: that folder is
+not invisible.** Both writers wrote a `bundle.json`, and D5's legacy rule reads
+`bundle.json`-without-a-marker as complete, so `_list_versions` counts it: it burns a version
+number and stays reachable by an explicit pin or a hand-set alias. Nothing *hands it out* — no
+caller resolves "the latest version" through `_list_versions` (D2) — so the risk is unchanged in
+kind, but the original wording overstated the containment and is fixed here rather than left to
+mislead a later reader. This is the guarantee the rename used to
 provide and that this spec gives up, on the user's statement (2026-08-24) that concurrent
 publication of the same model does not happen in this team. **If that changes, §6 is the way
 back.**
@@ -290,6 +299,51 @@ ref, confirm a re-publish of identical content is a no-op. Write it to `fsd/runb
 `TEMPLATE.md`; Claude never runs it. **This spec is not done on green tests.**
 
 ---
+
+## 10. Opus review of the implementation (2026-08-24)
+
+Reviewed at `/effort high` against the shipped branch, per CLAUDE.md's model split. Four findings,
+all fixed in-branch. **The D5/AC2 amendment itself was re-derived independently and stands** — the
+one correction to it is §10.4, which does not change its conclusion.
+
+1. **`run_inference` and `verify_adapter` turned a preflight error into a bare `ValueError`.**
+   D4's `configure_storage` call was placed before each verb's `_raise_preflight`, which is
+   genuinely *necessary* (`_resolve_model_ref` and `fs.read_geo` touch storage first, as the
+   handoff argued) — but `configure_storage` **raises** on an unsupported backend, so
+   `storage="s3"` escaped as a `ValueError` instead of the verb's `PreflightError`, discarding
+   every other accumulated preflight error with it. Confirmed by calling both verbs. And the
+   *accepted* case had the side effect the handoff had reasoned was absent:
+   `run_inference(storage="azure")` on the pre-built-cubes path is refused by the seam gate, yet
+   still flipped the whole process to authenticated adlfs on its way to being refused — the exact
+   accident D4 exists to remove. **Fixed:** the seam check raises on its own, before
+   `configure_storage`, in both verbs — the shape `deploy` already had. `verify_adapter`'s date
+   errors are no longer batched with seam errors; a seam misconfiguration is fatal by itself.
+2. **Publishing into an incomplete version inherited the previous attempt's leftovers.** AC2 has
+   the next `publish` reuse an interrupted `v<N>` **in place**, and D1 step 2 cannot police what
+   it inherits: `content_digest` covers only *manifest-declared* files, so an artifact or a
+   `code/*.py` the new bundle does not declare survived into the version and was then marked
+   complete. `bundle.load` puts a version's `code/` on `sys.path`, so a stale module left there is
+   importable by whichever adapter lands next — a quiet wrong-model failure the old
+   stage-then-rename could not produce, because every attempt got a fresh staging prefix.
+   **Fixed:** `_write_new_version` `_discard`s an existing incomplete target before writing.
+   Best-effort like every other `_discard`, so #50's unreliable recursive rm leaves a blob
+   registry no worse off than before the call existed.
+3. **Four branches were unpinned — found by mutation testing, not by reading.** Deleting the
+   idempotent-collision `return`, disabling the landed-digest guard, and replacing D5's legacy
+   `bundle.json` check with `return False` each left the whole suite **green**. The two "race"
+   tests rewritten during implementation look like they cover the collision path but cannot reach
+   it: the competitor publishes *before* `_list_versions` runs, so allocation starts past their
+   version and the loop body never sees an existing target. So the narrowing flagged at handoff
+   did lose something the ACs require — AC4's "retries only a genuine version collision", and
+   **AC5, which had no test at all**. **Fixed:** five tests added, each verified to kill its
+   mutation; the collision pair reaches the branch by simulating the stale listing that *is* the
+   race. D3's re-raise was already covered and stays so.
+4. **The residual window is not "one object write wide".** Between `bundle.json` landing and
+   `_complete.json` landing sits `content_digest(target)` — a full re-read and re-digest of the
+   whole bundle, which on blob is many round trips, not one write. The amendment's wording is
+   corrected in D5. **The conclusion is unaffected, and on inspection is stronger than it was
+   argued:** everything in that window is *post*-write, so a version stranded there holds complete
+   content, and reading it as legacy-complete is right — it is unverified, not partial.
 
 ## 8. Best-practice alignment / sources
 

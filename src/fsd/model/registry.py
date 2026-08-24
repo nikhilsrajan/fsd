@@ -389,10 +389,16 @@ def _write_new_version(
     A target that already exists and is complete (`_is_version_complete`) is a genuine
     collision only if it does not hold the caller's digest, in which case it retries at
     `v<N+1>` -- D2's idempotency, reached without writing anything. A target that exists
-    but is *not* complete (an interrupted publish, D1's step 3 never ran) is safe to
-    (re)write into: nothing has claimed it. A target where the freshly landed bytes do not
-    match the caller's digest (two publishers interleaved their files at the same `v<N>`,
-    spec 52 §5) is left unmarked and the loop moves to `v<N+1>` rather than claiming it.
+    but is *not* complete (an interrupted publish, D1's step 3 never ran) is nobody's, so
+    it is **cleared** and then rewritten -- clearing it is what keeps the previous
+    attempt's undeclared leftovers out of the version the re-digest is about to bless.
+    A target where the freshly landed bytes do not match the caller's digest (two
+    publishers interleaved their files at the same `v<N>`, spec 52 §5) is left unmarked
+    and the loop moves to `v<N+1>` rather than claiming it -- note that such a directory
+    is *not* invisible, because both writers wrote a `bundle.json` and D5's legacy rule
+    reads that as complete; it burns the version number and can still be reached by an
+    explicit pin, which is why §5's risk is stated in terms of a stranded directory
+    rather than an unreachable one.
 
     `bundle.json` is written **last** among the content files, deliberately out of the
     caller's `files` order (D5 amendment, 2026-08-24): `_is_version_complete`'s legacy
@@ -421,6 +427,18 @@ def _write_new_version(
             version += 1
             continue
 
+        if fs.exists(target, **storage_options):
+            # Opus review, 2026-08-24. An incomplete target holds a *previous* attempt's
+            # leftovers, and the re-digest below cannot see them: `content_digest` covers
+            # only manifest-declared files, so an artifact or a `code/*.py` that THIS
+            # bundle does not declare survives into the version and is then marked
+            # complete. `bundle.load` puts a version's `code/` on `sys.path`, so a stale
+            # module left there is importable by the adapter that lands next. The old
+            # stage-then-rename got a clean directory for free (a fresh staging prefix
+            # every attempt); publishing in place has to ask for one. Best-effort, like
+            # every other `_discard` -- a blob backend where recursive rm is unreliable
+            # (#50) is no worse off than before this call existed.
+            _discard(target, storage_options)
         try:
             for rel, data in ordered_files:
                 fs.write_bytes(os.path.join(target, rel), data, **storage_options)

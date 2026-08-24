@@ -4,10 +4,10 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-24 (**SPEC 52 IMPLEMENTED (Sonnet `/effort medium`) — all three §9 steps
-done, `pytest -q` and `ruff` clean; PENDING Opus `/effort high` review before merge.** Work is on
-worktree branch `worktree-spec52-registry-on-blob` (at `fsd/.claude/worktrees/`), based on `main`
-@ `7c3811c`.
+_Last updated: 2026-08-24 (**SPEC 52 IMPLEMENTED (Sonnet `/effort medium`) and REVIEWED by Opus
+`/effort high` — four findings, all fixed in-branch; see the "Opus review" block below and spec 52
+§10.** Work is on worktree branch `worktree-spec52-registry-on-blob` (at `fsd/.claude/worktrees/`),
+based on `main` @ `7c3811c`.
 
 **Step 0 (registry core, D1/D2/D3/D5) — `fsd/model/registry.py`.** `_write_new_version` writes a
 version's files straight into `v<N>/` (no staging prefix, no directory rename), re-digests what
@@ -43,6 +43,32 @@ blocked on). Added `test_deploy.py::test_deploy_set_alias_resolve_run_inference_
 for the fuller chain AC8 actually names (`deploy` → `set_alias` → `resolve` → `run_inference`), and
 a dedicated timeout-asserted test for AC1's literal wording (a background thread + `join(timeout=10)`,
 no new test dependency).
+
+**Opus review, 2026-08-24 — four findings, all fixed in-branch. The D5/AC2 amendment itself was
+re-derived independently and STANDS** (the handoff was right to ask for that; the one correction to
+it, #4 below, does not change its conclusion). Full account: spec 52 §10.
+(1) **`run_inference`/`verify_adapter` turned a preflight error into a bare `ValueError`.** D4's
+`configure_storage` call genuinely had to precede `_raise_preflight` — but `configure_storage`
+*raises* on an unsupported backend, so `storage="s3"` escaped as `ValueError` and discarded every
+other accumulated preflight error. And the side effect the handoff reasoned was absent is real: a
+call the seam *rejects* (`run_inference(storage="azure")` on the pre-built-cubes path) still flipped
+the process to authenticated adlfs first — the exact accident D4 exists to remove. The seam check
+now raises on its own first, matching `deploy`. (2) **Publishing into an incomplete version
+inherited the previous attempt's leftovers.** AC2 reuses an unmarked `v<N>` in place, and
+`content_digest` covers only *manifest-declared* files, so an undeclared artifact or `code/*.py`
+survived into the version and was then marked complete — and `bundle.load` puts `code/` on
+`sys.path`, so a stale module there is importable by the next adapter. `_write_new_version` now
+`_discard`s an incomplete target before writing; stage-then-rename got a clean directory for free.
+(3) **Four branches were unpinned — mutation testing found them, reading did not.** Deleting the
+idempotent-collision `return`, disabling the landed-digest guard, and replacing D5's legacy check
+with `return False` each left the suite green; the two rewritten "race" tests cannot reach
+`_write_new_version`'s collision branch at all (their competitor publishes *before* `_list_versions`
+runs). So the narrowing flagged at handoff did lose AC4's substance and left **AC5 with no test at
+all**. Five tests added, each verified to kill its mutation. (4) **The residual window is not "one
+object write wide"** — `content_digest(target)` re-reads the whole bundle inside it. Conclusion
+unaffected and actually stronger: everything in that window is post-write, so a version stranded
+there holds complete content; it is unverified, not partial.
+Suite **956 passed / 93 skipped**, ruff clean.
 
 **Run-book written, not run** (Claude never runs pipeline/networked scripts): `runbooks/52-registry-on-blob.md`
 — publish v1/v2 to a real `abfss://` registry, repoint an alias, run inference off the ref,

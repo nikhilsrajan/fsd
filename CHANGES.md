@@ -34,6 +34,34 @@ carried over (renames, restructures, behavioral tweaks). Pure removals go in
   its `storage_allowed=False` gate (a blob registry can now actually work); `verify_image` gained
   a `storage=` kwarg it never had.
 
+**Opus review, 2026-08-24 — two behavior fixes on top of the above** (full account:
+`specs/52-registry-on-blob.md` §10):
+
+- **A bad `storage=` backend is a `PreflightError` again, not a bare `ValueError`.** D4's
+  `configure_storage` call had to sit *before* `run_inference`/`verify_adapter`'s
+  `_raise_preflight` (both touch storage earlier than the raise point) — but `configure_storage`
+  itself raises on an unsupported backend, so `storage="s3"` escaped as a `ValueError` and took
+  every other accumulated preflight error with it. The seam check now raises on its own first, as
+  `deploy` already did. Second half of the same fix: a call the seam *rejects* no longer switches
+  the process to authenticated adlfs on its way to being rejected — that global side effect is the
+  accident D4 exists to remove. `verify_adapter`'s date errors are no longer reported alongside
+  seam errors; a seam misconfiguration now raises by itself.
+- **Reusing an interrupted version clears it first.** AC2 has the next `publish` write into an
+  unmarked `v<N>` in place, and the re-digest cannot police what it inherits — `content_digest`
+  covers only *manifest-declared* files, so an artifact or a `code/*.py` the new bundle does not
+  declare survived into the version and was then marked complete. `bundle.load` puts a version's
+  `code/` on `sys.path`, so a stale module there is importable by the adapter that lands next.
+  `_write_new_version` now `_discard`s an existing incomplete target before writing (best-effort,
+  like every other `_discard`). The old stage-then-rename never had this problem — each attempt
+  got a fresh staging prefix.
+- **Five tests added for branches mutation testing showed were unpinned** — the
+  idempotent-collision return, the collision-with-different-content advance, the landed-digest
+  guard, D5's legacy carve-out (**which had no test at all**), and the leftovers fix above. Each
+  was verified to fail against a mutation of the line it covers. The two "race" tests rewritten
+  during implementation cannot reach `_write_new_version`'s collision branch — their competitor
+  publishes before `_list_versions` runs, so allocation starts past it — so the new pair simulates
+  the stale listing that *is* the race.
+
 ## A resolved model ref announces itself before dispatch (spec 51 step 3, 2026-08-24)
 
 - **`_resolve_model_ref` prints `[model] <ref> -> v<N> (verified against <env>)`** the moment a

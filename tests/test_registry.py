@@ -503,3 +503,144 @@ def test_publish_against_a_url_registry_returns_within_a_timeout(tmp_path):
     if "error" in result:
         raise result["error"]
     assert result["version"] == 1
+
+
+# --- spec 52 review (Opus, 2026-08-24): the branches mutation testing found unpinned -----
+#
+# Three of `_write_new_version`'s exit paths and D5's legacy carve-out survived mutation
+# against the suite as shipped: deleting the idempotent-collision `return`, disabling the
+# landed-digest guard, and replacing the legacy `bundle.json` check with `return False` all
+# left every test green. The two "race" tests rewritten during implementation look like they
+# cover the collision path but cannot reach it -- their competitor publishes *before*
+# `_list_versions` runs, so allocation starts past the competitor's version and the loop
+# body never sees an existing target. Reaching it needs the listing to be stale, which is
+# what the race actually is and what `monkeypatch` supplies below.
+
+
+def test_write_new_version_returns_a_complete_collision_holding_identical_content(
+    tmp_path, monkeypatch,
+):
+    """D2/D3, path (a): we allocated `v1` off a listing taken before a competitor finished
+    `v1` with the *same* bytes. Their version is the right answer -- return it, write
+    nothing. Unreachable through `publish` (its own idempotency scan returns first), so the
+    stale listing is simulated directly."""
+    registry_root = str(tmp_path / "registry")
+    name_root = os.path.join(registry_root, "crop-rf")
+    src = _make_bundle(tmp_path, "src")
+    registry.publish(src, "crop-rf", registry_root)  # competitor completes v1
+
+    files = registry._read_bundle_content(src, None)
+    digest = registry._digest_of(files)
+    monkeypatch.setattr(registry, "_list_versions", lambda *a, **k: [])  # our stale listing
+
+    assert registry._write_new_version(name_root, files, digest, {}) == 1
+    assert fs.ls(os.path.join(registry_root, "crop-rf")) == [
+        os.path.join(registry_root, "crop-rf", "v1"),
+    ]
+
+
+def test_write_new_version_skips_a_complete_collision_holding_different_content(
+    tmp_path, monkeypatch,
+):
+    """D2/D3, path (b): same stale listing, but the competitor's `v1` holds *their* bundle.
+    Returning 1 would hand the caller a version they never published, so the loop must
+    advance to `v2` -- and must leave `v1`'s bytes untouched on the way past."""
+    registry_root = str(tmp_path / "registry")
+    name_root = os.path.join(registry_root, "crop-rf")
+    theirs = _make_bundle(tmp_path, "theirs")
+    mine = _make_bundle(tmp_path, "mine")
+    _rewrite_bundle_field(mine, feature={"kind": "callable", "steps": ["mine"]})
+    registry.publish(theirs, "crop-rf", registry_root)  # competitor completes v1
+
+    files = registry._read_bundle_content(mine, None)
+    digest = registry._digest_of(files)
+    monkeypatch.setattr(registry, "_list_versions", lambda *a, **k: [])
+
+    assert registry._write_new_version(name_root, files, digest, {}) == 2
+    v1 = registry.version_path(registry_root, "crop-rf", 1)
+    v2 = registry.version_path(registry_root, "crop-rf", 2)
+    assert registry.content_digest(v1) == registry.content_digest(theirs)
+    assert registry.content_digest(v2) == digest
+
+
+def test_publish_moves_on_when_the_landed_bytes_are_not_the_callers(tmp_path, monkeypatch):
+    """D1 step 2 / spec 52 §5: two publishers interleaved their files at the same `v<N>`, so
+    the re-digest of what landed does not match what we were asked to publish. Claiming that
+    directory would serve a model nobody published, so the loop leaves it unmarked and moves
+    to `v2`. Also pins the honest version of §5's risk: `v1` is *not* invisible afterwards --
+    our `bundle.json` did land, and D5's legacy rule reads that as complete."""
+    artifact = tmp_path / "model.bin"
+    artifact.write_bytes(b"weights")
+    src = bundle.save(
+        joblib.Parallel, {"model": str(artifact)}, str(tmp_path / "src_bundle"),
+        code=False, verbose=False,
+    )
+    registry_root = str(tmp_path / "registry")
+
+    real_write_bytes = fs.write_bytes
+    tampered = {"once": False}
+
+    def tampering_write_bytes(path, data, **kw):
+        # a competitor's bytes land at the artifact -- before `bundle.json`, which is last
+        if not tampered["once"] and os.path.basename(path) != bundle.BUNDLE_MANIFEST:
+            tampered["once"] = True
+            return real_write_bytes(path, b"someone else's weights", **kw)
+        return real_write_bytes(path, data, **kw)
+
+    monkeypatch.setattr(registry.fs, "write_bytes", tampering_write_bytes)
+    version = registry.publish(src, "crop-rf", registry_root)
+
+    assert version == 2
+    v1 = registry.version_path(registry_root, "crop-rf", 1)
+    v2 = registry.version_path(registry_root, "crop-rf", 2)
+    assert registry.content_digest(v2) == registry.content_digest(src)
+    assert not fs.exists(os.path.join(v1, registry._COMPLETE_FILE))
+    assert registry._list_versions(os.path.join(registry_root, "crop-rf"), {}) == [1, 2]
+
+
+def test_a_legacy_version_with_no_marker_counts_and_is_never_allocated_over(tmp_path):
+    """AC5 / D5's legacy carve-out, which had no test at all: replacing it with
+    `return False` left the whole suite green. It is the rule that keeps every pre-spec-52
+    version visible, and it is now *more* load-bearing than at sign-off -- since this review
+    added a `_discard` of an incomplete target, a regression here would not merely merge
+    files into a legacy version, it would delete it and publish over the top."""
+    registry_root = str(tmp_path / "registry")
+    name_root = os.path.join(registry_root, "crop-rf")
+    legacy = _make_bundle(tmp_path, "legacy")
+    registry.publish(legacy, "crop-rf", registry_root)
+
+    v1 = registry.version_path(registry_root, "crop-rf", 1)
+    fs.rm(os.path.join(v1, registry._COMPLETE_FILE))  # as a pre-spec-52 publish left it
+
+    assert registry._list_versions(name_root, {}) == [1]
+    assert registry.resolve("crop-rf:1", registry_root).path == v1
+
+    nextone = _make_bundle(tmp_path, "nextone")
+    _rewrite_bundle_field(nextone, feature={"kind": "callable", "steps": ["next"]})
+    assert registry.publish(nextone, "crop-rf", registry_root) == 2
+    assert registry.content_digest(v1) == registry.content_digest(legacy)
+
+
+def test_publish_into_an_incomplete_version_clears_the_previous_attempts_leftovers(tmp_path):
+    """Opus review, 2026-08-24. AC2 has the next `publish` reuse an interrupted version *in
+    place*, and the re-digest cannot police what it inherits: `content_digest` covers only
+    manifest-declared files, so an artifact or a `code/*.py` the new bundle does not declare
+    would survive into the version and then be marked complete. `bundle.load` puts a
+    version's `code/` on `sys.path`, so a stale module there is importable by whichever
+    adapter lands next -- a quiet, wrong-model failure the old stage-then-rename could not
+    produce, because every attempt got a fresh staging prefix."""
+    registry_root = str(tmp_path / "registry")
+    name_root = os.path.join(registry_root, "crop-rf")
+    v1 = os.path.join(name_root, "v1")
+    # what an interrupted publish leaves: files, but no manifest and no marker
+    fs.write_bytes(os.path.join(v1, "stale.bin"), b"a previous attempt's weights")
+    fs.write_text(os.path.join(v1, "code", "stale_adapter.py"), "raise RuntimeError('stale')")
+    assert registry._list_versions(name_root, {}) == []
+
+    src = _make_bundle(tmp_path, "fresh")
+    assert registry.publish(src, "crop-rf", registry_root) == 1
+
+    assert not fs.exists(os.path.join(v1, "stale.bin"))
+    assert not fs.exists(os.path.join(v1, "code", "stale_adapter.py"))
+    assert registry.content_digest(v1) == registry.content_digest(src)
+    assert fs.exists(os.path.join(v1, registry._COMPLETE_FILE))
