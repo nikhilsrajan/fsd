@@ -4,7 +4,50 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-22 (**spec 51 §9 step 2 (`fsd.deploy`) REVIEWED by Opus `/effort high` —
+_Last updated: 2026-08-24 (**spec 51 §9 step 3 (the `[model]` print line, D7/AC10's print half) —
+IMPLEMENTED (Sonnet `/effort medium`) and REVIEWED by Opus `/effort high`: three findings, all
+fixed in-branch — see CHANGES.md's "Opus review" block.** Work is on worktree branch
+`spec51-step3-model-line`, based on `main` @ `88e8f11` (steps 0-2 merged + pushed). This is the
+**last step of spec 51 §9** — after Opus review + merge, the spec is implemented apart from the
+two §7 AC gaps below (one done here, one blocked and issued).
+**What shipped:** `api._resolve_model_ref` now prints `[model] <ref> -> v<N> (verified against
+<env>)` (or the shorter `[model] <ref> -> v<N>` with no `_deploy.json`/`environment`) the moment a
+ref actually resolves — inside the one branch where `registry_mod.resolve` succeeds, so it fires
+exactly once per `run_inference`/`verify_adapter` call even though both can call
+`_resolve_model_ref` twice. `registry.read_deploy_record` (new, public) backs it and
+`_read_deploy_digest`; never raises — a missing/malformed `_deploy.json` degrades to the shorter
+line. Full detail: `CHANGES.md`'s top entry.
+**Deliberately deferred (recorded in the spec, not silent):** D7's environment-mismatch warning
+(§7 Q2) — `_deploy.json`'s `environment` is last-writer-wins, so it would warn falsely against any
+image but the most recently verified one. Ship the print only; decide the warning from real
+notebook use. **[Issue #87](https://github.com/nikhilsrajan/fsd/issues/87).**
+**Secondary scope (§7's two AC gaps):** AC14's second half done —
+`test_deploy_refuses_verify_adapters_real_auto_saved_bundle` runs the real `verify_adapter` path
+and feeds its actual `metrics["bundle_path"]` to `deploy`, asserting the `requirements` refusal.
+**AC12 (URL registry) blocked, not done** — writing it surfaced a real, separate bug:
+`registry._write_new_version`'s retry loop hangs forever publishing to any non-local fsspec
+backend (confirmed `memory://`), because `storage.fs.rename`'s directory move fails `ENOTEMPTY` on
+`MemoryFileSystem` and every retry hits the identical (non-transient) failure. Not fixed here —
+out of this step's scope, a storage/registry design question. **[Issue #88](https://github.com/nikhilsrajan/fsd/issues/88).**
+The AC12 test is now present but **`@pytest.mark.skip`ped** (Opus review) so the gap stays visible
+in `pytest -q`'s skip line instead of being absent from the suite.
+Suite **936 passed / 91 skipped / 1 pre-existing failure** (`planetary_computer` absent), ruff
+clean.
+**Opus review found three (the pattern held for a fourth step running):** (1)
+`read_deploy_record` raised `UnicodeDecodeError` on a byte-corrupt `_deploy.json`, breaking its own
+never-raise contract — catch widened to `(ValueError, OSError)`; (2) the once-per-call test was
+**vacuous** — an empty `inference_datacubes` folder dies at `_raise_preflight` before
+`_ensure_bundle` is ever reached, so it asserted "printed once" with only one of the two call sites
+executed; rewritten to drive a real datacube at `cores=2` and assert the second call site ran;
+(3) `registry.__all__` was missing `read_deploy_record`. Both behavioral fixes are mutation-checked.
+Independently verified during review: no runner or node resolves refs (`src/fsd/workflows/` contains
+zero `registry` references — nodes receive a staged bundle path), so D9's "once, on the driver"
+claim holds; and issue #88's hang reproduces (`_write_new_version` on `memory://` still looping
+after 10s).
+**NEXT: commit + merge `--no-ff` into `main`, prune this worktree, then push** — awaiting the
+user's go (`main` will be 4+ commits ahead of `origin/main`)._
+
+_Previously: 2026-08-22 (**spec 51 §9 step 2 (`fsd.deploy`) REVIEWED by Opus `/effort high` —
 one real defect found, reproduced and fixed; MERGED into `main` (`--no-ff`, `main` @ `37124c5`)
 and both per-spec worktrees pruned. NOT PUSHED — `main` is 3 commits ahead of `origin/main`,
 awaiting the user's go.**

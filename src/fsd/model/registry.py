@@ -48,6 +48,7 @@ __all__ = [
     "migrate",
     "parse_ref",
     "publish",
+    "read_deploy_record",
     "resolve",
     "set_alias",
     "version_path",
@@ -252,17 +253,37 @@ def content_digest(bundle_path: str, *, storage_options: dict | None = None) -> 
 # --- the deploy record (D7) ------------------------------------------------------
 
 
+def read_deploy_record(version_dir: str, *, storage_options: dict | None = None) -> dict | None:
+    """`version_dir`'s `_deploy.json` as a dict, or `None` if there is no such file (a version
+    published before step 2, or by a caller that never called `deploy`) -- and also `None` for
+    an empty or malformed file, since a print-line degrading to "no record" is the correct
+    failure mode (spec 51 step 3): a ref that resolved must never fail to run because its
+    bookkeeping record was unreadable.
+
+    **Never raises**, and the catch is deliberately wide enough to mean it. `ValueError` covers
+    both `json.JSONDecodeError` *and* `UnicodeDecodeError` -- a truncated or byte-corrupted
+    record decodes as neither JSON nor UTF-8, and catching only `JSONDecodeError` let that one
+    escape and kill a run whose model had already resolved. `OSError` covers absent (its
+    `FileNotFoundError` subclass), unreadable, and a backend that is briefly unhappy; degrading
+    to "no record" is right for all of them, because the record is bookkeeping, never the
+    thing being run. A non-dict payload (a bare list, a bare string) is `None` too."""
+    opts = storage_options or {}
+    path = os.path.join(version_dir, DEPLOY_FILE)
+    try:
+        with fs.open(path, "r", **opts) as f:
+            record = json.load(f)
+    except (ValueError, OSError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
 def _read_deploy_digest(version_dir: str, storage_options: dict) -> str | None:
     """The `digest` field of `version_dir`'s `_deploy.json`, or `None` if there is no such
     file (a version published before step 2, or by a caller that never called `deploy`).
     `publish`'s idempotency loop reads this first (a small metadata read) and falls back to
     recomputing the content digest only when it is absent."""
-    path = os.path.join(version_dir, DEPLOY_FILE)
-    try:
-        with fs.open(path, "r", **storage_options) as f:
-            return json.load(f).get("digest")
-    except FileNotFoundError:
-        return None
+    record = read_deploy_record(version_dir, storage_options=storage_options)
+    return record.get("digest") if record is not None else None
 
 
 def write_deploy_record(

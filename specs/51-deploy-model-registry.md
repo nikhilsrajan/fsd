@@ -288,6 +288,16 @@ Two consequences beyond the record itself:
   e.g. a rebuilt image — and refusing would make an image upgrade impossible without a re-deploy).
   §7 Q2 asks whether that should instead refuse.
 
+**§9 step 3 deferral (user, 2026-08-24):** the mismatch warning above is **not implemented**.
+`_deploy.json`'s `environment` field is overwritten on every re-deploy of identical content, so it
+can only ever record the *last* image that ran a version — a model verified against a rebuilt
+image would make the warning fire falsely for every other image that genuinely ran it. The
+user's position: images and models are orthogonal (one image runs many models, one model runs on
+many images), and the only thing that blocks a pairing is incompatibility, which `verify_image`
+already tests. Designing a multi-binding `_deploy.json` schema for a problem nobody has hit yet is
+premature; the decision is to ship the print line only, run the notebook, and decide from real
+use. Tracked as issue #87.
+
 ### D8 — `deploy` does not build images — already settled, recorded here so it stays settled
 
 This is **not a fresh deferral**. ADR 0002 called P6 *"the home where image-build later gets
@@ -479,12 +489,16 @@ and Harbor all implement (§8), so that backend is the one with a genuine anti-l
    `runner_kwargs`?** → an **explicit `registry=`** on `deploy`/`run_inference`/`verify_adapter`.
    Resolving a model is not a runner concern (a local run resolves models too), and `runner_kwargs`
    is already the parameter most likely to accumulate unrelated keys. Folded into **D4**.
-2. **[RESOLVED — default stands]** **On an environment mismatch at run time, warn or refuse?** →
-   **warn, loudly, and continue.** Refusing would make "I rebuilt the image, I will re-verify
-   later" impossible without a re-deploy, and D7's printed line makes the mismatch visible. The
-   counter-argument is recorded rather than dismissed: spec 47 D1 chose to *refuse* on the
-   analogous cached-cell-id drift, because there it would orphan outputs already written. Nothing
-   is orphaned here. Folded into **D7**.
+2. **[RESOLVED — default stands, then deferred at implementation]** **On an environment mismatch at
+   run time, warn or refuse?** → **warn, loudly, and continue.** Refusing would make "I rebuilt the
+   image, I will re-verify later" impossible without a re-deploy, and D7's printed line makes the
+   mismatch visible. The counter-argument is recorded rather than dismissed: spec 47 D1 chose to
+   *refuse* on the analogous cached-cell-id drift, because there it would orphan outputs already
+   written. Nothing is orphaned here. Folded into **D7**. **§9 step 3 (user, 2026-08-24): the warn
+   half is deferred, not implemented** — `_deploy.json`'s single, last-writer-wins `environment`
+   field cannot distinguish "this image never ran this model" from "a different image ran it after
+   the record was written", so implementing the warning now would fire falsely. Ship the print
+   half only; decide the warning from real notebook evidence. Tracked as issue #87.
 3. **[RESOLVED — default stands]** **Is the content digest checked on every load, or only by
    `deploy`?** → **only by `deploy`** (and by `migrate`, D11). A load-time check re-reads every
    artifact byte on every node of a fan-out — the same cost argument spec 49 §7 Q2 used to reject
