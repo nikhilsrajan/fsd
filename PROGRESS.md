@@ -44,8 +44,11 @@ Independently verified during review: no runner or node resolves refs (`src/fsd/
 zero `registry` references — nodes receive a staged bundle path), so D9's "once, on the driver"
 claim holds; and issue #88's hang reproduces (`_write_new_version` on `memory://` still looping
 after 10s).
-**NEXT: commit + merge `--no-ff` into `main`, prune this worktree, then push** — awaiting the
-user's go (`main` will be 4+ commits ahead of `origin/main`)._
+**Committed + merged `--no-ff` into `main` (`main` @ `002c85e`), worktree pruned, branch deleted.
+NOT PUSHED — `main` is 2 commits ahead of `origin/main`, awaiting the user's push.**
+**NEXT after the push: update `notebooks/e2e_austria_aml.ipynb`** to use the registry verbs
+(`fsd.deploy` + a `name@alias` ref through `run_inference`), then the user runs it and reports on
+usability._
 
 _Previously: 2026-08-22 (**spec 51 §9 step 2 (`fsd.deploy`) REVIEWED by Opus `/effort high` —
 one real defect found, reproduced and fixed; MERGED into `main` (`--no-ff`, `main` @ `37124c5`)
