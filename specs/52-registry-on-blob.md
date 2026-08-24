@@ -1,6 +1,7 @@
 # Spec 52 — the registry on blob: `fsd.deploy` publishes to the cloud
 
-**Status:** DRAFT, awaiting sign-off · **Opened:** 2026-08-24 · **Amends:** spec 51 D2
+**Status:** **SIGNED OFF (user, 2026-08-24)** — all four §7 questions resolved at their proposed
+defaults. Ready to implement. · **Opened:** 2026-08-24 · **Amends:** spec 51 D2
 **Closes:** [#86](https://github.com/nikhilsrajan/fsd/issues/86),
 [#88](https://github.com/nikhilsrajan/fsd/issues/88) · **Completes:** spec 51 AC12
 
@@ -213,18 +214,47 @@ need a *shared* registry: the model reaches the cluster either way, because `ver
 
 ---
 
-## 7. Questions at sign-off
+## 7. Questions at sign-off — ALL RESOLVED (user, 2026-08-24)
 
-1. **`_MAX_PUBLISH_ATTEMPTS = 16`** — right bound? It only limits genuine version collisions.
-2. **Should `run_inference` fetch the model from the registry instead of staging it per run?**
-   Deliberately **out of scope**. A blob registry makes it possible — `_stage_bundle` would become
-   a blob-to-blob copy that could be skipped — but it changes how nodes get models and deserves
-   its own decision. Flagged so it is not mistaken for part of this spec.
-3. **Does `deploy` need `storage=` at all, or should it infer from the registry URL's scheme?**
-   Proposed: keep the explicit kwarg, matching every other verb.
-4. **Should `_complete.json`'s digest replace the `_deploy.json` digest read in `publish`'s
-   idempotency scan?** It would let the scan skip re-digesting every version. Proposed: not now —
-   it is an optimisation, and this spec is trying to get smaller.
+Every question was signed off **at its proposed default**. Recorded individually so a later reader
+sees a decision, not an unread list.
+
+1. **[RESOLVED — default stands] `_MAX_PUBLISH_ATTEMPTS = 16`.** It bounds only genuine version
+   collisions. Folded into **D3**.
+2. **[RESOLVED — stays out of scope] `run_inference` keeps staging the model per run.** A blob
+   registry makes fetching-from-the-registry possible — `_stage_bundle` would become a
+   blob-to-blob copy that could be skipped — but it changes how nodes get models and needs its own
+   decision. **Do not implement it as part of this spec**, and do not treat the per-run `[stage]`
+   line as a defect while doing so.
+3. **[RESOLVED — default stands] `deploy` keeps an explicit `storage=` kwarg**, matching every
+   other verb, rather than inferring the backend from the registry URL's scheme. Inference would
+   be the silent-fallback pattern spec 51 D4 refused elsewhere. Folded into **D4**.
+4. **[RESOLVED — not now] `_complete.json`'s digest does NOT replace the `_deploy.json` digest read
+   in `publish`'s idempotency scan.** It would be a real saving (the scan could skip re-digesting
+   every version) but it is an optimisation, and this spec exists because the previous draft grew
+   too large. The marker carries the digest anyway, so taking this later costs nothing.
+
+---
+
+## 9. Implementation note
+
+Per CLAUDE.md's model split, implementation is a **Sonnet session at `/effort medium`** against
+this signed-off spec, handed back to Opus `/effort high` for review before merging. Phased so each
+step is independently revertible:
+
+0. **The registry core (D1, D2, D3, D5)** — `_write_new_version` writes in place, re-digests, then
+   writes `_complete.json`; `_list_versions` becomes marker-aware with the legacy rule; the retry
+   loop is bounded and stops misreading hard failures as races. Pure `fsd.model.registry`, no verb
+   touched, fully unit-testable on `memory://`. This is AC1–AC5 and AC9, i.e. most of the spec.
+1. **Verb wiring (D4)** — four `configure_storage` calls, and `deploy` stops refusing
+   `storage="azure"`. AC6, AC7. Small and mechanical; do it only once step 0 is green.
+2. **End-to-end on a URL registry** — unskip spec 51's AC12 test and drive
+   `deploy` → `set_alias` → `resolve` → `run_inference` against `memory://`. AC8.
+
+**Then the part tests cannot do (§5):** a run-book the *user* executes against the real Azure
+account — publish two versions to an `abfss://` registry, repoint an alias, run inference off the
+ref, confirm a re-publish of identical content is a no-op. Write it to `fsd/runbooks/` using
+`TEMPLATE.md`; Claude never runs it. **This spec is not done on green tests.**
 
 ---
 

@@ -4,7 +4,58 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-24 (**spec 51 §9 step 3 (the `[model]` print line, D7/AC10's print half) —
+_Last updated: 2026-08-24 (**SPEC 52 SIGNED OFF — the registry on blob. Nothing implemented yet;
+next session is a Sonnet `/effort medium` implementation against `specs/52-registry-on-blob.md`.**
+Work is on worktree branch `worktree-spec52-registry-on-blob` (at `fsd/.claude/worktrees/`), based
+on `main` @ `7c3811c`. Four commits, spec only, no source touched.
+
+**What spec 52 is.** `fsd.deploy` publishes into a registry folder; that folder could not live on
+blob, so it lives on the user's laptop and the registry is private to one machine. #88:
+`registry.publish` loops forever against any non-local backend. #86: `deploy` never calls
+`configure_storage`, so a blob registry would be read/written anonymously — and neither do
+`run_inference`, `verify_adapter` or `verify_image`; today's notebook works only because an earlier
+verb set a process-global flag as a side effect.
+
+**The design, after the user asked whether it was over-engineered — it was.** The first draft
+reproduced Azure's native atomic directory rename (`DataLakeDirectoryClient.rename_directory`) to
+preserve race arbitration between concurrent publishers — a guarantee the user had already said
+does not occur in this team. That needed conditional headers (`Path::Create` OVERWRITES by
+default), continuation tokens, file-vs-directory dispatch and a new dependency. **Rewritten around
+a completion marker:** write the version's files in place, re-digest what landed, write
+`_complete.json` LAST. Ordering the marker after the digest check (which `publish` already does at
+`registry.py:405`) makes the marker mean "these bytes were verified" — an interrupted upload or two
+interleaved writers leave a version that is simply invisible.
+
+**Two probes cut more scope than the redesign did — do not re-derive:** (1) a single-FILE
+`fs.rename` already works on a non-local backend, including onto an existing target, so
+`set_alias`, `write_deploy_record` and `builder.py:365` were never broken; `registry.py:394` is the
+ONLY directory rename in the codebase. Therefore **`storage.fs.rename` is not touched by this spec
+at all** and no Azure-specific code is added anywhere. (2) `adlfs 2026.8.0` implements neither
+`_rename` nor `_mv` — its `mv` is fsspec's `copy()`+`rm()` — so `fs.rename`'s docstring claim that
+the move is "one metadata operation on an HNS Azure account" is FALSE for adlfs, though ADLS Gen2
+itself does have the operation.
+
+**Accepted cost, stated not buried:** two simultaneous publishers can strand a corrupt, unmarked
+version. Invisible, never served, never cleaned up. Spec §6 keeps the rejected Azure-rename design
+in full so reinstating it is a decision, not a rediscovery.
+
+**All four §7 questions signed off at their proposed defaults** (user, 2026-08-24):
+`_MAX_PUBLISH_ATTEMPTS = 16`; `run_inference` KEEPS staging per run (explicitly out of scope — do
+not "fix" the per-run `[stage]` line); `deploy` keeps an explicit `storage=` kwarg rather than
+inferring from the URL scheme; `_complete.json`'s digest does NOT yet replace the `_deploy.json`
+digest read in publish's idempotency scan.
+
+**NEXT: implement spec 52 §9's three steps** (registry core → verb wiring → end-to-end on
+`memory://`), then write the run-book the USER executes against real `abfss://` — green tests do
+not finish this spec (MEMORY `real-run-beats-review`).
+
+**⚠️ `main` has an uncommitted `PROGRESS.md` edit that is now WRONG** — it records the blob registry
+as "a documented LIMITATION, not scheduled work", which the user reversed the same day. Discard it
+(`git checkout PROGRESS.md` on `main`) before merging this branch. `main` also carries an
+uncommitted one-character docstring change in `src/fsd/model/adapter.py` (an en-dash became a
+hyphen) that Claude did not make._
+
+_Previously: 2026-08-24 (**spec 51 §9 step 3 (the `[model]` print line, D7/AC10's print half) —
 IMPLEMENTED (Sonnet `/effort medium`) and REVIEWED by Opus `/effort high`: three findings, all
 fixed in-branch — see CHANGES.md's "Opus review" block.** Work is on worktree branch
 `spec51-step3-model-line`, based on `main` @ `88e8f11` (steps 0-2 merged + pushed). This is the
