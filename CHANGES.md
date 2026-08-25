@@ -4,6 +4,37 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## The local run path stages a non-local resolved bundle before loading it (spec 53, 2026-08-25)
+
+- **`run_inference` now fetches a non-local resolved bundle to `<output_folderpath>/_model` before
+  any local shape (`cores=1`, the `cores>1` Snakemake fan-out, local ROI mode) loads it.** Fixes
+  [issue #89](https://github.com/nikhilsrajan/fsd/issues/89): `bundle.load` puts a bundle's
+  `code/` on `sys.path` (`_activate_bundle_code`), and CPython's import machinery has no path hook
+  for a URL, so a blob-resolved ref (spec 52 made these possible) was inert there — a
+  `ModuleNotFoundError` that had nothing to do with the adapter itself. The AML path already staged
+  (`runners._stage_bundle`) so it was never affected; only the local path was missing it.
+- **New:** `api._stage_local_bundle`, a thin wrapper around the existing
+  `infer_shard.fetch_bundle_to_scratch` (manifest-driven, no directory listing — spec 38 D3). It is
+  a no-op for a path already local (a local registry costs nothing extra) and for anything that
+  isn't a path at all (a live adapter, handled by `_ensure_bundle`'s own auto-save).
+- **Placement is after each path's own preflight, not literally next to `_resolve_model_ref`** —
+  `_model_spec` still reads a non-local bundle's `bundle.json` directly via `fs.open`, so a call
+  rejected in preflight still costs no transfer. Staging happens once per `run_inference` call,
+  before `_ensure_bundle` gets a chance to resolve again, so that second (idempotent) call just
+  passes the now-local path through — the `cores>1` fan-out gets the staged path for free.
+- **Gated on `runner == "local"` for ROI mode** (an amendment made after the spec's sign-off,
+  before implementation): `runner="aml"` never loads the bundle on the driver — it stages its own
+  copy to blob and each node fetches from there — so staging on the driver too would be a wasted
+  blob→local→blob round trip and a behavior change to a path spec 53 promised not to touch. The
+  pre-built-cubes path has no AML shape at all, so it stages unconditionally there.
+- **The driver-side fetch announces itself** — `[stage] bundle <- <url> | N files, X MB`, printed
+  before the transfer starts (Opus review, 2026-08-25). Spec 53 D2's rationale assumed spec 47 D5
+  already covered this; it did not — D5 instrumented the **upload** leg (`runners._stage_bundle`),
+  and `infer_shard.fetch_bundle_to_scratch` prints nothing. On an AML node that silence was
+  invisible; on the driver it sat between `[model] <ref> -> vN` and the first `[inference]` line
+  for the whole download (spec 47 measured 13 MB at 627 s over VPN on the mirror-image leg). The
+  node-side leg is still silent — unchanged here so the AML path stays byte-identical.
+
 ## The registry publishes in place, no directory rename (spec 52, 2026-08-24)
 
 - **`registry._write_new_version` no longer stages then renames.** It writes a version's files

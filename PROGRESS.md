@@ -4,7 +4,78 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-25 (**SPEC 52 MERGED into `main` (`--no-ff`, `main` @ `f2fe6bf`), worktree
+_Last updated: 2026-08-25 (**SPEC 53 (D1+D2, #89) IMPLEMENTED + REVIEWED (Opus `/effort high`) —
+all eight ACs verified, one review fix applied, REVIEW-CLEAN. On worktree branch
+`worktree-spec53-phase0` (at `fsd/.claude/worktrees/`), based on `main` @ `9ab5202`. NOT MERGED,
+NOT COMMITTED — awaiting the user's go-ahead.**
+
+`api._stage_local_bundle` (new) fetches a non-local resolved bundle to
+`<output_folderpath>/_model` via `infer_shard.fetch_bundle_to_scratch`, and is called from two
+sites: unconditionally in `run_inference`'s pre-built-cubes path (right after that path's own
+`_raise_preflight`, since `cores=1` and the `cores>1` Snakemake fan-out are both always-local —
+`runner=` never reaches that branch) and, gated on `runner == "local"` per D1's amendment, in
+`_run_inference_roi` (right after its own `_raise_preflight`, before `_ensure_bundle`). Both sites
+sit after preflight, not literally next to `_resolve_model_ref`, so `_model_spec`'s earlier read
+(which uses `fs.open` and needs no local copy) still costs nothing on a rejected call (AC4).
+Because staging lands before `_ensure_bundle`'s own (idempotent) resolve call, `_ensure_bundle`
+just passes the already-local path through — AC6 (`cores>1`) falls out for free, as the spec said
+it would.
+
+9 tests in `tests/test_local_bundle_staging.py` — 8 cover AC1–AC7 (AC8 is the existing suite +
+ruff, already green); each was mutation-checked (call site commented out -> the assertion that
+covers it fails) rather than trusted on green alone (MEMORY `real-run-beats-review`). One thing
+the tests do NOT reproduce: #89's actual `ModuleNotFoundError`. The adapter class used in the test
+lives in the test module itself, which is already in `sys.modules` by the time `bundle.load` runs
+in-process, so `importlib.import_module` finds the cached module regardless of `sys.path` — the
+crash itself needs a genuinely fresh interpreter, which is what the run-book's real-Azure repro
+gives and unit tests cannot. The tests instead assert the mechanism directly: call counts, the
+staged path, and which call sites see it — AC1–AC7 as written.
+
+**Opus review, 2026-08-25 — verdict: clean, with one fix applied.** All eight ACs were
+re-verified against the diff (AC1/AC2/AC5/AC6 by reading the code path, AC3/AC4/AC7 by the tests'
+zero-call assertions, AC8 by re-running the suite here). Two findings:
+
+1. **FIXED — the driver-side fetch was completely silent.** Confirmed by capturing stdout on a real
+   `memory://`-registry run: the output went `[model] probe@champion -> v1` straight to
+   `[inference] 1/1 -> ...`, with nothing in between. D2's rationale for accepting a per-run
+   re-fetch rests on "spec 47 D5 already prints the transfer with a size and a ticker, so it is
+   never silent" — but D5 instrumented `runners._stage_bundle` (the **upload** leg), and
+   `fetch_bundle_to_scratch` prints nothing. `_stage_local_bundle` now prints
+   `[stage] bundle <- <url> | N files, X MB` before the transfer, mirroring `_stage_bundle`'s D5
+   shape (one extra `bundle.json` read + one `fs.size` per file, the cost `_stage_bundle` already
+   accepts). A 9th test asserts the line exists, names the source, carries a size, and lands
+   **before** the first `[inference]` line. Not given a per-file ticker: that would mean editing
+   `fetch_bundle_to_scratch`, which the AML node path shares, and AC7 says that path is untouched.
+2. **NOT FIXED, needs an issue — a non-local `output_folderpath` now creates a junk directory.**
+   The seam gate (`_check_local_seams`) inspects the `storage=` kwarg, never the URL, so
+   `run_inference(model=<blob ref>, output_folderpath="abfss://...", ...)` reaches
+   `_stage_local_bundle`, which hands a URL to `fetch_bundle_to_scratch` — whose `os.makedirs` and
+   bare `open` are local-only. Probed with `memory://outblob`: it created a literal `memory:`
+   directory in the process's CWD and then raised `FileNotFoundError /outblob/_model/bundle.json`.
+   That combination was already broken before this change (`bundle.load` would have failed on the
+   URL anyway), so this is not a regression — but the failure is now messier and leaves litter.
+   Left alone deliberately: the right fix is a design call (reject early in preflight vs. stage to
+   a real temp dir), which is spec territory, not review territory.
+
+**Full suite re-run under review: 965 passed, 94 skipped, 0 failed → 966 passed with the review
+test added; `ruff check src/ tests/ demos/ examples/` clean** (baseline before this work: 956
+passed, 93 skipped).
+
+⚠️ **Working-copy note for whoever picks this up:** the editable install in `fsd/.venv` resolves to
+the **main checkout's** `src/`, not a worktree's — running `pytest`/`ruff` from inside
+`.claude/worktrees/spec53-phase0/` against `../../../.venv/bin/python` silently ran the MAIN
+checkout's code for a while during this session (masked by `sys.modules` caching happening to make
+the tests pass anyway) until caught by a suspicious zero-call assertion. Fix: prefix commands with
+`PYTHONPATH="$(pwd)/src"` from inside the worktree, or give the worktree its own venv.
+
+**NEXT:** commit the worktree, merge `--no-ff` into `main`, prune the worktree, delete the branch
+(standing practice) — **all pending the user's go-ahead (CLAUDE.md: commit/push only when asked)**;
+nothing is committed yet. File finding 2 above as an issue (a sibling of #90 — both are the seam
+gate looking at the wrong thing). Then the *user* re-runs `runbooks/52-registry-on-blob.md` step 4 **without** the manual
+workaround against the real `abfss://` registry — the only thing that proves #89 closed; Claude
+never runs it.
+
+_Previously: 2026-08-25 (**SPEC 52 MERGED into `main` (`--no-ff`, `main` @ `f2fe6bf`), worktree
 pruned, branch deleted. NOT PUSHED. The run-book was then executed against a REAL `abfss://`
 registry by the user — steps 1-3 PASS, step 4 FAILS, and it found two defects that 956 green
 tests, two Opus review rounds and a mutation pass all missed (MEMORY `real-run-beats-review`).**

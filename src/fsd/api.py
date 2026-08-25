@@ -1504,6 +1504,12 @@ def run_inference(
     _raise_preflight(errs)
 
     fs.makedirs(output_folderpath)
+    # D1 (spec 53, #89): the pre-built-cubes path has no AML shape at all -- `cores==1` loads
+    # in-process here, `cores>1` fans out to a LOCAL Snakemake runner (`_run_prebuilt_via_runner`)
+    # -- so the driver always loads the bundle on this machine and staging is unconditional. Once
+    # per run, before either branch, so `_ensure_bundle`'s own resolve (cores>1) sees an
+    # already-local path and no-ops (AC6).
+    model = _stage_local_bundle(model, output_folderpath)
     # `None` = auto; the pre-built path has no node to interrogate, so auto == today's default (1).
     pb_cores = 1 if cores is None else cores
     pb_cubes_per_task = 1 if cubes_per_task is None else cubes_per_task
@@ -1545,6 +1551,38 @@ def _ensure_bundle(model, output_folderpath, *, why, registry=None):
             "bundle path (fsd.model.bundle.save) whose adapter class is importable by module:attr "
             "(not a __main__/interactive class)."
         ) from exc
+
+
+def _stage_local_bundle(model, output_folderpath):
+    """D1 (spec 53): a resolved bundle path that is not on THIS machine cannot be `bundle.load`ed
+    -- `sys.path.insert`ing a URL is inert (CPython's two path hooks, `zipimporter` and
+    `path_hook_for_FileFinder`, neither reads one; #89). Fetch it once, manifest-driven
+    (`infer_shard.fetch_bundle_to_scratch`, D3 -- no directory listing), to
+    `<output_folderpath>/_model` (D2: per-run, not a cache), and return that local copy.
+
+    A no-op for a path already local (AC3) and for anything that is not a path at all (a live
+    adapter, handled by `_ensure_bundle`'s own auto-save). Call only for a shape that actually
+    loads the bundle on the driver (D1's runner gate lives at each call site, not here) -- this
+    function only knows "is this path local", not "who is about to load it".
+    """
+    if not isinstance(model, str) or fs.is_local(model):
+        return model
+    from fsd.workflows.infer_shard import fetch_bundle_to_scratch
+
+    # spec 47 D5, applied to the leg this spec adds (Opus review, 2026-08-25): announce the
+    # destination and the total size BEFORE the transfer starts. D2's rationale claimed this
+    # was already covered -- it is not: only the UPLOAD leg prints (`runners._stage_bundle`),
+    # and `fetch_bundle_to_scratch` is silent. That silence was tolerable on an AML node; here
+    # it lands on the DRIVER, between `[model] <ref> -> vN` and the first `[inference]` line,
+    # where a user is watching a prompt that does nothing for as long as the download takes
+    # (spec 47 measured 13 MB at 627 s over VPN on the mirror-image leg). One extra
+    # `bundle.json` read + one `size` per file, the same cost `_stage_bundle` already accepts.
+    manifest = _bundle.read_spec(model)
+    rels = list(manifest.get("artifacts", {}).values()) + _bundle.manifest_code_files(manifest)
+    total_bytes = sum(fs.size(os.path.join(model, rel)) for rel in rels)
+    print(f"[stage] bundle <- {model} | {len(rels)} files, {total_bytes / 1e6:.1f} MB",
+          flush=True)
+    return fetch_bundle_to_scratch(model, os.path.join(output_folderpath, "_model"))
 
 
 def _run_prebuilt_via_runner(model, pairs, output_folderpath, *, cores, cubes_per_task,
@@ -1741,6 +1779,14 @@ def _run_inference_roi(
         _check_resume_identity(csv_filepath, grids, output_folderpath)
 
     fs.makedirs(output_folderpath)
+
+    # D1 (spec 53, #89), runner-gated per the post-sign-off amendment: `runner="aml"` never
+    # loads the bundle on the driver -- it stages to blob and each node fetches its own copy
+    # (`_stage_bundle` -> `infer_shard.fetch_bundle_to_scratch`) -- so staging here would be a
+    # wasted blob->local->blob round trip and a behavior change AC7 forbids. `runner="local"`
+    # (`cores=1` in-process, and the `cores>1` Snakemake fan-out) does load here.
+    if runner == "local":
+        model = _stage_local_bundle(model, output_folderpath)
 
     # model must be a bundle (it crosses a subprocess); auto-save a live adapter.
     bundle_path = _ensure_bundle(model, output_folderpath, why="roi mode", registry=registry)
