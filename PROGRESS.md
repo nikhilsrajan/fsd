@@ -79,10 +79,22 @@ step 4's result row now reads PASS-unaided, the obsolete fetch-to-scratch workar
 (git history at `9ab5202` if an old checkout needs it), and the prerequisites no longer warn that
 the step cannot pass.
 
-**NEXT:** two loose ends, both outward-facing and both waiting on the user. **Nothing has been
-pushed** — `main` is 5 commits ahead of the machine's last known remote state, identifier sweep
-clean. **#89 is not closed** on GitHub, and **finding 2 above is not filed** (a sibling of #90 —
-both are the seam gate looking at the wrong thing rather than at the URL). Then the *user* re-runs `runbooks/52-registry-on-blob.md` step 4 **without** the manual
+**LANDED AND PUSHED (2026-08-25).** `main` @ `5fe9b86` pushed to `origin` (`9ab5202..5fe9b86`,
+fast-forward, 5 commits) after a clean private-identifier sweep — all 7 hits were the documented
+known-clean false positives (`RECIPES.md`'s list: `030f6ac`, `env.example.sh`, `env.local.sh`,
+`fsd-aml-env`, `fsd-infer-env`, `identityReference`, `prevent_destroy`). **#89 CLOSED** with the fix
+summary and the real-run evidence. Review finding 2 filed as
+**[#91](https://github.com/nikhilsrajan/fsd/issues/91)** — a non-local `output_folderpath` reaches
+`_stage_local_bundle`, which is local-only, so it creates a scheme-named junk directory in the CWD
+and then raises a `FileNotFoundError` naming a path the caller never passed. Not a regression (the
+combination was already broken pre-spec-53) and low severity, but the right fix contradicts D2's
+fixed scratch location, so it is spec territory. **Filed as a sibling of #90: both are
+`_check_local_seams` inspecting which kwargs were spelled rather than what the call will touch —
+worth one spec over the gate, not two patches.**
+
+**NEXT:** open. Spec 53 is finished end to end (signed off → implemented → reviewed → merged →
+pushed → verified on real Azure → #89 closed). The obvious candidates are #90+#91 as one seam-gate
+spec, or the next item on the notebook-usability sprint (MEMORY `fsd-notebook-usability-sprint`). Then the *user* re-runs `runbooks/52-registry-on-blob.md` step 4 **without** the manual
 workaround against the real `abfss://` registry — the only thing that proves #89 closed; Claude
 never runs it.
 
