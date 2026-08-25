@@ -4,7 +4,69 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-24 (**SPEC 52 IMPLEMENTED (Sonnet `/effort medium`) and REVIEWED by Opus
+_Last updated: 2026-08-25 (**SPEC 52 MERGED into `main` (`--no-ff`, `main` @ `f2fe6bf`), worktree
+pruned, branch deleted. NOT PUSHED. The run-book was then executed against a REAL `abfss://`
+registry by the user — steps 1-3 PASS, step 4 FAILS, and it found two defects that 956 green
+tests, two Opus review rounds and a mutation pass all missed (MEMORY `real-run-beats-review`).**
+
+**Run-book results (real Azure, 2026-08-25).** Step 1: v1 published in **32.9 s** — #88 is
+genuinely dead against Azure, not just `memory://`. Step 2: v2 published on changed content
+(digests differ). Step 3: `set_alias` repointed `champion` -> v1. **Step 4: FAILED as written, workaround
+PASSED** — the ref resolved (`[model] crop-rf-t10@champion -> v1`, against live blob, which is
+AC8's substance) and then died in `bundle.load`; inference ran once the bundle was fetched to
+scratch. **Step 5: PASS** — re-publishing v1's exact content returned v1 and wrote nothing
+(`n_entries` 3 -> 3). **Verdict: spec 52's publish protocol is proven on real Azure** (in-place
+publish, marker, alias repoint, digest idempotency); **#88 is closeable**; **#86 is not proven**.
+
+**Two new issues, both filed, both with a drafted fix:**
+- **[#89](https://github.com/nikhilsrajan/fsd/issues/89) — a blob-resolved ref cannot be loaded on
+  the local run path.** `bundle.load` requires a local directory (its own docstring says so) and
+  `_activate_bundle_code` does `sys.path.insert(0, "<bundle>/code")`; with a blob ref that entry is
+  an `abfss://` URL, and CPython ships only `zipimporter` + `FileFinder` path hooks, so it is inert
+  (verified by execution). The AML path stages first and is fine; the local path never stages.
+  **A blob registry works for AML runs and is broken for local runs.** Pre-existing, but only
+  reachable once spec 52 made a blob registry possible.
+- **[#90](https://github.com/nikhilsrajan/fsd/issues/90) — `storage=` and `registry=` are
+  conflated in `run_inference`'s seam gate**, so spec 52 D4's `configure_storage` fix is
+  unreachable on the pre-built-cubes path (`storage="azure"` is refused there). **#86 is therefore
+  UNPROVEN, not fixed** — step 4 is the run-book's only step that goes through a verb at all.
+  Related finding: adlfs's `anon` default is `None`, not `True`, so steps 1-3 authenticated
+  against real Azure with **no** `configure_storage` call anywhere — #86's stated failure mode may
+  not occur under a developer `az login` at all. Recorded as spec 53 §5's first risk.
+
+**[`specs/53-blob-registry-on-the-local-run-path.md`](specs/53-blob-registry-on-the-local-run-path.md)
+— DRAFT, awaiting sign-off. Rescoped to #89 alone before sign-off.** D1: stage a non-local resolved
+bundle to scratch in `run_inference`, right after `_resolve_model_ref`, reusing
+`infer_shard.fetch_bundle_to_scratch` (the primitive already exists — the spec wires, it does not
+write transfer code). D2: scratch at `<output_folderpath>/_model/`, per run, not a cache. **Two
+open questions in §7** (D1's placement; whether D2 should be a digest-keyed cache instead).
+
+**#90 was dropped from spec 53 and downgraded to a tidy-up** (assessment recorded as a comment on
+the issue). The reason: **`configure_storage` does not authenticate** — its whole body sets
+`FSSPEC_ABFSS_ANON=false` plus the matching `fsspec.config` key, which forbids the *anonymous
+fallback* rather than supplying a credential. Credentials come from the `az login` chain either
+way, which is exactly why steps 1/2/3/5 worked without it. So #90's entire cost today is a
+confusing refusal when a caller passes a kwarg they never needed; the workaround is to omit it.
+**Caveat kept visible: while that gate stands, #86 is permanently unprovable**, since the
+run-book's only verb-level step cannot exercise D4 — a bookkeeping cost, not a functional one, and
+the one argument for fixing #90 sooner.
+
+**#88 CLOSED** (2026-08-25) with the real-Azure evidence. **The #86 claim was corrected** in
+`CHANGES.md` (a "Correction, 2026-08-25" block) and in spec 52's header + §10.5 — the merge commit
+`f2fe6bf` and `82eda21` both say #86 is closed, which is wrong and cannot be edited after the fact,
+so those notes are the correction of record.
+
+**`runbooks/52-registry-on-blob.md` was corrected as the run proceeded** (step 2 had no command at
+all and referenced an env var nothing produced; step 4 had three separate faults: `storage="azure"`
+which the gate refuses, a model/cube `n_timestamps` mismatch, and folder-mode cube discovery that
+needs per-cube subfolders). It now carries the #89 workaround so step 4 is completable today. All
+7 Python blocks parse; no undeclared env vars.
+
+**NEXT: sign off spec 53 §7's two questions**, then implement its single phase (D1+D2, #89) in
+a Sonnet session. Then re-run run-book step 4 **without** the manual workaround to prove it.
+Also still pending: the push of `main` (at `f2fe6bf`, plus the uncommitted doc/spec work).
+
+_Previously: 2026-08-24 (**SPEC 52 IMPLEMENTED (Sonnet `/effort medium`) and REVIEWED by Opus
 `/effort high` — four findings, all fixed in-branch; see the "Opus review" block below and spec 52
 §10.** Work is on worktree branch `worktree-spec52-registry-on-blob` (at `fsd/.claude/worktrees/`),
 based on `main` @ `7c3811c`.

@@ -21,6 +21,33 @@ summary: Prove the model registry actually works on real Azure Blob storage — 
 > `python - <<'PY' ... PY` blocks, which are Python — paste those into a cell body directly
 > (drop the heredoc wrapper) rather than running them with `%run`.
 
+## Results — executed against a real `abfss://` registry, 2026-08-25
+
+| Step | Verdict | Evidence |
+|---|---|---|
+| **1** publish v1 | **PASS** | `version=1`, `elapsed_s=32.9` (bar: < 60). **#88 is dead against real Azure**, not just `memory://` |
+| **2** publish v2 | **PASS** | `version=2`; v1/v2 content digests differ |
+| **3** repoint alias | **PASS** | `resolved_version=1` after `set_alias`; neither version touched |
+| **4** infer off the ref | **FAILED as written; workaround PASSED** | `[model] crop-rf-t10@champion -> v1` proves the ref resolved against live blob (AC8's substance), then `bundle.load` raised `ModuleNotFoundError` — **[#89](https://github.com/nikhilsrajan/fsd/issues/89)**. Inference ran after fetching the bundle to scratch |
+| **5** idempotent re-publish | **PASS** | `version=1` returned, `n_entries` 3 -> 3 — nothing written |
+
+**Verdict: spec 52's publish protocol is proven on real Azure.** In-place publish, the completion
+marker, alias repointing and content-digest idempotency all behave against `abfss://` exactly as
+they do on `memory://` — which was D1's whole argument (no backend-specific branch left to
+diverge), now with "no branch" backed by an actual run.
+
+**Two things this run did NOT prove, both filed:**
+
+- **#86 is unproven.** Step 4 is the only step that goes through a verb at all (1/2/3/5 call
+  `registry.*` directly), and it cannot pass `storage="azure"` —
+  **[#90](https://github.com/nikhilsrajan/fsd/issues/90)**. So `configure_storage` was never
+  exercised anywhere in this run. Note also that steps 1-3 authenticated fine **without** it:
+  adlfs's `anon` default is `None`, so the `az login` credential chain was found on its own.
+- **A blob registry is unusable on the local run path** — #89. Fix drafted as
+  `specs/53-blob-registry-on-the-local-run-path.md` D1.
+
+---
+
 ## Purpose
 
 | Step | Proves |
@@ -46,7 +73,12 @@ summary: Prove the model registry actually works on real Azure Blob storage — 
   export AZ_FS='<filesystem/container>'
   export AZ_REGISTRY="abfss://${AZ_FS}@${AZ_ACCOUNT}.dfs.core.windows.net/<your-prefix>/fsd-registry-52"
   export AZ_BUNDLE_LOCAL="$PWD/tests/outputs/p40_train_and_bundle/demo_rf_bundle"   # or your own
+  export AZ_BUNDLE_LOCAL_V2="$PWD/tests/outputs/p52_registry_on_blob/demo_rf_bundle_v2"  # step 2 creates this
+  export AZ_INFERENCE_CUBES="$PWD/tests/outputs/demo_e2e/inference_datacubes"   # step 4; use your own
   ```
+  `AZ_BUNDLE_LOCAL_V2` must **not** exist yet — step 2 creates it with `cp -r`.
+  `AZ_INFERENCE_CUBES` is a folder of pre-built `datacube.npy` + `metadata.pickle.npy` pairs.
+  **Read step 4's own note before relying on it** — that step cannot pass as written.
   `AZ_REGISTRY` should be a prefix nothing else is using — this run-book publishes real content
   under it and does not clean up after itself (spec 52 §5: stranded/legacy content is cheap and
   harmless, but pick a throwaway name, not a shared registry).
@@ -84,22 +116,37 @@ PY
 
 ## Step 2 — publish v2 (changed content) and confirm `alias=` repoints in one call
 
-Change the bundle's content first (any manifest-visible change — re-saving with a different
-`requirements=` list is the cheapest):
+Change the bundle's content first. **Copy the bundle and add a `requirements` entry** — a
+manifest-visible change, so the content digest changes, and it needs no adapter import (the demo
+bundle's `adapters:DemoRF` is not importable from an arbitrary cwd, which is why this does not go
+through `bundle.save`). Verified locally 2026-08-25 against
+`tests/outputs/p40_train_and_bundle/demo_rf_bundle`: the digest changes and `read_spec` still
+reads the result.
 
 ```bash
+mkdir -p "$(dirname "$AZ_BUNDLE_LOCAL_V2")"
+rm -rf "$AZ_BUNDLE_LOCAL_V2"          # re-runnable: cp -r onto an existing dir nests instead
+cp -r "$AZ_BUNDLE_LOCAL" "$AZ_BUNDLE_LOCAL_V2"
 .venv/bin/python - <<'PY'
+import json
 import os
 from fsd.model import bundle, registry
 
-# re-save the SAME adapter with a trivially different requirements list, so the digest changes
-src = bundle.read_spec(os.environ["AZ_BUNDLE_LOCAL"])
-print("adapter:", src.get("adapter"))
+dst = os.environ["AZ_BUNDLE_LOCAL_V2"]
+manifest_path = os.path.join(dst, bundle.BUNDLE_MANIFEST)
+with open(manifest_path) as f:
+    manifest = json.load(f)
+manifest["requirements"] = sorted(set(manifest.get("requirements") or []) | {"packaging"})
+with open(manifest_path, "w") as f:
+    json.dump(manifest, f, indent=2, sort_keys=True)
+
+print({"v1_digest": registry.content_digest(os.environ["AZ_BUNDLE_LOCAL"]),
+       "v2_digest": registry.content_digest(dst)})
 PY
 ```
 
-Then, using whatever adapter class the bundle above names, re-save it to a new local folder with
-one extra requirement (e.g. `requirements=[..., "packaging"]`), and publish that:
+The two digests must differ. If they do not, `publish` returns v1 by idempotency (D2) and step 2
+fails for the right reason. Now publish the changed bundle:
 
 ```bash
 .venv/bin/python - <<'PY'
@@ -143,32 +190,92 @@ PY
 
 ## Step 4 — `run_inference` resolves the ref against blob and runs
 
-Pick whichever is cheaper for you: pre-built cubes (fastest) or a small ROI. Pre-built cubes shown;
-swap in your own `inference_datacubes=` folder or an `roi=`/`catalog_filepath=` pair per
-`runbooks/48-e2e-austria-with-verify-adapter.md` if you'd rather prove the ROI path.
+> **Corrected 2026-08-25, after this step failed twice in a real run.** Three things were wrong
+> and all three are fixed below. (1) **Do NOT pass `storage="azure"` here.** `run_inference`
+> allows non-local storage only when `roi is not None and runner == "aml"`; on the pre-built-cubes
+> path the seam gate refuses it with *"non-local storage not supported here yet"*. The registry
+> may still be `abfss://` — `storage=` and `registry=` are independent axes. (2) **The cubes must
+> be local**, for the same reason. (3) **The model you infer with must match the cubes' `T`** —
+> preflight rejects a mismatch with *"datacube T=N but model needs T=M"*, and the demo bundles in
+> this repo disagree (`p40_train_and_bundle/demo_rf_bundle` is T=8; the `demo_e2e` and
+> `demo_verify_adapter` bundles and cubes are T=10).
+>
+> **Honest scope note.** Because `storage="azure"` cannot be passed here, this step does **not**
+> exercise `configure_storage`, so it does **not** prove D4/#86 — it proves a ref resolves off a
+> blob registry and drives a real run. Resolution works anyway because adlfs's `anon` default is
+> `None`, so it falls through to your `az login` credential chain (which is also why steps 1-3
+> authenticated with no `configure_storage` call at all). **#86 remains unproven by this
+> run-book.**
+
+Publish a bundle whose `n_timestamps` matches your cubes, then infer off that ref. `_bundle` from
+a previous `verify_adapter` run is a good choice — it is T=10, has an embedded `code/`, and sits
+next to the cube it was verified against:
+
+```bash
+export AZ_CUBE_DIR="$PWD/notebooks/demo_verify_adapter/demo-20260820T175606Z"   # or your own
+.venv/bin/python - <<'PY'
+import os
+from fsd import api
+from fsd.model import registry
+
+cube_dir = os.environ["AZ_CUBE_DIR"]
+v = registry.publish(
+    os.path.join(cube_dir, "_bundle"), "crop-rf-t10", os.environ["AZ_REGISTRY"],
+    alias="champion",
+)
+
+# NOTE: no storage= kwarg (see the correction above). An explicit LIST of datacube.npy paths --
+# folder mode expects each cube in its own SUBfolder, which this layout is not.
+result = api.run_inference(
+    model="crop-rf-t10@champion", registry=os.environ["AZ_REGISTRY"],
+    inference_datacubes=[os.path.join(cube_dir, "datacube.npy")],
+    output_folderpath=os.environ.get(
+        "AZ_INFER_OUT", "./tests/outputs/p52_registry_on_blob/step4_out"),
+)
+print({"step": "52-4-run-inference", "status": "ok",
+       "pass": len(result.output_filepaths) > 0,
+       "metrics": {"published_version": v, "n_outputs": len(result.output_filepaths)},
+       "expected": {"n_outputs": "> 0"}, "error": None})
+PY
+```
+
+- **PASS if:** `n_outputs > 0` and no exception — a `name@alias` ref resolved against an
+  `abfss://` registry and drove a real inference run.
+- **If it raises `non-local storage not supported here yet`:** you still have `storage="azure"`
+  in the call. Remove it.
+- **If it raises `datacube T=N but model needs T=M`:** the bundle you published does not match
+  these cubes. Publish the one that sits beside them (`<cube_dir>/_bundle`).
+- **If it raises `no inference datacubes found`:** you passed a folder whose cubes are not in
+  per-cube subfolders. Pass an explicit list of `datacube.npy` paths, as above.
+- **If it raises `ModuleNotFoundError` on the adapter module:** that is
+  **[#89](https://github.com/nikhilsrajan/fsd/issues/89)** — `bundle.load` needs a *local*
+  directory and `sys.path` cannot hold an `abfss://` entry, so a blob-resolved ref resolves and
+  then fails to load on the local run path. The ref resolution itself worked (you will have seen
+  the `[model] ... -> v1` line, which is what this step exists to prove). Fetch the bundle down
+  first and run off the local copy:
 
 ```bash
 .venv/bin/python - <<'PY'
 import os
 from fsd import api
+from fsd.model import registry
+from fsd.workflows.infer_shard import fetch_bundle_to_scratch
+
+cube_dir = os.environ["AZ_CUBE_DIR"]
+resolved = registry.resolve("crop-rf-t10@champion", os.environ["AZ_REGISTRY"])
+local = fetch_bundle_to_scratch(
+    resolved.path, "./tests/outputs/p52_registry_on_blob/_bundle_scratch")
 
 result = api.run_inference(
-    model="crop-rf@champion", registry=os.environ["AZ_REGISTRY"], storage="azure",
-    inference_datacubes=os.environ["AZ_INFERENCE_CUBES"],   # a folder of pre-built datacube.npy
-    output_folderpath=os.environ.get("AZ_INFER_OUT", "./tests/outputs/p52_infer"),
+    model=local,
+    inference_datacubes=[os.path.join(cube_dir, "datacube.npy")],
+    output_folderpath="./tests/outputs/p52_registry_on_blob/step4_out",
 )
-print({"step": "52-4-run-inference", "status": "ok", "pass": len(result.output_filepaths) > 0,
-       "metrics": {"n_outputs": len(result.output_filepaths)},
-       "expected": {"n_outputs": "> 0"}, "error": None})
+print({"n_outputs": len(result.output_filepaths)})
 PY
 ```
 
-- **PASS if:** `n_outputs > 0` and no exception. This is spec 52 AC8 for real: `crop-rf@champion`
-  resolved against blob (v1, per step 3's repoint) without `storage="azure"` needing to be set
-  anywhere else in the process first — `run_inference` authenticates itself now (D4, #86).
-- **If it raises before reaching inference:** check `_configure_storage` actually ran — the
-  fastest sanity check is `import os; print(os.environ.get("FSSPEC_ABFSS_ANON"))` right after the
-  call starts raising; it should be `"false"`.
+  Fixing this properly is **`specs/53-blob-registry-on-the-local-run-path.md`** D1.
 - **Open an output `.tif` in QGIS.** Visual validation is the standard here, per `CLAUDE.md`.
 
 ---

@@ -28,7 +28,8 @@ carried over (renames, restructures, behavioral tweaks). Pure removals go in
   published version is worse than stranding an unmarked folder, a cost spec 52 §5 already
   accepts). See `specs/52-registry-on-blob.md` §3 D5's amendment block for the full reasoning.
 - **`deploy`, `run_inference`, `verify_adapter`, `verify_image` each call `configure_storage`
-  now** — fixing [issue #86](https://github.com/nikhilsrajan/fsd/issues/86): a blob registry was
+  now** — *intended* to fix [issue #86](https://github.com/nikhilsrajan/fsd/issues/86)
+  (**UNPROVEN — #86 stays open, see the correction at the end of this entry**): a blob registry was
   read/written anonymously, because authentication worked only when some *earlier* verb in the
   same process happened to set a process-global fsspec flag as a side effect. `deploy` also drops
   its `storage_allowed=False` gate (a blob registry can now actually work); `verify_image` gained
@@ -61,6 +62,27 @@ carried over (renames, restructures, behavioral tweaks). Pure removals go in
   during implementation cannot reach `_write_new_version`'s collision branch — their competitor
   publishes before `_list_versions` runs, so allocation starts past it — so the new pair simulates
   the stale listing that *is* the race.
+
+**Correction, 2026-08-25 — #86 is NOT fixed by this work.** The run-book was executed against a
+real `abfss://` registry (results in `runbooks/52-registry-on-blob.md`). The publish protocol
+passed and **#88 is closed**, but the `configure_storage` half was never exercised, and cannot be:
+
+- `run_inference` accepts `storage="azure"` only when `roi is not None and runner == "aml"`. On
+  the pre-built-cubes path the seam gate refuses it, so D4's call is unreachable there —
+  **[#90](https://github.com/nikhilsrajan/fsd/issues/90)**. Step 4 is the run-book's only step
+  that goes through a verb at all (1/2/3/5 call `registry.*` directly), so nothing in the run
+  touched `configure_storage`.
+- The premise may also be weaker than assumed: adlfs's `anon` default is `None`, not `True`, and
+  its anonymous branch is a *fallback* reached only when credential discovery fails. Steps 1-3
+  read and wrote a real storage account with **no** `configure_storage` call anywhere — the
+  `az login` chain was found on its own. "A blob registry would be read anonymously" is not what
+  happens under a normal developer login.
+- The same run found that a blob-resolved ref cannot be loaded on the local run path at all
+  (`sys.path` cannot hold an `abfss://` entry) — **[#89](https://github.com/nikhilsrajan/fsd/issues/89)**.
+
+Both are addressed in `specs/53-blob-registry-on-the-local-run-path.md` (DRAFT). The merge commit
+`f2fe6bf` and `82eda21`'s message both say #86 is closed; they are wrong and cannot be edited
+after the fact — this note is the correction of record.
 
 ## A resolved model ref announces itself before dispatch (spec 51 step 3, 2026-08-24)
 

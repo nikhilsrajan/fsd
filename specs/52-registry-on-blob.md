@@ -7,8 +7,10 @@ summary: A registry version is published in place with a completion marker writt
 
 **Status:** **SIGNED OFF (user, 2026-08-24)** — all four §7 questions resolved at their proposed
 defaults. Ready to implement. · **Opened:** 2026-08-24 · **Amends:** spec 51 D2
-**Closes:** [#86](https://github.com/nikhilsrajan/fsd/issues/86),
-[#88](https://github.com/nikhilsrajan/fsd/issues/88) · **Completes:** spec 51 AC12
+**Closes:** [#88](https://github.com/nikhilsrajan/fsd/issues/88) — verified on real Azure
+2026-08-25, closed. **[#86](https://github.com/nikhilsrajan/fsd/issues/86) was claimed and is NOT
+closed** — unreachable on the path the run-book exercises; see §10.5 and
+[#90](https://github.com/nikhilsrajan/fsd/issues/90). · **Completes:** spec 51 AC12
 
 > **Rewritten 2026-08-24 after the user asked whether this was being over-engineered.** It was.
 > The first draft reproduced Azure's native atomic directory rename in order to preserve a
@@ -344,6 +346,20 @@ one correction to it is §10.4, which does not change its conclusion.
    corrected in D5. **The conclusion is unaffected, and on inspection is stronger than it was
    argued:** everything in that window is *post*-write, so a version stranded there holds complete
    content, and reading it as legacy-complete is right — it is unverified, not partial.
+
+5. **#86 is not closed by this spec — corrected 2026-08-25 after the real run.** D4's
+   `configure_storage` call is unreachable on `run_inference`'s pre-built-cubes path, because
+   `storage="azure"` is refused there by the seam gate
+   (**[#90](https://github.com/nikhilsrajan/fsd/issues/90)**). Step 4 is the run-book's only step
+   that goes through a verb at all, so the run-book as written cannot exercise D4 anywhere. Two
+   further facts from that run: adlfs's `anon` default is `None` (its anonymous branch is a
+   fallback reached only when credential discovery fails), and steps 1-3 read and wrote a real
+   storage account with **no** `configure_storage` call — so #86's stated failure mode may not
+   occur under a developer `az login` at all. The same run also found that a blob-resolved ref
+   cannot be loaded on the local run path
+   (**[#89](https://github.com/nikhilsrajan/fsd/issues/89)**). Both are addressed in
+   `specs/53-blob-registry-on-the-local-run-path.md`. **#88 is genuinely fixed and closed** —
+   publish returned v1 in 32.9 s against `abfss://`, where it previously never returned.
 
 ## 8. Best-practice alignment / sources
 
