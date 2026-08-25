@@ -1,11 +1,12 @@
 ---
-status: draft
+status: current
 summary: A model ref resolved against a blob registry cannot be run locally -- `bundle.load` needs a local directory and `sys.path` cannot hold an `abfss://` entry (#89). `run_inference` stages a non-local resolved bundle to scratch before load (D1), reusing `infer_shard.fetch_bundle_to_scratch`; scratch lives under the run's own output folder (D2). One defect, two decisions.
 ---
 
 # Spec 53 — a blob registry that works on the local run path
 
-**Status:** **DRAFT — not signed off.** Awaiting answers to §7's two questions. · **Opened:** 2026-08-25
+**Status:** **SIGNED OFF (user, 2026-08-25)** — both §7 questions resolved at their proposed
+defaults. Ready to implement. · **Opened:** 2026-08-25
 **Closes:** [#89](https://github.com/nikhilsrajan/fsd/issues/89)
 **Origin:** found by the user running `runbooks/52-registry-on-blob.md` against a **real**
 `abfss://` registry on 2026-08-25 — after spec 52 passed 956 unit tests, two Opus review rounds and
@@ -168,15 +169,22 @@ functional one, and it is the one argument for fixing #90 sooner.
 
 ---
 
-## 7. Questions at sign-off — OPEN
+## 7. Questions at sign-off — ALL RESOLVED (user, 2026-08-25)
 
-1. **D1 placement: `api.run_inference` (recommended), or `bundle.load` itself (§6 option B)?**
-   The recommendation keeps `load`'s contract narrow at the cost of not covering future callers;
-   option B is fewer moving parts but a wider contract.
-2. **D2 location: `<output_folderpath>/_model/` (recommended), or a shared cache keyed by content
-   digest?** The digest is already sitting in `_complete.json` (spec 52 D1), so a
-   content-addressed cache is cheap to add later — the question is only whether to build it now
-   rather than re-fetch a few MB per run.
+Both questions were signed off **at their proposed default**. Recorded individually so a later
+reader sees a decision, not an unread list.
+
+1. **[RESOLVED — default stands] D1 stages in `api.run_inference`, not in `bundle.load`.**
+   `load` keeps the narrow, predictable contract spec 44 D2 gave it — it mutates `sys.path` and
+   nothing else, and it never performs network I/O or chooses a temp directory. The cost, accepted
+   knowingly: a *future* caller that hands `load` a URL will hit #89 again rather than being fixed
+   for free. §6 keeps option B intact so that is a decision to revisit, not a rediscovery.
+   Folded into **D1**.
+2. **[RESOLVED — default stands] Scratch is `<output_folderpath>/_model/`, not a digest-keyed
+   cache.** Per-run, self-cleaning by the same rules as every other run artifact, no eviction
+   policy to design. The digest is already in `_complete.json` (spec 52 D1), so a
+   content-addressed cache stays cheap to add later if the re-fetch per run ever shows up in a
+   timing. Folded into **D2**.
 
 ---
 

@@ -35,11 +35,16 @@ publish, marker, alias repoint, digest idempotency); **#88 is closeable**; **#86
   not occur under a developer `az login` at all. Recorded as spec 53 §5's first risk.
 
 **[`specs/53-blob-registry-on-the-local-run-path.md`](specs/53-blob-registry-on-the-local-run-path.md)
-— DRAFT, awaiting sign-off. Rescoped to #89 alone before sign-off.** D1: stage a non-local resolved
+— SIGNED OFF (user, 2026-08-25) at both proposed defaults. Rescoped to #89 alone before
+sign-off.** D1: stage a non-local resolved
 bundle to scratch in `run_inference`, right after `_resolve_model_ref`, reusing
 `infer_shard.fetch_bundle_to_scratch` (the primitive already exists — the spec wires, it does not
-write transfer code). D2: scratch at `<output_folderpath>/_model/`, per run, not a cache. **Two
-open questions in §7** (D1's placement; whether D2 should be a digest-keyed cache instead).
+write transfer code). D2: scratch at `<output_folderpath>/_model/`, per run, not a cache. **§7's two questions
+resolved at their defaults:** staging goes in `run_inference` (so `bundle.load` keeps the narrow
+spec-44-D2 contract — no network I/O, no temp dir of its own; the accepted cost is that a future
+caller handing `load` a URL hits #89 again, with §6 option B kept as the way back), and scratch
+stays per-run rather than a digest-keyed cache (cheap to add later — the digest is already in
+`_complete.json`).
 
 **#90 was dropped from spec 53 and downgraded to a tidy-up** (assessment recorded as a comment on
 the issue). The reason: **`configure_storage` does not authenticate** — its whole body sets
@@ -62,8 +67,8 @@ which the gate refuses, a model/cube `n_timestamps` mismatch, and folder-mode cu
 needs per-cube subfolders). It now carries the #89 workaround so step 4 is completable today. All
 7 Python blocks parse; no undeclared env vars.
 
-**NEXT: sign off spec 53 §7's two questions**, then implement its single phase (D1+D2, #89) in
-a Sonnet session. Then re-run run-book step 4 **without** the manual workaround to prove it.
+**NEXT: implement spec 53's single phase (D1+D2, #89) in a Sonnet session at `/effort medium`**
+against the signed-off spec, then hand back to Opus `/effort high` for review. Then re-run run-book step 4 **without** the manual workaround to prove it.
 Also still pending: the push of `main` (at `f2fe6bf`, plus the uncommitted doc/spec work).
 
 _Previously: 2026-08-24 (**SPEC 52 IMPLEMENTED (Sonnet `/effort medium`) and REVIEWED by Opus
