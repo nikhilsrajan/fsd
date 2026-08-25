@@ -1,4 +1,4 @@
-"""The ModelAdapter contract (spec 18, F1–F5).
+"""The ModelAdapter contract (spec 18, F1-F5).
 
 A project team plugs a model into fsd by writing a small adapter class. fsd **duck-types**
 it — no forced base class (the OQ-3 precedent: a documented signature, not an ABC, until a
