@@ -28,7 +28,7 @@ summary: Prove the model registry actually works on real Azure Blob storage — 
 | **1** publish v1 | **PASS** | `version=1`, `elapsed_s=32.9` (bar: < 60). **#88 is dead against real Azure**, not just `memory://` |
 | **2** publish v2 | **PASS** | `version=2`; v1/v2 content digests differ |
 | **3** repoint alias | **PASS** | `resolved_version=1` after `set_alias`; neither version touched |
-| **4** infer off the ref | **FAILED as written; workaround PASSED** | `[model] crop-rf-t10@champion -> v1` proves the ref resolved against live blob (AC8's substance), then `bundle.load` raised `ModuleNotFoundError` — **[#89](https://github.com/nikhilsrajan/fsd/issues/89)**. Inference ran after fetching the bundle to scratch |
+| **4** infer off the ref | **FAILED 2026-08-25 as written; PASSED unaided after spec 53** | First run: `[model] crop-rf-t10@champion -> v1` proved the ref resolved against live blob (AC8's substance), then `bundle.load` raised `ModuleNotFoundError` — **[#89](https://github.com/nikhilsrajan/fsd/issues/89)**. Re-run after spec 53 merged (`main` @ `38a2d09`), **with no workaround**: `n_outputs=1`, `published_version=1`, no exception |
 | **5** idempotent re-publish | **PASS** | `version=1` returned, `n_entries` 3 -> 3 — nothing written |
 
 **Verdict: spec 52's publish protocol is proven on real Azure.** In-place publish, the completion
@@ -43,8 +43,12 @@ diverge), now with "no branch" backed by an actual run.
   **[#90](https://github.com/nikhilsrajan/fsd/issues/90)**. So `configure_storage` was never
   exercised anywhere in this run. Note also that steps 1-3 authenticated fine **without** it:
   adlfs's `anon` default is `None`, so the `az login` credential chain was found on its own.
-- **A blob registry is unusable on the local run path** — #89. Fix drafted as
-  `specs/53-blob-registry-on-the-local-run-path.md` D1.
+- ~~**A blob registry is unusable on the local run path** — #89.~~ **RESOLVED 2026-08-25.**
+  `specs/53-blob-registry-on-the-local-run-path.md` D1/D2 shipped (`run_inference` stages a
+  non-local bundle to `<output_folderpath>/_model` before any local shape loads it), and step 4
+  was re-run against the same real `abfss://` registry **without** the manual workaround: PASS.
+  That re-run is what closes #89 — unit tests structurally cannot, since the crash needs a fresh
+  interpreter.
 
 ---
 
@@ -78,7 +82,8 @@ diverge), now with "no branch" backed by an actual run.
   ```
   `AZ_BUNDLE_LOCAL_V2` must **not** exist yet — step 2 creates it with `cp -r`.
   `AZ_INFERENCE_CUBES` is a folder of pre-built `datacube.npy` + `metadata.pickle.npy` pairs.
-  **Read step 4's own note before relying on it** — that step cannot pass as written.
+  Step 4 passes as written from spec 53 onward (`main` @ `38a2d09`); on an older checkout it
+  raises `ModuleNotFoundError` — see that step's own note.
   `AZ_REGISTRY` should be a prefix nothing else is using — this run-book publishes real content
   under it and does not clean up after itself (spec 52 §5: stranded/legacy content is cheap and
   harmless, but pick a throwaway name, not a shared registry).
@@ -247,35 +252,16 @@ PY
   these cubes. Publish the one that sits beside them (`<cube_dir>/_bundle`).
 - **If it raises `no inference datacubes found`:** you passed a folder whose cubes are not in
   per-cube subfolders. Pass an explicit list of `datacube.npy` paths, as above.
-- **If it raises `ModuleNotFoundError` on the adapter module:** that is
-  **[#89](https://github.com/nikhilsrajan/fsd/issues/89)** — `bundle.load` needs a *local*
-  directory and `sys.path` cannot hold an `abfss://` entry, so a blob-resolved ref resolves and
-  then fails to load on the local run path. The ref resolution itself worked (you will have seen
-  the `[model] ... -> v1` line, which is what this step exists to prove). Fetch the bundle down
-  first and run off the local copy:
-
-```bash
-.venv/bin/python - <<'PY'
-import os
-from fsd import api
-from fsd.model import registry
-from fsd.workflows.infer_shard import fetch_bundle_to_scratch
-
-cube_dir = os.environ["AZ_CUBE_DIR"]
-resolved = registry.resolve("crop-rf-t10@champion", os.environ["AZ_REGISTRY"])
-local = fetch_bundle_to_scratch(
-    resolved.path, "./tests/outputs/p52_registry_on_blob/_bundle_scratch")
-
-result = api.run_inference(
-    model=local,
-    inference_datacubes=[os.path.join(cube_dir, "datacube.npy")],
-    output_folderpath="./tests/outputs/p52_registry_on_blob/step4_out",
-)
-print({"n_outputs": len(result.output_filepaths)})
-PY
-```
-
-  Fixing this properly is **`specs/53-blob-registry-on-the-local-run-path.md`** D1.
+- **If it raises `ModuleNotFoundError` on the adapter module:** you are on a checkout older than
+  spec 53 (`main` @ `38a2d09`). That was **[#89](https://github.com/nikhilsrajan/fsd/issues/89)** —
+  `bundle.load` needs a *local* directory and `sys.path` cannot hold an `abfss://` entry, so a
+  blob-resolved ref resolved and then failed to load on the local run path. Fixed by spec 53 D1/D2:
+  `run_inference` now stages a non-local bundle to `<output_folderpath>/_model` first. Update, do
+  not work around it. (The manual fetch-to-scratch workaround this step used to carry is in git
+  history at `9ab5202` if you need it for an old checkout.)
+- **You should see a `[stage] bundle <- ... | N files, X MB` line** between `[model] ... -> v1` and
+  the first `[inference]` line. That is spec 53's staging fetch announcing itself; its absence on a
+  blob registry means staging did not run.
 - **Open an output `.tif` in QGIS.** Visual validation is the standard here, per `CLAUDE.md`.
 
 ---

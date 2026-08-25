@@ -5,8 +5,11 @@ summary: A model ref resolved against a blob registry cannot be run locally -- `
 
 # Spec 53 — a blob registry that works on the local run path
 
-**Status:** **SIGNED OFF (user, 2026-08-25)** — both §7 questions resolved at their proposed
-defaults. Ready to implement. · **Opened:** 2026-08-25
+**Status:** **DONE (2026-08-25)** — signed off (both §7 questions at their proposed defaults),
+implemented + reviewed, merged into `main` @ `38a2d09`, and **verified against the real `abfss://`
+registry**: `runbooks/52-registry-on-blob.md` step 4 re-run with **no** manual workaround returned
+`n_outputs=1`, no exception. That re-run is what closes #89 (§9 — unit tests structurally cannot,
+the crash needs a fresh interpreter). · **Opened:** 2026-08-25
 **Closes:** [#89](https://github.com/nikhilsrajan/fsd/issues/89)
 **Origin:** found by the user running `runbooks/52-registry-on-blob.md` against a **real**
 `abfss://` registry on 2026-08-25 — after spec 52 passed 956 unit tests, two Opus review rounds and

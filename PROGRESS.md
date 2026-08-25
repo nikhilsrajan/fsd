@@ -69,11 +69,20 @@ checkout's code for a while during this session (masked by `sys.modules` caching
 the tests pass anyway) until caught by a suspicious zero-call assertion. Fix: prefix commands with
 `PYTHONPATH="$(pwd)/src"` from inside the worktree, or give the worktree its own venv.
 
-**NEXT:** the *user* re-runs `runbooks/52-registry-on-blob.md` step 4 **without** the manual
-workaround against the real `abfss://` registry — the only thing that proves #89 closed; Claude
-never runs it. Two loose ends: **the push is still pending** (nothing has left the machine), and
-**finding 2 above is not yet filed** as an issue (a sibling of #90 — both are the seam gate looking
-at the wrong thing). Then the *user* re-runs `runbooks/52-registry-on-blob.md` step 4 **without** the manual
+**VERIFIED ON REAL AZURE, same day.** The user re-ran `runbooks/52-registry-on-blob.md` step 4
+against the real `abfss://` registry **with no manual workaround** — the exact call that raised
+`ModuleNotFoundError` before — and it passed: `{"step": "52-4-run-inference", "pass": true,
+"published_version": 1, "n_outputs": 1, "error": null}`. That is the proof spec 53 §9 said unit
+tests structurally could not give (the crash needs a fresh interpreter; the test module is already
+in `sys.modules`). **Spec 53 is DONE and #89 is closable.** The run-book was updated to match:
+step 4's result row now reads PASS-unaided, the obsolete fetch-to-scratch workaround block is gone
+(git history at `9ab5202` if an old checkout needs it), and the prerequisites no longer warn that
+the step cannot pass.
+
+**NEXT:** two loose ends, both outward-facing and both waiting on the user. **Nothing has been
+pushed** — `main` is 5 commits ahead of the machine's last known remote state, identifier sweep
+clean. **#89 is not closed** on GitHub, and **finding 2 above is not filed** (a sibling of #90 —
+both are the seam gate looking at the wrong thing rather than at the URL). Then the *user* re-runs `runbooks/52-registry-on-blob.md` step 4 **without** the manual
 workaround against the real `abfss://` registry — the only thing that proves #89 closed; Claude
 never runs it.
 
