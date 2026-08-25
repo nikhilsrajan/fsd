@@ -4,7 +4,89 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-25 (**SPEC 53 (D1+D2, #89) IMPLEMENTED + REVIEWED (Opus `/effort high`) +
+_Last updated: 2026-08-26 (**SPEC 53 DONE AND PUSHED; the e2e notebook is now TRACKED, guarded and
+proven end to end on real Azure. `main` @ `a61200f` == `origin/main`. NEXT: PHASE 2 of the
+notebook-usability sprint — a SEPARATE REPO that consumes fsd as an installed dependency.**)_
+
+**What closed since the last entry.** Spec 53 landed (#89 closed with real-run evidence; review
+finding filed as #91). Then the user ran `notebooks/e2e_austria_aml.ipynb` **to completion** against
+the real cluster with the registry on **blob** — the first end-to-end run of
+create_training_data -> train -> deploy -> run_inference where the model is resolved by NAME from an
+`abfss://` registry. That run is the evidence spec 52 and spec 53 both said only a real run could
+give.
+
+**The notebook is now tracked** (`62aeab8`, the user's commit) and **guarded** (`a61200f`): it was
+un-ignored without being added to `tests/test_notebooks.py`'s `TRACKED_NOTEBOOKS`, which is the
+mechanism that makes the `00_build_images.ipynb` exception safe — so it went public unguarded, clean
+only because outputs had been cleared by hand. It now carries all six identifier patterns and both
+structural rules (no saved outputs, no execution counts), mutation-checked: injecting a storage
+account URL plus one `execution_count` fails exactly three tests, each naming the leak class. Suite
+**977 passed, 96 skipped**, ruff clean, identifier sweep clean.
+
+Notebook content was also brought in line with the verbs as they now are: the intended
+**1 create training data -> 2 create features -> 3 train -> 4 deploy -> 5 run inference** flow is
+stated up front, section 3 documents deploy as **five gates** (adapter -> verify_adapter ->
+bundle.save -> verify_image -> deploy), `REGISTRY` moved to `f"{cfg.AZ_ROOT}/model_registry"` (blob,
+hung off `AZ_ROOT` not `ROOT`, since models outlive runs), and four stale "the registry must be
+local / will hang" claims were removed. One check was added that fsd cannot do for the user: an
+assert that the training `SEQ` and the adapter's `feature_sequence` are identical — they are written
+out twice in two files, nothing in fsd compares them, and a drift produces confident nonsense with
+no error at bundling, at `verify_adapter`, or at inference.
+
+---
+
+## NEXT: Phase 2 — a separate repo that consumes fsd
+
+This is **not a new objective**. MEMORY `fsd-notebook-usability-sprint` defined it on 2026-08-21 and
+six decisions were taken for it then; the user has now started it. Phase 2 = *a separate repository
+with `fsd` as a pinned requirement installed into its own venv, holding the demo notebook. No
+notebooks ship in the fsd wheel.* It is where pip-install friendliness is actually measured.
+
+**Four issues were filed against exactly this and none are built** — #78, #79, #80, #81, #82.
+Read them before designing anything; they carry measured numbers, not guesses.
+
+**The critical path, in order, with the reasoning a fresh session should not re-derive:**
+
+1. **#80 first, BEFORE the tag** (snakemake -> `[local]`, s3fs -> `[s3]`). Both are declared core and
+   **never imported** by `src/fsd/` — snakemake is a subprocess, s3fs an fsspec URL backend — so this
+   is zero code change and zero import-time risk, and it removes **53 packages / 111 MB** (689 -> 578
+   MB core closure). It goes first because **a tag pins the dependency set**: cut v0.1.0 today and
+   the first consumer install pays 689 MB, and trimming afterwards costs a v0.2.0 plus an edit in
+   every consumer.
+2. **#82 — cut and push `v0.1.0`.** **Its stated blocker is now GONE:** the issue says "`main` is
+   currently 5 commits ahead of `origin/main` and unpushed. A tag must be cut from pushed code" —
+   `main` is level with `origin/main` at `a61200f` as of 2026-08-26. Decision already taken: pinned
+   **git URL** now (`fsd[aml,mpc,grid] @ git+https://github.com/nikhilsrajan/fsd.git@v0.1.0`), PyPI
+   later, public MIT so `https://` needs no auth inside a Docker build.
+3. **#78 — `fsd init` / user-level config. On the critical path, not optional.**
+   `notebooks/_config.py` does `find_repo()` at **module scope** and raises unless it finds a
+   `pyproject.toml` + `src/fsd/` above it. A consumer who `pip install`s fsd has neither, so the
+   import crashes before any cell runs — and Phase 2's whole shape is the notebook living outside
+   the checkout. Decision taken: `fsd init` -> `~/.config/fsd/config.toml` + `fsd.config.load()`,
+   which **overturns spec 41 D7** and adds fsd's first `[project.scripts]` entry point.
+4. **#79 (`fsd.aml.ensure_environment()`)** — wanted, not blocking. The new repo can paste image
+   versions by hand exactly as `e2e_austria_aml.ipynb` does today.
+5. **#81 (numba -> `[accel]`, -160 MB)** — **do not block on it.** Unlike #80 it is *not* free:
+   numba is a top-level import in `bands/modify.py` and `datacube/ops.py`, both reachable from
+   `import fsd`, so it needs a benchmark before a decision. The floor is ~420 MB regardless
+   (pyarrow/scipy/pyogrio/pandas/rasterio/numpy) — **"tiny" is not achievable; say so rather than
+   promising it.**
+
+**Two constraints the new repo inherits.** Nothing private may reach it, and `env.example.sh` /
+`_config.py` are *inside* the fsd checkout, so the config bootstrap has to be solved (#78) rather
+than copied. And the demo notebook it holds must keep the same no-outputs/no-identifiers discipline
+that `tests/test_notebooks.py` now enforces here — the new repo needs its own copy of that guard, or
+it inherits the leak risk without the check.
+
+**Still open, unrelated to Phase 2:** #91 and #90 as one seam-gate spec (both are
+`_check_local_seams` inspecting which kwargs were spelled rather than what the call will touch);
+**#87 is waiting on evidence from the run the user just completed** — either the single
+`_deploy.json` binding is fine in practice (close won't-fix) or a concrete case where a mismatch
+warning was wanted.
+
+---
+
+_Previously: 2026-08-25 (**SPEC 53 (D1+D2, #89) IMPLEMENTED + REVIEWED (Opus `/effort high`) +
 MERGED into `main` (`--no-ff`, `main` @ `38a2d09`), worktree pruned, branch deleted. NOT PUSHED.**
 All eight ACs verified, one review fix applied. On `main` the suite is **968 passed, 96 skipped, 0
 failed** (4 more tests collected than in the worktree — the gitignored real-data fixtures under
