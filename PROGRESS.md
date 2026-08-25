@@ -39,7 +39,13 @@ publish, marker, alias repoint, digest idempotency); **#88 is closeable**; **#86
 sign-off.** D1: stage a non-local resolved
 bundle to scratch in `run_inference`, right after `_resolve_model_ref`, reusing
 `infer_shard.fetch_bundle_to_scratch` (the primitive already exists — the spec wires, it does not
-write transfer code). D2: scratch at `<output_folderpath>/_model/`, per run, not a cache. **§7's two questions
+write transfer code). D2: scratch at `<output_folderpath>/_model/`, per run, not a cache. **D1 was amended after
+sign-off (2026-08-25) with a runner gate:** as first written it staged whenever the resolved path
+was non-local, with no runner condition, which contradicted AC7 — a blob registry plus
+`runner="aml"` would have added a blob→local fetch that then got staged straight back to blob.
+Staging is now gated on `runner == "local"` (the shapes that actually call `bundle.load` on this
+machine), with `fs.is_local` as the locality test; AC7 asserts zero driver-side fetches on the AML
+path by call count. **§7's two questions
 resolved at their defaults:** staging goes in `run_inference` (so `bundle.load` keeps the narrow
 spec-44-D2 contract — no network I/O, no temp dir of its own; the accepted cost is that a future
 caller handing `load` a URL hits #89 again, with §6 option B kept as the way back), and scratch

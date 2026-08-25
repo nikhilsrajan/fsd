@@ -88,6 +88,26 @@ fine — so a preflight rejection still costs no transfer. **Only `sys.path` can
 only `load` needs the local copy. Staging any earlier would make every rejected call pay for a
 download it never used.
 
+> **Amendment (raised after sign-off, 2026-08-25; resolved by the user same day).** D1 as first
+> written said "when `_resolve_model_ref` yields a path that is not local", with **no runner
+> condition** — which contradicted **AC7** ("the AML path is untouched"). With a blob registry and
+> `runner="aml"`, that wording adds a blob→local fetch that did not exist before, and the AML path
+> then stages that local copy straight back up to blob (`runners._stage_bundle`) — a
+> blob→local→blob round trip that is correct but wasteful, and a behavior change to a path this
+> spec promised not to touch.
+>
+> **The gate: stage only when the bundle will be loaded on *this* machine** — i.e. when
+> `runner == "local"` — using `fs.is_local(path)` (`storage/fs.py:79`) for the locality test.
+> `runner="aml"` never calls `bundle.load` on the driver: it stages to blob and each node fetches
+> its own copy (`infer_shard.fetch_bundle_to_scratch`), so it needs nothing from D1. Every local
+> execution shape *does* need it — `cores=1` (`_engine.run_local`), the `cores>1` Snakemake
+> fan-out, and local ROI mode all end at `bundle.load` in a process on this machine.
+>
+> **`_VALID_RUNNERS` is `("local", "aml")` today, so this gate is total.** A future runner (Azure
+> Batch, per `ROADMAP.md`) must declare which side loads the bundle; the condition to write then is
+> "does the driver load it", not a growing list of runner names. Recorded so the next runner does
+> not inherit `runner == "local"` as though it were the question.
+
 ### D2 — scratch lives under the run's own output folder, and is not a cache
 
 `<output_folderpath>/_model/` — created per run, beside the outputs it produced.
@@ -114,7 +134,10 @@ size and a ticker, so it is never silent.
    manifest-declared files — no directory listing was used to build it.
 6. `cores > 1` (the `_run_prebuilt_via_runner` fan-out) uses the same staged local path, not the
    original URL.
-7. The AML path is untouched: a run with `runner="aml"` stages exactly as it does today.
+7. The AML path is untouched **in both directions** (the D1 amendment): a run with
+   `runner="aml"` stages exactly as it does today, and a blob registry with `runner="aml"`
+   performs **no** local fetch — asserted by counting `fetch_bundle_to_scratch` calls on the
+   driver (zero), not by inspecting timings. Every local runner shape does stage.
 8. `pytest -q` and `ruff check src/ tests/ demos/ examples/` clean; no network in unit tests — the
    blob path is exercised on `memory://`, with the real-Azure proof left to the run-book, for the
    reason spec 52 §5 established.
