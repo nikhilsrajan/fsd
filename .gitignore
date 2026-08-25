@@ -74,6 +74,10 @@ notebooks/demo_*
 # committing (Kernel > Restart & Clear All Outputs).
 !notebooks/00_build_images.ipynb
 
+# and another exception - the demo model adapter and e2e_austria_aml.ipynb
+!notebooks/demo_model/my_adapter.py
+!notebooks/e2e_austria_aml.ipynb
+
 # The AML image build contexts (docs/howto/build-the-images.md) ARE tracked -- a
 # Dockerfile and an environment.yml carry no cloud identifiers, and keeping them in
 # the repo is what stops them drifting from the how-to that documents them. The fsd
