@@ -29,7 +29,7 @@ NOTEBOOKS = REPO_ROOT / "notebooks"
 
 # Every notebook `.gitignore` explicitly un-ignores. Add a name here in the same commit
 # that un-ignores it, or it goes public unguarded.
-TRACKED_NOTEBOOKS = ["00_build_images.ipynb"]
+TRACKED_NOTEBOOKS = ["00_build_images.ipynb", "e2e_austria_aml.ipynb"]
 
 
 def _cells(name):
