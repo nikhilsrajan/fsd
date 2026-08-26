@@ -5,7 +5,8 @@ summary: The AML image recipe lives in `00_build_images.ipynb` as 110 lines of h
 
 # Spec 56 — image definitions, and a registry to keep them in
 
-**Status:** DRAFT — awaiting sign-off. · **Opened:** 2026-08-26
+**Status:** **SIGNED OFF (user, 2026-08-27)** — all three §7 questions resolved. Not implemented.
+· **Opened:** 2026-08-26
 **Closes:** [#79](https://github.com/nikhilsrajan/fsd/issues/79).
 **Origin:** the user, 2026-08-26: *"the helper functions written in 00_build_images notebook are
 still within the notebook and they need to be selectively pushed into the fsd module so that a
@@ -170,16 +171,27 @@ after the OCI image-spec annotation keys** rather than invented:
 Everything goes through `fsd.storage.fs`, so a local registry and an `abfss://` registry are the
 same code — the property spec 52 established and the reason this is not a new storage problem.
 
-**The registry path is an argument.** `fsd.image.registry.publish(registry=..., ...)` takes it;
-nothing reads it from config. That is spec 55 D1's rule and spec 54 D3's before it. In practice a
-user points it at `f"{ROOT}/image_registry"`, next to `model_registry`.
+**The registry path is an argument, always.** `fsd.image.registry.publish(registry=..., ...)`
+takes it; no code under `src/fsd/` reads it from anywhere. The user, 2026-08-27: *"within the module
+it should be all variables."*
+
+Where an **operator** gets that value is a separate question, answered by
+[spec 55 D2](55-root-leaves-the-config.md): an optional `image_registry` config key, alongside
+`model_registry`. So the two fsd-tracked notebooks read `cfg.image_registry` — they are leak-guarded
+and may not hold a literal `abfss://` URL — while the `rise` repo hard-sets its own concrete value.
+**No concrete storage-account name appears anywhere under `fsd/`;** fsd is public MIT, and the
+identifier sweep (RECIPES.md) exists to catch exactly that.
 
 **Reuse, not re-implementation.** `fsd/model/registry.py` already implements immutable versions,
 `_aliases.json` staged-and-renamed, content-digest idempotency, `_complete.json` written last, and
 the collision retry — with its concurrency guarantees written down. The generic half of that
 (version allocation, alias read/write, completeness marking) moves to `fsd/registry/_core.py` and
 both registries call it; the model-specific half (bundle digesting, `_deploy.json`) stays put.
-See §7 Q1 — this is the one decision with a cheaper alternative.
+**Resolved at sign-off (§7 Q1): extract.** It happens as step 0 of §9, with the model
+registry's own tests green and unmodified before anything image-related is written. The user,
+2026-08-27, on whether the two registries should share a mechanism: *"a thing to consider is if the
+mechanism used be common between model registry and image registry — which is already stated in
+D3."* They should, and this is how.
 
 ### D4 — `ensure_environment()` is check-then-build
 
@@ -355,29 +367,32 @@ Its existing failure modes must keep failing.
   definition's `fsd` field takes any pip-installable reference, so PyPI is a value change, not a
   design change.
 
-## 7. Questions at sign-off
+## 7. Questions at sign-off — ALL RESOLVED (user, 2026-08-27)
 
-**Q1 — extract `fsd/registry/_core.py`, or copy the ~120 lines?** D3 assumes extraction: one
-implementation of version allocation, aliases, completeness and the collision retry, used by both
-registries. *For:* one place to fix a concurrency bug; the model registry's guarantees are
-documented and hard-won, and a copy will drift. *Against:* it refactors a module `deploy` depends
-on, in the same spec that adds a new one — and spec 52's own §5 shows how subtle that code is.
-**Recommendation: extract, but as step 0 of §9, with the model registry's existing tests green and
-unmodified before anything image-related is written.** If step 0 turns out to touch more than
-mechanical moves, stop and copy instead.
+**Q1 — extract `fsd/registry/_core.py`, or copy the ~120 lines?** *For extraction:* one
+implementation of version allocation, aliases, completeness and the collision retry; the model
+registry's guarantees are documented and hard-won, and a copy will drift. *Against:* it refactors a
+module `deploy` depends on, in the same spec that adds a new one.
+> **RESOLVED — extract, per the recommendation** (user, 2026-08-27). It is step 0 of §9. The
+> guard rail stands: **if step 0 grows beyond mechanical moves, stop and copy instead** — the model
+> registry's existing tests must be green and unmodified throughout.
 
-**Q2 — where does the registry live by default?** `f"{ROOT}/image_registry"` next to
-`model_registry` is the obvious answer and the one D3 assumes. But images outlive runs even more
-than models do (spec 51's `REGISTRY = f"{AZ_ROOT}/model_registry"` comment already makes this
-argument), and a single image registry per *platform* — shared by every project under that storage
-account — would mean the second project reuses the first's images instead of rebuilding them.
-*Proposal:* take no default. `registry=` is required, the two notebooks pass
-`f"{ROOT}/image_registry"`, and platform-wide sharing is something a user opts into by passing a
-path that is not under their run root. **This is a question about your intent, not about code.**
+**Q2 — where does the registry live by default?**
+> **RESOLVED — fsd takes no default and hard-codes nothing** (user, 2026-08-27). `registry=` is a
+> required argument on every fsd signature. The concrete paths for this project are hard-set **in
+> the `rise` repo**, and reach the two fsd notebooks through spec 55 D2's optional
+> `image_registry` / `model_registry` config keys. The user's reasoning, recorded because it is the
+> general rule and not a one-off: *"maybe hardsetting this within fsd is not the right move because
+> that makes it hardcode too much for azure and rise project. fsd is supposed to be a general
+> library."*
+>
+> The question this replaced — whether one image registry should be shared platform-wide rather than
+> sitting per-project — is now the operator's to answer by what they put in the key, which is the
+> right place for it.
 
-**Q3 — does `ImageDefinition` cover apt packages in v1?** The current Dockerfiles need none, and
-`build_context=` is the escape hatch. *Proposal:* no `apt` field in v1; add one when a real image
-needs it.
+**Q3 — does `ImageDefinition` cover apt packages in v1?**
+> **RESOLVED — as proposed: no.** No `apt` field in v1; `build_context=` is the escape hatch for an
+> image that needs one. Add it when a real image does.
 
 ## 8. Best-practice alignment / sources
 
@@ -466,7 +481,7 @@ the asset still exists.
 Each step is independently testable; do not start the next until the previous is green. Steps 0–3
 need no Azure at all.
 
-0. **`fsd/registry/_core.py`** (§7 Q1) — move version allocation, `_aliases.json`, `_complete.json`
+0. **`fsd/registry/_core.py`** (§7 Q1, resolved: extract) — move version allocation, `_aliases.json`, `_complete.json`
    and the collision retry out of `fsd/model/registry.py`. **`fsd/model/registry.py`'s public
    functions and its tests must not change.** If this step grows beyond mechanical moves, stop and
    take Q1's fallback (copy).

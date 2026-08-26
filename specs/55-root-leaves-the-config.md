@@ -1,23 +1,26 @@
 ---
 status: current
-summary: `root` is the one value in spec 54's schema that names a DESTINATION rather than the platform, and pinning it in a user-level file makes a second project awkward (user, 2026-08-26). Remove it from the schema entirely -- the caller passes every storage location, which is spec 41 D7's invariant applied to the last value that escaped it. Plus `fsd init --blank` for a file you fill in by hand. Five decisions.
+summary: Two changes to spec 54's schema, in opposite directions. `root` comes OUT -- it names a per-run destination, not a durable address, and pinning it per-user makes a second project awkward (user, 2026-08-26). Two optional registry keys go IN, so a config file decides where the model and image registries live (user, 2026-08-27) while fsd's own code still only takes arguments. Plus `fsd init --blank`. Four decisions.
 ---
 
-# Spec 55 — `root` leaves the config; `fsd init --blank`
+# Spec 55 — `root` leaves the config, the registries enter it
 
-**Status:** DRAFT — awaiting sign-off. · **Opened:** 2026-08-26
+**Status:** **SIGNED OFF (user, 2026-08-27)** — every §7 question resolved; see §7 for what was
+dropped at sign-off and why. Not implemented. · **Opened:** 2026-08-26
 **Amends:** [spec 54](54-user-level-config.md) (D2's schema, D5's `init` forms, D7's error).
 Spec 54 is **not** superseded — its D1 location rule, D3 explicitness and D4 precedence all stand.
-**Origin:** two notes from the user, 2026-08-26, after spec 54 landed. **Related:**
-[#78](https://github.com/nikhilsrajan/fsd/issues/78) (closed, the spec this amends),
-[spec 56](56-image-definitions-and-registry.md) (the sibling note, and the first consumer of the
-rule that a registry path is *passed*, never read from config).
+**Origin:** the user's notes of 2026-08-26 and 2026-08-27, after spec 54 landed.
+**Related:** [#78](https://github.com/nikhilsrajan/fsd/issues/78) (closed, the spec this amends),
+[spec 56](56-image-definitions-and-registry.md) (the sibling spec; D2 here is what its registry
+argument is fed from).
+**Implementation:** Sonnet `/effort medium` against this spec (CLAUDE.md model split). §9 is the
+build order.
 
 ---
 
 ## 1. The problem
 
-Two, from using what spec 54 built.
+Two, from using what spec 54 built, plus one gap it left.
 
 **`root` is per-project; the file is per-user.** The user, 2026-08-26: *"a user might want to work
 with multiple projects and to hard-set it early on might make things less user friendly."* The
@@ -25,203 +28,247 @@ other five values answer *which platform am I on* — subscription, resource gro
 cluster, managed identity. They change when you change employer, not when you change project.
 `root` answers *where does this run's data go*, which changes per project, per experiment, and
 sometimes per cell. Writing it once into `~/.config/fsd/config.toml` and reading it back
-everywhere makes the common case (one project) two keystrokes shorter and the second case
-(any other project) a trip to a file in a directory the user does not have open.
+everywhere makes the common case (one project) two keystrokes shorter and every other case a trip
+to a file in a directory the user does not have open.
 
 The same note observed that a user-level file is otherwise *"standard practice"* — it is (spec 54
-§8 cites `az`, `gcloud`, and dbt says the same thing in its own words, §8 below). This spec does
-not move the file. It removes the one key that never belonged in it.
+§8 cites `az` and `gcloud`; dbt says it in its own words, §8 below). This spec does not move the
+file. It removes the one key that never belonged in it, and adds two that do.
+
+**Nothing tells fsd where the registries are.** Spec 56 puts image definitions in a registry and
+spec 51 already put models in one, and both take the path as an argument — correctly, since fsd is
+a general library and the concrete location is one project's business. But the two notebooks fsd
+itself ships are **leak-guarded**: `tests/test_notebooks.py` fails the build on six identifier
+patterns, so neither may hold a literal `abfss://` URL. Without a config key they have nowhere to
+read one from. The user, 2026-08-27: *"fsd is supposed to be a general library — therefore the goal
+is to hardset these parameters within the new rise repository. design wise fsd code should allow
+config files to decide where the repository lies and use variables."*
 
 **`fsd init` cannot write a file you intend to fill in yourself.** Every form writes values:
-interactive prompts for six, `--set` takes them on the command line, `--from-env-file` reads them
-from a file you already have. There is no *"just create it, I will edit it"* — which is what
-`env.example.sh` was for, and the affordance did not survive its retirement. Related, and
-visible in the spec 54 review: a non-tty `fsd init` (a CI step, a piped shell) dies on a bare
-`EOFError` traceback out of `input()`, because prompting is the only default.
+interactive prompts, `--set`, `--from-env-file`. There is no *"just create it, I will edit it"* —
+which is what `env.example.sh` was for, and the affordance did not survive its retirement. Related,
+and found by the spec 54 review: a non-tty `fsd init` (a CI step, a piped shell) dies on a bare
+`EOFError` out of `input()`, because prompting is the only default.
 
 ## 2. Scope
 
 **In:**
 
-- Removing `root` from the config schema, and everything that follows: `KEYS`, the `AZ_*` map,
-  `MissingConfig`, `fsd config`, the two tracked notebooks, `docs/reference/environment.md`.
-- What a notebook does instead, given that `tests/test_notebooks.py` forbids it to hold a literal
-  storage URL.
+- Removing `root` from the config schema, and everything that follows.
+- Adding `model_registry` and `image_registry` as **optional** keys, and the required/optional
+  split in `load()` that they force.
+- What a notebook does for `root` instead, given that it may not hold a literal storage URL.
 - `fsd init --blank`, and making a non-tty `fsd init` say something useful.
-- A migration note for a `config.toml` that already has `root` in it.
 
 **Out:**
 
 - The file's location (spec 54 D1 stands), the precedence rule (D4 stands), the explicitness rule
   (D3 stands — this spec makes it *more* true, not less).
-- Named profiles / multiple environments. Still out, and this spec is the reason they are not
+- Named profiles / multiple environments. Still out, and this spec is part of why they are not
   needed: the value that would have driven a profile is now an argument.
-- Any change to how `AZ_ROOT` works **as an environment variable** in a shell or a run-book. It
-  keeps working exactly as it does; it simply stops being part of fsd's config schema.
-- Adding subset support to `load()` (`load("resource_group", "workspace")`). Raised by the spec 54
-  review because `00_build_images.ipynb` needs two of the six. With `root` gone the remaining five
-  are all *platform* coordinates that any AML call needs together, so the case for a subset
-  weakens rather than strengthens. Left unbuilt; see §7 Q1.
+- **Any concrete `rise` value.** The registry URLs the user supplied name a real storage account;
+  they live in `AZURE_INFRA_PRIVATE.md` and in the `rise` repo. Nothing under `fsd/` — a public MIT
+  repo — carries them, in this spec or in any file it produces.
+- Adding subset support to `load()` (`load("resource_group", "workspace")`). See §7 Q1: resolved as
+  *leave it until it becomes an actual pain*.
+- Cleaning `AZ_ROOT` out of the env-file/notebook plumbing that still names it. Deferred to a later
+  Opus session — see §7's dropped D5.
 
 ## 3. Decisions
 
 ### D1 — `root` is removed from the config schema
 
-`KEYS` becomes five: `subscription_id`, `resource_group`, `workspace`, `cluster`,
-`uami_client_id`. `_KEY_TO_ENV` loses its `root: AZ_ROOT` entry. `load()` returns a namespace with
-five attributes and raises `MissingConfig` naming whichever of the five are unset. `fsd init`
-prompts for five. `fsd config` prints five.
+The required keys become five: `subscription_id`, `resource_group`, `workspace`, `cluster`,
+`uami_client_id`. `_KEY_TO_ENV` loses its `root: AZ_ROOT` entry. `load()` no longer returns a
+`root` attribute, `fsd init` no longer prompts for one, and `fsd config` no longer prints one.
 
-**The principled line, so this is not re-litigated as an ad-hoc removal.** The five that remain
-are *addresses of the platform*: they identify an Azure tenancy and the compute inside it, they are
-handed to you by a platform admin, and every fsd call that touches AML needs all of them.  `root`
-is a *destination for data*, chosen by whoever is running the job, different per run. Spec 41 D7
-and spec 54 D3 both say the library takes storage locations as **arguments** and never resolves
-them from ambient state; `root` sitting in a config file was the one place that rule was bent —
-not by `src/fsd/`, which still never read it, but by the operator-facing helper that fed it. This
-removes the bend.
+**The line, so this is not re-litigated as an ad-hoc removal.** What belongs in the config file is a
+**durable address** — something stable for this user across runs and, mostly, across projects. What
+does not is a **per-run destination**. The five platform coordinates are durable: a platform admin
+hands them over, and they change when the tenancy does. The registries (D2) are durable by design —
+spec 51's notebook comment already argues it, hanging the model registry off `AZ_ROOT` and not off
+the per-run `ROOT` because *"Models outlive the runs that made them."* `root` is the destination
+itself, chosen per run by whoever is running it.
+
+Spec 41 D7 and spec 54 D3 both say the library takes storage locations as **arguments** and never
+resolves them from ambient state. `root` sitting in a config file was the one place that rule was
+bent — not by `src/fsd/`, which still never read it, but by the operator-facing helper feeding it.
+This removes the bend.
 
 *The consequence, stated plainly:* every caller now writes its own root. That is the cost, it is
 deliberate, and it is one line per notebook.
 
-### D2 — What the notebooks do instead
+### D2 — Two optional keys, `model_registry` and `image_registry`
 
-Neither tracked notebook may carry a literal storage URL — `tests/test_notebooks.py` fails the
-build on six identifier patterns, and that guard is the reason those notebooks can be public at
-all. So "the caller passes root" cannot mean "paste your `abfss://` URL into the config cell".
+```toml
+[azure]
+subscription_id = "…"
+resource_group  = "…"
+workspace       = "…"
+cluster         = "…"
+uami_client_id  = "…"
+model_registry  = ""     # optional — where fsd.model.registry publishes
+image_registry  = ""     # optional — where fsd.image.registry publishes (spec 56)
+```
 
-The fsd-tracked notebooks read it from the environment, with an error that says what to do:
+With `AZ_MODEL_REGISTRY` / `AZ_IMAGE_REGISTRY` as their bare env names, so spec 54 D4's precedence
+(kwarg > env > file) applies to them unchanged and `_KEY_TO_ENV` stays a bijection.
+
+**`load()` gains a required/optional split.** `REQUIRED_KEYS` is the five; `OPTIONAL_KEYS` is these
+two; `KEYS` is both, and remains the order things are written and reported in. An unset **required**
+key raises `MissingConfig` naming every gap at once, exactly as spec 54 D7 says. An unset
+**optional** key is returned as `None` and raises nothing — a user who never touches a registry must
+not be blocked by one.
+
+**Where the concrete values live.** In the `rise` repo and in the user's own
+`~/.config/fsd/config.toml`, never in fsd. This is the whole point of the key existing: fsd's code
+signatures stay `publish(registry=..., ...)` and `ensure_environment(..., registry=...)` — variables
+all the way down — while a config file supplies the value for the two notebooks that cannot carry
+it. The user, 2026-08-27: *"within the module it should be all variables."*
+
+**Why these two are config and `root` is not**, given they are all `abfss://` strings: a registry is
+a durable address that several projects may legitimately share, and it is *named* rather than
+*chosen per run*. If that turns out to be false — if a second project wants a second image registry
+— the answer is the same as for any other key: pass it explicitly, since it is an argument in every
+fsd signature anyway. The config key is a convenience for the common case, not a channel the library
+reads.
+
+### D3 — What the notebooks do for `root`
+
+Neither tracked notebook may carry a literal storage URL, so "the caller passes root" cannot mean
+"paste your `abfss://` URL into the config cell". They read it from the environment, in a visible
+cell, with an error that says what to do:
 
 ```python
-# Your storage root is per-project, so fsd does not store it (spec 55 D1). Export it, or
-# set it here if this notebook is not the one that is committed.
+# Your storage root is per-project, so fsd does not store it (spec 55 D1). Export it before
+# starting the kernel, or set it here if this notebook is not one that gets committed.
 ROOT = os.environ.get("AZ_ROOT")
 assert ROOT, "set AZ_ROOT (export AZ_ROOT=abfss://…) — spec 55 D1: root is not config"
 ```
 
-`AZ_ROOT` stays a documented environment variable in `docs/reference/environment.md` — it is
-what every existing run-book already exports, and D4's precedence made it work before this spec.
-The difference is only that **fsd does not read it**: the notebook does, explicitly, in a cell the
-reader can see. A consumer repo whose notebook is *not* committed to a public repo can of course
-write the URL inline; that is their call, and the leak guard is fsd's rule about fsd's own files.
+**The reason is the leak guard, and only the leak guard.** An earlier draft of this decision also
+argued that `AZ_ROOT` should keep working because run-books export it. That argument is withdrawn:
+the user, 2026-08-27 — *"we do not care about the runbooks. runbooks are point in time docs ... we
+do not prioritise being able to run the runbooks. we do not make decisions so that the runbooks are
+still compatible."* Run-book compatibility is not a design input here or anywhere else. `AZ_ROOT`
+stays because a public notebook needs a non-literal source for a private string, full stop.
 
-### D3 — `fsd init --blank`
+A consumer repo whose notebook is not committed to a public repo can write the URL inline. That is
+their call; the guard is fsd's rule about fsd's own files.
+
+### D4 — `fsd init --blank`, and a non-tty that explains itself
 
 ```
 fsd init --blank      # write config.toml with every key present and empty; prompt for nothing
 ```
 
-Mutually exclusive with `--set` and `--from-env-file`, like they are with each other. It writes
-the same commented header `_emit_toml` already produces, refuses to overwrite a file that already
-has a non-empty value unless `--force` is given (a blank init over a filled-in file is
-destructive, and nothing else in `fsd init` destroys a value), and prints the path — which is the
-only useful thing it can print, since it has no values.
+Mutually exclusive with `--set` and `--from-env-file`, as they are with each other. It writes the
+commented header `_emit_toml` already produces, **refuses to overwrite a file that already holds a
+non-empty value** unless `--force` (a blank init over a filled-in file is destructive, and nothing
+else in `fsd init` destroys a value), and prints the path — the only useful thing it can print,
+having no values.
 
-This restores `env.example.sh`'s one genuine affordance — *here is the shape, fill it in* — at the
-location a consumer can actually reach, which is what spec 54 §1 said the template failed to do.
+This restores `env.example.sh`'s one genuine affordance — *here is the shape, fill it in* — at a
+location a consumer can reach, which spec 54 §1 identified as the template's fatal flaw.
+
+Keys are written **present and empty** rather than commented out, so the file parses and `load()`
+reports the gaps by name instead of `tomllib` reporting a syntax error.
 
 **And prompting stops being the fallback for a non-tty.** `fsd init` with no arguments and no
-terminal currently raises `EOFError` from `input()`. It should detect `not sys.stdin.isatty()` and
-exit non-zero with the three non-interactive forms named (`--blank`, `--set`, `--from-env-file`).
-
-### D4 — A `root` key already in someone's file is ignored, and said so once
-
-`_read_file_values` already filters to known keys, so an existing `config.toml` written by spec
-54's `fsd init` keeps loading — `root` is simply not returned. Silence here is the wrong
-behaviour: the value is sitting in the file, visibly, and the user will reasonably expect it to be
-used.
-
-`fsd config` prints one line when the file holds keys the schema no longer has:
-
-```
-config file: /Users/…/.config/fsd/config.toml
-  …
-  note: 'root' in this file is ignored — root is passed per call since spec 55, not configured.
-```
-
-Not a warning on `load()`. `load()` is called at the top of every notebook cell run and a
-per-import nag is noise; `fsd config` is the command whose entire job is explaining where values
-come from.
-
-### D5 — `--from-env-file` keeps parsing `AZ_ROOT`, and drops it with a line of output
-
-The migration path (spec 54 D5) reads an `env.local.sh` that certainly contains `export AZ_ROOT=`.
-`parse_env_file` returns every `AZ_*` it finds; `_cmd_init` maps only what is in `ENV_TO_KEY`, so
-`AZ_ROOT` is already dropped. Make it say so — `skipped AZ_ROOT (not a config key since spec 55)`
-— rather than silently discarding the one value the user is most likely to be looking for
-afterwards.
+terminal currently raises `EOFError` from `input()`. It detects `not sys.stdin.isatty()` and exits
+non-zero naming the three non-interactive forms.
 
 ## 4. Acceptance criteria
 
-1. `fsd.config.KEYS` is the five; `load()` returns a namespace with exactly those attributes and
-   no `root`.
-2. `MissingConfig` raised from an empty config names five keys and five `AZ_*` names, and still
-   mentions `fsd init`.
-3. `load(root="…")` raises `TypeError` — the existing unknown-kwarg guard covers it, and a test
+1. `fsd.config.REQUIRED_KEYS` is the five, `OPTIONAL_KEYS` is the two, `KEYS` is both in write
+   order; `_KEY_TO_ENV` covers all seven and the bijection test still passes.
+2. `load()` returns a namespace with all seven attributes and no `root`. The two optional ones are
+   `None` when unset anywhere; **no** `MissingConfig` is raised for them.
+3. `MissingConfig` from an empty config names exactly the five required keys and their five `AZ_*`
+   names, and still mentions `fsd init`.
+4. `load(root="…")` raises `TypeError` — the existing unknown-kwarg guard covers it, and a test
    pins that it does, because passing `root=` is exactly the mistake a spec-54-era caller makes.
-4. A `config.toml` containing a `root` key loads without error and `load()` ignores it;
-   `fsd config` prints the D4 note naming the ignored key.
-5. `fsd init --blank` writes all five keys empty, prompts for nothing, prints the path, and exits
-   0; run against a file with a non-empty value it refuses and exits non-zero unless `--force`.
-6. `fsd init` with `stdin` not a tty exits non-zero naming `--blank` / `--set` / `--from-env-file`,
+5. Precedence holds for an optional key too: `load(image_registry=…)` beats `AZ_IMAGE_REGISTRY`
+   beats the file, and an empty string at one level falls through to the next.
+6. `fsd init --blank` writes all seven keys empty, prompts for nothing, prints the path, exits 0;
+   against a file with a non-empty value it refuses and exits non-zero unless `--force`.
+7. `fsd init` with `stdin` not a tty exits non-zero naming `--blank` / `--set` / `--from-env-file`
    and does not raise `EOFError`. Tested by monkeypatching `sys.stdin.isatty`.
-7. `fsd init --from-env-file` on a file containing `AZ_ROOT` writes the other keys, prints the
-   skip line, and does not write `root`.
-8. `tests/test_docs.py::test_az_vars_are_documented` passes with the five, and
-   `docs/reference/environment.md` still documents `AZ_ROOT` (as an environment variable that fsd
-   does not read).
-9. Both tracked notebooks call `fsd.config.load()`, get `ROOT` from `os.environ`, carry no literal
-   storage URL, and `tests/test_notebooks.py`'s guards still pass.
-10. `pytest -q` and `ruff check src/ tests/` clean; identifier sweep clean.
+8. `fsd config` prints seven rows with provenance; an unset optional key reads as unset rather than
+   as a missing requirement.
+9. `tests/test_docs.py::test_az_vars_are_documented` passes with all seven, and
+   `docs/reference/environment.md` documents `AZ_MODEL_REGISTRY` / `AZ_IMAGE_REGISTRY`, and
+   `AZ_ROOT` as an environment variable that **fsd does not read**.
+10. `e2e_austria_aml.ipynb` gets D3's `ROOT` cell, both tracked notebooks carry no literal storage
+    URL, and `tests/test_notebooks.py`'s guards still pass.
+11. `pytest -q` and `ruff check src/ tests/` clean; identifier sweep clean — **including that no
+    concrete storage-account name entered any tracked file.**
 
 ## 5. Risks
 
-- **A user with one project is now slightly worse off** — they type a root they used to have
-  stored. Accepted: it is one line, and it is the line that makes the second project free.
-- **`AZ_ROOT` looks like it is still config.** It is still a documented variable, still exported by
-  every run-book, and now read by the notebook rather than by fsd. The distinction is real but
-  invisible at a glance, which is why D4 and D5 both spend output on saying it.
-- **The notebook assert is a worse error than `MissingConfig`.** `MissingConfig` names every gap at
-  once and says how to fix it; a bare `assert ROOT` names one. Accepted for now — it is in a cell
-  the reader can see and edit, which is the property D2 is buying.
-- **Churn on a spec that landed hours ago.** Spec 54's schema is one commit old and this changes
-  it. Cheap now, expensive after the consumer notebooks are written against six keys — which is
-  precisely why this is being specced before phase 2 continues rather than after.
+- **A user with one project types a root they used to have stored.** Accepted: one line, and it is
+  the line that makes the second project free.
+- **`AZ_ROOT` looks like it is still config.** It is still a documented variable and now read by the
+  notebook rather than by fsd. Real distinction, invisible at a glance;
+  `docs/reference/environment.md` has to say it in words (AC 9).
+- **The registry keys reintroduce "a storage location in a config file",** which D1 just removed one
+  of. Mitigated by them being optional, by every fsd signature still taking the path, and by D2
+  stating the durable-address test that separates them. If that test starts feeling like a
+  rationalisation, the honest response is to remove them again, not to add a third category.
+- **The notebook `assert` is a worse error than `MissingConfig`** — it names one gap, not all.
+  Accepted: it sits in a cell the reader can see and edit, which is the property D3 buys.
+- **Churn on a spec that landed a day ago.** Cheap now, expensive once the consumer notebooks are
+  written against the old schema — which is exactly why this is specced before phase 2 continues.
 
 ## 6. Alternatives considered
 
 - **Project-local `fsd.toml` holding `root`, discovered by walking up.** Offered at the decision
-  point and declined by the user in favour of passing it. Would have reintroduced exactly what
-  spec 54 §6 rejected: a live storage URL inside a git tree, which is the leak this project has
-  caught four times, and it would have made fsd responsible for managing a `.gitignore` rule.
-- **Named profiles (`[project.rise]`, `load(profile=…)`).** Offered and declined. It is the
-  `gcloud configurations` shape and it works, but it is a second lookup mechanism to explain,
-  spec 54 §2 ruled it out, and it stores per-project data — meaning the second project still
-  starts with an edit to a file in a hidden directory.
-- **Keep `root` in the schema but make it optional.** Rejected as the worst of both: the key stays
-  in the file inviting a value, `load()` sometimes returns it, and every caller needs a branch for
-  whether it did.
-- **A `fsd init --template` printing TOML to stdout instead of `--blank` writing a file.** Rejected:
-  the user then has to know where to redirect it, which is the knowledge `fsd init` exists to
-  remove. `--blank` writes it at the resolved path and prints where.
+  point and declined by the user in favour of passing it. Would have reintroduced what spec 54 §6
+  rejected: a live storage URL inside a git tree — the leak this project has caught four times —
+  and made fsd responsible for a `.gitignore` rule.
+- **Named profiles (`[project.rise]`, `load(profile=…)`).** Offered and declined. It is the `gcloud
+  configurations` shape and it works, but it is a second lookup mechanism to explain, spec 54 §2
+  ruled it out, and the second project still starts with an edit to a file in a hidden directory.
+- **Keep `root` in the schema but make it optional** (as D2 does for the registries). Rejected: the
+  key stays in the file inviting a value, `load()` sometimes returns it, and every caller needs a
+  branch for whether it did. The registries differ because a caller who has no registry does not
+  want one at all, whereas every run has a root.
+- **One `registry_root` key, with `model_registry`/`image_registry` derived by convention.**
+  Considered at sign-off. Rejected: it makes fsd own a layout convention, and it forecloses putting
+  the image registry somewhere shared while the model registry stays per-project.
+- **No config keys at all; `AZ_IMAGE_REGISTRY` / `AZ_MODEL_REGISTRY` env vars only.** Considered at
+  sign-off. It keeps D1's line perfectly clean, at the cost of the one file the user actually edits
+  not mentioning the registries at all.
+- **`fsd init --template` printing TOML to stdout** instead of `--blank` writing a file. Rejected:
+  the user then needs to know where to redirect it, which is the knowledge `fsd init` removes.
 
-## 7. Questions at sign-off
+## 7. Questions at sign-off — ALL RESOLVED (user, 2026-08-26/27)
 
-**Q1 — does `load()` gain subset support?** Raised by the spec 54 review: `00_build_images.ipynb`
-needs `resource_group` + `workspace`, and `load()` requires the whole schema, so building an image
-demands a cluster and a managed identity you may not have yet. With `root` gone the schema is five
-platform coordinates, and any AML *job* needs all five — but an image build genuinely needs two.
+**Q1 — does `load()` gain subset support?** `00_build_images.ipynb` needs `resource_group` +
+`workspace`, and `load()` requires the whole required set, so building an image demands a cluster
+and a managed identity you may not have yet.
+> **RESOLVED — as proposed: leave it** (user, 2026-08-27): *"leave it till it becomes an actual
+> pain."* `load()` keeps requiring all five required keys.
 
-*Proposal:* `load()` keeps requiring all five, and this is revisited only if a real caller is
-blocked. The five are handed over together by a platform admin; a user who has two of them and not
-the other three is mid-setup, and `MissingConfig` naming the rest is arguably the right thing to
-show them. *Against:* it makes `00_build_images` unusable until every value is filled, which is a
-real consumer's first fsd command.
+**Q2 — what does `--blank` write?** Keys present and empty, or a commented-out template?
+> **RESOLVED — as proposed:** present and empty (D4), so the file parses and `load()` reports gaps
+> by name.
 
-**Q2 — does `--blank` write the five keys, or a fully commented template?** Proposal: keys present
-and empty (`root = ""`-style, minus root), because the file must parse and `load()` must report
-the gaps rather than `tomllib` reporting a syntax error. A commented-out template reads better and
-loads as an empty file. Proposal: keys present and empty, with the existing two header comments.
+**Q3 — where do the registry paths come from?** Added 2026-08-27.
+> **RESOLVED — two optional config keys** (user, 2026-08-27), now D2. Concrete values live in the
+> `rise` repo and the user's own config file; fsd's signatures stay variables.
+
+**Two decisions were DROPPED at sign-off.** Recorded here because a later reader will otherwise
+propose them again:
+
+- **Dropped D4 — "a `root` key already in someone's file is ignored, and `fsd config` says so
+  once."** The user, 2026-08-27: *"there is no 'existing config.toml' file ... we have not shipped
+  fsd for people to use. i have been the sole user. this feature could be ignored until an actual
+  issue pops up."* `_read_file_values` already filters unknown keys, so a stale `root` is ignored
+  silently and nothing needs building.
+- **Dropped D5 — "`--from-env-file` prints a line when it skips `AZ_ROOT`."** Same reasoning, plus:
+  the user assigned the wider job — *"clean up AZ_ROOT for env files and notebooks"* — to a later
+  Opus session. Filed as an issue rather than built here.
 
 ## 8. Best-practice alignment / sources
 
@@ -229,36 +276,37 @@ Per-source credit — what each source specifically contributed.
 
 **dbt — "Connection profiles" / `profiles.yml`**
 ([docs.getdbt.com/docs/core/connect-data-platform/connection-profiles](https://docs.getdbt.com/docs/core/connect-data-platform/connection-profiles),
-fetched 2026-08-26). Contributed **the confirmation that keeping the file user-level is right, and
-the vocabulary for why `root` is different**. dbt gives three reasons for `~/.dbt/profiles.yml`:
-*"Security — Keeps credentials out of project directories and version control. Reusability — A
-single file for all dbt projects on the machine. Separation — Connection details don't travel with
-project code."* All three describe the five values this spec keeps. The same source draws the other
-half of the line: `dbt_project.yml` is the project-specific file and *"references a profile name
-defined in profiles.yml"* — the project file holds what varies per project, and the user file holds
-what does not. fsd takes the stricter form of the same split, because its per-project value is a
-single string and a function argument is cheaper than a second file.
+fetched 2026-08-26). Contributed **the confirmation that a user-level file is right, and the
+vocabulary for why `root` is different from the rest**. dbt gives three reasons for
+`~/.dbt/profiles.yml`: *"Security — Keeps credentials out of project directories and version
+control. Reusability — A single file for all dbt projects on the machine. Separation — Connection
+details don't travel with project code."* All three describe the keys this spec keeps. The same
+source draws the other half of the line: `dbt_project.yml` is the project-specific file and
+*"references a profile name defined in profiles.yml"* — the project file holds what varies per
+project, the user file holds what does not. fsd takes the stricter form: its per-project value is a
+single string, and a function argument is cheaper than a second file.
 
-**Spec 54 §8's own sources are not re-derived here.** The Azure CLI's precedence order, the XDG
-relative-path rule and the `console_scripts` contract are unchanged by this spec; it amends the
-schema, not the mechanism.
+**Spec 54 §8's sources are not re-derived.** The Azure CLI's precedence order, the XDG relative-path
+rule and the `console_scripts` contract are unchanged by this spec; it amends the schema, not the
+mechanism.
 
 ## 9. Implementation note — build order
 
-1. **`src/fsd/config.py`** — drop `root` from `KEYS` and `_KEY_TO_ENV`. Nothing else in the module
-   changes shape: `load`, `MissingConfig`, `_emit_toml` and `write_config` are all driven off
-   `KEYS`.
-2. **`tests/test_config.py`** — the six-key fixtures become five; add AC 3 (`load(root=…)` raises
-   `TypeError`) and AC 4 (a file with `root` loads and ignores it).
-3. **`src/fsd/cli.py`** — `--blank` (mutually exclusive, `--force` to overwrite a filled file), the
-   non-tty guard, the D4 note in `fsd config`, the D5 skip line in `--from-env-file`.
-4. **`tests/test_cli.py`** — AC 5, 6, 7.
-5. **Notebooks** — `e2e_austria_aml.ipynb` gets D2's `ROOT` cell (it is the only one that uses
-   root); `00_build_images.ipynb` needs no change beyond what spec 56 does to it.
+1. **`src/fsd/config.py`** — split `KEYS` into `REQUIRED_KEYS` + `OPTIONAL_KEYS`; drop `root`; add
+   the two registry keys and their `AZ_*` names. `load()` raises only for missing **required** keys
+   and returns `None` for unset optional ones. `_emit_toml` / `write_config` are already driven off
+   `KEYS` and need no change beyond the new order.
+2. **`tests/test_config.py`** — AC 1–5. The existing six-key fixtures become five required + two
+   optional.
+3. **`src/fsd/cli.py`** — `--blank` (mutually exclusive; `--force` to overwrite a filled file), the
+   non-tty guard, and `fsd config` printing optional keys as optional.
+4. **`tests/test_cli.py`** — AC 6, 7, 8.
+5. **Notebooks** — `e2e_austria_aml.ipynb` gets D3's `ROOT` cell and reads `cfg.model_registry`;
+   `00_build_images.ipynb` is otherwise spec 56's business.
 6. **Docs** — `docs/reference/environment.md`: `AZ_ROOT` moves from "one of the six `fsd init`
-   writes" to "an environment variable your run-book exports and your notebook reads; fsd does not
-   read it". `CHANGES.md` entry amending spec 54's.
+   writes" to "an environment variable your notebook reads; fsd does not read it", and the two
+   registry variables are added to the table. `CHANGES.md` entry amending spec 54's.
 7. **Full suite + ruff + identifier sweep.**
 
-Do **not** touch `fsd.download` / `create_training_data` / `run_inference` — they already take
-every location as an argument, which is the state this spec restores the config to.
+Do **not** touch `fsd.download` / `create_training_data` / `run_inference` — they already take every
+location as an argument, which is the state this spec restores the config to.
