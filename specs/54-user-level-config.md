@@ -5,7 +5,8 @@ summary: A pip-install consumer cannot bootstrap config — `env.example.sh` is 
 
 # Spec 54 — user-level config and `fsd init`
 
-**Status:** **DRAFT — awaiting sign-off.** One question in §7. · **Opened:** 2026-08-26
+**Status:** **SIGNED OFF (user, 2026-08-26)** — §7's single question resolved at its recommended
+proposal (`[azure]` + lowercase keys). Not implemented. · **Opened:** 2026-08-26
 **Closes:** [#78](https://github.com/nikhilsrajan/fsd/issues/78)
 **Origin:** the first two hard stops in
 [`docs/findings/consumer-repo-friction.md`](../docs/findings/consumer-repo-friction.md), observed
@@ -72,6 +73,11 @@ addresses; it does not introduce credential storage. (#78, user, 2026-08-21.)
 - Non-Azure config keys. The schema has one section because fsd has one cloud today.
 - The consumer repo's own `requirements.txt`, notebook, or how-to — those are the user's, and are
   written after this lands.
+- **`rise init`** — a *project*-level scaffold, one layer above `fsd init`: stand up a consumer
+  repo (requirements pinning fsd, a starter notebook, the config call already wired). Wanted, and
+  explicitly deferred (user, 2026-08-26). It belongs to `rise`, not to fsd, and it should be
+  designed against a consumer notebook that already exists rather than ahead of one. `fsd init`
+  must not grow scaffolding options in anticipation of it.
 
 ## 3. Decisions
 
@@ -127,6 +133,34 @@ tractable precisely because the schema is closed and flat. A round-trip test (`e
 
 If the schema ever gains nesting, arrays, or user-supplied keys, this decision is revisited and
 `tomli-w` is the answer. Say so in the emitter's docstring.
+
+**Why not simply keep the shell format** (asked at sign-off, 2026-08-26 — recorded because the
+next reader will ask it too). The env file was fine while a **human** wrote it and a **shell** read
+it. `fsd init` breaks both halves of that:
+
+1. **A shell file cannot be read safely, only parsed.** `_config.env_local` already refuses to
+   `source` — sourcing runs arbitrary shell from a file whose purpose is holding
+   credential-adjacent values — so it hand-wrote `_EXPORT_RE`. That regex has already carried a
+   real defect: it anchored the value to end-of-line, so every line with a trailing comment failed
+   to match and a fully filled-in file was reported as empty. Its docstring records this. A format
+   that needs a bespoke parser we own and must keep correct loses to one whose parser is in the
+   standard library.
+2. **Writing shell is much harder than reading it.** Shell quoting has real edge cases — a value
+   containing a single quote inside single quotes needs `'\''` — and a mis-quoted shell file is
+   *not* a parse error. It is a file that silently means something else, or that executes something
+   when sourced. TOML basic-string escaping is a backslash and a double quote. The risk is
+   asymmetric and it appears only now, because nothing generated `env.local.sh` before.
+3. **The shell affordance is already unused where it matters.** `source env.local.sh` is the
+   format's one genuine advantage, and a notebook — the consumer's entry point — sources nothing.
+   `_config.py` exists precisely because of that. The file is already being parsed rather than
+   executed everywhere it is actually read.
+4. **And D4 keeps that affordance anyway.** The bare `AZ_*` names sit *above* the file in
+   precedence, so `source env.local.sh` still overrides `config.toml` for anything launched from
+   that shell, and every run-book that exports these keeps working. The `source`-ability moves out
+   of the file format and into the precedence rule, where it costs nothing.
+5. **Cross-platform and room to grow.** `export FOO=bar` means nothing to PowerShell, and a section
+   header is free in TOML — in a flat env file the only namespacing is a name prefix, which is why
+   everything is called `AZ_*` today.
 
 ### D3 — `load()` is explicit; the library still never reads config on its own
 
@@ -306,7 +340,7 @@ entirely.
   loaders with two precedence rules, and the developer path — the one the maintainer runs daily —
   would be the one *not* exercising the consumer code path. One loader, used by everyone.
 
-## 7. Questions at sign-off
+## 7. Questions at sign-off — RESOLVED (user, 2026-08-26)
 
 **Q1 — schema key names: `[azure]` + lowercase keys, or the `AZ_*` names verbatim?**
 
@@ -323,7 +357,8 @@ name map that must be kept correct in two directions.
 bijection, and the consumer notebook — the one that matters — is being written fresh against
 whatever this spec says.
 
-Everything else in §3 is proposed as decided; flag any of it at sign-off.
+> **RESOLVED — take the proposed form** (user, 2026-08-26). `[azure]` + lowercase keys, `cfg.root`.
+> Everything else in §3 was signed off as written.
 
 ## 8. Best-practice alignment / sources
 
