@@ -26,10 +26,10 @@ values are handed to you privately (`AZURE_INFRA_PRIVATE.md`, never public), not
   an inference one (carries your model bundle). Building one is a 10–20 minute ACR build — do this
   ahead of a long unattended run, not during it. See `runbooks/36-aml-runner.md` /
   `runbooks/38-inference-on-aml.md` for how they're built.
-- All `AZ_*` environment variables this run needs — see
-  [`docs/reference/environment.md`](../reference/environment.md) and `env.example.sh`. Concrete
-  values for the `rise` platform live in `AZURE_INFRA_PRIVATE.md` at the workspace root, handed to
-  you by your platform admin — never in this repo.
+- All six values `fsd init` asks for, or the `AZ_*` environment variables that override them — see
+  [`docs/reference/environment.md`](../reference/environment.md). Concrete values for the `rise`
+  platform live in `AZURE_INFRA_PRIVATE.md` at the workspace root, handed to you by your platform
+  admin — never in this repo.
 - Install with the extras the cluster path actually needs:
   ```bash
   pip install -e ".[dev,azure,aml,mpc,grid,model-example]"

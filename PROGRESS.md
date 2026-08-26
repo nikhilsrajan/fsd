@@ -4,7 +4,82 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-26 (**SPEC 53 DONE AND PUSHED; the e2e notebook is now TRACKED, guarded and
+_Last updated: 2026-08-26 (**SPEC 54 IMPLEMENTED, REVIEWED (Opus `/effort high`) AND MERGED
+TO `main`.** Closes #78: `fsd init` + `fsd.config.load()` replace `env.example.sh` /
+`notebooks/_config.py`. NEXT: Phase 2 — `rise/` pip-installs fsd from this `main` and writes its
+own `build_images` + `e2e_austria_aml` notebooks against `fsd.config.load()` (#80, #82).)_
+
+**What spec 54 built, in one line.** `env.example.sh` (repo root) + `notebooks/_config.py`
+(checkout-path `find_repo()`, `env.local.sh` parsing) — both unreachable from a `pip install` — are
+replaced by `~/.config/fsd/config.toml` (D1: `$FSD_CONFIG_DIR` > `$XDG_CONFIG_HOME/fsd` >
+`~/.config/fsd` on POSIX; `%APPDATA%\fsd` on Windows), written by fsd's first console script
+(`fsd init` / `fsd init --from-env-file PATH` / `fsd init --set key=value`, plus `fsd config` to
+print resolved values + provenance) and read by an explicit `fsd.config.load()`. `src/fsd/` itself
+still never reads config (D3 — the part of spec 41 D7 that survives); precedence is explicit kwarg
+> bare `AZ_*` env var > file (D4), and neither `load()` nor `init` ever touches `os.environ`.
+Schema: one TOML table `[azure]`, six lowercase keys, written by a ~20-line hand-rolled emitter
+(`tomllib` cannot write; `tomli-w` stays the documented escape hatch if the schema ever grows).
+
+**Verified, not just tested green.** AC1 — the criterion #78 exists for — was run for real: built a
+wheel (`python -m build`), installed it into a scratch venv with **no fsd checkout anywhere on the
+path**, ran `fsd init --from-env-file` and
+`python -c "import fsd; print(fsd.config.load().root)"` from an empty directory with no
+`pyproject.toml` above it — both succeeded (MEMORY `real-run-beats-review`: green tests alone would
+not have caught a `find_repo()`-shaped bug here). Suite **1003 passed, 92 skipped, 0 failed** (skip
+count differs from the prior 977/96 baseline because this session additionally installed the
+`azure`/`aml`/`mpc`/`titiler`/`serving` extras, unmasking tests previously skipped for missing deps
+— not a regression), `ruff check src/ tests/` clean, identifier sweep clean (every hit matches
+RECIPES.md's documented known-clean list — `env.example.sh`/`env.local.sh` as fsd's own filenames,
+`fsd-aml-env`/`fsd-infer-env`, the `030f6ac` commit sha, `identityReference`/`prevent_destroy` as
+generic API terms — no new leak).
+
+Both tracked notebooks (`e2e_austria_aml.ipynb`, `00_build_images.ipynb`) now call
+`fsd.config.load()` with lowercase attributes (`cfg.root`, not `cfg.AZ_ROOT`); their checkout-path
+resolution is a two-line `pathlib.Path.cwd()` cell per D6, not `find_repo()`. `docs/howto/
+run-at-scale.md` + `build-the-images.md` prerequisite lines and `docs/reference/environment.md`'s
+"How to use it" section were updated in the same change; `CHANGES.md` / `DROPPED.md` record the
+move.
+
+**Review (Opus `/effort high`, 2026-08-26) — approved with five fixes, all applied.** The review
+re-ran everything rather than trusting the report: suite, ruff, the identifier sweep, and **AC1
+from scratch** (fresh wheel, `pip install --no-deps` into a scratch venv, run from a directory with
+no `pyproject.toml` above it — `fsd.__file__` resolved inside the scratch venv, so no checkout was
+on the path). D3 was verified by grep, not by claim: only `__init__.py` and `config.py` changed
+under `src/`, and no `config.load()` / `config_dir()` / `write_config()` call exists anywhere
+outside `config.py` and `cli.py`. What the review changed:
+
+1. **`_toml_escape` missed U+007F (DEL)** — TOML forbids it raw in a basic string, and it sits
+   *above* the printable range, so an `ord(ch) < 0x20` guard skips it and writes a `config.toml`
+   that `tomllib` then refuses to parse. Fixed; DEL is now in the AC-6 adversarial table.
+2. **`docs/howto/build-the-images.md` told the user to fill "AZ_RG and AZ_ML_WORKSPACE at
+   minimum"**, which `load()` rejects — it requires all six or raises `MissingConfig`. The line now
+   says all six. *Left open (a design question, not a defect):* `00_build_images.ipynb` genuinely
+   needs only two of the six, and the retired `_config.load(*names)` allowed a subset. Giving
+   `load()` subset support would change spec 54 D7, so it stays unbuilt pending sign-off.
+3. **"never reads or writes `os.environ`" was stated twice and was wrong** (`load()`'s docstring,
+   a `CHANGES.md` bullet). `load()` *reads* the environment — that is D4 precedence level 2 — and
+   never assigns to it. Both now say that, because D4 is the exact thing a later reader must not
+   misread.
+4. **AC 7b was two-thirds tested** — the `init --from-env-file` write had no environ-mutation
+   test. Added.
+5. **Interactive `fsd init` — D5's primary form — had no test at all.** Added: prompt order,
+   the existing value shown as default, Enter keeping it.
+
+*Not fixed, recorded instead:* D1's `%APPDATA%` branch has no test, because `pathlib.Path()`
+consults `os.name` at construction — forcing it to `"nt"` on POSIX makes every `Path(...)` raise
+`NotImplementedError`, pytest's own included. A comment in `tests/test_config.py` says so.
+*Known small warts, none blocking:* `fsd init --set key=` cannot clear a value (empty is filtered,
+so it is a silent no-op); a non-tty `fsd init` dies on a bare `EOFError`; a hand-edited
+`root = 12345` passes through as an `int`.
+
+**Post-fix:** suite green, `ruff check src/ tests/` clean, identifier sweep re-run *correctly* —
+the first attempt used `xargs -a`, which BSD xargs does not support, so it silently scanned
+nothing; redone with `git ls-files -z | xargs -0` it gives seven hits, every one on RECIPES.md's
+documented known-clean list.
+
+---
+
+_Previously: 2026-08-26 (**SPEC 53 DONE AND PUSHED; the e2e notebook is now TRACKED, guarded and
 proven end to end on real Azure. `main` @ `a61200f` == `origin/main`. NEXT: PHASE 2 of the
 notebook-usability sprint — a SEPARATE REPO that consumes fsd as an installed dependency.**)_
 

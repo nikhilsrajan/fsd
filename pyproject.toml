@@ -25,6 +25,9 @@ dependencies = [
     "packaging",     # PEP 508 parsing for bundle requirement checks (specs/44 D5)
 ]
 
+[project.scripts]
+fsd = "fsd.cli:main"
+
 [project.optional-dependencies]
 notebooks = [
     "matplotlib",
