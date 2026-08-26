@@ -3,10 +3,10 @@
 Implemented here:
   * assertion 4 (P1) - every point-in-time doc parses as a valid D4 status
     header, and every `superseded_by` names a file that exists.
-  * assertion 1 (P4) - `env.example.sh` declares exactly the variables the notebooks
-    ask a user to fill in (`notebooks/_config.py::NOTEBOOK_VARS`), and every one is
-    documented in `docs/reference/environment.md`. Re-scoped 2026-08-20 from a
-    whole-corpus parity check -- see the test's own docstring for why.
+  * assertion 1 (P4) - every `fsd.config` key is documented in
+    `docs/reference/environment.md`. Re-scoped 2026-08-26 (spec 54 D6): the left-hand side
+    of the parity contract moved from `env.example.sh` (retired) to `fsd.config.KEYS`, the
+    schema `fsd init` now writes.
 
 Assertions 2 and 3 (link resolution, README verb existence) belong to P5.
 """
@@ -105,17 +105,16 @@ def test_d4_superseded_by_target_exists(path: Path):
 
 
 # --------------------------------------------------------------------------
-# Assertion 1 (spec 41 D6/D7): AZ_* variable parity.
+# Assertion 1 (spec 41 D6/D7, re-scoped spec 54 D6): `fsd.config` key parity.
 #
 # The drift this kills is measured: ~50 variables accreted across the run-books
 # with no canonical list, including four spellings of one idea (AZ_ARCHIVE /
 # _ROOT / _PATH / _CATALOG). Every documentation defect that cost a real run was
-# of this class.
+# of this class. The parity contract survives spec 54; only its left-hand side
+# changed, from a shell template to `fsd.config`'s schema.
 # --------------------------------------------------------------------------
 
-_ENV_EXAMPLE = REPO_ROOT / "env.example.sh"
 _ENV_REFERENCE = REPO_ROOT / "docs" / "reference" / "environment.md"
-_CONFIG_PY = REPO_ROOT / "notebooks" / "_config.py"
 
 # Point-in-time corpora are never edited after the fact (spec 41 D3), so what they name is
 # a fact about what was true then, not drift to fix. The progress archive in particular
@@ -124,69 +123,12 @@ _CONFIG_PY = REPO_ROOT / "notebooks" / "_config.py"
 _POINT_IN_TIME_EXCLUDE = {REPO_ROOT / "docs" / "progress-archive.md"}
 
 
-def _declared_vars() -> set[str]:
-    return set(re.findall(r"^export (AZ_[A-Z0-9_]+)", _ENV_EXAMPLE.read_text(), re.M))
-
-
-def _notebook_vars() -> set[str]:
-    """`notebooks/_config.py::NOTEBOOK_VARS` — read as text, not imported.
-
-    Parsing keeps this test independent of `notebooks/` being importable (it is not a
-    package, and `_config` resolves the repo at import time).
-    """
-    src = _CONFIG_PY.read_text()
-    # Split on a closing paren at the START of a line, not the first `)` anywhere: the
-    # per-variable comments contain parentheses ("(not your login)"), and slicing at the
-    # first one silently truncated the tuple — which this test then reported as the
-    # template declaring a variable no notebook reads. Found by the test itself.
-    block = src.split("NOTEBOOK_VARS = (", 1)[1].split("\n)", 1)[0]
-    return set(re.findall(r'"(AZ_[A-Z0-9_]+)"', block))
-
-
-def test_env_example_declares_exactly_the_notebook_vars():
-    """`env.example.sh` offers exactly what a notebook asks a user to fill in.
-
-    **This deliberately replaced a wider check** (2026-08-20). The earlier version asserted
-    parity against every `AZ_*` named anywhere in `runbooks/`, `demos/` and `docs/` — which
-    made sense when this template's charter was "every AZ_* the run-books use, in one
-    place" (spec 41 D7's original wording). That charter is obsolete:
-
-    * `env.example.sh` is **what a user copies and fills in**, and their entry point is a
-      notebook. A variable no notebook reads is a blank they are asked to fill for nothing,
-      so the old check actively pushed the file towards being unusable — 54 blanks for the
-      six a notebook needs.
-    * the run-books that introduced most of those variables are **point-in-time documents**
-      (spec 41 D3): never edited after the fact, and progressively stale. Holding a live
-      user-facing template hostage to them is backwards. The old check already conceded the
-      principle by excluding `docs/progress-archive.md` for exactly this reason.
-
-    What is NOT lost: `docs/reference/environment.md` still documents every variable this
-    project has ever used, and `test_az_vars_are_documented` below still requires every
-    declared variable to appear there. So the reference stays the complete decode ring; the
-    template stays the short thing you fill in.
-
-    Both directions still matter, which is why this is an equality and not a subset:
-    a notebook must never read a variable the template does not offer, and the template must
-    never accrete one no notebook reads.
-    """
-    declared, expected = _declared_vars(), _notebook_vars()
-    assert expected, "notebooks/_config.py declares no NOTEBOOK_VARS"
-    missing = expected - declared
-    assert not missing, (
-        f"NOTEBOOK_VARS names {sorted(missing)}, which env.example.sh does not declare — "
-        "a user copying the template cannot fill in a value the notebook will ask for."
-    )
-    extra = declared - expected
-    assert not extra, (
-        f"env.example.sh declares {sorted(extra)}, which no notebook reads — that is a blank "
-        "the user is asked to fill for nothing. Drop it, or add it to NOTEBOOK_VARS."
-    )
-
-
 def test_az_vars_are_documented():
-    """Every declared variable appears in the environment reference table."""
+    """Every `fsd.config` key's `AZ_*` env name appears in the environment reference table."""
+    import fsd.config as config
+
     reference = _ENV_REFERENCE.read_text()
-    missing = sorted(v for v in _declared_vars() if v not in reference)
+    missing = sorted(v for v in config._KEY_TO_ENV.values() if v not in reference)
     assert not missing, f"undocumented in docs/reference/environment.md: {missing}"
 
 

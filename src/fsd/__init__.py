@@ -8,6 +8,7 @@ High-level API (specs/16): `fsd.download`, `fsd.create_training_data` (+ `run_in
 `deploy` stubs). These are the verbs users call; the modules under fsd.* are the internals.
 """
 
+from fsd import config
 from fsd.api import (
     InferenceResult,
     PreflightError,
@@ -33,6 +34,7 @@ __all__ = [
     "TrainingData",
     "__version__",
     "compute_n_timestamps",
+    "config",
     "create_training_data",
     "deploy",
     "download",

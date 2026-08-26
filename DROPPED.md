@@ -41,6 +41,28 @@ Not legacy carry-overs — things fsd built, ran, and removed. Recorded here bec
 look like a good idea again, and the code they were removed from now carries only a pointer
 (`docs/reference/code-comments.md`: cut the changelog, keep the hazard).
 
+### `env.example.sh` + `notebooks/_config.py` (retired spec 54, 2026-08-26, #78)
+
+fsd's first config bootstrap: a shell template at the repo root (`env.example.sh`), copied to a
+gitignored `env.local.sh` and parsed (never sourced) by `notebooks/_config.py`, which also
+resolved the checkout root by walking upward for `pyproject.toml` + `src/fsd/` (`find_repo()`).
+
+**Both halves were reachable only from a checkout.** The template ships in no wheel
+(`packages.find where = ["src"]` excludes it), and `find_repo()` raises `RuntimeError` at import
+time when there is no checkout above the caller — which is exactly the situation a `pip install`
+consumer (phase 2's `rise/`) is in. Superseded by `~/.config/fsd/config.toml` + `fsd init` +
+`fsd.config.load()`, a user-level path outside every project tree that a bare install can reach.
+
+**What survives:** the `AZ_*` bare env-var names (still read, above the file in precedence — see
+specs/54 D4), the `_EXPORT_RE` parser (moved into `fsd.config.parse_env_file`, used by
+`fsd init --from-env-file` as the migration path), and `docs/reference/environment.md` as the
+complete decode ring.
+
+**If you reintroduce a checkout-relative config file:** it recreates the exact problem this
+retirement solved — a project-local file sits inside a git tree, and someone eventually commits a
+live storage URL into it (four such leaks already caught in this project; specs/54 §6 rejected
+this alternative for that reason).
+
 ### The `InvalidBlockList` write retry (`storage/fs.py`, reverted 2026-07-28, #57 → #58)
 
 `_write_with_retry` retried any write whose error message looked like a transient Azure

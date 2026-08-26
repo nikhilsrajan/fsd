@@ -78,10 +78,9 @@ wheel afterwards.
 - An AML workspace and resource group — a platform-admin action, not something this repo
   provisions. Ask for them by name; see [`run-at-scale.md`](run-at-scale.md).
 - A local fsd checkout with its venv (`pip install -e ".[dev,aml,mpc,azure,grid]"`).
-- Your Azure coordinates in `env.local.sh`:
+- Your Azure coordinates in `~/.config/fsd/config.toml`:
   ```bash
-  cp env.example.sh env.local.sh     # env.local.sh is gitignored
-  $EDITOR env.local.sh               # AZ_RG and AZ_ML_WORKSPACE at minimum
+  fsd init      # interactive; fill in all six -- `load()` requires every one of them
   ```
   Every variable is documented in [`../reference/environment.md`](../reference/environment.md).
 
@@ -89,9 +88,10 @@ wheel afterwards.
 
 [`notebooks/00_build_images.ipynb`](../../notebooks/00_build_images.ipynb) is this page as a
 runnable notebook, and is **the one notebook this repo tracks**. It reads `AZ_RG` and
-`AZ_ML_WORKSPACE` from `env.local.sh` rather than carrying them, and `tests/test_notebooks.py`
-fails the build if it ever gains a saved output or a hardcoded identifier — that guard is why it
-can be public at all. Clear its outputs (*Kernel → Restart & Clear All Outputs*) before committing.
+`AZ_ML_WORKSPACE` from `~/.config/fsd/config.toml` via `fsd.config.load()` rather than carrying
+them, and `tests/test_notebooks.py` fails the build if it ever gains a saved output or a
+hardcoded identifier — that guard is why it can be public at all. Clear its outputs
+(*Kernel → Restart & Clear All Outputs*) before committing.
 
 Its Part A / Part B split is the same one described in step 3 below, plus a status cell per image
 that compares your current git state against a local record of what was last registered.

@@ -4,6 +4,37 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## Config bootstrap moves to a user-level file + `fsd init` (spec 54, 2026-08-26)
+
+- **The operator config bootstrap moves out of the checkout.** `env.example.sh` (repo root) +
+  `notebooks/_config.py` (checkout-path discovery, `env.local.sh` parsing) are replaced by
+  `~/.config/fsd/config.toml` (or `$FSD_CONFIG_DIR` / `$XDG_CONFIG_HOME/fsd`; `%APPDATA%\fsd` on
+  Windows), written by the new `fsd init` console script and read by `fsd.config.load()`. Fixes
+  [#78](https://github.com/nikhilsrajan/fsd/issues/78): both halves of the old bootstrap were only
+  reachable from an fsd checkout, so a `pip install`ed consumer (phase 2's `rise/`) could not use
+  either.
+- **`fsd.config.load()` is still explicit, never called by the library.** `fsd.download` /
+  `create_training_data` / `run_inference` gain no config awareness — this is the part of spec 41
+  D7 that survives unchanged: the library takes every storage location as an argument. What moved
+  is only the bootstrap: the template's location and the loader's home.
+- **Precedence: explicit kwarg > bare `AZ_*` env var > `config.toml`.** The `AZ_*` names
+  (`AZ_SUBSCRIPTION_ID`, `AZ_RG`, `AZ_ML_WORKSPACE`, `AZ_CLUSTER`, `AZ_UAMI_CLIENT_ID`, `AZ_ROOT`)
+  are unchanged and still work — `source env.local.sh` in a shell still overrides the file, so no
+  existing run-book needs editing. `load()` reads `os.environ` (that is the precedence rule) but
+  never assigns to it, and neither does `fsd init`.
+- **New:** `fsd`'s first console script (`[project.scripts]`, `fsd = "fsd.cli:main"`). `fsd init`
+  (interactive, `--from-env-file PATH`, or `--set key=value`) writes the file; `fsd config` prints
+  the resolved value of each key and which of the three sources it came from.
+- **Schema:** one TOML table, `[azure]`, six lowercase string keys (`subscription_id`,
+  `resource_group`, `workspace`, `cluster`, `uami_client_id`, `root`) — read with stdlib
+  `tomllib`, written by a small hand-rolled emitter (`tomllib` cannot write; taking `tomli-w` as a
+  dependency for six flat strings was rejected, see specs/54 D2).
+- **Both tracked notebooks** (`e2e_austria_aml.ipynb`, `00_build_images.ipynb`) now call
+  `fsd.config.load()` and use the lowercase attribute names (`cfg.root` etc, not `cfg.AZ_ROOT`);
+  their checkout-path resolution is now a two-line `pathlib.Path.cwd()` cell (they are developer
+  artifacts that genuinely live in the checkout) rather than `_config.find_repo()`'s upward marker
+  search.
+
 ## The local run path stages a non-local resolved bundle before loading it (spec 53, 2026-08-25)
 
 - **`run_inference` now fetches a non-local resolved bundle to `<output_folderpath>/_model` before

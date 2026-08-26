@@ -4,26 +4,45 @@ Every `AZ_*` variable the run-books use: what it means, **where the value comes 
 command that tells you whether the one you set is right.
 
 > **Continuously-true document** (spec 41 D3) — maintained, and mechanically checked:
-> `tests/test_docs.py::test_az_var_parity` fails the suite if `env.example.sh` and this table drift
-> from the variables the run-books actually name. **Adding or renaming an `AZ_*` requires editing
-> `env.example.sh` and this file in the same change** (D5 tier 3).
+> `tests/test_docs.py::test_az_vars_are_documented` fails the suite if `fsd.config`'s six keys
+> and this table drift apart. **Adding or renaming one of the six requires editing
+> `src/fsd/config.py` and this file in the same change** (spec 54 D6).
 
 ## How to use it
 
+The six values every run needs (`subscription_id`, `resource_group`, `workspace`, `cluster`,
+`uami_client_id`, `root`) live in a user-level file, outside every project tree, so they can never
+be committed by accident (spec 54):
+
 ```bash
-cp env.example.sh env.local.sh   # gitignored
-$EDITOR env.local.sh             # fill the blanks
-source env.local.sh
+fsd init                         # interactive; writes ~/.config/fsd/config.toml
 ```
+
+```python
+import fsd
+cfg = fsd.config.load()          # explicit -- fsd's own code never reads this on its own
+```
+
+**The bare `AZ_*` names keep working too** (spec 54 D4) — they sit *above* the file in
+precedence, so an existing run-book that does `export AZ_ROOT=…` (or `source env.local.sh`, for
+anyone with an older checkout still holding one) needs no migration:
+
+```bash
+export AZ_RG=my-resource-group   # overrides config.toml's [azure].resource_group for this shell
+```
+
+`fsd config` prints the resolved value of each key and which of the three sources it came from --
+useful the moment a stale shell export silently outranks the file.
 
 Concrete values for the `rise` platform are in **`AZURE_INFRA_PRIVATE.md` at the workspace root**
 (uncommitted, never pushed). This repo is public MIT: **no real name, id, URL or CIDR ever lands in
-it.** `env.example.sh` is structured to mirror that document section for section.
+it.**
 
-**None of these are read by `src/fsd/`.** Every one is operator-facing — consumed by the run-book
-shell, the `az` CLI, or `demos/e2e_austria_aml.py`. fsd's library code takes storage locations as
-*arguments*; it never reads the environment. (The one near-match you may find in `src/` is
-`_AZ_RE`, a compiled regex in `storage/azure.py:29` — not a variable.)
+**None of these are read by `src/fsd/`.** Every one is operator-facing — consumed by `fsd.config`,
+the run-book shell, the `az` CLI, or `demos/e2e_austria_aml.py`. fsd's library code takes storage
+locations as *arguments*; it never reads the environment or `config.toml` on its own (spec 54 D3).
+(The one near-match you may find in `src/` is `_AZ_RE`, a compiled regex in `storage/azure.py:29`
+— not a variable.)
 
 ## Verify everything at once
 
@@ -38,7 +57,7 @@ az storage fs directory exists -f "$AZ_FS" --account-name "$AZ_ACCOUNT" \
 builds a *wrong path* rather than failing:
 
 ```bash
-for v in $(grep -oE '^export AZ_[A-Z0-9_]+' env.example.sh | sed 's/export //'); do
+for v in $(grep -oE '`AZ_[A-Z0-9_]+`' docs/reference/environment.md | tr -d '`' | sort -u); do
   [ -n "${!v}" ] || echo "EMPTY: $v"
 done
 ```
@@ -128,7 +147,7 @@ version silently runs old code on the nodes — the failure looks like a logic b
 | `AZ_LOCAL_CREDS_JSON` | your local `cdse_credentials.json` | your machine | `test -f "$AZ_LOCAL_CREDS_JSON" && echo ok` |
 
 **Nothing here is a secret value** — these are *names and locations* of secrets. Never put a
-credential in `env.local.sh`.
+credential in `config.toml` or an `AZ_*` export.
 
 ## 6. Azure Batch (pre-AML fork)
 
@@ -177,7 +196,7 @@ before you spend.**
 
 ## Related
 
-- `env.example.sh` — the template this table documents
+- `fsd.config` (`src/fsd/config.py`) — the schema and loader for the six values `fsd init` writes
 - `AZURE_INFRA_PRIVATE.md` (workspace root, uncommitted) — the concrete values
 - `AZURE_INFRA.md` — the scrubbed public description of the platform
 - `runbooks/README.md` — which run-book needs which of these

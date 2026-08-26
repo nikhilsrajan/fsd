@@ -1,10 +1,18 @@
-"""Shared constants and defaults.
+"""Shared constants and defaults, and the user-level config loader (spec 54).
 
-These are decided contracts (see specs/00-overview.md §6), not implementation
-logic, so they are filled in. Anything requiring real logic lives in its module.
+The constants above the "User config" section are decided contracts (see
+specs/00-overview.md §6), not implementation logic, so they are filled in. Anything
+requiring real logic lives in its module — except the user config below, which is small
+enough (D2) to live here rather than earn its own module.
 """
 
+from __future__ import annotations
+
 import os
+import re
+import tomllib
+from pathlib import Path
+from types import SimpleNamespace
 
 # --- Satellite ---------------------------------------------------------------
 SATELLITE_S2L2A = "sentinel-2-l2a"
@@ -123,3 +131,201 @@ MAX_CONVERT_PROCS = min(os.cpu_count() or 1, 8)
 # safety CAP, not a throughput lever (D5). Throughput plateaus once the buffer keeps both pools fed.
 STAGING_DISK_FRACTION = 0.25   # use at most 25% of free space on root_folderpath for in-flight staging
 STAGING_ITEM_GB = 0.2          # rough disk per in-flight band file (the JP2 + its COG coexist mid-convert)
+
+# ==============================================================================
+# User config (spec 54) — an operator-facing helper, NOT read by the library.
+#
+# `fsd.download` / `create_training_data` / `run_inference` take every storage location as
+# an argument and never look here (D3). This section exists so an operator can write
+# `cfg = fsd.config.load()` at the top of a notebook and pass `cfg.root` etc down explicitly
+# -- the seam spec 41 D7 wanted, with the bootstrap moved to a place a `pip install`
+# consumer can actually reach.
+# ==============================================================================
+
+# The six values, and their bare-env-var spelling (D4). Order here is the order they are
+# written to config.toml and reported in `MissingConfig` / `fsd config`.
+KEYS = ("subscription_id", "resource_group", "workspace", "cluster", "uami_client_id", "root")
+
+_KEY_TO_ENV = {
+    "subscription_id": "AZ_SUBSCRIPTION_ID",
+    "resource_group": "AZ_RG",
+    "workspace": "AZ_ML_WORKSPACE",
+    "cluster": "AZ_CLUSTER",
+    "uami_client_id": "AZ_UAMI_CLIENT_ID",
+    "root": "AZ_ROOT",
+}
+ENV_TO_KEY = {env: key for key, env in _KEY_TO_ENV.items()}
+
+
+class MissingConfig(KeyError):
+    """One or more config values are unset in every source `load()` checks.
+
+    Subclasses `KeyError` so an existing `except KeyError` in a notebook still catches it.
+    Reports every missing name at once (D7): filling one blank, re-running a cell, and being
+    told about the next is a bad loop when each round trip costs a notebook cell.
+    """
+
+    def __init__(self, missing: list[str]):
+        self.missing = list(missing)
+        names = ", ".join(missing)
+        env_names = ", ".join(_KEY_TO_ENV[k] for k in missing)
+        self._message = (
+            f"{names} — not set.\n\n"
+            f"  Run `fsd init` to fill them in (writes {config_path()}),\n"
+            f"  or set {env_names} in your environment.\n\n"
+            "  These are addresses, not secrets — your credential is `az login`.\n"
+            "  Concrete values come from your platform admin. See docs/reference/environment.md."
+        )
+        super().__init__(self._message)
+
+    def __str__(self) -> str:
+        # KeyError.__str__ reprs a single arg (quoting it); this message is prose, not a key.
+        return self._message
+
+
+def config_dir() -> Path:
+    """The config directory, per D1's resolution order.
+
+    1. `$FSD_CONFIG_DIR`, if set and absolute.
+    2. `$XDG_CONFIG_HOME/fsd`, if `XDG_CONFIG_HOME` is set and absolute.
+    3. POSIX: `~/.config/fsd`. Windows: `%APPDATA%\\fsd`.
+
+    A relative path in either override variable is ignored, not resolved -- the XDG spec's
+    own rule, which stops a stray `FSD_CONFIG_DIR=.` from silently writing into whatever
+    directory a notebook kernel happened to start in.
+    """
+    fsd_dir = os.environ.get("FSD_CONFIG_DIR")
+    if fsd_dir and Path(fsd_dir).is_absolute():
+        return Path(fsd_dir)
+    xdg_dir = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_dir and Path(xdg_dir).is_absolute():
+        return Path(xdg_dir) / "fsd"
+    if os.name == "nt":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return Path(appdata) / "fsd"
+    return Path.home() / ".config" / "fsd"
+
+
+def config_path() -> Path:
+    """`config.toml` inside `config_dir()`."""
+    return config_dir() / "config.toml"
+
+
+# TOML basic-string escapes this schema actually needs: backslash, double quote, and the
+# control characters TOML forbids unescaped in a basic string -- U+0000-U+0008, U+000A-U+001F
+# AND U+007F (DEL), which is easy to miss because it sits above the printable range: emitting
+# it raw produces a file `tomllib` then refuses to parse. Tractable because the schema is
+# closed and flat (D2) -- if it ever grows nesting, arrays, or user-supplied keys, switch to
+# `tomli-w` instead of extending this.
+_TOML_ESCAPES = {"\\": "\\\\", '"': '\\"', "\b": "\\b", "\t": "\\t", "\n": "\\n", "\f": "\\f", "\r": "\\r"}
+
+
+def _toml_escape(value: str) -> str:
+    out = []
+    for ch in value:
+        if ch in _TOML_ESCAPES:
+            out.append(_TOML_ESCAPES[ch])
+        elif ord(ch) < 0x20 or ord(ch) == 0x7F:
+            out.append(f"\\u{ord(ch):04x}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _emit_toml(values: dict[str, str]) -> str:
+    """Render the `[azure]` table as TOML text. Stdlib `tomllib` cannot write (D2's
+    constraint); this is the ~20-line emitter that stands in for `tomli-w` while the schema
+    stays six flat strings.
+    """
+    width = max(len(k) for k in KEYS)
+    lines = [
+        "# ~/.config/fsd/config.toml — written by `fsd init`.",
+        "# These are addresses, not secrets. Your credential is `az login`.",
+        "[azure]",
+    ]
+    for key in KEYS:
+        lines.append(f'{key.ljust(width)} = "{_toml_escape(values.get(key, ""))}"')
+    return "\n".join(lines) + "\n"
+
+
+def _read_file_values() -> dict[str, str]:
+    """The `[azure]` table on disk, or `{}` if the file does not exist."""
+    path = config_path()
+    if not path.exists():
+        return {}
+    with path.open("rb") as f:
+        data = tomllib.load(f)
+    azure = data.get("azure", {})
+    return {k: v for k, v in azure.items() if k in _KEY_TO_ENV}
+
+
+def write_config(updates: dict[str, str]) -> Path:
+    """Read-modify-write `config.toml`: merge `updates` over whatever is already there.
+
+    Used by every `fsd init` form (D5) -- interactive, `--from-env-file`, and `--set` all
+    reduce to "here are some keys, keep the rest." Creates `config_dir()` if needed.
+    """
+    values = _read_file_values()
+    values.update({k: v for k, v in updates.items() if v})
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_emit_toml(values))
+    return path
+
+
+# `export NAME='value'`, `export NAME="value"`, or `export NAME=value`, each optionally
+# followed by a comment -- moved verbatim from the retired `notebooks/_config.py` (D6). The
+# trailing-comment part is load-bearing: an earlier version of this pattern anchored the
+# value to end-of-line, so a line with a trailing comment never matched and a fully filled-in
+# file was reported as empty.
+_EXPORT_RE = re.compile(
+    r"""\s*export\s+(\w+)=(?:"([^"]*)"|'([^']*)'|([^#\s]*))\s*(?:\#.*)?$"""
+)
+
+
+def parse_env_file(path: Path | str) -> dict[str, str]:
+    """Parse an `env.local.sh`-shaped file into `{AZ_NAME: value}`. No shell is spawned.
+
+    Deliberately **not** `source`d: sourcing would run arbitrary shell from a file whose
+    whole purpose is holding credential-adjacent values, and it would resolve `$(...)`
+    entries whose values this has no business capturing. Entries containing `$` are skipped
+    for the same reason. Empty values are omitted rather than returned as `""`, so a caller
+    reports them as missing instead of writing a blank into `config.toml`.
+    """
+    out: dict[str, str] = {}
+    for line in Path(path).read_text().splitlines():
+        m = _EXPORT_RE.match(line)
+        if not m:
+            continue
+        value = next((g for g in m.groups()[1:] if g is not None), "")
+        if value and "$" not in value:
+            out[m.group(1)] = value
+    return out
+
+
+def load(**kwargs: str) -> SimpleNamespace:
+    """Resolve the six config values: explicit kwarg, then `AZ_*` env var, then `config.toml`.
+
+    `src/fsd/` never calls this (D3) -- it is an operator-facing helper, called explicitly:
+
+        cfg = fsd.config.load()
+        fsd.download(..., dst_folderpath=f"{cfg.root}/imagery", ...)
+
+    Raises `MissingConfig` naming every key still unset after all three sources. Reads
+    `os.environ` (that is precedence level 2) but never assigns to it (D4) -- the environment
+    is read, never written.
+    """
+    unknown = sorted(set(kwargs) - set(KEYS))
+    if unknown:
+        raise TypeError(f"load() got unexpected keyword argument(s): {unknown}")
+    file_values = _read_file_values()
+    resolved: dict[str, str] = {}
+    for key in KEYS:
+        value = kwargs.get(key) or os.environ.get(_KEY_TO_ENV[key]) or file_values.get(key)
+        if value:
+            resolved[key] = value
+    missing = [k for k in KEYS if not resolved.get(k)]
+    if missing:
+        raise MissingConfig(missing)
+    return SimpleNamespace(**resolved)

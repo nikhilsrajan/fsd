@@ -10,8 +10,8 @@ So the exception needs teeth. These tests are the reason the file can be tracked
 
   * no saved outputs and no execution counts -- an executed notebook must be cleared before
     it is committed (Kernel > Restart & Clear All Outputs);
-  * no identifiers in the source -- the private values come from the gitignored
-    `env.local.sh` at run time, never from the file itself.
+  * no identifiers in the source -- the private values come from
+    `~/.config/fsd/config.toml` (spec 54) at run time, never from the file itself.
 
 Synthetic and offline: this reads the checked-in JSON, it never runs a cell.
 """
@@ -97,100 +97,25 @@ _FORBIDDEN = {
 @pytest.mark.parametrize("name", TRACKED_NOTEBOOKS)
 @pytest.mark.parametrize("what, pattern", sorted(_FORBIDDEN.items()))
 def test_file_carries_no_identifiers(what, pattern, name):
-    """The notebook's private values come from `env.local.sh` at run time.
+    """The notebook's private values come from `~/.config/fsd/config.toml` at run time.
 
     Anything matching here has been baked into a public file — in a cell, or in an output.
     """
     hits = sorted(set(re.findall(pattern, _whole_file(name))))
     assert not hits, (
         f"notebooks/{name} hardcodes {what}: {hits}. "
-        "Read it from env.local.sh through _config.load() instead."
+        "Read it through fsd.config.load() instead."
     )
 
 
 @pytest.mark.parametrize("name", TRACKED_NOTEBOOKS)
-def test_private_values_still_come_from_env_local(name):
+def test_private_values_still_come_from_fsd_config(name):
     """The positive half of the rule above.
 
-    Without this, deleting the `env_local()` plumbing and replacing it with literals would
-    still pass every pattern check right up until someone filled in a real name.
+    Without this, deleting the `fsd.config.load()` call and replacing it with literals
+    would still pass every pattern check right up until someone filled in a real name.
+    Spec 54 D6 moved the config half of `notebooks/_config.py` into `fsd.config`; this
+    guard's purpose is unchanged, only its target call.
     """
     src = _source(name)
-    assert "_config" in src, f"{name} no longer goes through notebooks/_config.py"
-    assert re.search(r"\bload\(", src), f"{name} no longer calls _config.load()"
-
-
-# --- notebooks/_config.py ---------------------------------------------------------
-# The module both tracked notebooks import to read `env.local.sh`. It is the single point
-# where a private value enters a public notebook, so its parsing is worth pinning: the
-# trailing-comment case below is not hypothetical — it shipped broken once and reported a
-# fully filled-in file as empty.
-
-
-@pytest.fixture
-def config_mod():
-    """Import `notebooks/_config.py` by path — `notebooks/` is not a package."""
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("_nb_config", NOTEBOOKS / "_config.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def test_config_parses_env_local_forms(config_mod, tmp_path):
-    """Quoted, double-quoted and bare values, each with an optional trailing comment.
-
-    `env.example.sh` writes every line as `export AZ_RG=''   # what it means`, so anchoring
-    the value to end-of-line makes EVERY line fail to match.
-    """
-    f = tmp_path / "env.local.sh"
-    f.write_text(
-        "# a comment line\n"
-        "export AZ_RG='my-rg'                 # resource group\n"
-        'export AZ_ML_WORKSPACE="my-ws"       # workspace\n'
-        "export AZ_CLUSTER=bare-value         # unquoted\n"
-        "not an export line\n"
-    )
-    assert config_mod.env_local(f) == {
-        "AZ_RG": "my-rg", "AZ_ML_WORKSPACE": "my-ws", "AZ_CLUSTER": "bare-value",
-    }
-
-
-def test_config_skips_empty_and_derived_values(config_mod, tmp_path):
-    """An empty value must be *absent*, so `load()` reports it missing rather than handing a
-    notebook a blank that fails somewhere further on. `$` entries are skipped so what a
-    notebook uses is exactly what is visible in the file — no shell is ever run.
-    """
-    f = tmp_path / "env.local.sh"
-    f.write_text(
-        "export AZ_RG=''\n"
-        'export AZ_DERIVED="${AZ_RG}/x"\n'
-        'export AZ_FROM_CMD="$(az account show --query id -o tsv)"\n'
-        "export AZ_REAL='kept'\n"
-    )
-    assert config_mod.env_local(f) == {"AZ_REAL": "kept"}
-
-
-def test_config_load_reports_every_missing_name_at_once(config_mod, tmp_path):
-    """Filling one blank, re-running a cell, and being told about the next is a bad loop."""
-    f = tmp_path / "env.local.sh"
-    f.write_text("export AZ_RG='set'\n")
-    with pytest.raises(KeyError) as exc:
-        config_mod.load("AZ_RG", "AZ_MISSING_ONE", "AZ_MISSING_TWO", path=f)
-    msg = str(exc.value)
-    assert "AZ_MISSING_ONE" in msg and "AZ_MISSING_TWO" in msg
-
-
-def test_config_missing_file_says_how_to_create_it(config_mod, tmp_path):
-    with pytest.raises(FileNotFoundError, match="env.example.sh"):
-        config_mod.env_local(tmp_path / "absent.sh")
-
-
-def test_config_find_repo_is_marker_based(config_mod, tmp_path):
-    """A bare `Path("..")` silently resolves to the wrong tree whenever the kernel's cwd is
-    not `notebooks/`; the marker search either finds the checkout or raises."""
-    assert config_mod.find_repo(NOTEBOOKS) == REPO_ROOT
-    assert config_mod.find_repo(REPO_ROOT) == REPO_ROOT
-    with pytest.raises(RuntimeError, match="no fsd checkout"):
-        config_mod.find_repo(tmp_path)
+    assert re.search(r"\bfsd\.config\.load\(", src), f"{name} no longer calls fsd.config.load()"
