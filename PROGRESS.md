@@ -79,87 +79,144 @@ documented known-clean list.
 
 ---
 
-_Previously: 2026-08-26 (**SPEC 53 DONE AND PUSHED; the e2e notebook is now TRACKED, guarded and
-proven end to end on real Azure. `main` @ `a61200f` == `origin/main`. NEXT: PHASE 2 of the
-notebook-usability sprint — a SEPARATE REPO that consumes fsd as an installed dependency.**)_
+_Previously: 2026-08-26 (**PHASE 2 STARTED. The consumer repo `rise/` exists and installs fsd
+from a git URL; the friction it exposed is logged as a finding, and SPEC 54 (`fsd init` +
+user-level config, closing #78) is WRITTEN AND SIGNED OFF. Merged into `main` (`--no-ff`),
+worktree pruned. NOT PUSHED. NEXT: a Sonnet `/effort medium` session implements spec 54 §9.**)_
 
-**What closed since the last entry.** Spec 53 landed (#89 closed with real-run evidence; review
-finding filed as #91). Then the user ran `notebooks/e2e_austria_aml.ipynb` **to completion** against
-the real cluster with the registry on **blob** — the first end-to-end run of
-create_training_data -> train -> deploy -> run_inference where the model is resolved by NAME from an
-`abfss://` registry. That run is the evidence spec 52 and spec 53 both said only a real run could
-give.
+**What closed since the last entry.** The user stood up `rise/` — a separate git repo at the
+workspace root with a `.venv`, a one-line `requirements.txt` (`git+https://github.com/nikhilsrajan/fsd`)
+and a blank `notebooks/e2e_austria_aml.ipynb` — and asked what a stranger would actually have to do
+to rebuild that notebook. That is phase 2's premise being exercised rather than described, and it
+produced two artifacts.
 
-**The notebook is now tracked** (`62aeab8`, the user's commit) and **guarded** (`a61200f`): it was
-un-ignored without being added to `tests/test_notebooks.py`'s `TRACKED_NOTEBOOKS`, which is the
-mechanism that makes the `00_build_images.ipynb` exception safe — so it went public unguarded, clean
-only because outputs had been cleared by hand. It now carries all six identifier patterns and both
-structural rules (no saved outputs, no execution counts), mutation-checked: injecting a storage
-account URL plus one `execution_count` fails exactly three tests, each naming the leak class. Suite
-**977 passed, 96 skipped**, ruff clean, identifier sweep clean.
+**`docs/findings/consumer-repo-friction.md`** — eight friction points, four of them hard stops,
+measured by read-only inspection (`pip show`/`pip list` in `rise/.venv`, the installed wheel
+`RECORD`, `git ls-files` + `git check-ignore -v`, the notebook JSON). No cluster time. **It is an
+OPEN LOG, not a point-in-time measurement** — the exception to the rule the other two findings
+follow, because this friction *is* phase 2's deliverable, and the findings index says so. The four
+hard stops: `env.example.sh` is not in the wheel and no install-facing doc names it; `_config.py`
+raises at **import** outside a checkout; `notebooks/shapefiles/*.geojson` is caught by the blanket
+`*.geojson` rule so the training data is on **nobody's** GitHub; and the extras set is
+undiscoverable, with `README.md`, `docs/howto/run-at-scale.md` and the notebook's own init cell
+giving **three different answers**, all in the `pip install -e ".[…]"` checkout-only form no
+consumer can use.
 
-Notebook content was also brought in line with the verbs as they now are: the intended
-**1 create training data -> 2 create features -> 3 train -> 4 deploy -> 5 run inference** flow is
-stated up front, section 3 documents deploy as **five gates** (adapter -> verify_adapter ->
-bundle.save -> verify_image -> deploy), `REGISTRY` moved to `f"{cfg.AZ_ROOT}/model_registry"` (blob,
-hung off `AZ_ROOT` not `ROOT`, since models outlive runs), and four stale "the registry must be
-local / will hang" claims were removed. One check was added that fsd cannot do for the user: an
-assert that the training `SEQ` and the adapter's `feature_sequence` are identical — they are written
-out twice in two files, nothing in fsd compares them, and a drift produces confident nonsense with
-no error at bundling, at `verify_adapter`, or at inference.
+Three things it also records, to stop them being re-derived: the **wheel is already code-only**
+(`packages.find where=["src"]`; the RECORD is `fsd/**` + dist-info), so "ship less" is a
+*dependency* problem (#80/#81), not a files problem; **~420 MB is the floor**; and the Azure
+prerequisites are **not fsd's to fix** — a stranger genuinely cannot run this notebook, and the
+runnable stranger path is `docs/tutorial.md`. Do not confuse *hard because Azure* with *hard
+because fsd*.
+
+**`specs/54-user-level-config.md`** — **SIGNED OFF 2026-08-26, not implemented.** Replaces
+`env.example.sh` + `notebooks/_config.py` with `~/.config/fsd/config.toml`, written by a new
+`fsd init` console script (fsd's first `[project.scripts]` entry) and read by an explicit
+`fsd.config.load()`. Seven decisions, cross-validated against five primary sources with per-source
+credit. The load-bearing one is **D3: the library still never reads config on its own** — the verbs
+keep taking every storage location as an argument. That is spec 41 D7's *real* invariant surviving
+while its **bootstrap** (a template at a repo root, a loader in `notebooks/`) is overturned; a
+library that resolves its own storage root from ambient state behaves differently on every machine,
+and every fan-out node would inherit whatever the driver's `$HOME` held.
+
+Also decided there, so it is not relitigated: a tool-specific `FSD_CONFIG_DIR` **ahead of** XDG
+(D1) — the cross-validation **amends #78**, which implied `~/.config` is the shared convention;
+`az` actually uses `~/.azure` with `$AZURE_CONFIG_DIR` and gcloud `~/.config/gcloud` with
+`$CLOUDSDK_CONFIG`, so the shared convention is *a user-level dir plus a tool-specific override*,
+and that is also the evidence for rejecting `platformdirs` (its macOS answer matches neither).
+Stdlib `tomllib` to read, **fsd's own emitter to write** — `tomllib` "does not support writing
+TOML", and taking `tomli-w` for six flat strings runs against #80 (D2, with the escape hatch named).
+Precedence **arg > env > file** with the bare `AZ_*` names kept, adopted from the Azure CLI's own
+documented order, so `source env.local.sh` and every run-book keep working (D4). And **the
+environment is read, never written** (D4, AC 7b) — `load()` never assigns to `os.environ`; the one
+existing write in `src/fsd/` (`storage/azure.py:114`, `FSSPEC_ABFSS_ANON`) is named there with why
+it does not generalise, because it is the precedent someone will cite.
+
+**Q1 resolved at its recommendation:** `[azure]` + lowercase keys, read as `cfg.root`.
 
 ---
 
-## NEXT: Phase 2 — a separate repo that consumes fsd
+## NEXT: implement spec 54 — Sonnet `/effort medium`
 
-This is **not a new objective**. MEMORY `fsd-notebook-usability-sprint` defined it on 2026-08-21 and
-six decisions were taken for it then; the user has now started it. Phase 2 = *a separate repository
-with `fsd` as a pinned requirement installed into its own venv, holding the demo notebook. No
-notebooks ship in the fsd wheel.* It is where pip-install friendliness is actually measured.
+**Spec 54 §9 is the build order** and it is written for this session: seven steps, each
+independently testable, do not start one until the last is green. Start at step 1
+(`src/fsd/config.py`), not at the CLI. Two things §9 says explicitly and are worth repeating
+because they are the easy mistakes:
 
-**Four issues were filed against exactly this and none are built** — #78, #79, #80, #81, #82.
-Read them before designing anything; they carry measured numbers, not guesses.
+- **Do not touch `fsd.download` / `create_training_data` / `run_inference`.** D3 is the point of the
+  spec; a signature change there is out of scope.
+- **No test may reach the developer's real `~/.config/fsd`.** `monkeypatch.setenv("FSD_CONFIG_DIR",
+  str(tmp_path))` in a fixture used by every test that touches disk (AC 8, spec 37 §7's rule).
 
-**The critical path, in order, with the reasoning a fresh session should not re-derive:**
+**Then #80, then the tag.** The order from the last entry stands, with one change the user made on
+2026-08-26: **the `v0.1.0` tag is cut AFTER the first consumer notebook works**, not before — a tag
+pins the dependency set *and* the asset layout, and both are still moving. #80's extras split and
+the shapefiles un-ignore should land **inside** `v0.1.0` rather than force a `v0.2.0` plus an edit
+in every consumer.
 
-1. **#80 first, BEFORE the tag** (snakemake -> `[local]`, s3fs -> `[s3]`). Both are declared core and
-   **never imported** by `src/fsd/` — snakemake is a subprocess, s3fs an fsspec URL backend — so this
-   is zero code change and zero import-time risk, and it removes **53 packages / 111 MB** (689 -> 578
-   MB core closure). It goes first because **a tag pins the dependency set**: cut v0.1.0 today and
-   the first consumer install pays 689 MB, and trimming afterwards costs a v0.2.0 plus an edit in
-   every consumer.
-2. **#82 — cut and push `v0.1.0`.** **Its stated blocker is now GONE:** the issue says "`main` is
-   currently 5 commits ahead of `origin/main` and unpushed. A tag must be cut from pushed code" —
-   `main` is level with `origin/main` at `a61200f` as of 2026-08-26. Decision already taken: pinned
-   **git URL** now (`fsd[aml,mpc,grid] @ git+https://github.com/nikhilsrajan/fsd.git@v0.1.0`), PyPI
-   later, public MIT so `https://` needs no auth inside a Docker build.
-3. **#78 — `fsd init` / user-level config. On the critical path, not optional.**
-   `notebooks/_config.py` does `find_repo()` at **module scope** and raises unless it finds a
-   `pyproject.toml` + `src/fsd/` above it. A consumer who `pip install`s fsd has neither, so the
-   import crashes before any cell runs — and Phase 2's whole shape is the notebook living outside
-   the checkout. Decision taken: `fsd init` -> `~/.config/fsd/config.toml` + `fsd.config.load()`,
-   which **overturns spec 41 D7** and adds fsd's first `[project.scripts]` entry point.
-4. **#79 (`fsd.aml.ensure_environment()`)** — wanted, not blocking. The new repo can paste image
-   versions by hand exactly as `e2e_austria_aml.ipynb` does today.
-5. **#81 (numba -> `[accel]`, -160 MB)** — **do not block on it.** Unlike #80 it is *not* free:
-   numba is a top-level import in `bands/modify.py` and `datacube/ops.py`, both reachable from
-   `import fsd`, so it needs a benchmark before a decision. The floor is ~420 MB regardless
-   (pyarrow/scipy/pyogrio/pandas/rasterio/numpy) — **"tiny" is not achievable; say so rather than
-   promising it.**
+1. **#80** (snakemake -> `[local]`, s3fs -> `[s3]`) — zero code change, **-53 packages / -111 MB**
+   (689 -> 578 MB core closure). Both are declared core and **never imported** by `src/fsd/`.
+2. **The `notebooks/shapefiles/` un-ignore** — not yet an issue, described in the finding's P3. The
+   user's rule: the test geometries **must exist on GitHub** and **must not travel in a package
+   install**, which are not in tension (git tracking and wheel contents are set by different
+   mechanisms). **The precedent is already in-repo:** `.gitignore:32-38` un-ignores
+   `tests/data/tutorial/` with `!dir/` **then** `!dir/**` and it carries a `NOTICE`. Copy that,
+   NOTICE included — the Austria fields are EuroCrops-derived, and `CLAUDE.md` already claims a
+   NOTICE exists there when it does not.
+3. **#82 — cut and push `v0.1.0`** once the consumer notebook runs. Its stated blocker (unpushed
+   commits) was already gone on 2026-08-26.
+4. **#79 (`fsd.aml.ensure_environment()`)** — wanted, not blocking; paste image versions by hand as
+   the notebook does today. Its scope call is still open and is written up in the finding's P7:
+   **does the consumer repo build its own images, or consume admin-built ones?** That decides
+   whether #79 is inside phase 2 or after it. Note `notebooks/images/*/fsd-*.whl` is gitignored, so
+   a consumer cannot reproduce a build context today.
+5. **#81 (numba -> `[accel]`, -160 MB)** — **do not block on it.** Not free: numba is a top-level
+   import in `bands/modify.py` and `datacube/ops.py`, both reachable from `import fsd`. Needs a
+   benchmark first. The floor is ~420 MB regardless — **"tiny" is not achievable; say so.**
 
-**Two constraints the new repo inherits.** Nothing private may reach it, and `env.example.sh` /
-`_config.py` are *inside* the fsd checkout, so the config bootstrap has to be solved (#78) rather
-than copied. And the demo notebook it holds must keep the same no-outputs/no-identifiers discipline
-that `tests/test_notebooks.py` now enforces here — the new repo needs its own copy of that guard, or
-it inherits the leak risk without the check.
+**Deferred, recorded so it is not lost:** **`rise init`** (user, 2026-08-26) — a *project*-level
+scaffold one layer above `fsd init`, standing up a consumer repo with its requirements, a starter
+notebook and the config call wired. It belongs to `rise`, not fsd, and should be designed against a
+consumer notebook that already exists. `fsd init` must not grow scaffolding options in anticipation.
+
+**Two constraints the new repo still inherits.** Nothing private may reach it; and its demo notebook
+needs its **own copy** of `tests/test_notebooks.py`'s guard (no saved outputs, no execution counts,
+six identifier patterns) or it inherits the leak risk without the check.
+
+**Housekeeping noticed, not done:** `specs/README.md`'s table stops at **spec 47** — 48-54 are all
+missing. Its own convention note says regenerate the rows from `CHANGES.md`/`docs/adr/`/tests rather
+than hand-patch a stale one, so it wants a pass, not a one-line append.
 
 **Still open, unrelated to Phase 2:** #91 and #90 as one seam-gate spec (both are
 `_check_local_seams` inspecting which kwargs were spelled rather than what the call will touch);
-**#87 is waiting on evidence from the run the user just completed** — either the single
-`_deploy.json` binding is fine in practice (close won't-fix) or a concrete case where a mismatch
-warning was wanted.
+**#87 is waiting on evidence from the completed run** — either the single `_deploy.json` binding is
+fine in practice (close won't-fix) or a concrete case where a mismatch warning was wanted.
 
 ---
+
+_Previously: 2026-08-26 (**SPEC 53 DONE AND PUSHED; the e2e notebook is now TRACKED, guarded and
+proven end to end on real Azure. `main` == `origin/main`.**) Spec 53 landed (#89 closed with
+real-run evidence; review finding filed as #91). The user then ran `notebooks/e2e_austria_aml.ipynb`
+**to completion** against the real cluster with the registry on **blob** — the first end-to-end run
+of create_training_data -> train -> deploy -> run_inference where the model is resolved by NAME from
+an `abfss://` registry, and the evidence specs 52 and 53 both said only a real run could give.
+
+The notebook was un-ignored without being added to `tests/test_notebooks.py`'s `TRACKED_NOTEBOOKS`
+— the mechanism that makes the `00_build_images.ipynb` exception safe — so it went public unguarded,
+clean only because outputs had been cleared by hand. It now carries all six identifier patterns and
+both structural rules, mutation-checked: injecting a storage account URL plus one `execution_count`
+fails exactly three tests, each naming the leak class. Suite **977 passed, 96 skipped**, ruff clean,
+identifier sweep clean.
+
+Notebook content was also brought in line with the verbs as they now are: the
+**1 create training data -> 2 create features -> 3 train -> 4 deploy -> 5 run inference** flow is
+stated up front, section 3 documents deploy as **five gates**, `REGISTRY` moved to
+`f"{cfg.AZ_ROOT}/model_registry"` (blob, hung off `AZ_ROOT` not `ROOT`, since models outlive runs),
+and four stale "the registry must be local / will hang" claims were removed. One check was added
+that fsd cannot do for the user: an assert that the training `SEQ` and the adapter's
+`feature_sequence` are identical — they are written out twice in two files, nothing in fsd compares
+them, and a drift produces confident nonsense with no error at bundling, at `verify_adapter`, or at
+inference._
 
 _Previously: 2026-08-25 (**SPEC 53 (D1+D2, #89) IMPLEMENTED + REVIEWED (Opus `/effort high`) +
 MERGED into `main` (`--no-ff`, `main` @ `38a2d09`), worktree pruned, branch deleted. NOT PUSHED.**
