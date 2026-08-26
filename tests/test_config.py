@@ -24,6 +24,12 @@ def isolated_config_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
+def _write_required(config_mod, **overrides):
+    """The five REQUIRED keys, filled in, so a test can isolate the one thing it is about."""
+    values = {k: overrides.get(k, k[:2]) for k in config_mod.REQUIRED_KEYS}
+    return config_mod.write_config(values)
+
+
 # --- AC 3: fsd.config resolves off a bare `import fsd` ------------------------------
 
 
@@ -35,34 +41,30 @@ def test_config_reachable_off_bare_import():
 
 
 def test_precedence_file_only(isolated_config_dir):
-    config.write_config({"root": "abfss://file-root", "subscription_id": "s", "resource_group": "r",
-                          "workspace": "w", "cluster": "c", "uami_client_id": "u"})
+    _write_required(config, workspace="file-ws")
     cfg = config.load()
-    assert cfg.root == "abfss://file-root"
+    assert cfg.workspace == "file-ws"
 
 
 def test_precedence_env_overrides_file(isolated_config_dir, monkeypatch):
-    config.write_config({"root": "abfss://file-root", "subscription_id": "s", "resource_group": "r",
-                          "workspace": "w", "cluster": "c", "uami_client_id": "u"})
-    monkeypatch.setenv("AZ_ROOT", "abfss://env-root")
+    _write_required(config, workspace="file-ws")
+    monkeypatch.setenv("AZ_ML_WORKSPACE", "env-ws")
     cfg = config.load()
-    assert cfg.root == "abfss://env-root"
+    assert cfg.workspace == "env-ws"
 
 
 def test_precedence_kwarg_overrides_env(isolated_config_dir, monkeypatch):
-    config.write_config({"root": "abfss://file-root", "subscription_id": "s", "resource_group": "r",
-                          "workspace": "w", "cluster": "c", "uami_client_id": "u"})
-    monkeypatch.setenv("AZ_ROOT", "abfss://env-root")
-    cfg = config.load(root="abfss://kwarg-root")
-    assert cfg.root == "abfss://kwarg-root"
+    _write_required(config, workspace="file-ws")
+    monkeypatch.setenv("AZ_ML_WORKSPACE", "env-ws")
+    cfg = config.load(workspace="kwarg-ws")
+    assert cfg.workspace == "kwarg-ws"
 
 
 def test_precedence_empty_string_falls_through(isolated_config_dir, monkeypatch):
-    config.write_config({"root": "abfss://file-root", "subscription_id": "s", "resource_group": "r",
-                          "workspace": "w", "cluster": "c", "uami_client_id": "u"})
-    monkeypatch.setenv("AZ_ROOT", "")
-    cfg = config.load(root="")
-    assert cfg.root == "abfss://file-root"
+    _write_required(config, workspace="file-ws")
+    monkeypatch.setenv("AZ_ML_WORKSPACE", "")
+    cfg = config.load(workspace="")
+    assert cfg.workspace == "file-ws"
 
 
 # --- AC 5: location resolution, all five D1 branches -----------------------------------
@@ -121,7 +123,8 @@ def test_toml_round_trips_adversarial_values(isolated_config_dir):
         "workspace": "has # a hash",
         "cluster": "has\na newline",
         "uami_client_id": "has non-ascii café",
-        "root": "",
+        "model_registry": "",
+        "image_registry": "abfss://c@a.dfs.core.windows.net/r",
     }
     # U+007F is a control character TOML forbids raw in a basic string, and it sits ABOVE the
     # printable range -- an `ord(ch) < 0x20` guard misses it and writes a file tomllib rejects.
@@ -135,13 +138,13 @@ def test_toml_round_trips_adversarial_values(isolated_config_dir):
 
 
 def test_missing_config_lists_every_missing_key(isolated_config_dir):
-    config.write_config({"root": "abfss://only-this-one"})
+    config.write_config({"subscription_id": "only-this-one"})
     with pytest.raises(config.MissingConfig) as exc:
         config.load()
     msg = str(exc.value)
-    for key in ("subscription_id", "resource_group", "workspace", "cluster", "uami_client_id"):
+    for key in ("resource_group", "workspace", "cluster", "uami_client_id"):
         assert key in msg
-    assert "root" not in exc.value.missing
+    assert "subscription_id" not in exc.value.missing
     assert "fsd init" in msg
 
 
@@ -154,8 +157,7 @@ def test_missing_config_is_a_key_error(isolated_config_dir):
 
 
 def test_load_does_not_mutate_environ_reading_file(isolated_config_dir):
-    config.write_config({"root": "abfss://x", "subscription_id": "s", "resource_group": "r",
-                          "workspace": "w", "cluster": "c", "uami_client_id": "u"})
+    _write_required(config)
     before = dict(os.environ)
     config.load()
     assert dict(os.environ) == before
@@ -171,7 +173,7 @@ def test_load_does_not_mutate_environ_reading_env(isolated_config_dir, monkeypat
 
 def test_write_config_does_not_mutate_environ(isolated_config_dir):
     before = dict(os.environ)
-    config.write_config({"root": "abfss://x"})
+    config.write_config({"workspace": "w"})
     assert dict(os.environ) == before
 
 
@@ -214,10 +216,10 @@ def test_parse_env_file_skips_empty_and_derived_values(tmp_path):
 
 
 def test_write_config_merges_over_existing_values(isolated_config_dir):
-    config.write_config({"root": "abfss://first", "cluster": "c1"})
+    config.write_config({"workspace": "first", "cluster": "c1"})
     config.write_config({"cluster": "c2"})
     values = config._read_file_values()
-    assert values["root"] == "abfss://first"
+    assert values["workspace"] == "first"
     assert values["cluster"] == "c2"
 
 
@@ -225,3 +227,59 @@ def test_key_to_env_map_is_a_bijection():
     assert len(config._KEY_TO_ENV) == len(config.ENV_TO_KEY) == len(config.KEYS)
     for key, env_name in config._KEY_TO_ENV.items():
         assert config.ENV_TO_KEY[env_name] == key
+
+
+# --- spec 55: `root` is gone, the registries are optional -------------------------------
+
+
+def test_root_is_not_a_config_key():
+    """Spec 55 D1. `root` names a per-run destination, so the caller passes it."""
+    assert "root" not in config.KEYS
+    assert "AZ_ROOT" not in config._KEY_TO_ENV.values()
+
+
+def test_load_rejects_root_kwarg(isolated_config_dir):
+    """AC 4 -- passing `root=` is exactly the mistake a spec-54-era caller makes, so it must
+    fail loudly rather than being silently accepted and dropped."""
+    _write_required(config)
+    with pytest.raises(TypeError, match="root"):
+        config.load(root="abfss://nope")
+
+
+def test_required_and_optional_split(isolated_config_dir):
+    """AC 1 + AC 2: the five raise when unset, the two do not."""
+    assert config.KEYS == config.REQUIRED_KEYS + config.OPTIONAL_KEYS
+    _write_required(config)
+    cfg = config.load()
+    assert cfg.model_registry is None and cfg.image_registry is None
+    assert cfg.subscription_id
+
+
+def test_missing_config_names_only_required_keys(isolated_config_dir):
+    with pytest.raises(config.MissingConfig) as exc:
+        config.load()
+    assert set(exc.value.missing) == set(config.REQUIRED_KEYS)
+    for optional in config.OPTIONAL_KEYS:
+        assert optional not in exc.value.missing
+
+
+def test_optional_key_precedence(isolated_config_dir, monkeypatch):
+    """AC 5: kwarg > env > file for an optional key too, with empty falling through."""
+    _write_required(config)
+    config.write_config({"image_registry": "abfss://file-reg"})
+    assert config.load().image_registry == "abfss://file-reg"
+    monkeypatch.setenv("AZ_IMAGE_REGISTRY", "abfss://env-reg")
+    assert config.load().image_registry == "abfss://env-reg"
+    assert config.load(image_registry="abfss://kwarg-reg").image_registry == "abfss://kwarg-reg"
+    monkeypatch.setenv("AZ_IMAGE_REGISTRY", "")
+    assert config.load(image_registry="").image_registry == "abfss://file-reg"
+
+
+def test_write_blank_config_writes_every_key_empty(isolated_config_dir):
+    """AC 6 half: a blank file must PARSE, so `load()` names the gaps rather than tomllib
+    reporting a syntax error."""
+    path = config.write_blank_config()
+    assert path.exists()
+    assert config._read_file_values() == {k: "" for k in config.KEYS}
+    with pytest.raises(config.MissingConfig):
+        config.load()

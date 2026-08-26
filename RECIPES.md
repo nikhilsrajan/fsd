@@ -668,6 +668,16 @@ is only processed in a real *site* directory, not in a `PYTHONPATH` entry — so
 to the worktree's `src/fsd`, while `adlfs`/`s2sphere`/etc. come from the repo venv. Sanity-check
 with `python -c "import fsd; print(fsd.__file__)"` before trusting the run.
 
+- ⚠️ **One test fails under this recipe and is not a regression** (hit 2026-08-27, spec 55):
+  `tests/test_bundle_code.py::test_installed_adapter_is_not_embedded` asserts `joblib` classifies
+  as `installed`, and `bundle._installed_roots()` builds that answer from the **running
+  interpreter's** `site.getsitepackages()` / `sysconfig` paths. The repo venv's `site-packages`
+  arrives via `PYTHONPATH`, which is not one of those roots, so `joblib` looks like local source
+  and classifies as `bundled`. **The same mechanism that makes the recipe work is what breaks this
+  test** — a `PYTHONPATH` entry is deliberately not a site directory. Confirm before dismissing it:
+  run that one test in the repo checkout with the repo venv (no `PYTHONPATH`), where it passes.
+  Any *other* failure is real.
+
 ---
 
 ## Harvest every timing that was ever measured (`_result.json` sweep)

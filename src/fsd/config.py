@@ -137,14 +137,29 @@ STAGING_ITEM_GB = 0.2          # rough disk per in-flight band file (the JP2 + i
 #
 # `fsd.download` / `create_training_data` / `run_inference` take every storage location as
 # an argument and never look here (D3). This section exists so an operator can write
-# `cfg = fsd.config.load()` at the top of a notebook and pass `cfg.root` etc down explicitly
+# `cfg = fsd.config.load()` at the top of a notebook and pass `cfg.workspace` etc down explicitly
 # -- the seam spec 41 D7 wanted, with the bootstrap moved to a place a `pip install`
 # consumer can actually reach.
 # ==============================================================================
 
-# The six values, and their bare-env-var spelling (D4). Order here is the order they are
-# written to config.toml and reported in `MissingConfig` / `fsd config`.
-KEYS = ("subscription_id", "resource_group", "workspace", "cluster", "uami_client_id", "root")
+# What belongs in this file is a DURABLE ADDRESS -- stable for this user across runs and mostly
+# across projects. What does not is a PER-RUN DESTINATION (spec 55 D1). That is the whole test,
+# and it is why `root` is NOT here: it is chosen per run by whoever runs it, so the caller passes
+# it. The registries are here because they are named rather than chosen, and models (and now
+# images) deliberately outlive the runs that made them.
+#
+# REQUIRED: the platform coordinates. A platform admin hands all five over together, every AML
+# call needs them, and `load()` raises `MissingConfig` naming whichever are unset.
+REQUIRED_KEYS = ("subscription_id", "resource_group", "workspace", "cluster", "uami_client_id")
+
+# OPTIONAL: where the registries live (spec 55 D2). `load()` returns None rather than raising --
+# a user who never touches a registry must not be blocked by one. fsd's own signatures still take
+# `registry=` as an argument ALWAYS; these keys exist so an operator has somewhere to keep the
+# value, notably the two tracked notebooks, which are leak-guarded and may not hold a literal URL.
+OPTIONAL_KEYS = ("model_registry", "image_registry")
+
+# Order here is the order keys are written to config.toml and reported in `fsd config`.
+KEYS = REQUIRED_KEYS + OPTIONAL_KEYS
 
 _KEY_TO_ENV = {
     "subscription_id": "AZ_SUBSCRIPTION_ID",
@@ -152,13 +167,14 @@ _KEY_TO_ENV = {
     "workspace": "AZ_ML_WORKSPACE",
     "cluster": "AZ_CLUSTER",
     "uami_client_id": "AZ_UAMI_CLIENT_ID",
-    "root": "AZ_ROOT",
+    "model_registry": "AZ_MODEL_REGISTRY",
+    "image_registry": "AZ_IMAGE_REGISTRY",
 }
 ENV_TO_KEY = {env: key for key, env in _KEY_TO_ENV.items()}
 
 
 class MissingConfig(KeyError):
-    """One or more config values are unset in every source `load()` checks.
+    """One or more REQUIRED config values are unset in every source `load()` checks.
 
     Subclasses `KeyError` so an existing `except KeyError` in a notebook still catches it.
     Reports every missing name at once (D7): filling one blank, re-running a cell, and being
@@ -274,6 +290,20 @@ def write_config(updates: dict[str, str]) -> Path:
     return path
 
 
+def write_blank_config() -> Path:
+    """Write `config.toml` with every key present and empty, prompting for nothing (spec 55 D4).
+
+    Not `write_config({})`: that merges over what is already there and drops empty values, so it
+    cannot express "blank". Keys are written present-and-empty rather than commented out so the
+    file PARSES -- an unfilled template must make `load()` name the missing keys, not make
+    `tomllib` report a syntax error.
+    """
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_emit_toml({}))
+    return path
+
+
 # `export NAME='value'`, `export NAME="value"`, or `export NAME=value`, each optionally
 # followed by a comment -- moved verbatim from the retired `notebooks/_config.py` (D6). The
 # trailing-comment part is load-bearing: an earlier version of this pattern anchored the
@@ -305,12 +335,17 @@ def parse_env_file(path: Path | str) -> dict[str, str]:
 
 
 def load(**kwargs: str) -> SimpleNamespace:
-    """Resolve the six config values: explicit kwarg, then `AZ_*` env var, then `config.toml`.
+    """Resolve the config values: explicit kwarg, then `AZ_*` env var, then `config.toml`.
+
+    Returns every key in `KEYS` as an attribute. A missing REQUIRED key raises; a missing
+    OPTIONAL one is `None` (spec 55 D2). There is no `root` -- it is per-run, so the caller
+    passes it (spec 55 D1), and `load(root=...)` therefore raises `TypeError`.
 
     `src/fsd/` never calls this (D3) -- it is an operator-facing helper, called explicitly:
 
         cfg = fsd.config.load()
-        fsd.download(..., dst_folderpath=f"{cfg.root}/imagery", ...)
+        root = os.environ["AZ_ROOT"]          # per-run, so NOT config (spec 55 D1)
+        fsd.download(..., dst_folderpath=f"{root}/imagery", ...)
 
     Raises `MissingConfig` naming every key still unset after all three sources. Reads
     `os.environ` (that is precedence level 2) but never assigns to it (D4) -- the environment
@@ -320,12 +355,11 @@ def load(**kwargs: str) -> SimpleNamespace:
     if unknown:
         raise TypeError(f"load() got unexpected keyword argument(s): {unknown}")
     file_values = _read_file_values()
-    resolved: dict[str, str] = {}
+    resolved: dict[str, str | None] = {}
     for key in KEYS:
         value = kwargs.get(key) or os.environ.get(_KEY_TO_ENV[key]) or file_values.get(key)
-        if value:
-            resolved[key] = value
-    missing = [k for k in KEYS if not resolved.get(k)]
+        resolved[key] = value or None
+    missing = [k for k in REQUIRED_KEYS if not resolved.get(k)]
     if missing:
         raise MissingConfig(missing)
     return SimpleNamespace(**resolved)
