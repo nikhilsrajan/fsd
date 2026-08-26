@@ -16,6 +16,23 @@ from fsd import config as fsd_config
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
+    if args.blank:
+        existing = fsd_config._read_file_values()
+        if any(existing.values()) and not args.force:
+            print(
+                f"fsd init --blank: {fsd_config.config_path()} already holds values. "
+                "--blank would erase nothing but writes an empty template over your edits; "
+                "pass --force if that is what you want.",
+                file=sys.stderr,
+            )
+            return 2
+        # write_config drops empty values, so a blank file cannot go through it (spec 55 D4:
+        # keys present and empty, so the file PARSES and `load()` names the gaps instead of
+        # `tomllib` reporting a syntax error).
+        path = fsd_config.write_blank_config()
+        print(f"Wrote {path}")
+        return 0
+
     if args.from_env_file:
         env_values = fsd_config.parse_env_file(args.from_env_file)
         updates = {
@@ -39,11 +56,23 @@ def _cmd_init(args: argparse.Namespace) -> int:
                 return 2
             updates[key] = value
     else:
+        if not sys.stdin.isatty():
+            # Prompting is the default form, so a piped shell or a CI step lands here and used
+            # to die on a bare EOFError out of `input()`. Name the three non-interactive forms.
+            print(
+                "fsd init: no terminal to prompt on. Use one of:\n"
+                "  fsd init --blank                  write an empty config.toml to fill in\n"
+                "  fsd init --set key=value …        set named keys\n"
+                "  fsd init --from-env-file PATH     import an env.local.sh-shaped file",
+                file=sys.stderr,
+            )
+            return 2
         existing = fsd_config._read_file_values()
         updates = {}
         for key in fsd_config.KEYS:
             default = existing.get(key, "")
-            prompt = f"{key} [{default}]: " if default else f"{key}: "
+            optional = " (optional)" if key in fsd_config.OPTIONAL_KEYS else ""
+            prompt = f"{key}{optional} [{default}]: " if default else f"{key}{optional}: "
             entered = input(prompt).strip()
             updates[key] = entered or default
 
@@ -66,6 +95,8 @@ def _cmd_config(args: argparse.Namespace) -> int:
             source, value = None, None
         if source:
             print(f"  {key} = {value!r}  ({source})")
+        elif key in fsd_config.OPTIONAL_KEYS:
+            print(f"  {key} unset (optional)")
         else:
             print(f"  {key} unset")
     return 0
@@ -84,6 +115,14 @@ def build_parser() -> argparse.ArgumentParser:
     group.add_argument(
         "--set", metavar="KEY=VALUE", action="append",
         help="set one config key (repeatable); other keys are left as they are",
+    )
+    group.add_argument(
+        "--blank", action="store_true",
+        help="write config.toml with every key present and empty; prompt for nothing",
+    )
+    init_parser.add_argument(
+        "--force", action="store_true",
+        help="with --blank: overwrite a config.toml that already holds values",
     )
     init_parser.set_defaults(func=_cmd_init)
 

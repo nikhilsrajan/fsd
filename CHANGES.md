@@ -4,6 +4,37 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## `root` leaves the config; the registries enter it (spec 55, 2026-08-27)
+
+Amends spec 54's schema, one day old, in both directions. Spec 54's location rule, explicitness
+rule and precedence rule are unchanged.
+
+- **`root` is no longer a config key.** `fsd.config.load()` returns no `root`, `fsd init` does not
+  prompt for one, and `load(root=…)` raises `TypeError`. The test that decides what belongs in the
+  file: a **durable address** (stable for this user across runs and mostly across projects) belongs
+  in it; a **per-run destination** does not. `root` is chosen per run by whoever runs the job, so
+  the caller passes it — which is spec 41 D7's *"takes a storage location as an argument"* applied
+  to the last value that escaped it.
+- **`model_registry` and `image_registry` are new, and OPTIONAL.** With `AZ_MODEL_REGISTRY` /
+  `AZ_IMAGE_REGISTRY` as their env spellings. An unset required key still raises `MissingConfig`
+  naming every gap; an unset optional key is simply `None`. Registries are named rather than chosen
+  per run, and both models and images outlive the runs that made them.
+  **fsd's own signatures still take `registry=` as an argument, always** — the keys exist so an
+  operator has somewhere to keep the value, notably the two tracked notebooks, which are
+  leak-guarded and may not hold a literal `abfss://` URL.
+- **`fsd init --blank`** writes `config.toml` with every key present and empty and prompts for
+  nothing — `env.example.sh`'s one genuine affordance, at a location a `pip install` consumer can
+  reach. It refuses to overwrite a file that already holds values unless `--force`. Keys are
+  present-and-empty rather than commented out so the file parses and `load()` names the gaps
+  instead of `tomllib` reporting a syntax error.
+- **A non-tty `fsd init` explains itself** instead of raising `EOFError` out of `input()`: it exits
+  non-zero naming `--blank`, `--set` and `--from-env-file`.
+- **`AZ_ROOT` still works, and fsd still never reads it.** `e2e_austria_aml.ipynb` reads it from
+  the environment in a visible cell. Note the reason is the notebook leak guard and *only* that:
+  run-book compatibility is explicitly not a design input (user, 2026-08-27 — run-books are
+  point-in-time documents and are not kept runnable). The wider `AZ_ROOT` tidy-up is
+  [#92](https://github.com/nikhilsrajan/fsd/issues/92).
+
 ## Config bootstrap moves to a user-level file + `fsd init` (spec 54, 2026-08-26)
 
 - **The operator config bootstrap moves out of the checkout.** `env.example.sh` (repo root) +

@@ -4,10 +4,61 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-26 (**SPEC 54 IMPLEMENTED, REVIEWED (Opus `/effort high`) AND MERGED
-TO `main`.** Closes #78: `fsd init` + `fsd.config.load()` replace `env.example.sh` /
-`notebooks/_config.py`. NEXT: Phase 2 — `rise/` pip-installs fsd from this `main` and writes its
-own `build_images` + `e2e_austria_aml` notebooks against `fsd.config.load()` (#80, #82).)_
+_Last updated: 2026-08-27 (**SPECS 55 + 56 SIGNED OFF. SPEC 55 IMPLEMENTED AND MERGED to `main`;
+SPEC 56 IS NOT IMPLEMENTED — it is the next job, handed to a Sonnet `/effort medium` session
+against its §9 build order.** 55: `root` leaves the config, the two registries enter it,
+`fsd init --blank`. 56 (closes #79): the AML image recipe leaves `00_build_images.ipynb` for a
+declarative `ImageDefinition` + a definitions registry on the storage seam.)_
+
+**Read before touching either:** `specs/55-root-leaves-the-config.md`,
+`specs/56-image-definitions-and-registry.md`. Both carry their sign-off resolutions in §7,
+including **two decisions the user killed** (a note for a stale `root` key; a skip line for
+`AZ_ROOT` in `--from-env-file`) — do not re-propose them.
+
+**Spec 55 — DONE (merged).** `root` is no longer a config key: it names a *per-run destination*
+chosen by whoever runs the job, not a durable address, so the caller passes it — spec 41 D7's
+"takes a storage location as an argument" applied to the last value that escaped it.
+`load(root=…)` raises `TypeError` on purpose, because that is the mistake a spec-54-era caller
+makes. In the other direction, **`model_registry` + `image_registry` arrive as OPTIONAL keys**
+(`AZ_MODEL_REGISTRY` / `AZ_IMAGE_REGISTRY`), so `load()` now splits required from optional: a
+missing required key still raises `MissingConfig` naming every gap at once, a missing optional one
+is `None`. **fsd's own signatures still take `registry=` as an argument, always** — the keys exist
+because the two tracked notebooks are leak-guarded and may not hold a literal `abfss://` URL, and
+the concrete values belong in `rise` + `AZURE_INFRA_PRIVATE.md`, never in this repo. Also
+`fsd init --blank` (write it empty, fill it in by hand; refuses to clobber without `--force`) and
+a non-tty `fsd init` that names the three non-interactive forms instead of raising `EOFError`.
+
+**Spec 56 — SIGNED OFF, NOT STARTED.** The next implementation job. Its §9 is the build order and
+steps 0–3 need no Azure at all. The shape: an `ImageDefinition` dataclass (D1) whose digest is
+taken **after resolution** (D2 — `git+…@main` is not a definition, `git+…@<sha>` is), published to
+a registry on the storage seam that **shares `fsd/registry/_core.py` with `fsd.model.registry`**
+(D3 + §7 Q1 — extract, as step 0, with the model registry's tests green and unmodified; if step 0
+grows beyond mechanical moves, stop and copy instead). `ensure_environment` is check-then-build
+(D4) and `git_state()` dies (D5) — a consumer has no checkout, so the resolved `fsd` reference *is*
+the staleness key. Cross-validated against flytekit's `image_spec.py`, Flyte's docs, Metaflow's
+datastore, apko's lock files, the OCI annotation keys, and ORAS (§8, per-source credit).
+**§9 step 10: green tests do not close it — it needs a real AML run of the rewritten notebook.**
+
+**Also this session:** [#92](https://github.com/nikhilsrajan/fsd/issues/92) filed for the wider
+`AZ_ROOT` tidy-up (deferred by the user, a later Opus job). And a standing rule was recorded, in
+MEMORY and in #92: **run-books are point-in-time and are not a design input** — the user,
+2026-08-27, *"we do not prioritise being able to run the runbooks. we do not make decisions so that
+the runbooks are still compatible."* Spec 55 D3's rationale was rewritten to drop exactly that
+argument; the surviving reason for reading `AZ_ROOT` from the environment is the notebook leak
+guard, which is a real constraint.
+
+**One trap recorded in `RECIPES.md`:** the worktree PYTHONPATH parity recipe **necessarily** fails
+`tests/test_bundle_code.py::test_installed_adapter_is_not_embedded` — `bundle._installed_roots()`
+reads the *running interpreter's* `site.getsitepackages()`, and a `PYTHONPATH` entry is
+deliberately not a site directory, so `joblib` classifies as `bundled`. Verified by running that
+test in the repo checkout with the repo venv, where it passes. **Any other failure under that
+recipe is real.**
+
+---
+
+_Previously: 2026-08-26 (**SPEC 54 IMPLEMENTED, REVIEWED (Opus `/effort high`) AND MERGED TO
+`main`.** Closes #78: `fsd init` + `fsd.config.load()` replace `env.example.sh` /
+`notebooks/_config.py`.)_
 
 **What spec 54 built, in one line.** `env.example.sh` (repo root) + `notebooks/_config.py`
 (checkout-path `find_repo()`, `env.local.sh` parsing) — both unreachable from a `pip install` — are
