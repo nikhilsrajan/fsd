@@ -203,6 +203,24 @@ does `source env.local.sh` gets the new `load()` working with zero migration, ru
 friends in the job environment — is unaffected. The names are already the project's vocabulary,
 documented in `docs/reference/environment.md`.
 
+**The environment is read, never written** (user, 2026-08-26). `load()` returns values; it does not
+assign to `os.environ`, and neither does `fsd init` — the only thing `init` writes is
+`config.toml`. This is stated as an invariant rather than left as an implied absence, because the
+tempting "helpful" extension is precisely to export the loaded values so a subprocess inherits
+them, and that would silently redefine a variable the operator had already set for other tooling
+in the same shell. A library that mutates its caller's environment produces action at a distance
+that no traceback attributes to it.
+
+*The one existing exception, and why it does not generalise.* `storage/azure.py:114` does set
+`os.environ["FSSPEC_ABFSS_ANON"] = "false"`, for a documented reason: fsspec populates
+`fsspec.config.conf` from `FSSPEC_*` at **import** time, so setting `conf` alone does not cross a
+subprocess boundary, while `os.environ` is what a child inherits and re-reads on its own import.
+That is fsd's **own** switch, with one legal value, written to make a subprocess behave — nothing
+an operator would have set for another purpose. `AZ_ROOT` is the opposite: an operator-owned value
+that other tooling in the same shell may already depend on. Clobbering the second is a cross-tool
+side effect; setting the first is not. Anyone citing line 114 as precedent for exporting config
+should be pointed here.
+
 ### D5 — `fsd init` is fsd's first console script
 
 ```toml
@@ -292,6 +310,10 @@ entirely.
 6. **TOML round-trips**: emit → `tomllib.load` → equal, over a table including a value with `"`, one
    with `\`, one with a `#`, one with a newline, one with non-ASCII, and one empty.
 7. `MissingConfig` lists **every** missing key in one message and mentions `fsd init`.
+7b. **Neither `load()` nor any `fsd init` code path mutates `os.environ`** (D4). Test it directly:
+    snapshot `dict(os.environ)` before and assert equality after, across a `load()` that reads from
+    the file, one that reads from env, and an `init --from-env-file` write. This is the invariant
+    most likely to be "helpfully" broken later.
 8. **No test requires Azure, a network, or a filesystem outside `tmp_path`.** `FSD_CONFIG_DIR` is
    pointed at `tmp_path` via `monkeypatch`; no test may touch the developer's real `~/.config/fsd`.
    This is spec 37 §7's rule and it is the one most easily broken here.
