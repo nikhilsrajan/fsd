@@ -7,7 +7,9 @@ state plus the most recent entry, not the log.
 _Last updated: 2026-08-27 (**SPEC 56 MERGED to `main`** — implemented, Opus-reviewed, 8 defects
 fixed, `1055 passed / 100 skipped`, worktree pruned; **NOT PUSHED**, and §9 step 10's real AML run
 is still outstanding so the spec is not closed. **SPEC 57 SIGNED OFF, NOT IMPLEMENTED** — the
-`run_inference` collect+STAC window, 777 s of a 300-cell run. Spec 55 merged earlier.)_
+`run_inference` collect+STAC window, 777 s of a 300-cell run. Spec 55 merged earlier.
+**`main` is PUSHED @ `b21f3d3`;** `1058 passed / 101 skipped`, ruff clean, identifier sweep clean.
+**Next session: implement spec 57 on Sonnet `/effort medium`, §9 build order, D1 first.**)_
 
 **Spec 57 — SIGNED OFF 2026-08-27, ready for a Sonnet implementation session.**
 `specs/57-collect-and-stac-round-trips.md`, advancing [#61](https://github.com/nikhilsrajan/fsd/issues/61)
