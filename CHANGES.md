@@ -29,12 +29,18 @@ and (c); fix (d) (node-side Item emission) stays open.
   and catalog layout are unaffected by completion order; a worker failure raises out of the call,
   never a silently truncated/incomplete catalog.
 - **Every remote raster open now sets `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` +
-  `CPL_VSIL_CURL_ALLOWED_EXTENSIONS=.tif`** in `rio_env`/`rio_open` (D5) — GDAL stops listing the
-  containing blob directory for sidecars (`.aux.xml`/`.ovr`/`.msk`) on every VSI open. Applies to
-  every remote raster open in fsd (download, datacube, merge, collect), not just the collect path.
+  `CPL_VSIL_CURL_ALLOWED_EXTENSIONS=.tif,.tiff,.jp2`** in `rio_env`/`rio_open` (D5) — GDAL stops
+  listing the containing blob directory for sidecars (`.aux.xml`/`.ovr`/`.msk`) on every VSI open.
+  Applies to every remote raster open in fsd (download, datacube, merge, collect), not just the
+  collect path.
   **Named risk:** a sidecar that *does* exist stops being read — fsd writes plain COGs with
   statistics inline and no sidecars, so nothing in-repo depends on one, but this is a real
   behavior change for anything reading a `fsd`-external COG with a sidecar over `abfss://`/`az://`.
+  **The extension list is a whitelist, not a hint** (review, 2026-08-27): GDAL treats a remote
+  file whose extension is *not* listed as non-existent, so it must cover every extension
+  `datacube.builder._RASTER_EXTS` can hand to `rio_open` — `.tif` alone would have made a remote
+  `.jp2` band file (any `cog=False` download staged to blob) unopenable. A remote raster with any
+  *other* extension is now unopenable; add it to `_REMOTE_OPEN_CONFIG` if that ever happens.
 
 ## Image builds become `fsd.image`/`fsd.aml`, with a registry (spec 56, 2026-08-27)
 

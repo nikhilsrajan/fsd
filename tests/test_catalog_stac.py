@@ -334,10 +334,17 @@ def test_cog_outputs_to_items_id_disagreement_raises(tmp_path):
 def test_cog_outputs_to_items_in_memory_geometry_matches_path_form(tmp_path, monkeypatch):
     """AC2: an already-loaded geometry produces a byte-identical Item to the path form for the
     same input, and the seam is never asked for a footprint path (zero `geometry.geojson`
-    reads)."""
+    reads).
+
+    Both sides are `.buffer(0)`-ed, because that is what the pipeline actually compares: the path
+    form reads back `create_datacube.setup._prepare`'s `srow["geometry"].buffer(0)`, and
+    `_run_inference_roi` buffers `grids.geometry` the same way (spec 57 D2). Feeding the raw
+    polygon to one side and the buffered one to the other would test a pair of inputs the
+    pipeline never produces."""
     cell_dir = str(tmp_path / "cell-1")
     cog = _make_output_cog(cell_dir)
-    geom_path = _write_geometry_geojson(cell_dir, feature_id="cell-1")
+    buffered = _SLANTED_POLYGON.buffer(0)
+    geom_path = _write_geometry_geojson(cell_dir, feature_id="cell-1", geom=buffered)
     when = dt.datetime(2018, 6, 1, tzinfo=dt.timezone.utc)
 
     path_form = stac.cog_outputs_to_items([cog], geometries={cog: geom_path}, dt=when)
@@ -351,7 +358,7 @@ def test_cog_outputs_to_items_in_memory_geometry_matches_path_form(tmp_path, mon
 
     monkeypatch.setattr(stac, "_read_footprint_geometry", _spy)
     in_memory_form = stac.cog_outputs_to_items(
-        [cog], geometries={cog: _SLANTED_POLYGON}, dt=when,
+        [cog], geometries={cog: buffered}, dt=when,
     )
 
     assert calls == []  # no round-trip read for the in-memory value

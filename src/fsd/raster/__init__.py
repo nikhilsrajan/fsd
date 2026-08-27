@@ -26,11 +26,21 @@ __all__ = ["rio_open", "rio_env"]
 # and `rio_open` (one dataset) build their env_kwargs from this same dict so the two never drift.
 # Sources (GDAL config docs, gdal.org/en/stable/user/configoptions.html, fetched 2026-08-27):
 # GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR -- "only the target file is visible; side-car/auxiliary
-# files aren't loaded". CPL_VSIL_CURL_ALLOWED_EXTENSIONS -- "can speed up dramatically open
-# experience, in case the server cannot return a file list".
+# files aren't loaded". CPL_VSIL_CURL_ALLOWED_EXTENSIONS -- "Consider that only the files whose
+# extension ends up with one that is listed in CPL_VSIL_CURL_ALLOWED_EXTENSIONS exist on the
+# server. This can speed up dramatically open experience, in case the server cannot return a
+# file list."
+#
+# ⚠️ That second option is a WHITELIST, not a hint (review, 2026-08-27): a remote file whose
+# extension is not listed is reported as NOT EXISTING, so the list must cover every extension fsd
+# can open remotely -- not just the one at the call site that motivated it. Remote here is always
+# `abfss://`/`az://` -> `/vsiadls/` (`storage.to_vsi`), i.e. fsd's own run folders and staged
+# imagery: output/mosaic COGs (`.tif`), plus band files, which are `.jp2` whenever imagery was
+# downloaded with `cog=False` (`sources.cdse.download`) and `.tiff` for a foreign COG. Keep this
+# in sync with `datacube.builder._RASTER_EXTS` -- the set the cube builder hands to `rio_open`.
 _REMOTE_OPEN_CONFIG = {
     "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
-    "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif",
+    "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif,.tiff,.jp2",
 }
 
 

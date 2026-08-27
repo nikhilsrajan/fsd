@@ -443,7 +443,7 @@ def test_rio_open_remote_path_translates_and_uses_env(monkeypatch):
         {
             "AZURE_STORAGE_ACCESS_TOKEN": "tok-abc",
             "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
-            "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif",
+            "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif,.tiff,.jp2",
             "AZURE_STORAGE_ACCOUNT": "acct",
         }
     ]
@@ -491,11 +491,16 @@ def test_rio_open_worker_thread_gets_its_own_env_not_the_drivers(monkeypatch):
 
 def test_rio_open_and_rio_env_disable_sidecar_probing_on_remote_opens(monkeypatch):
     """D5 (spec 57): every remote VSI open sets `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` +
-    `CPL_VSIL_CURL_ALLOWED_EXTENSIONS=.tif`, so GDAL stops listing the containing directory for
-    sidecars on each open (gdal.org config docs, fetched 2026-08-27). Both `rio_open` (one
-    dataset) and `rio_env` (N datasets) build from the same `_REMOTE_OPEN_CONFIG` so they cannot
-    drift apart."""
+    an extension whitelist, so GDAL stops listing the containing directory for sidecars on each
+    open (gdal.org config docs, fetched 2026-08-27). Both `rio_open` (one dataset) and `rio_env`
+    (N datasets) build from the same `_REMOTE_OPEN_CONFIG` so they cannot drift apart.
+
+    `CPL_VSIL_CURL_ALLOWED_EXTENSIONS` is a WHITELIST -- a remote file whose extension is missing
+    from it reads as non-existent -- so it must list EVERY extension the cube builder can hand to
+    `rio_open` (review, 2026-08-27; `.tif` alone would have made a remote `.jp2` band file, i.e.
+    any `cog=False` download, unopenable)."""
     from fsd import raster
+    from fsd.datacube.builder import _RASTER_EXTS
 
     env_calls = []
 
@@ -524,7 +529,11 @@ def test_rio_open_and_rio_env_disable_sidecar_probing_on_remote_opens(monkeypatc
     assert len(env_calls) == 2
     for kw in env_calls:
         assert kw["GDAL_DISABLE_READDIR_ON_OPEN"] == "EMPTY_DIR"
-        assert kw["CPL_VSIL_CURL_ALLOWED_EXTENSIONS"] == ".tif"
+        allowed = kw["CPL_VSIL_CURL_ALLOWED_EXTENSIONS"].split(",")
+        assert set(_RASTER_EXTS).issubset(allowed), (
+            f"the whitelist {allowed} drops {sorted(set(_RASTER_EXTS) - set(allowed))}, which "
+            "makes those remote band files read as non-existent"
+        )
 
 
 def test_rio_open_write_mode_on_remote_raises():
