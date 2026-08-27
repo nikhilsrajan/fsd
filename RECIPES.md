@@ -748,14 +748,16 @@ going forward (that was run-book 41's whole job, now free).
 
 ## Rebuild BOTH AML Environments (after any fsd change that runs on a node)
 
-> **⚠️ Superseded for the inference image by [`docs/howto/build-the-images.md`](docs/howto/build-the-images.md)
-> (2026-08-20).** The block below is kept for its `az` guard, its ACR-wait note and its CLI
-> gotchas, which all still apply — but its **image 2 is pre-spec-44**: `COPY adapter_src/` and
-> `ENV PYTHONPATH=/opt/adapter` bake one adapter into the image, and since spec 44 the adapter's
-> source rides inside the bundle instead. Building that way now gives you an image that is
-> needlessly per-model. The tracked build contexts are
-> [`notebooks/images/base/`](notebooks/images/base/Dockerfile) and
-> [`notebooks/images/sklearn/`](notebooks/images/sklearn/Dockerfile).
+> **⚠️ Fully superseded by [`docs/howto/build-the-images.md`](docs/howto/build-the-images.md)
+> (spec 56, 2026-08-27).** `fsd.aml.ensure_environment` replaces every `az ml environment create`
+> call below with a check-then-build call driven by an `fsd.image.ImageDefinition` — no checked-in
+> Dockerfile, no manual version capture. **`notebooks/images/{base,sklearn}/` no longer exist**
+> (spec 56 §9 step 8; `DROPPED.md` has the entry) — the block below is kept only for its `az` CLI
+> gotchas (extension self-upgrade, `export` swallowing a failure) and the ACR-wait explanation,
+> which are still correct and still apply to `ensure_environment`'s own `az ml environment create`
+> call underneath. Its **image 2 is also pre-spec-44** (bakes one adapter into the image via
+> `COPY adapter_src/`/`ENV PYTHONPATH`) — since spec 44 the adapter rides inside the bundle
+> instead, so don't copy this Dockerfile as a starting point either.
 
 **The node's `fsd` comes from the image, not from your checkout.** `git pull` on the driver
 changes nothing about what executes on the cluster: the AML Environment bakes in a wheel, so any
@@ -1022,6 +1024,28 @@ print(m['fsd_bundle_version'], m['adapter'], m.get('code'), m.get('requirements'
 ```
 `fsd_bundle_version` must be `2` and `code` must be non-null, or the bundle cannot run on a generic
 (adapter-less) inference image. `read_spec` imports nothing, so this is safe anywhere.
+
+## What was this image built from? (spec 56 image registry)
+
+`az ml environment show` proves an environment asset exists; it says nothing about what went into
+it. The image registry does, keyed on `name:version` or the digest that made it:
+
+```python
+from fsd.image import registry as image_registry
+
+# NOTE the ":4" is the REGISTRY's version (ensure_environment's `.registry_ref`), not AML's
+# `.ref` -- the two sequences are independent. `"fsd-infer-sklearn@current"` also works.
+rec = image_registry.resolve("fsd-infer-sklearn:4", registry=cfg.image_registry)
+print(rec.digest)             # sha256:...
+print(rec.definition["fsd"])  # "git+https://github.com/nikhilsrajan/fsd@<sha>" or "wheel:<digest>"
+print(rec.aml)                # {"name": "fsd-infer-sklearn", "version": "4", "workspace": "..."}
+```
+
+`rec.definition` is the RESOLVED definition (spec 56 D2/D3) — every moving reference already
+fixed, so this answers "what fsd went into this image" without needing the checkout that built it.
+`image_registry.status(name, registry, digest)` answers the cheaper question ("is THIS digest
+already registered?") without a full resolve, and is what `fsd.aml.ensure_environment` calls
+internally before deciding to build.
 
 ## Check an AML environment pin at the step that uses it
 

@@ -63,6 +63,33 @@ retirement solved — a project-local file sits inside a git tree, and someone e
 live storage URL into it (four such leaks already caught in this project; specs/54 §6 rejected
 this alternative for that reason).
 
+### `notebooks/images/{base,sklearn}/` + `.last_registered.json` (retired spec 56, 2026-08-27, #79)
+
+The AML image recipe's first home: a Dockerfile + `environment.yml` per image, checked into
+`notebooks/images/`, with the fsd wheel built from the working tree (`{FSD_REPO}/.venv/bin/pip
+wheel ... --no-deps`) and copied alongside it. Staleness was tracked by `git_state()` (`git
+status --porcelain` against an `fsd` checkout) compared to `.last_registered.json`, a JSON file
+written into the build-context folder itself.
+
+**Both halves were reachable only from a checkout, the same failure shape as `env.example.sh`
+above.** The Dockerfiles ship in no wheel; `git_state()` raises nothing but answers nothing
+useful without a `.git` directory to ask; and `.last_registered.json` was per-machine bookkeeping
+— nobody else, and no node, could ever answer "what was `fsd-aml-env:7` built from?"
+
+Superseded by `fsd.image.ImageDefinition` (declared, not written), `fsd.image.digest.resolve`
+(the resolved `fsd` reference — a git sha or a wheel content digest — replaces `git_state()` as
+the staleness key, D5), and `fsd.image.registry` (mirroring `fsd.model.registry`'s storage-seam
+layout, D3) in place of the single local JSON file.
+
+**What survives:** `wheel_digest()` moved verbatim into `fsd/image/digest.py` (D2); the rendered
+Dockerfile is byte-identical (modulo the explanatory comments, which moved into
+`fsd/image/definition.py`'s module docstring) to what `notebooks/images/{base,sklearn}/Dockerfile`
+held, verified by diff before deletion (spec 56 §9 step 8).
+
+**If you reintroduce a checked-in build-context folder as the source of truth:** it recreates the
+same "only a checkout can build this" problem `#79` was filed to fix — a consumer installing fsd
+from a wheel or a git ref has no such folder to point at.
+
 ### The `InvalidBlockList` write retry (`storage/fs.py`, reverted 2026-07-28, #57 → #58)
 
 `_write_with_retry` retried any write whose error message looked like a transient Azure
