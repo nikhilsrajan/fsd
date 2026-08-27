@@ -83,8 +83,11 @@ notebooks/demo_*
 !notebooks/demo_model/my_adapter.py
 !notebooks/e2e_austria_aml.ipynb
 
-# ...and the shapefiles for the demos
-!notebooks/shapefiles/* 
+# ...and the shapefiles for the demos, which the blanket `*.geojson` above would otherwise
+# catch. A test geometry that exists only on one laptop is not a test geometry. Tracking them
+# here does NOT put them in the wheel -- different mechanism. Provenance and the unresolved
+# EuroCrops licensing are in notebooks/shapefiles/NOTICE; same shape as tests/data/tutorial/.
+!notebooks/shapefiles/*
 
 # The AML image build contexts (docs/howto/build-the-images.md) ARE tracked -- a
 # Dockerfile and an environment.yml carry no cloud identifiers, and keeping them in

@@ -1,0 +1,24 @@
+NOTICE — notebooks/shapefiles/
+
+These geometries are committed deliberately: they are what the demo notebooks read, and a
+test geometry that exists only on one laptop is not a test geometry. They do not travel in a
+package install — no data ships in the fsd wheel (git tracking and wheel contents are set by
+different mechanisms).
+
+AT_2018_TRAIN.geojson
+  900 Austrian agricultural field parcels, 2018, each carrying a `crop` label. EPSG:31287
+  (Austria Lambert); attributes reduced to `fid` + `crop`. Derived from EuroCrops, which
+  harmonises national parcel declarations — for Austria, the INVEKOS/AMA data — onto a common
+  crop taxonomy. Sampled and reprojected for this repository; not the upstream dataset.
+
+  The upstream licence has NOT been reconciled with this repository's MIT licence. Treat this
+  file as carrying EuroCrops' terms rather than fsd's until that is settled, and do not
+  redistribute it as if it were MIT. (Tracked in PROGRESS.md: "its licensing is unresolved for
+  a public MIT repo.")
+
+AT_ROI.geojson
+s2grid=476da24.geojson
+  Authored for this repository — a demo area of interest over Austria, and one S2 grid cell
+  lying entirely inside MGRS tile T33UWP. No third-party data.
+
+Precedent for committing test data with a NOTICE: tests/data/tutorial/NOTICE.
