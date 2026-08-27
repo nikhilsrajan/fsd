@@ -5,10 +5,10 @@
 state plus the most recent entry, not the log.
 
 _Last updated: 2026-08-27 (**SPECS 55 + 56 SIGNED OFF. SPEC 55 MERGED to `main`. SPEC 56 IS
-IMPLEMENTED **AND OPUS-REVIEWED** IN A WORKTREE (`worktree-spec-56-image-registry`), §9 steps 0-9
-done, 8 review defects fixed, `1053 passed / 98 skipped` + clean ruff + clean identifier sweep —
-STILL UNCOMMITTED, NOT MERGED, and step 10's real AML run of the rewritten notebook has not
-happened.** 55: `root` leaves the config, the two registries enter it, `fsd init --blank`.
+IMPLEMENTED, OPUS-REVIEWED **AND MERGED TO `main`** (`b866c9d`, merge `b6ba610`; the worktree and
+its branch are pruned), §9 steps 0-9 done, 8 review defects fixed, `1055 passed / 100 skipped` on
+`main` + clean ruff + clean identifier sweep. **NOT PUSHED, and step 10's real AML run of the
+rewritten notebook has not happened — the spec is NOT closed on green tests.** 55: `root` leaves the config, the two registries enter it, `fsd init --blank`.
 56 (closes #79): the AML image recipe leaves `00_build_images.ipynb` for a declarative
 `ImageDefinition` + a definitions registry on the storage seam.)_
 
@@ -45,8 +45,8 @@ for tests, no network in the suite), `fsd.image.registry` (D3, on `_core`), `fsd
 `00_build_images.ipynb` (D7, 11 cells vs the old 22) and the deleted
 `notebooks/images/{base,sklearn}/` (step 8, rendered-Dockerfile diff confirmed equivalent before
 deletion, `DROPPED.md` diff confirmed byte-identical modulo comments/blanks, entry written) are all
-done. **Not done: a real AML run** (§9 step 10 — MEMORY `real-run-beats-review`) — the worktree is
-uncommitted and unmerged.
+done. **Not done: a real AML run** (§9 step 10 — MEMORY `real-run-beats-review`); `main` is merged
+but **unpushed**.
 
 **Spec 56 — OPUS REVIEW, 2026-08-27. Eight defects found and fixed in the worktree; suite now
 `1053 passed / 98 skipped`.** Verified-as-claimed first: `src/fsd/model/registry.py` is untouched
