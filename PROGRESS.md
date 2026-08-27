@@ -4,7 +4,42 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-27 (**SPEC 57 IMPLEMENTED (Sonnet) + REVIEWED (Opus) + MERGED + PUSHED —
+_Last updated: 2026-08-28 (**SPEC 57 LANDED; `notebooks/shapefiles/` NOW PUBLIC WITH A NOTICE;
+`main` @ `e4879b0`, pushed, clean.** Since the entry below: the user un-ignored
+`notebooks/shapefiles/` themselves (`16b66f6` — 900 EuroCrops-derived Austrian fields + the two
+demo geometries + a scrubbed `00_build_images.ipynb`, so critical-path item 2 is **done**), and a
+`NOTICE` was added beside them (`e4879b0`) recording provenance and stating plainly that the
+**upstream EuroCrops licence has NOT been reconciled with this repo's MIT licence** — it grants
+nothing fsd cannot. Nothing reaches the wheel (`packages.find` is `where=["src"]`). The canonical
+EuroCrops citation URL is deliberately **absent** from the NOTICE: it needs a lookup nobody has
+done. **NEXT: issue #92, handed off to a fresh Opus session** —
+`/tmp/handoff-issue-92-az-root-2026-08-28.md`. The ordered chain it must not drop is directly
+below.)_
+
+## THE ORDER — four tasks, and what follows each (user, 2026-08-28)
+
+The user's standing instruction: **record what comes after finishing a task, so it is not
+forgotten at the boundary.** Do not reorder without saying so.
+
+| # | task | done when | → then |
+|---|---|---|---|
+| **1** | **[#92](https://github.com/nikhilsrajan/fsd/issues/92)** — AZ_ROOT cleanup across docs/notebook/demos | nothing outside `specs/` + `runbooks/` still describes `AZ_ROOT` as config; `gh issue close 92` | → **2** |
+| **2** | **The consumer-repo run** — reinstall `rise/.venv` from `@main`, run `rise/notebooks/e2e_austria_aml.ipynb` end to end | `[collect]`/`[stac]` numbers captured against the **616 s / 161 s** baseline, and spec 56 §9 step 10's forced stale-entry rebuild checked | → **3**; also **unblocks #80 + #82** (see the rider below) |
+| **3** | **[#55](https://github.com/nikhilsrajan/fsd/issues/55)** — docs refactor (story + C4 set) | its own gate is step 2's timed report; **needs its OWN spec and a discussion before starting** | → **4** |
+| **4** | **[#85](https://github.com/nikhilsrajan/fsd/issues/85)** — trim the changelog out of `src/` comments | 7 packages left, **one per session**; `storage/` is the done sample (`eb7f29f`) | → the next spec / ROADMAP |
+
+**Rider on step 2 — do not lose these.** #80 (snakemake → `[local]`, s3fs → `[s3]`; zero code
+change, −53 packages / −111 MB) and #82 (cut + push `v0.1.0`) both belong **inside** `v0.1.0`, and
+the **tag is LAST** — cut only once the consumer notebook actually runs (user, 2026-08-26: a tag
+pins the dependency set *and* the asset layout, and both were still moving). #80 may land any time
+before the tag; it cannot alter runtime behaviour, so it does not require re-running step 2.
+**#79** is wanted-not-blocking; **#81 must not block** (numba is a real top-level import).
+
+**Why #92 goes first, not after the run:** it edits `notebooks/e2e_austria_aml.ipynb`'s prose and
+`docs/howto/run-at-scale.md`'s config example — cheaper to fix before the run than to re-touch a
+notebook that has just been validated.
+
+_Previously: 2026-08-27 (**SPEC 57 IMPLEMENTED (Sonnet) + REVIEWED (Opus) + MERGED + PUSHED —
 `main` @ `52f7b2b`.** D1 (segment ticker) + D2 (in-memory footprint, ROI mode) + D5 (GDAL
 sidecar-probe config) + D3 (threaded collect) + D4 (threaded STAC writes) all landed; worktree
 `spec-57-collect-stac` merged `--no-ff`, then pruned and its branch deleted (standing practice).
@@ -21,9 +56,8 @@ sequence, so never more than 16 threads are live; `as_completed`'s exception ord
 AC5. **NEXT: §9 step 5 — a real cluster run against the pre-D1 baseline.** It is the user's, not
 an agent's ([[real-run-beats-review]]), and until it happens the 777 s → <100 s number is a
 *hypothesis*. Spec 56's §9 step 10 real AML run is also still outstanding, unrelated.
-⚠️ The working copy carries an **uncommitted** `notebooks/00_build_images.ipynb` edit that trips 5
-`tests/test_notebooks.py` identifier guards (real storage account, resource group, home dir, saved
-outputs) — the committed version is clean; scrub before committing it.)_
+[The `00_build_images.ipynb` leak-guard warning recorded here was resolved by the user in
+`16b66f6`.])_
 
 **Spec 57 — LANDED 2026-08-27** (signed off, implemented, reviewed, merged).
 `specs/57-collect-and-stac-round-trips.md`, advancing [#61](https://github.com/nikhilsrajan/fsd/issues/61)
