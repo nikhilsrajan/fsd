@@ -4,6 +4,44 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## `run_inference`'s collect + STAC-write window shrinks and threads (spec 57, 2026-08-27)
+
+`_finalize_outputs`'s post-run window (`cog_outputs_to_items` + `write_stac_catalog`) was two
+*sequential* remote round-trips per output cell scaling with cell count, not work — 777 s of a
+300-cell run whose actual inference was skipped (#61, run-book 41 Step 3). Closes #61 fixes (b)
+and (c); fix (d) (node-side Item emission) stays open.
+
+- **`_finalize_outputs`/`cog_outputs_to_items`/`write_stac_catalog` now print `[collect]`/`[stac]`
+  segment lines** (elapsed + per-unit rate) through the existing `fsd.progress` ticker, matching
+  `[merge]`'s existing shape — the window measures itself instead of being read back from blob
+  `last_modified` after the fact (D1).
+- **`cog_outputs_to_items`'s `geometries` values may now be an already-loaded `shapely` geometry,
+  not just a `geometry.geojson` path** (D2). ROI mode passes the footprint it already holds in
+  memory (`grids`, tiled by the driver itself) instead of reading back the file it wrote minutes
+  earlier — one fewer blob round-trip per cell. The in-memory form is checked structurally (looked
+  up *by* item id); the path form's `properties.id` cross-check is unchanged. Only ROI mode uses
+  the new form; `from_manifest`, a bare COG list, and pre-built-cube modes are unaffected.
+- **The remaining per-cell COG open, and every STAC object write, now run on a bounded thread
+  pool** (`_COLLECT_THREADS = 16`, `fsd/catalog/stac.py`) — D3/D4. Each `rio_open` call already
+  owns its own `rasterio.Env` (`raster/__init__.py`), so a worker thread gets its own credentialed
+  env; nothing relies on an env entered on the driver thread (rasterio's env stack is
+  thread-local — verified directly, not inferred from the docstring, see spec 57 §8). Item order
+  and catalog layout are unaffected by completion order; a worker failure raises out of the call,
+  never a silently truncated/incomplete catalog.
+- **Every remote raster open now sets `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` +
+  `CPL_VSIL_CURL_ALLOWED_EXTENSIONS=.tif,.tiff,.jp2`** in `rio_env`/`rio_open` (D5) — GDAL stops
+  listing the containing blob directory for sidecars (`.aux.xml`/`.ovr`/`.msk`) on every VSI open.
+  Applies to every remote raster open in fsd (download, datacube, merge, collect), not just the
+  collect path.
+  **Named risk:** a sidecar that *does* exist stops being read — fsd writes plain COGs with
+  statistics inline and no sidecars, so nothing in-repo depends on one, but this is a real
+  behavior change for anything reading a `fsd`-external COG with a sidecar over `abfss://`/`az://`.
+  **The extension list is a whitelist, not a hint** (review, 2026-08-27): GDAL treats a remote
+  file whose extension is *not* listed as non-existent, so it must cover every extension
+  `datacube.builder._RASTER_EXTS` can hand to `rio_open` — `.tif` alone would have made a remote
+  `.jp2` band file (any `cog=False` download staged to blob) unopenable. A remote raster with any
+  *other* extension is now unopenable; add it to `_REMOTE_OPEN_CONFIG` if that ever happens.
+
 ## Image builds become `fsd.image`/`fsd.aml`, with a registry (spec 56, 2026-08-27)
 
 The AML image recipe stops being 110 lines of notebook helpers keyed on the git state of an fsd

@@ -27,10 +27,18 @@ from pystac.extensions.raster import RasterBand, RasterExtension
 from pystac.stac_io import DefaultStacIO
 
 from fsd import config
+from fsd import progress as _progress
 from fsd.catalog import declaration as declaration_module
 from fsd.catalog.declaration import SourceDeclaration
 from fsd.raster.images import _is_reflectance
 from fsd.storage import fs
+
+# D3/D4 (spec 57 §7 Q1): a fixed default, not `cores` -- `cores` means the node's inference
+# parallelism elsewhere in fsd, so overloading it here would be misleading. Tuned for
+# latency-bound round-trips (a blob header read / small blob write, ~1 s each over VPN), not for
+# core count. No public knob until a real run asks for one -- an unused knob is a knob that gets
+# set wrong; D1's segment line ([collect]/[stac]) is what a future retune reads.
+_COLLECT_THREADS = 16
 
 # Bands with a categorical mask/QA role (spec 34 §2a) rather than a continuous
 # reflectance value — never radiometrically offset, and the default S2 declaration's
@@ -61,6 +69,41 @@ class _StorageStacIO(DefaultStacIO):
             fs.makedirs(parent)
         with fs.open(str(dest), "w") as f:
             f.write(txt)
+
+
+class _ThreadedStorageStacIO(_StorageStacIO):
+    """D4 (spec 57): `Catalog.save()` walks the tree and calls `save_json` -> `write_text` once
+    per object (catalog, collection, one per Item) -- 301 independent small blob writes,
+    sequentially, at ~0.53 s each. The tree walk and JSON encoding stay on the driver thread (fast,
+    pure Python, no I/O); only the blob write itself is handed to a thread pool, so the catalog
+    **layout** (link order, one Item per object) is untouched -- this only changes how the bytes
+    reach storage.
+
+    `write_text` submits and returns immediately; `wait()` (called once, after `catalog.save()`
+    returns) blocks until every submitted write has finished and re-raises the first exception any
+    of them hit -- a worker failure surfaces as that failure, never a silently-incomplete catalog
+    (AC5). The `ThreadPoolExecutor` this is built with is itself a `with` block in the caller, so
+    even an early exception out of `wait()` lets every in-flight write finish before it propagates
+    (same shape as D3 / `workflows.create_datacube.setup`'s threaded loop)."""
+
+    def __init__(self, executor, tick):
+        super().__init__()
+        self._executor = executor
+        self._tick = tick
+        self._futures: list = []
+
+    def write_text(self, dest, txt, *args, **kwargs) -> None:
+        bound_write = super().write_text
+        self._futures.append(self._executor.submit(bound_write, dest, txt, *args, **kwargs))
+
+    def wait(self) -> None:
+        import concurrent.futures
+
+        done = 0
+        for fut in concurrent.futures.as_completed(self._futures):
+            fut.result()  # first exception, if any, raises here
+            done += 1
+            self._tick(done)
 
 
 # --- mapping helpers ---------------------------------------------------------
@@ -238,15 +281,33 @@ def cog_outputs_to_items(cog_filepaths, *, geometries=None, collection_id="fsd-i
     ambiguity). `dt` is the Item datetime for all outputs (defaults to now, UTC) — outputs are
     mosaics over a window, not a single acquisition.
 
-    `geometries` (spec 28): an optional `{output_cog_filepath: geometry.geojson_path}` mapping —
-    the **true S2-cell footprint** (CRS84, from the build manifest's `shapefilepath` column), used
-    as the Item geometry/bbox instead of the raster bbox. This is a **deterministic, manifest-driven
-    contract, not a per-item fallback**: when `geometries` is given, every `fp` in `cog_filepaths`
-    must have a readable polygon entry — a missing/unreadable/empty one raises (a manifest that
-    lists an output but no footprint is a real inconsistency; fail loud, don't silently box).
-    `geometries=None` (the default) keeps the raster-bbox behavior, for geometry-less callers
-    (unit tests; a bare list of COGs; pre-built folder/list inference modes with no manifest).
+    `geometries` (spec 28, D2 spec 57): an optional `{output_cog_filepath: value}` mapping — the
+    **true S2-cell footprint**, used as the Item geometry/bbox instead of the raster bbox. `value`
+    is **either**:
+
+    - a `geometry.geojson` **path** (str), read through the `fsd.storage` seam — today's
+      behaviour. Carries a cross-check: the file's `properties.id` must equal the item id derived
+      from the output path, else raises (two independent sources that can disagree).
+    - an **already-loaded** `shapely` geometry, used as-is with **no round-trip read**. Checked
+      **structurally** rather than by id: the caller looked this geometry up *by* the item id
+      when building the mapping, so a mismatch cannot be constructed the way it can for the path
+      form (D2 — only ROI mode, which holds `grids` in memory, uses this form).
+
+    This is a **deterministic, manifest-driven contract, not a per-item fallback**: when
+    `geometries` is given, every `fp` in `cog_filepaths` must have an entry — a missing/unreadable/
+    empty one raises (a manifest that lists an output but no footprint is a real inconsistency;
+    fail loud, don't silently box). `geometries=None` (the default) keeps the raster-bbox
+    behavior, for geometry-less callers (unit tests; a bare list of COGs; pre-built folder/list
+    inference modes with no manifest).
+
+    The COG opens are threaded (D3, spec 57, `_COLLECT_THREADS` workers): each is I/O-bound and
+    independent, and `rio_open` already owns its own `rasterio.Env` per call (`raster/__init__.py`)
+    — a fresh, credentialed env per worker thread, since rasterio's env stack is thread-local (an
+    env entered on one thread is invisible to another). Item order in the returned list always
+    matches `cog_filepaths`, regardless of completion order; a failure in one worker surfaces as
+    that failure via `fut.result()`, not as a silently short list.
     """
+    import concurrent.futures
     import datetime as _datetime
 
     from rasterio.warp import transform_bounds
@@ -256,45 +317,76 @@ def cog_outputs_to_items(cog_filepaths, *, geometries=None, collection_id="fsd-i
     if dt is None:
         dt = _datetime.datetime.now(_datetime.timezone.utc)
 
-    items: list[pystac.Item] = []
-    for fp in cog_filepaths:
+    cog_filepaths = list(cog_filepaths)
+
+    def _describe(fp):
+        """One output COG -> its Item ingredients. Pure per-fp work (a read, never a write),
+        which is what makes threading it safe."""
         with rio_open(fp) as src:
             epsg = src.crs.to_epsg() if src.crs else None
             shape = [src.height, src.width]
             transform = list(src.transform)[:6]
 
             if geometries is not None:
-                geom_path = geometries.get(str(fp), geometries.get(fp))
-                if geom_path is None:
+                geom_or_path = geometries.get(str(fp), geometries.get(fp))
+                if geom_or_path is None:
                     raise ValueError(
                         f"cog_outputs_to_items: geometries has no entry for output COG {fp!r}; "
                         "the manifest-driven contract requires every output to have a footprint "
                         "(pass geometries=None to fall back to the raster bbox for ALL outputs)."
                     )
-                try:
-                    geom, feat_id = _read_footprint_geometry(geom_path)
-                except (OSError, ValueError) as exc:
-                    raise ValueError(
-                        f"cog_outputs_to_items: could not read geometry {geom_path!r} for "
-                        f"output COG {fp!r}: {exc}"
-                    ) from exc
-                if geom is None or geom.is_empty:
-                    raise ValueError(
-                        f"cog_outputs_to_items: geometry.geojson at {geom_path!r} (for {fp!r}) "
-                        "has no readable polygon feature."
-                    )
-                item_id = _output_item_id(fp)
-                if feat_id is not None and str(feat_id) != item_id:
-                    raise ValueError(
-                        f"cog_outputs_to_items: geometry.geojson id {feat_id!r} at {geom_path!r} "
-                        f"disagrees with output item id {item_id!r} for {fp!r}."
-                    )
+                if isinstance(geom_or_path, shapely.geometry.base.BaseGeometry):
+                    geom = geom_or_path
+                    if geom.is_empty:
+                        raise ValueError(
+                            f"cog_outputs_to_items: geometries entry for output COG {fp!r} is an "
+                            "empty geometry."
+                        )
+                else:
+                    geom_path = geom_or_path
+                    try:
+                        geom, feat_id = _read_footprint_geometry(geom_path)
+                    except (OSError, ValueError) as exc:
+                        raise ValueError(
+                            f"cog_outputs_to_items: could not read geometry {geom_path!r} for "
+                            f"output COG {fp!r}: {exc}"
+                        ) from exc
+                    if geom is None or geom.is_empty:
+                        raise ValueError(
+                            f"cog_outputs_to_items: geometry.geojson at {geom_path!r} (for "
+                            f"{fp!r}) has no readable polygon feature."
+                        )
+                    item_id = _output_item_id(fp)
+                    if feat_id is not None and str(feat_id) != item_id:
+                        raise ValueError(
+                            f"cog_outputs_to_items: geometry.geojson id {feat_id!r} at "
+                            f"{geom_path!r} disagrees with output item id {item_id!r} for {fp!r}."
+                        )
                 bbox = list(geom.bounds)
             else:
                 bounds4326 = transform_bounds(src.crs, "EPSG:4326", *src.bounds, densify_pts=21)
                 geom = shapely.geometry.box(*bounds4326)
                 bbox = list(bounds4326)
 
+        return epsg, shape, transform, geom, bbox
+
+    # D1 (spec 57): the window measures itself -- results placed BY INDEX and reassembled after,
+    # so `items` below is always in `cog_filepaths` order regardless of completion order (same
+    # pattern as `workflows.create_datacube.setup`'s threaded loop).
+    described: list[tuple | None] = [None] * len(cog_filepaths)
+    tick = _progress.ticker(len(cog_filepaths), "collect", unit="outputs")
+    tick(0, force=True)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=_COLLECT_THREADS) as pool:
+        futures = {pool.submit(_describe, fp): i for i, fp in enumerate(cog_filepaths)}
+        done = 0
+        for fut in concurrent.futures.as_completed(futures):
+            described[futures[fut]] = fut.result()
+            done += 1
+            tick(done)
+    tick(len(cog_filepaths), force=True)
+
+    items: list[pystac.Item] = []
+    for fp, (epsg, shape, transform, geom, bbox) in zip(cog_filepaths, described):
         item = pystac.Item(
             id=_output_item_id(fp),
             geometry=shapely.geometry.mapping(geom),
@@ -483,5 +575,18 @@ def write_stac_catalog(
     catalog.add_child(collection)
 
     catalog.normalize_hrefs(str(dst_folderpath))
-    catalog.save(catalog_type=pystac.CatalogType.SELF_CONTAINED, stac_io=_StorageStacIO())
+
+    # D4 (spec 57): catalog + collection + one Item each -- threaded the same way D3 threads the
+    # collect reads (see `_ThreadedStorageStacIO`'s docstring for why the tree walk itself stays
+    # single-threaded and only the blob write is deferred).
+    import concurrent.futures
+
+    n_objects = len(items) + 2  # + the collection + the catalog itself
+    tick = _progress.ticker(n_objects, "stac", unit="objects")
+    tick(0, force=True)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=_COLLECT_THREADS) as pool:
+        stac_io = _ThreadedStorageStacIO(pool, tick)
+        catalog.save(catalog_type=pystac.CatalogType.SELF_CONTAINED, stac_io=stac_io)
+        stac_io.wait()
+    tick(n_objects, force=True)
     return os.path.join(str(dst_folderpath), "catalog.json")

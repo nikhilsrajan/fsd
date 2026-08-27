@@ -284,6 +284,75 @@ def test_roi_resume_same_ids_skips_setup_and_dispatches(tmp_path, monkeypatch):
     assert result == "DONE"
 
 
+def test_roi_passes_in_memory_footprints_not_geometry_geojson_paths(tmp_path, monkeypatch):
+    """AC2 (spec 57 D2), caller side: ROI mode hands `_finalize_outputs` the footprint it
+    already holds (`grids`, `.buffer(0)`-ed the way `create_datacube.setup._prepare` does),
+    keyed by output path — NOT the `shapefilepath` column, which would be one blob read per
+    cell. The `cog_outputs_to_items` half of AC2 is covered in `test_catalog_stac.py`; this is
+    the half that proves the driver never asks for the path form at all."""
+    import pandas as pd
+    from shapely.geometry import Polygon
+
+    import fsd.api as api
+    import fsd.grid as _grid_mod
+    from fsd.workflows import runners as _runners
+
+    # slanted, not a box: `.buffer(0)` on a box is a no-op, which would hide a missing buffer.
+    cell_a = Polygon([(0.0, 0.0), (1.0, 0.2), (0.9, 1.0), (0.1, 0.8)])
+    cell_b = Polygon([(2.0, 2.0), (3.0, 2.3), (2.8, 3.0), (2.1, 2.7)])
+    fresh = gpd.GeoDataFrame(
+        {"id": ["cell_a", "cell_b"]}, geometry=[cell_a, cell_b], crs="EPSG:4326",
+    )
+    monkeypatch.setattr(_grid_mod, "roi_to_s2_grids", lambda *a, **kw: fresh)
+    monkeypatch.setattr(api, "_ensure_bundle", lambda *a, **kw: "bundle_path")
+    monkeypatch.setattr(api._create_datacube, "setup", lambda *a, **kw: None)
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(_runners, "run_local_inference", lambda *a, **kw: _Result())
+    monkeypatch.setattr(api, "_existing_outputs", lambda paths, **kw: list(paths))
+
+    captured = {}
+
+    def _fake_finalize(*a, **kw):
+        captured.update(kw)
+        return "DONE"
+
+    monkeypatch.setattr(api, "_finalize_outputs", _fake_finalize)
+
+    csv_filepath, _ = _write_grids_and_csv(tmp_path, ["cell_a", "cell_b"], [])
+    pd.DataFrame({
+        "id": ["cell_a", "cell_b"],
+        "export_folderpath": ["a", "b"],
+        # present in the manifest, and deliberately unreadable: reading it would be the bug.
+        "shapefilepath": ["/nope/a.geojson", "/nope/b.geojson"],
+    }).to_csv(csv_filepath, index=False)
+
+    fsd.run_inference(
+        _Tiny(), output_folderpath=str(tmp_path), roi=ROI, catalog_filepath="c.parquet",
+        startdate=datetime.datetime(2018, 6, 1), enddate=datetime.datetime(2018, 7, 11),
+        mosaic_days=20, bands=["B04", "B08"],
+    )
+
+    geometries = captured["geometries"]
+    import os as _os
+
+    assert set(geometries) == {
+        _os.path.join("a", "output.tif"), _os.path.join("b", "output.tif"),
+    }
+    for value in geometries.values():
+        assert not isinstance(value, str)          # never a geometry.geojson path
+    # mapping(), not .equals(): the Item's bytes are the coordinates, so this must guard
+    # coordinate-level identity (ring order included), not topological equality.
+    import shapely.geometry as _sgeom
+
+    assert _sgeom.mapping(geometries[_os.path.join("a", "output.tif")]) == \
+        _sgeom.mapping(cell_a.buffer(0))
+    assert _sgeom.mapping(geometries[_os.path.join("b", "output.tif")]) == \
+        _sgeom.mapping(cell_b.buffer(0))
+
+
 # --- merge modes -------------------------------------------------------------
 
 def _write_cog(path, epsg, x0, y0, val, size=8, res=10, nodata=255):

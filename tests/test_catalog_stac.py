@@ -5,6 +5,7 @@ Synthetic + pure-metadata: no raster files are read (read_proj defaults False).
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 
@@ -315,3 +316,137 @@ def test_cog_outputs_to_items_geometries_none_keeps_raster_box(tmp_path):
     xs, ys = zip(*items[0].geometry["coordinates"][0][:-1])
     assert set(xs) == {minx, maxx}
     assert set(ys) == {miny, maxy}
+
+
+def test_cog_outputs_to_items_id_disagreement_raises(tmp_path):
+    """The path form's cross-check (spec 28) survives D2/D3 (spec 57 AC3) -- a geometry.geojson
+    whose `properties.id` disagrees with the item id derived from the output path still raises."""
+    cell_dir = str(tmp_path / "cell-1")
+    cog = _make_output_cog(cell_dir)
+    geom_path = _write_geometry_geojson(cell_dir, feature_id="not-cell-1")
+    with pytest.raises(ValueError, match="disagrees with output item id"):
+        stac.cog_outputs_to_items([cog], geometries={cog: geom_path})
+
+
+# --- D2 (spec 57): in-memory geometries -------------------------------------
+
+
+def test_cog_outputs_to_items_in_memory_geometry_matches_path_form(tmp_path, monkeypatch):
+    """AC2: an already-loaded geometry produces a byte-identical Item to the path form for the
+    same input, and the seam is never asked for a footprint path (zero `geometry.geojson`
+    reads).
+
+    Both sides are `.buffer(0)`-ed, because that is what the pipeline actually compares: the path
+    form reads back `create_datacube.setup._prepare`'s `srow["geometry"].buffer(0)`, and
+    `_run_inference_roi` buffers `grids.geometry` the same way (spec 57 D2). Feeding the raw
+    polygon to one side and the buffered one to the other would test a pair of inputs the
+    pipeline never produces."""
+    cell_dir = str(tmp_path / "cell-1")
+    cog = _make_output_cog(cell_dir)
+    buffered = _SLANTED_POLYGON.buffer(0)
+    geom_path = _write_geometry_geojson(cell_dir, feature_id="cell-1", geom=buffered)
+    when = dt.datetime(2018, 6, 1, tzinfo=dt.timezone.utc)
+
+    path_form = stac.cog_outputs_to_items([cog], geometries={cog: geom_path}, dt=when)
+
+    calls = []
+    real_read = stac._read_footprint_geometry
+
+    def _spy(*a, **k):
+        calls.append((a, k))
+        return real_read(*a, **k)
+
+    monkeypatch.setattr(stac, "_read_footprint_geometry", _spy)
+    in_memory_form = stac.cog_outputs_to_items(
+        [cog], geometries={cog: buffered}, dt=when,
+    )
+
+    assert calls == []  # no round-trip read for the in-memory value
+    assert len(in_memory_form) == 1
+    p, m = path_form[0], in_memory_form[0]
+    assert m.id == p.id
+    assert m.bbox == p.bbox
+    assert m.geometry == p.geometry
+    assert m.datetime == p.datetime
+    assert m.properties["proj:shape"] == p.properties["proj:shape"]
+    assert m.properties["proj:transform"] == p.properties["proj:transform"]
+
+
+def test_cog_outputs_to_items_in_memory_empty_geometry_raises(tmp_path):
+    cell_dir = str(tmp_path / "cell-1")
+    cog = _make_output_cog(cell_dir)
+    with pytest.raises(ValueError, match="empty geometry"):
+        stac.cog_outputs_to_items(
+            [cog], geometries={cog: shapely.geometry.Polygon()},
+        )
+
+
+def test_cog_outputs_to_items_in_memory_missing_entry_raises(tmp_path):
+    """The missing-entry raise (AC3) is shared by both value shapes -- not weakened by D2."""
+    cell_dir = str(tmp_path / "cell-1")
+    cog = _make_output_cog(cell_dir)
+    with pytest.raises(ValueError, match="no entry"):
+        stac.cog_outputs_to_items([cog], geometries={})
+
+
+# --- D3 (spec 57): threaded collect ------------------------------------------
+
+
+def test_cog_outputs_to_items_order_matches_input_not_completion(tmp_path):
+    """AC5: Item order matches `cog_filepaths`, not thread completion order."""
+    cogs = []
+    for i in range(8):
+        cell_dir = str(tmp_path / f"cell-{i}")
+        cogs.append(_make_output_cog(cell_dir))
+    items = stac.cog_outputs_to_items(cogs)
+    assert [it.id for it in items] == [stac._output_item_id(c) for c in cogs]
+
+
+def test_cog_outputs_to_items_worker_failure_surfaces(tmp_path):
+    """AC5: a failure in one worker surfaces as that failure, not a truncated item list."""
+    cell_dir = str(tmp_path / "cell-1")
+    cog = _make_output_cog(cell_dir)
+    missing = str(tmp_path / "cell-2" / "output.tif")  # never written -- rio_open raises
+    with pytest.raises(Exception):
+        stac.cog_outputs_to_items([cog, missing])
+
+
+def test_cog_outputs_to_items_prints_collect_ticker(tmp_path, capsys):
+    """AC1: the collect step prints a `[collect]` segment line with elapsed + rate."""
+    cell_dir = str(tmp_path / "cell-1")
+    cog = _make_output_cog(cell_dir)
+    stac.cog_outputs_to_items([cog])
+    out = capsys.readouterr().out
+    assert "[collect]" in out
+    assert "elapsed" in out
+
+
+# --- D4 (spec 57): threaded STAC writes --------------------------------------
+
+
+def test_write_stac_catalog_prints_stac_ticker(tmp_path, capsys):
+    """AC1: the stac-write step prints a `[stac]` segment line with elapsed + rate."""
+    cog = _make_output_cog(str(tmp_path / "cell-1"))
+    items = stac.cog_outputs_to_items([cog])
+    stac.write_stac_catalog(items, str(tmp_path / "stac"))
+    out = capsys.readouterr().out
+    assert "[stac]" in out
+    assert "elapsed" in out
+
+
+def test_write_stac_catalog_threaded_write_failure_surfaces(tmp_path, monkeypatch):
+    """AC5: one worker's write failure raises out of `write_stac_catalog`, not a partially
+    written, silently-incomplete catalog."""
+    cogs = [_make_output_cog(str(tmp_path / f"cell-{i}")) for i in range(3)]
+    items = stac.cog_outputs_to_items(cogs)
+
+    real_open = stac.fs.open
+
+    def _flaky_open(dest, mode="r", *a, **k):
+        if str(dest).endswith(f"{items[1].id}.json"):
+            raise OSError("simulated blob write failure")
+        return real_open(dest, mode, *a, **k)
+
+    monkeypatch.setattr(stac.fs, "open", _flaky_open)
+    with pytest.raises(OSError, match="simulated blob write failure"):
+        stac.write_stac_catalog(items, str(tmp_path / "stac"))
