@@ -5,7 +5,9 @@ summary: The AML image recipe lives in `00_build_images.ipynb` as 110 lines of h
 
 # Spec 56 — image definitions, and a registry to keep them in
 
-**Status:** **SIGNED OFF (user, 2026-08-27)** — all three §7 questions resolved. Not implemented.
+**Status:** **SIGNED OFF (user, 2026-08-27)** — all three §7 questions resolved. **Implemented
+and Opus-reviewed 2026-08-27** (D3 carries one approved amendment, `_aml.json`); §9 step 10's
+real AML run is still outstanding, so the spec is not closed.
 · **Opened:** 2026-08-26
 **Closes:** [#79](https://github.com/nikhilsrajan/fsd/issues/79).
 **Origin:** the user, 2026-08-26: *"the helper functions written in 00_build_images notebook are
@@ -148,8 +150,36 @@ models"* and because the shape is already proven on blob (spec 52):
     v7/
       image.json                  the resolved definition + the digest + the AML asset it became
       _complete.json              written last; the all-or-nothing marker
+      _aml.json                   [amendment, below] the AML asset it CURRENTLY is
     v8/ …
 ```
+
+> **Amendment — `_aml.json` (Opus review 2026-08-27; approved by the user, 2026-08-27).**
+> `publish` is idempotent by digest, so rebuilding an **unchanged** definition — D4 step 3's
+> deleted asset, or `force=True` — allocates no new version, and the new AML version number has
+> nowhere in the versioned record to go. Left unfixed, the registry keeps naming the asset that
+> was just replaced, `ensure_environment` finds it missing on every later call, and rebuilds a
+> 10–20 minute image forever (reproduced end to end before the fix).
+>
+> The fix is a **mutable sidecar**, not an edit to `image.json`. `image.json` is the byte set the
+> content digest covers; editing it in place would still *appear* to work (only `definition` is
+> hashed), but it would make the digest's validity rest on a convention rather than on the file
+> being untouched, put the only record of what a version was built from at risk on every rewrite,
+> reopen the torn-read window `_complete.json` was written last to close (spec 52 D1), and break
+> AC5's flat "versions are immutable". It is also a layering point: `image.json` answers *what is
+> this definition* (backend-agnostic, §2's whole line); an AML asset id answers *what did it become
+> in one Azure workspace*.
+>
+> `_aml.json` is staged-and-renamed like `_aliases.json`, and is exactly the role `_deploy.json`
+> plays in `fsd.model.registry` (spec 51 D7) — same placement, same mechanism, same reason.
+> `registry.resolve(...).aml` prefers it and falls back to `image.json`'s frozen `aml` block, which
+> stays as first-publish provenance.
+>
+> **Two version sequences, found in the same review.** AML versions *assets*; this registry versions
+> *definitions*, in its own integer sequence — `fsd-aml-env:5` in AML is routinely `:1` here. So
+> `ensure_environment` returns both: `version`/`ref` (AML's, for `environment=`) and
+> `registry_version`/`registry_ref` (this registry's, the only thing D8's `image_ref=` can resolve).
+> Passing one where the other belongs fails as a missing `v<N>` directory, not as a type error.
 
 `image.json` carries the resolved definition plus provenance, and its provenance fields are **named
 after the OCI image-spec annotation keys** rather than invented:

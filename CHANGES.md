@@ -4,6 +4,56 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## Image builds become `fsd.image`/`fsd.aml`, with a registry (spec 56, 2026-08-27)
+
+The AML image recipe stops being 110 lines of notebook helpers keyed on the git state of an fsd
+checkout, and becomes a declarative `fsd.image.ImageDefinition` whose **resolved** form is
+digested, looked up in a storage-seam registry mirroring `fsd.model.registry`, and built only if
+absent. Closes #79.
+
+- **`fsd.image.ImageDefinition`** (frozen dataclass) replaces the checked-in
+  `notebooks/images/{base,sklearn}/Dockerfile`. `render_dockerfile()`/`write_context()` generate
+  what those files held; `.derive()` makes the inference image from the general-purpose one
+  without repeating `base`/`fsd`/`extras`. The `build_context=` escape hatch takes a caller-owned
+  directory unchanged, for an image fsd's fields cannot express.
+- **The staleness key changes from git state to the resolved definition's digest**
+  (`fsd.image.digest.resolve`/`digest`). `git_state()` and `.last_registered.json` are gone
+  (see `DROPPED.md`): the resolved `fsd` reference — a 40-char git sha, or a wheel content
+  digest for `fsd="path:..."` — travels with the definition instead of living in one working
+  copy. `-dirty` does not disappear for the checkout case, it changes meaning: an uncommitted
+  edit changes the wheel's content digest rather than triggering a separate "dirty" flag.
+- **`fsd.image.registry`** (built on the new `fsd.registry._core`, shared mechanism with
+  `fsd.model.registry` — see that module for why it is a parameterized copy, not an import) is a
+  registry of *definitions*, keyed by digest — not AML's own `name:version` asset versioning,
+  which fsd still leaves entirely to AML.
+- **`fsd.aml.ensure_environment`** is check-then-build (D4): resolve, look up by digest, confirm
+  the AML asset still exists, build only on a miss, publish. It never waits for the build — an AML
+  v2 image build is an ACR task run, not an AML job — so it returns the version and the Studio URL
+  immediately, same as the notebook always had to do manually.
+- **`verify_image` gains `image_ref=`/`registry=`** (D8) alongside `build_context=`: the same
+  wheel-staleness gate (spec 47), driven by the image registry's resolved `fsd` reference instead
+  of a wheel sitting in a folder on disk. `build_context` is unchanged and wins if both are given.
+- **A published definition carries a mutable `_aml.json` beside its immutable `image.json`**
+  (Opus review, 2026-08-27, amending D3's layout). `publish` is idempotent by digest, so
+  rebuilding an *unchanged* definition — D4 step 3's deleted asset, or `force=True` — can never
+  allocate a new version to record the new AML version in. Without the sidecar the registry keeps
+  naming the asset that was just replaced, `ensure_environment` finds it missing on every later
+  call, and rebuilds a 10–20 minute image forever. `_aml.json` is staged-and-renamed and sits
+  outside `image.json`, so it never touches the bytes the content digest covers — exactly the role
+  `_deploy.json` plays in `fsd.model.registry` (spec 51 D7). `registry.resolve(...).aml` prefers it
+  and falls back to `image.json`'s frozen `aml` block.
+- **`ensure_environment` reports two version numbers, and they are not interchangeable** (Opus
+  review, 2026-08-27). AML versions *assets*; the image registry versions *definitions*, in its
+  own integer sequence — `fsd-aml-env:5` in AML is routinely `fsd-aml-env:1` in the registry.
+  `EnsureResult.version`/`.ref` are AML's (what `environment=` and `runner_kwargs` want);
+  `.registry_version`/`.registry_ref` are the registry's (the only thing
+  `verify_image(image_ref=..., registry=...)` can resolve). Passing one where the other belongs
+  fails as a missing `v<N>` directory rather than as a type error.
+- **`00_build_images.ipynb` collapses to two declarations and two calls** (D7). The old
+  wheel-build, git-state and helper cells are gone; Part C's "paste these versions into the e2e
+  notebook" step is gone too — the e2e notebook now calls `ensure_environment` itself and gets the
+  same answer by asking the same registry.
+
 ## `root` leaves the config; the registries enter it (spec 55, 2026-08-27)
 
 Amends spec 54's schema, one day old, in both directions. Spec 54's location rule, explicitness

@@ -4,11 +4,13 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-27 (**SPECS 55 + 56 SIGNED OFF. SPEC 55 IMPLEMENTED AND MERGED to `main`;
-SPEC 56 IS NOT IMPLEMENTED — it is the next job, handed to a Sonnet `/effort medium` session
-against its §9 build order.** 55: `root` leaves the config, the two registries enter it,
-`fsd init --blank`. 56 (closes #79): the AML image recipe leaves `00_build_images.ipynb` for a
-declarative `ImageDefinition` + a definitions registry on the storage seam.)_
+_Last updated: 2026-08-27 (**SPECS 55 + 56 SIGNED OFF. SPEC 55 MERGED to `main`. SPEC 56 IS
+IMPLEMENTED **AND OPUS-REVIEWED** IN A WORKTREE (`worktree-spec-56-image-registry`), §9 steps 0-9
+done, 8 review defects fixed, `1053 passed / 98 skipped` + clean ruff + clean identifier sweep —
+STILL UNCOMMITTED, NOT MERGED, and step 10's real AML run of the rewritten notebook has not
+happened.** 55: `root` leaves the config, the two registries enter it, `fsd init --blank`.
+56 (closes #79): the AML image recipe leaves `00_build_images.ipynb` for a declarative
+`ImageDefinition` + a definitions registry on the storage seam.)_
 
 **Read before touching either:** `specs/55-root-leaves-the-config.md`,
 `specs/56-image-definitions-and-registry.md`. Both carry their sign-off resolutions in §7,
@@ -28,16 +30,74 @@ the concrete values belong in `rise` + `AZURE_INFRA_PRIVATE.md`, never in this r
 `fsd init --blank` (write it empty, fill it in by hand; refuses to clobber without `--force`) and
 a non-tty `fsd init` that names the three non-interactive forms instead of raising `EOFError`.
 
-**Spec 56 — SIGNED OFF, NOT STARTED.** The next implementation job. Its §9 is the build order and
-steps 0–3 need no Azure at all. The shape: an `ImageDefinition` dataclass (D1) whose digest is
-taken **after resolution** (D2 — `git+…@main` is not a definition, `git+…@<sha>` is), published to
-a registry on the storage seam that **shares `fsd/registry/_core.py` with `fsd.model.registry`**
-(D3 + §7 Q1 — extract, as step 0, with the model registry's tests green and unmodified; if step 0
-grows beyond mechanical moves, stop and copy instead). `ensure_environment` is check-then-build
-(D4) and `git_state()` dies (D5) — a consumer has no checkout, so the resolved `fsd` reference *is*
-the staleness key. Cross-validated against flytekit's `image_spec.py`, Flyte's docs, Metaflow's
-datastore, apko's lock files, the OCI annotation keys, and ORAS (§8, per-source credit).
-**§9 step 10: green tests do not close it — it needs a real AML run of the rewritten notebook.**
+**Spec 56 — IMPLEMENTED in a worktree, §9 steps 0-9 done, step 10 (the real AML run) still
+outstanding.** `fsd/registry/_core.py` (step 0) took the **copy fallback, not extraction**: §7 Q1
+recommended extraction, but `tests/test_registry.py` monkeypatches `registry._list_versions` /
+calls `registry._write_new_version` directly, which only works if those functions stay defined in
+`fsd/model/registry.py`'s own namespace — a real move-and-reexport would leave the closures
+resolving against `_core`'s globals instead and silently break the patches. So `fsd/model/registry.py`
+is **byte-for-byte untouched** (`git diff` confirms it), and `fsd/registry/_core.py` is a
+parameterized copy the new image registry builds on — exactly the fallback the guard rail names.
+`fsd.image.ImageDefinition` (D1), `fsd.image.digest.resolve`/`digest` (D2 — resolution injectable
+for tests, no network in the suite), `fsd.image.registry` (D3, on `_core`), `fsd.aml.environment`
++ `fsd.aml.ensure_environment` (D4, `az` calls behind an injectable seam), `verify_image`'s
+`image_ref=`/`registry=` path (D8, spec 47's own tests green and unmodified), the rewritten
+`00_build_images.ipynb` (D7, 11 cells vs the old 22) and the deleted
+`notebooks/images/{base,sklearn}/` (step 8, rendered-Dockerfile diff confirmed equivalent before
+deletion, `DROPPED.md` diff confirmed byte-identical modulo comments/blanks, entry written) are all
+done. **Not done: a real AML run** (§9 step 10 — MEMORY `real-run-beats-review`) — the worktree is
+uncommitted and unmerged.
+
+**Spec 56 — OPUS REVIEW, 2026-08-27. Eight defects found and fixed in the worktree; suite now
+`1053 passed / 98 skipped`.** Verified-as-claimed first: `src/fsd/model/registry.py` is untouched
+and the step-0 copy fallback is genuinely forced (`tests/test_registry.py:534` patches
+`registry._list_versions` then calls `registry._write_new_version` — a move-and-reexport defeats
+it), and the rendered Dockerfiles were re-diffed against `git show main:` rather than eyeballed.
+What was wrong:
+
+1. **A rebuild loop, the worst of the seven.** `publish` is idempotent by digest, so rebuilding an
+   *unchanged* definition (D4 step 3's deleted asset, or `force=True`) allocated no new version and
+   dropped the new AML version on the floor — the registry kept naming the asset that had just been
+   replaced, so every later `ensure_environment` found it missing and rebuilt a 10–20 minute image
+   again, forever. Reproduced end-to-end before fixing. Fix: **`_aml.json`**, a staged-and-renamed
+   mutable sidecar beside the immutable `image.json` — the role `_deploy.json` plays in
+   `fsd.model.registry` (spec 51 D7). **This amends D3's layout and wants the user's blessing.**
+2. **Two version sequences, silently swappable.** AML versions *assets*, the registry versions
+   *definitions* — `fsd-aml-env:5` in AML is routinely `:1` in the registry, and
+   `verify_image(image_ref=)` can only resolve the latter. `EnsureResult` now carries
+   `registry_version`/`registry_ref` alongside AML's `version`/`ref`; the howto and RECIPES had the
+   wrong one and are corrected.
+3. **Spec 56 D1's own example raised.** `git ls-remote` matches ref *names*, not object ids (exit 0,
+   empty stdout for a sha), so `fsd="git+…@9a00f2b"` died with an empty error message. Abbreviated
+   shas (7–40 hex) are now kept verbatim; the not-found error says what it means.
+4. **The digest described a different wheel than the image got.** `resolve()` built one wheel in a
+   throwaway tmpdir and `write_context()` built a second — two `pip wheel` runs per image, and an
+   edit between them makes the registry record a digest the image does not have (§5's *worse*
+   direction). One shared directory now, one wheel.
+5. **`--no-build-isolation` was a sandbox artifact in library code** — kept as the first attempt
+   (it is what keeps the wheel test offline, AC8) with a retry without it for a 3.12+ venv.
+6. **Two D8 edges**: a non-GitHub `git+` URL mis-fetched a `raw.githubusercontent.com/https://…`
+   404 instead of saying the gate only reads GitHub; the "any non-`git+` ref is trusted" hole is now
+   documented as a hole to close before fsd ships on PyPI (#82).
+7. **`e2e_austria_aml.ipynb` was left behind and broken** — it pointed `INFER_BUILD_CONTEXT` at the
+   deleted `notebooks/images/sklearn/`, and its "paste the versions from Part C" cell contradicted
+   D7, `00`'s new Part C and `CHANGES.md`, all three of which claimed the paste was gone. **Edited
+   on the user's explicit say-so (2026-08-27):** it now declares the same two `ImageDefinition`s,
+   calls `ensure_environment` against the same registry, **asserts `reused`** (a fresh build means
+   an ACR run just started and nothing below it can work — a gate the pasted numbers never gave),
+   and uses `image_ref=`/`registry=` for `verify_image`.
+
+8. **A test that was green only by import order.** `test_docs.py::test_doc_snippets_use_real_fsd_attributes`
+   resolves `fsd.aml.<x>` in a doc as `hasattr(fsd, "aml")` — and a *submodule* is not an attribute
+   of its package until something imports it, so the new howto passed the full suite (where
+   `tests/test_aml_*.py` had already imported it) and failed `pytest tests/test_docs.py` on its own.
+   The test now asks the import system instead of `hasattr`. **Worth remembering as a class:** run a
+   new test module, and the modules a change touches, in isolation as well as in the suite.
+
+Still open, both deliberate: **the real AML run** (§9 step 10), which also verifies the one thing
+review cannot — `_default_resolve_base_digest`'s HEAD against a live `mcr.microsoft.com` (its
+`Accept` header was missing the manifest-list/OCI-index types a multi-arch tag needs; added, still
+unverified) — and **AC6's `abfss://` round-trip**, which has no manual-runbook entry yet.
 
 **Also this session:** [#92](https://github.com/nikhilsrajan/fsd/issues/92) filed for the wider
 `AZ_ROOT` tidy-up (deferred by the user, a later Opus job). And a standing rule was recorded, in

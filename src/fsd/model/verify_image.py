@@ -27,15 +27,63 @@ from __future__ import annotations
 import glob
 import json
 import os
+import urllib.error
+import urllib.request
 import uuid
 import zipfile
 
+from fsd.image import registry as _image_registry
 from fsd.model import bundle as _bundle
 from fsd.model import registry as _registry
 from fsd.storage import fs
 from fsd.storage.azure import configure_storage as _configure_storage
 
 __all__ = ["verify_image"]
+
+
+def _default_fetch_fsd_source(fsd_ref: str, relpath: str) -> str:
+    """`relpath` of the fsd source tree named by `fsd_ref` (a resolved `git+...@<sha>`
+    reference, D8) -- via GitHub's raw-content host, since fsd is public on GitHub and this
+    avoids a local clone for a one-file check. Raises on anything unexpected; the caller
+    turns that into a `pass=False` result, not a crash (D8's gate must keep failing, not
+    become unable to report)."""
+    url_part, _, sha = fsd_ref.partition("@")
+    repo_url = url_part[len("git+"):].removesuffix(".git")
+    if not repo_url.startswith("https://github.com/"):
+        # Said plainly rather than mis-fetched: `removeprefix` on a non-GitHub URL is a no-op,
+        # so the raw URL would come out as `raw.githubusercontent.com/https://gitlab.com/...`
+        # and 404 -- a confusing pass=False instead of "this gate only reads GitHub"
+        # (Opus review, 2026-08-27).
+        raise ValueError(
+            f"verify_image cannot check {fsd_ref!r}: the image_ref= gate reads fsd's source "
+            "from raw.githubusercontent.com, so it only understands a "
+            "'git+https://github.com/...' reference. Pass build_context= instead."
+        )
+    repo_path = repo_url.removeprefix("https://github.com/")
+    raw_url = f"https://raw.githubusercontent.com/{repo_path}/{sha}/{relpath}"
+    with urllib.request.urlopen(raw_url, timeout=10) as resp:  # noqa: S310 - fixed https scheme
+        return resp.read().decode()
+
+
+def _image_ref_has_spec44(fsd_ref: str, *, fetch=_default_fetch_fsd_source) -> bool:
+    """D8's `image_ref=` equivalent of `_wheel_has_spec44`: does the fsd this image was
+    built from already carry `manifest_code_files` (spec 44)? A `wheel:<digest>` reference
+    (an fsd developer's `path:` build) carries no fetchable source -- only its content
+    digest -- so it is trusted rather than checked, the same way `fsd="path:..."` always
+    was the developer's own responsibility (D5).
+
+    **A non-`git+` reference is likewise trusted, and that is a hole in the gate** (Opus
+    review, 2026-08-27): a PyPI spec (`fsd==0.2.0`) names a version this function has no
+    cheap way to read `bundle.py` out of, so it passes unchecked. Harmless while fsd is not
+    on PyPI (#82 is deliberately last on the phase-2 path) and the resolved reference is
+    recorded in `metrics["image_ref_fsd"]` either way -- but it must be closed, by reading
+    the sdist's `bundle.py`, before a PyPI-installed image is verified this way."""
+    if fsd_ref.startswith("wheel:"):
+        return True
+    if not fsd_ref.startswith("git+"):
+        return True
+    src = fetch(fsd_ref, "src/fsd/model/bundle.py")
+    return "def manifest_code_files" in src
 
 
 def _find_wheel(build_context: str) -> str:
@@ -67,7 +115,10 @@ def verify_image(
     runner: str = "aml",
     runner_kwargs: dict | None = None,
     build_context: str | None = None,
+    image_ref: str | None = None,
+    registry: str | None = None,
     storage=None,
+    _fetch_fsd_source=_default_fetch_fsd_source,
 ) -> dict:
     """Does `environment` actually run `bundle_path`? Submits one real node and reports.
 
@@ -89,7 +140,11 @@ def verify_image(
     defaults to a fresh uuid; pass one explicitly to make the status URL predictable).
 
     `build_context`, if given, is the folder holding the fsd wheel the image was built from --
-    enables the wheel-staleness gate (see `_check_wheel_has_spec44`).
+    enables the wheel-staleness gate (see `_check_wheel_has_spec44`). `image_ref`/`registry`
+    (spec 56 D8) are the alternative: an image built by `fsd.aml.ensure_environment` names no
+    checkout folder, so instead `image_ref` (e.g. `"fsd-infer-sklearn:4"`) is resolved through
+    the image `registry` and its resolved `fsd` reference is checked the same way a wheel is.
+    `build_context` wins if both are given; neither is required.
 
     Returns a `_result.json`-shaped dict (spec 24): `{"step", "status", "pass", "metrics",
     "expected", "error"}`. `metrics["bundle_digest"]` records the content digest of what was
@@ -117,6 +172,14 @@ def verify_image(
     # D11: a caller who passes build_context has asserted the folder holds the wheel -- an
     # absent wheel is caller misuse and must raise here, before the try, not become pass=False.
     wheel = _find_wheel(build_context) if build_context else None
+    # D8: build_context wins if both are given (checkout path unchanged, spec 47 behaviour
+    # intact). A caller who passes image_ref without registry, or a ref the registry cannot
+    # resolve, is misuse -- same treatment as an absent wheel.
+    image_ref_fsd = None
+    if image_ref and not build_context:
+        if not registry:
+            raise ValueError("verify_image(image_ref=...) requires registry=.")
+        image_ref_fsd = _image_registry.resolve(image_ref, registry).definition.get("fsd")
 
     result: dict = {
         "step": "verify_image",
@@ -170,6 +233,19 @@ def verify_image(
                     "image's fetch_bundle_to_scratch will not download code/ and bundle.load "
                     "will not put it on sys.path. Rebuild the wheel and the image, then re-run "
                     "verify_image."
+                )
+
+        if image_ref_fsd is not None:
+            fresh = _image_ref_has_spec44(image_ref_fsd, fetch=_fetch_fsd_source)
+            result["metrics"]["image_ref"] = image_ref
+            result["metrics"]["image_ref_fsd"] = image_ref_fsd
+            result["metrics"]["image_ref_has_spec44"] = fresh
+            if not fresh:
+                raise ValueError(
+                    f"{image_ref} was built from {image_ref_fsd!r}, which predates spec 44 -- "
+                    "it has no `manifest_code_files`, so the image's fetch_bundle_to_scratch "
+                    "will not download code/ and bundle.load will not put it on sys.path. "
+                    "Rebuild the image from a current fsd, then re-run verify_image."
                 )
 
         # --- stage + submit ----------------------------------------------------------------

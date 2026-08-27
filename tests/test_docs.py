@@ -311,6 +311,16 @@ def test_doc_snippets_use_real_fsd_attributes(path: Path):
                 continue
             obj = getattr(obj, leaf)
         if not hasattr(obj, attr):
+            # A SUBMODULE is only an attribute of its package once something has imported it,
+            # so `import fsd` alone leaves `fsd.aml` unset and this check would depend on
+            # whichever test ran first (Opus review, 2026-08-27 -- `fsd.aml` in
+            # docs/howto/build-the-images.md was passing only because tests/test_aml_*.py
+            # happened to import it earlier in the session). Ask the import system directly.
+            try:
+                importlib.import_module(f"{module_path}.{attr}")
+                continue
+            except ImportError:
+                pass
             failures.append(
                 f"{module_path}.{attr} does not exist "
                 f"(is {module_path} a package whose functions live one level deeper?)"
