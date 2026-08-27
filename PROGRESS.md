@@ -4,7 +4,27 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-28 (**SPEC 57 LANDED; `notebooks/shapefiles/` NOW PUBLIC WITH A NOTICE;
+_Last updated: 2026-08-28 (**#92 DONE, CLOSED + PUSHED — `main` @ `ee7277b`, clean.** The AZ_ROOT
+cleanup landed (`3a968dc`, merged `--no-ff` as `ee7277b`; worktree pruned, branch deleted). Three
+files, five edits, **no code**: `docs/howto/run-at-scale.md` (its "all six values `fsd init` asks
+for" prerequisite → five required + two optional registries, with the storage root explicitly not
+among them; the `runner_kwargs` block now labelled as an argument dict), `docs/reference/environment.md`
+(the `root` paragraph names every non-reader — `fsd init` does not prompt, `fsd config` does not
+print, `--from-env-file` parses and drops it, `tests/test_cli.py:58` — and every actual reader; a
+duplicated `fsd config` paragraph dropped; "six values" → seven keys), and
+`notebooks/e2e_austria_aml.ipynb` markdown cell 0, which said the model registry lives at
+`$AZ_ROOT/model_registry` and so contradicted **code cell 3 of the same notebook** and spec 55 D2.
+`1068 passed / 99 skipped`, ruff clean — baseline unchanged. **Two reported defects were not
+defects:** `run-at-scale.md:51` is `runner_kwargs`, and `runner_kwargs["root"]` is a **required
+argument** (`src/fsd/api.py:499-501`) — reframed, not deleted, since removing it would have broken
+the example; and `demos/e2e_austria_aml.py` + `demos/E2E_AUSTRIA_AML.md` already read `AZ_ROOT`
+from the environment as a per-run root. A mention is not a defect. **Still stale, out of scope:**
+`rise/docs/environment.md` in the consumer repo carries the old framing — fix it when that repo is
+next touched, i.e. during step 2. **NEXT: step 2 of THE ORDER below, the consumer-repo run — the
+user's to run, not an agent's** ([[real-run-beats-review]], CLAUDE.md's "Claude never runs
+pipeline/networked scripts")._
+
+_Previously: 2026-08-28 (**SPEC 57 LANDED; `notebooks/shapefiles/` NOW PUBLIC WITH A NOTICE;
 `main` @ `e4879b0`, pushed, clean.** Since the entry below: the user un-ignored
 `notebooks/shapefiles/` themselves (`16b66f6` — 900 EuroCrops-derived Austrian fields + the two
 demo geometries + a scrubbed `00_build_images.ipynb`, so critical-path item 2 is **done**), and a
@@ -23,7 +43,7 @@ forgotten at the boundary.** Do not reorder without saying so.
 
 | # | task | done when | → then |
 |---|---|---|---|
-| **1** | **[#92](https://github.com/nikhilsrajan/fsd/issues/92)** — AZ_ROOT cleanup across docs/notebook/demos | nothing outside `specs/` + `runbooks/` still describes `AZ_ROOT` as config; `gh issue close 92` | → **2** |
+| ~~**1**~~ | ~~**[#92](https://github.com/nikhilsrajan/fsd/issues/92)** — AZ_ROOT cleanup~~ | **DONE 2026-08-28** — `3a968dc` / `ee7277b`, issue closed + pushed | → **2**, now current |
 | **2** | **The consumer-repo run** — reinstall `rise/.venv` from `@main`, run `rise/notebooks/e2e_austria_aml.ipynb` end to end | `[collect]`/`[stac]` numbers captured against the **616 s / 161 s** baseline, and spec 56 §9 step 10's forced stale-entry rebuild checked | → **3**; also **unblocks #80 + #82** (see the rider below) |
 | **3** | **[#55](https://github.com/nikhilsrajan/fsd/issues/55)** — docs refactor (story + C4 set) | its own gate is step 2's timed report; **needs its OWN spec and a discussion before starting** | → **4** |
 | **4** | **[#85](https://github.com/nikhilsrajan/fsd/issues/85)** — trim the changelog out of `src/` comments | 7 packages left, **one per session**; `storage/` is the done sample (`eb7f29f`) | → the next spec / ROADMAP |
