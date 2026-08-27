@@ -29,11 +29,15 @@ cfg = fsd.config.load()          # explicit -- fsd's own code never reads this o
 ```
 
 **`root` is deliberately NOT in the file** (spec 55 D1). It names a *per-run destination* chosen
-by whoever runs the job, not a durable address, so every fsd verb takes it as an argument. The
-tracked notebooks read `AZ_ROOT` from the environment themselves — **fsd does not read it**:
+by whoever runs the job, not a durable address, so every fsd verb takes it as an argument
+(`dst_folderpath=`, `output_folderpath=`, `runner_kwargs["root"]`). Nothing writes `AZ_ROOT` —
+`fsd init` does not prompt for it, `fsd config` does not print it, and `--from-env-file` parses
+and drops it. **It is not config.** The callers that need a root — the two tracked notebooks and
+`demos/e2e_austria_aml.py` — read it from the environment themselves, because a public repo may
+not hold a literal storage URL (spec 55 D3):
 
 ```bash
-export AZ_ROOT=abfss://…         # read by the NOTEBOOK, not by fsd
+export AZ_ROOT=abfss://…         # read by the NOTEBOOK/demo script, never by fsd
 ```
 
 **The bare `AZ_*` names override the file** for everything that *is* config (spec 54 D4) — they
@@ -42,8 +46,6 @@ sit *above* it in precedence:
 ```bash
 export AZ_RG=my-resource-group   # overrides config.toml's [azure].resource_group for this shell
 ```
-
-`fsd config` prints the resolved value of each key and which source it came from.
 
 `fsd config` prints the resolved value of each key and which of the three sources it came from --
 useful the moment a stale shell export silently outranks the file.
@@ -212,7 +214,8 @@ before you spend.**
 
 ## Related
 
-- `fsd.config` (`src/fsd/config.py`) — the schema and loader for the six values `fsd init` writes
+- `fsd.config` (`src/fsd/config.py`) — the schema and loader for the seven keys `fsd init` writes
+  (five required + two optional registries; `root` is not one of them — spec 55 D1)
 - `AZURE_INFRA_PRIVATE.md` (workspace root, uncommitted) — the concrete values
 - `AZURE_INFRA.md` — the scrubbed public description of the platform
 - `runbooks/README.md` — which run-book needs which of these
