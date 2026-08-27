@@ -4,18 +4,28 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-27 (**SPEC 57 IMPLEMENTED (Sonnet, worktree `spec-57-collect-stac`),
-§9 steps 0–4 green, NOT REVIEWED, NOT MERGED.** D1 (segment ticker) + D2 (in-memory footprint,
-ROI mode) + D5 (GDAL sidecar-probe config) + D3 (threaded collect) + D4 (threaded STAC writes) all
-landed. `1067 passed / 99 skipped`, ruff clean, in the worktree — full suite run against the
-repo's `.venv` per RECIPES.md. Handback doc: see below. **Working agreement (spec 24/57 §10):
-Opus `/effort high` reviews next, then the user decides on the merge — do not self-review.** §9
-step 5 (a real cluster run vs the pre-D1 baseline) is the user's, not this session's
-([[real-run-beats-review]]). Spec 56 remains merged-not-pushed with its §9 step 10 real AML run
-still outstanding — unrelated to spec 57, unchanged this session.
-**`main` is PUSHED @ `d23e880`;** `1058 passed / 101 skipped` there, unaffected.)_
+_Last updated: 2026-08-27 (**SPEC 57 IMPLEMENTED (Sonnet) + REVIEWED (Opus) + MERGED + PUSHED —
+`main` @ `52f7b2b`.** D1 (segment ticker) + D2 (in-memory footprint, ROI mode) + D5 (GDAL
+sidecar-probe config) + D3 (threaded collect) + D4 (threaded STAC writes) all landed; worktree
+`spec-57-collect-stac` merged `--no-ff`, then pruned and its branch deleted (standing practice).
+`1068 passed / 99 skipped`, ruff clean. **Review found one real bug** (commit `e745a57`): D5's
+`CPL_VSIL_CURL_ALLOWED_EXTENSIONS` is a GDAL *whitelist*, not a hint — a remote file whose
+extension is not listed reads as **non-existent** — so `.tif` alone would have made remote `.jp2`
+and `.tiff` band files unopenable (`datacube.builder._RASTER_EXTS`; any `cog=False` imagery staged
+on blob). Widened to `.tif,.tiff,.jp2`, with a test tying the whitelist to `_RASTER_EXTS`. Review
+also added AC2's missing **caller-side** test (nothing asserted `_run_inference_roi` builds the
+in-memory mapping at all) and made the byte-identity test `.buffer(0)` both sides. The
+implementer's three other flags resolved as non-issues: `.buffer(0)` parity holds (grids are
+EPSG:4326, `grid.py:112`, and `to_json()` does not reproject); D3's and D4's pools run strictly in
+sequence, so never more than 16 threads are live; `as_completed`'s exception ordering satisfies
+AC5. **NEXT: §9 step 5 — a real cluster run against the pre-D1 baseline.** It is the user's, not
+an agent's ([[real-run-beats-review]]), and until it happens the 777 s → <100 s number is a
+*hypothesis*. Spec 56's §9 step 10 real AML run is also still outstanding, unrelated.
+⚠️ The working copy carries an **uncommitted** `notebooks/00_build_images.ipynb` edit that trips 5
+`tests/test_notebooks.py` identifier guards (real storage account, resource group, home dir, saved
+outputs) — the committed version is clean; scrub before committing it.)_
 
-**Spec 57 — SIGNED OFF 2026-08-27, ready for a Sonnet implementation session.**
+**Spec 57 — LANDED 2026-08-27** (signed off, implemented, reviewed, merged).
 `specs/57-collect-and-stac-round-trips.md`, advancing [#61](https://github.com/nikhilsrajan/fsd/issues/61)
 (closes its fixes (b) and (c); (d), node-side Item emission, stays open). Origin: the user watched a
 real AML run and asked what the gap between `[collect]` and `[merge]` was. Answer, from #61's
