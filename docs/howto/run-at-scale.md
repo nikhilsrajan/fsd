@@ -26,7 +26,9 @@ values are handed to you privately (`AZURE_INFRA_PRIVATE.md`, never public), not
   an inference one (carries your model bundle). Building one is a 10–20 minute ACR build — do this
   ahead of a long unattended run, not during it. See `runbooks/36-aml-runner.md` /
   `runbooks/38-inference-on-aml.md` for how they're built.
-- All six values `fsd init` asks for, or the `AZ_*` environment variables that override them — see
+- The five required values `fsd init` asks for (plus the two optional registry keys), or the
+  `AZ_*` environment variables that override them. **Your storage root is not among them** — it
+  is a per-run argument you pass, not config (spec 55 D1) — see
   [`docs/reference/environment.md`](../reference/environment.md). Concrete values for the `rise`
   platform live in `AZURE_INFRA_PRIVATE.md` at the workspace root, handed to you by your platform
   admin — never in this repo.
@@ -40,15 +42,22 @@ values are handed to you privately (`AZURE_INFRA_PRIVATE.md`, never public), not
 
 ## The same three calls, one keyword different
 
+Your blob working root is an **argument**, not config: `fsd init` never writes it and fsd never
+reads it (spec 55 D1). Pick one per run and pass it — the `AZ_ROOT` export below is just this
+example's way of not hard-coding a private URL into a public repo.
+
 ```python
 import os
 
 import fsd
 
+# An ARGUMENT dict, not a config file. `cluster` and `identity_client_id` happen to have
+# config keys you could read with `fsd.config.load()`; `root` deliberately does not (spec 55
+# D1) -- it is a per-run destination you choose, so it is only ever passed.
 runner_kwargs = {
     "cluster": os.environ["AZ_CLUSTER"],
     "environment": os.environ["AZ_ENV_NAME"],
-    "root": os.environ["AZ_ROOT"],                       # blob working root -- abfss://...
+    "root": os.environ["AZ_ROOT"],                       # per-run blob root -- abfss://..., yours to pass
     "identity_client_id": os.environ["AZ_UAMI_CLIENT_ID"],
 }
 
