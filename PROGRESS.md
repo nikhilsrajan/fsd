@@ -4,13 +4,43 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-27 (**SPECS 55 + 56 SIGNED OFF. SPEC 55 MERGED to `main`. SPEC 56 IS
-IMPLEMENTED, OPUS-REVIEWED **AND MERGED TO `main`** (`b866c9d`, merge `b6ba610`; the worktree and
-its branch are pruned), §9 steps 0-9 done, 8 review defects fixed, `1055 passed / 100 skipped` on
-`main` + clean ruff + clean identifier sweep. **NOT PUSHED, and step 10's real AML run of the
-rewritten notebook has not happened — the spec is NOT closed on green tests.** 55: `root` leaves the config, the two registries enter it, `fsd init --blank`.
-56 (closes #79): the AML image recipe leaves `00_build_images.ipynb` for a declarative
-`ImageDefinition` + a definitions registry on the storage seam.)_
+_Last updated: 2026-08-27 (**SPEC 56 MERGED to `main`** — implemented, Opus-reviewed, 8 defects
+fixed, `1055 passed / 100 skipped`, worktree pruned; **NOT PUSHED**, and §9 step 10's real AML run
+is still outstanding so the spec is not closed. **SPEC 57 SIGNED OFF, NOT IMPLEMENTED** — the
+`run_inference` collect+STAC window, 777 s of a 300-cell run. Spec 55 merged earlier.)_
+
+**Spec 57 — SIGNED OFF 2026-08-27, ready for a Sonnet implementation session.**
+`specs/57-collect-and-stac-round-trips.md`, advancing [#61](https://github.com/nikhilsrajan/fsd/issues/61)
+(closes its fixes (b) and (c); (d), node-side Item emission, stays open). Origin: the user watched a
+real AML run and asked what the gap between `[collect]` and `[merge]` was. Answer, from #61's
+segment measurement: **collect 616 s (2.05 s/cell) + STAC writes 161 s (0.53 s/item)** on 300
+cells — it scales with the number of output cells, not with the work, and that run's inference had
+already been skipped. Five decisions, in build order: **D1** print segment timings *first* (#61's
+original suspect was a "627 s bundle upload" that measurement showed to be 13 s — do not optimise
+blind); **D2** stop re-reading each cell's `geometry.geojson`, because those footprints are the
+`grids.geojson` the driver itself wrote and still holds (~300 s, no threads); **D5** two GDAL
+options to stop sidecar probes on every remote open; **D3** thread the COG opens; **D4** thread the
+301 Item writes.
+
+**The finding worth carrying forward: #61's own fix guidance was wrong, and the spec corrects it.**
+#61 says to thread the metadata reads *"under a single `raster.rio_env`, since GDAL's env stack is
+thread-local"*. Thread-local means the **opposite** of that conclusion — rasterio 1.4.4 keeps the
+active env in `local = ThreadEnv()` (`rasterio/env.py:56`), so an `Env` entered on the driver
+thread does not exist in a worker. Proved by direct execution, not by reading: `hasenv()` is
+`True` in the main thread and `False` in the worker. Since `rio_env` is what carries
+`AZURE_STORAGE_ACCESS_TOKEN`, following #61 literally would have had every worker open a remote COG
+with **no credential**. Each worker enters its own env (D3). Instance of
+[[verify-the-primitive-a-spec-cites]].
+
+**Also rejected, with arithmetic (spec 57 §6):** running the STAC write and the merge concurrently
+(the user's suggestion). They are independent in output but bottlenecked on the same link, so the
+ceiling is `max(stac, merge)` = 777→616 s against D2–D5's 777→<100 s, it buys nothing on the common
+`merge=False` run, and it adds a half-written catalog beside a failed merge.
+
+**Not spec 57: [#77](https://github.com/nikhilsrajan/fsd/issues/77).** The same run felt slow for a
+second, independent reason — inference *is* deduped, but on the node after dispatch, so a
+95%-complete re-run still starts ~299 tasks to discover it needs ~15. That wants its own short
+spec, mainly to settle presence-vs-stamp for the output skip.
 
 **Read before touching either:** `specs/55-root-leaves-the-config.md`,
 `specs/56-image-definitions-and-registry.md`. Both carry their sign-off resolutions in §7,
