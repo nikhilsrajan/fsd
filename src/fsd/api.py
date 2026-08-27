@@ -1331,9 +1331,10 @@ def _finalize_outputs(output_filepaths, output_folderpath, spec, merge, collecti
                       *, grids_filepath=None, merge_crs=None, geometries=None) -> InferenceResult:
     """Shared tail for both inference modes: STAC catalog + optional merge -> InferenceResult.
 
-    `geometries` (spec 28): `{output_filepath: geometry.geojson_path}` sourced from the build
-    manifest — the true per-cell footprint, forwarded to `cog_outputs_to_items` in place of the
-    raster bbox. `None` for geometry-less callers (see `_resolve_inference_pairs`).
+    `geometries` (spec 28, D2 spec 57): `{output_filepath: geometry.geojson_path | shapely
+    geometry}` — the true per-cell footprint, forwarded to `cog_outputs_to_items` in place of the
+    raster bbox (see its docstring for the two accepted value shapes). `None` for geometry-less
+    callers (see `_resolve_inference_pairs`).
     """
     items = _stac.cog_outputs_to_items(
         output_filepaths, geometries=geometries, collection_id=collection_id,
@@ -1845,9 +1846,17 @@ def _run_inference_roi(
     # 4) collect the per-cell outputs (+ each cell's true footprint, for STAC geometry — spec 28)
     with fs.open(csv_filepath, "r") as f:
         rows = pd.read_csv(f)
+    # D2 (spec 57): pass the footprint already held in memory (`grids`, tiled by THIS driver
+    # minutes ago) instead of the geometry.geojson path `create_datacube.setup` wrote it to --
+    # a sequential blob read per cell that fetches back geometry the driver itself authored.
+    # `.buffer(0)` mirrors `create_datacube.setup`'s own `_prepare` exactly (create_datacube.py),
+    # so the Item this produces is byte-identical to the path form's (AC2). Keyed by `id`
+    # (str -- the S2 grid cell id column, `csv_filepath`'s `COL_ID`), matched to each row's own
+    # `export_folderpath` -- structurally correct by construction, not by a re-derived id check.
+    id_to_geometry = {str(gid): geom.buffer(0) for gid, geom in zip(grids["id"], grids.geometry)}
     geometries = {
-        os.path.join(str(exp), "output.tif"): str(sp)
-        for exp, sp in zip(rows["export_folderpath"], rows["shapefilepath"])
+        os.path.join(str(exp), "output.tif"): id_to_geometry[str(cell_id)]
+        for exp, cell_id in zip(rows["export_folderpath"], rows["id"])
     }
     output_filepaths = _existing_outputs(list(geometries), run_folderpath=run_folderpath)
     if not output_filepaths:

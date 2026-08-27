@@ -440,9 +440,91 @@ def test_rio_open_remote_path_translates_and_uses_env(monkeypatch):
 
     assert calls == [("/vsiadls/data/p/x.tif", "r", {})]
     assert env_calls == [
-        {"AZURE_STORAGE_ACCESS_TOKEN": "tok-abc", "AZURE_STORAGE_ACCOUNT": "acct"}
+        {
+            "AZURE_STORAGE_ACCESS_TOKEN": "tok-abc",
+            "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
+            "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif",
+            "AZURE_STORAGE_ACCOUNT": "acct",
+        }
     ]
     src.close()
+
+
+def test_rio_open_worker_thread_gets_its_own_env_not_the_drivers(monkeypatch):
+    """AC4 (spec 57 D3) -- the regression guard for the #61 trap (spec 57 §8, §4.1): a worker
+    thread entering an env sees ITS OWN token, and the driver thread's env is not relied on.
+    rasterio's env stack is thread-local (`rasterio/env.py`, `local = ThreadEnv()`), so an Env
+    entered on the driver thread does not exist in a worker thread. Exercised against REAL
+    `rasterio.Env`/`hasenv`/`getenv` (not mocked) -- that thread-locality is rasterio's own
+    behaviour, not fsd's, so mocking it would prove nothing."""
+    import threading
+
+    import rasterio.env
+
+    from fsd import raster
+
+    monkeypatch.setattr(raster, "storage_token", lambda: "worker-token")
+
+    seen = {}
+    driver_env = rasterio.Env(AZURE_STORAGE_ACCESS_TOKEN="driver-token")
+    driver_env.__enter__()
+    try:
+        seen["driver_hasenv"] = rasterio.env.hasenv()
+
+        def _worker():
+            # what D3's wrong fix (one rio_env around the threaded loop) would rely on --
+            # and what #61's "thread-local" fact actually means: this is False.
+            seen["worker_hasenv_before_own_env"] = rasterio.env.hasenv()
+            with rasterio.Env(AZURE_STORAGE_ACCESS_TOKEN=raster.storage_token()):
+                seen["worker_token"] = rasterio.env.getenv()["AZURE_STORAGE_ACCESS_TOKEN"]
+
+        t = threading.Thread(target=_worker)
+        t.start()
+        t.join()
+    finally:
+        driver_env.__exit__(None, None, None)
+
+    assert seen["driver_hasenv"] is True
+    assert seen["worker_hasenv_before_own_env"] is False
+    assert seen["worker_token"] == "worker-token"  # the worker entered its OWN credentialed env
+
+
+def test_rio_open_and_rio_env_disable_sidecar_probing_on_remote_opens(monkeypatch):
+    """D5 (spec 57): every remote VSI open sets `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` +
+    `CPL_VSIL_CURL_ALLOWED_EXTENSIONS=.tif`, so GDAL stops listing the containing directory for
+    sidecars on each open (gdal.org config docs, fetched 2026-08-27). Both `rio_open` (one
+    dataset) and `rio_env` (N datasets) build from the same `_REMOTE_OPEN_CONFIG` so they cannot
+    drift apart."""
+    from fsd import raster
+
+    env_calls = []
+
+    class _FakeEnv:
+        def __init__(self, **kw):
+            env_calls.append(kw)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _FakeDataset:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(raster.rasterio, "open", lambda *a, **k: _FakeDataset())
+    monkeypatch.setattr(raster.rasterio, "Env", _FakeEnv)
+    monkeypatch.setattr(raster, "storage_token", lambda: "tok")
+
+    raster.rio_open("abfss://data@acct.dfs.core.windows.net/p/x.tif").close()
+    with raster.rio_env(["abfss://data@acct.dfs.core.windows.net/p/y.tif"]):
+        pass
+
+    assert len(env_calls) == 2
+    for kw in env_calls:
+        assert kw["GDAL_DISABLE_READDIR_ON_OPEN"] == "EMPTY_DIR"
+        assert kw["CPL_VSIL_CURL_ALLOWED_EXTENSIONS"] == ".tif"
 
 
 def test_rio_open_write_mode_on_remote_raises():

@@ -4,12 +4,16 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-27 (**SPEC 56 MERGED to `main`** — implemented, Opus-reviewed, 8 defects
-fixed, `1055 passed / 100 skipped`, worktree pruned; **NOT PUSHED**, and §9 step 10's real AML run
-is still outstanding so the spec is not closed. **SPEC 57 SIGNED OFF, NOT IMPLEMENTED** — the
-`run_inference` collect+STAC window, 777 s of a 300-cell run. Spec 55 merged earlier.
-**`main` is PUSHED @ `b21f3d3`;** `1058 passed / 101 skipped`, ruff clean, identifier sweep clean.
-**Next session: implement spec 57 on Sonnet `/effort medium`, §9 build order, D1 first.**)_
+_Last updated: 2026-08-27 (**SPEC 57 IMPLEMENTED (Sonnet, worktree `spec-57-collect-stac`),
+§9 steps 0–4 green, NOT REVIEWED, NOT MERGED.** D1 (segment ticker) + D2 (in-memory footprint,
+ROI mode) + D5 (GDAL sidecar-probe config) + D3 (threaded collect) + D4 (threaded STAC writes) all
+landed. `1067 passed / 99 skipped`, ruff clean, in the worktree — full suite run against the
+repo's `.venv` per RECIPES.md. Handback doc: see below. **Working agreement (spec 24/57 §10):
+Opus `/effort high` reviews next, then the user decides on the merge — do not self-review.** §9
+step 5 (a real cluster run vs the pre-D1 baseline) is the user's, not this session's
+([[real-run-beats-review]]). Spec 56 remains merged-not-pushed with its §9 step 10 real AML run
+still outstanding — unrelated to spec 57, unchanged this session.
+**`main` is PUSHED @ `d23e880`;** `1058 passed / 101 skipped` there, unaffected.)_
 
 **Spec 57 — SIGNED OFF 2026-08-27, ready for a Sonnet implementation session.**
 `specs/57-collect-and-stac-round-trips.md`, advancing [#61](https://github.com/nikhilsrajan/fsd/issues/61)

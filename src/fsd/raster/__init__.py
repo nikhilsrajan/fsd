@@ -18,6 +18,21 @@ from fsd.storage.azure import account_from_url, storage_token, to_vsi
 
 __all__ = ["rio_open", "rio_env"]
 
+# D5 (spec 57): every remote VSI open otherwise costs more than one HTTP request, because GDAL
+# lists the containing directory looking for sidecars (.aux.xml/.ovr/.msk). fsd writes plain COGs
+# with statistics inline and no sidecars, so nothing in-repo depends on one -- named risk (spec 57
+# §5): EMPTY_DIR means a sidecar that DOES exist stops being read. Applies to every remote raster
+# open (download, datacube, merge, collect), not just one call site -- both `rio_env` (N-datasets)
+# and `rio_open` (one dataset) build their env_kwargs from this same dict so the two never drift.
+# Sources (GDAL config docs, gdal.org/en/stable/user/configoptions.html, fetched 2026-08-27):
+# GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR -- "only the target file is visible; side-car/auxiliary
+# files aren't loaded". CPL_VSIL_CURL_ALLOWED_EXTENSIONS -- "can speed up dramatically open
+# experience, in case the server cannot return a file list".
+_REMOTE_OPEN_CONFIG = {
+    "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
+    "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif",
+}
+
 
 def rio_env(paths):
     """ONE `rasterio.Env` covering MANY remote datasets — use this when several must be open
@@ -47,7 +62,7 @@ def rio_env(paths):
             f"rio_env: cannot cover datasets on multiple storage accounts in one env: "
             f"{sorted(accounts)}. Open them under separate envs."
         )
-    env_kwargs = {"AZURE_STORAGE_ACCESS_TOKEN": storage_token()}
+    env_kwargs = {"AZURE_STORAGE_ACCESS_TOKEN": storage_token(), **_REMOTE_OPEN_CONFIG}
     if accounts:
         env_kwargs["AZURE_STORAGE_ACCOUNT"] = accounts.pop()
     return rasterio.Env(**env_kwargs)
@@ -77,7 +92,7 @@ def rio_open(path: str, mode: str = "r", **kwargs):
         )
 
     account = account_from_url(path)
-    env_kwargs = {"AZURE_STORAGE_ACCESS_TOKEN": storage_token()}
+    env_kwargs = {"AZURE_STORAGE_ACCESS_TOKEN": storage_token(), **_REMOTE_OPEN_CONFIG}
     if account is not None:
         env_kwargs["AZURE_STORAGE_ACCOUNT"] = account
     env = rasterio.Env(**env_kwargs)
