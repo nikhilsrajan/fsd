@@ -3,8 +3,30 @@ stubbed throughout so no test reaches Azure (AC8)."""
 
 from __future__ import annotations
 
+import os
+
+import fsspec
+import pytest
+
 from fsd.aml import ensure_environment
 from fsd.image import ImageDefinition
+
+
+@pytest.fixture()
+def _clean_fsspec_conf():
+    """`configure_storage` mutates `fsspec.config.conf` and `os.environ` PROCESS-GLOBALLY, so
+    any test that lets `storage="azure"` through has to put them back or it silently fails
+    `tests/test_azure_seam.py::test_configure_storage_*_is_noop` later in the same session
+    (Opus review, 2026-08-27 -- caught exactly this way). Mirrors that module's own fixture."""
+    before = {k: dict(v) for k, v in fsspec.config.conf.items()}
+    before_env = os.environ.get("FSSPEC_ABFSS_ANON")
+    yield
+    fsspec.config.conf.clear()
+    fsspec.config.conf.update(before)
+    if before_env is None:
+        os.environ.pop("FSSPEC_ABFSS_ANON", None)
+    else:
+        os.environ["FSSPEC_ABFSS_ANON"] = before_env
 
 DEFN = ImageDefinition(
     name="fsd-aml-env", fsd="git+https://github.com/nikhilsrajan/fsd@main",
@@ -243,3 +265,50 @@ def test_the_aml_version_and_the_registry_version_are_reported_separately(tmp_pa
     )
     assert reused.reused is True
     assert (reused.version, reused.registry_version) == ("5", 1)
+
+
+def test_storage_is_configured_before_the_first_registry_read(
+    tmp_path, monkeypatch, _clean_fsspec_conf,
+):
+    """`ensure_environment` reaches the storage seam (`find_by_digest`) and must configure it
+    first, like every other public verb (spec 52 D4). `adlfs`'s own default (`anon=None`) tries
+    a credential, so the authenticated path already worked; what `storage="azure"` adds is
+    `anon=False`, which makes a credential problem RAISE instead of degrading to an anonymous
+    read that returns nothing and is indistinguishable from "not registered yet" -- i.e. a
+    rebuild of a 10-20 minute image on every call (Opus review, 2026-08-27)."""
+    import fsd.aml as aml_mod
+
+    order = []
+    real_configure = aml_mod._configure_storage
+    monkeypatch.setattr(
+        aml_mod, "_configure_storage",
+        lambda storage: (order.append(("configure", storage)), real_configure(storage))[0],
+    )
+
+    def _spy_find(*a, **k):
+        order.append(("find", None))
+        return None
+
+    ensure_environment(
+        DEFN, registry=str(tmp_path / "registry"), storage="azure",
+        _find_by_digest=_spy_find,
+        _create_environment=lambda name, ctx, **k: "1",
+        _build_link=lambda *a, **k: "https://ml.azure.com/x",
+        **_kwargs(),
+    )
+    assert order[0] == ("configure", "azure")
+    assert ("find", None) in order[1:]
+
+
+def test_an_unsupported_storage_backend_raises(tmp_path, _clean_fsspec_conf):
+    """`configure_storage` refuses an unknown backend, and that must surface here rather than
+    silently falling back to anonymous local access."""
+    import pytest
+
+    with pytest.raises(ValueError, match="not supported"):
+        ensure_environment(
+            DEFN, registry=str(tmp_path / "registry"), storage="s3",
+            _create_environment=lambda name, ctx, **k: "1",
+            _build_link=lambda *a, **k: "https://ml.azure.com/x",
+            **_kwargs(),
+        )

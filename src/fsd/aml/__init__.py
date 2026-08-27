@@ -23,6 +23,7 @@ from fsd.aml import environment as env_mod
 from fsd.image import digest as digest_mod
 from fsd.image import registry as img_registry
 from fsd.image.definition import ImageDefinition
+from fsd.storage.azure import configure_storage as _configure_storage
 
 __all__ = ["EnsureResult", "ensure_environment"]
 
@@ -74,6 +75,7 @@ def ensure_environment(
     workspace: str,
     force: bool = False,
     alias: str | None = "current",
+    storage: str | dict | None = None,
     storage_options: dict | None = None,
     resolve_base_digest: Callable[[str], str | None] | None = None,
     resolve_git_ref: Callable[[str, str], str] | None = None,
@@ -89,10 +91,22 @@ def ensure_environment(
     otherwise build and publish a new one. `force=True` rebuilds regardless of a digest hit
     (a base image moved under a tag you did not pin -- flytekit's `force_push()`, D4).
 
+    `storage="azure"` forbids the anonymous fallback for an `abfss://` registry, exactly as
+    `deploy`/`run_inference`/`verify_image` do (Opus review, 2026-08-27: this was the one
+    public verb reaching the storage seam without configuring it). It is a **hardening, not a
+    fix for a broken path** -- `adlfs` defaults to `anon=None`, which tries a credential
+    first, so a registry read with `az login` in place already worked (verified on a real run,
+    2026-08-27). What it buys is the failure mode: with `anon=False` a credential problem
+    raises, instead of silently degrading to an anonymous read that returns nothing and looks
+    exactly like "this definition is not registered yet" -- which would rebuild a 10-20 minute
+    image on every call.
+
     The `_find_by_digest`/`_resolve`/`_publish`/`_write_aml_record`/`_environment_exists`/
     `_create_environment`/`_build_link` parameters are the seam tests stub (AC8/AC4) -- override them to avoid a
     real registry or a real `az` call; production code never passes them.
     """
+    # Before the first storage access -- `_find_by_digest` below (spec 52 D4's rule).
+    _configure_storage(storage)
     # One temp directory spans resolve AND build on purpose: for `fsd="path:..."` the digest
     # is of a wheel this function builds, and the image must be built from THAT wheel, not a
     # second one built moments later (Opus review, 2026-08-27). For every other `fsd` form
