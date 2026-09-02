@@ -4,14 +4,62 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-09-02 (**STEP 2's MEASUREMENT IS IN — SPEC 57 CONFIRMED ON A REAL RUN.**
+_Last updated: 2026-09-02 (**STEP 3 IS BUILT, NOT YET REVIEWED — SPEC 43 SIGNED OFF AND
+`docs/history.md` WRITTEN.** On branch **`worktree-spec-43-history`**, two commits (`d185a3d` the
+spec, `a515335` the document), **not merged to `main`, not pushed**. `main` is still @ `c49a9fc`.
+**#55 IS DELIBERATELY STILL OPEN** — spec 43 §9 puts the Opus review (step 6) before closing it
+(step 8), and this repo's standing rule is that **the authoring session cannot be its own
+reviewer**. That review is the one thing left._
+
+_**What landed.** `specs/43-history.md` (signed off by the user 2026-09-02 — the D6 era list
+confirmed, §7's other three questions resolved as proposed) and **`docs/history.md`, 4,994 words,
+eight eras**, each named by the question the project was facing and each carrying a fork taken, a
+fork dropped, and the measurement that decided it. Plus **ADR 0027** (the append-only document
+class) and a `README.md` pointer. Gates: **1073 passed / 101 skipped** (+2 — the two new files are
+picked up by `test_docs.py`'s directory glob), ruff clean, and the `RECIPES.md` identifier sweep
+**clean over both new files** — all 32 concrete values, zero hits. `test_relative_links_resolve`
+earned its keep on the first run by failing on a link to `CLAUDE.md`, which lives at the workspace
+root and is not in this repo._
+
+_**Three findings from the archaeology worth not re-deriving.** (1) **The handoff's premise was
+half wrong:** `docs/progress-archive.md` is necessary but **not sufficient** — specs 48–53 and the
+whole notebook-usability sprint appear **zero times** in it, because `PROGRESS.md` regrew and holds
+2026-08-20 → 09-02 itself; the archive is also **not in date order** (its 08-19/20 entries sit after
+its 07-06 ones). Filed as **#94**. (2) **`DROPPED.md` is legacy-capability triage only** — it
+mentions rslearn, the Leaflet dashboard, C4 and the SQLite catalog strategy **zero times** — and an
+ADR by construction records a decision *taken*, so the declined forks had no home in any register.
+That is `docs/history.md`'s whole justification. (3) **Spec 41 built three of Diátaxis's four
+modes**; the word "explanation" appears **once** in its 587 lines, in the list. `docs/history.md`
+fills that quadrant._
+
+_**The through-line the story names, which no register had:** **existence is not identity.** One
+tile per `(timestamp, band)` key losing coverage (spec 20); a STAC item id derived from a constant
+filename stem (300 identical links); README verbs checked for presence in `__all__` rather than
+callability (2 of 3 calls raised `TypeError`); resume-by-existence re-inferring a **different** ROI
+(#66); a cube skipped as "already landed" then stamped with the wrong request's identity (spec 48
+review); a registry left naming a deleted asset (spec 56 review). Six eras, one confusion._
+
+_**Filed rather than fixed, per spec 43 D9:** **[#93](https://github.com/nikhilsrajan/fsd/issues/93)**
+(the front-door pass — `README` → tutorial → how-tos, against `docs/findings/consumer-repo-friction.md`'s
+eight friction points / four hard stops) and **[#94](https://github.com/nikhilsrajan/fsd/issues/94)**
+(`PROGRESS.md` is 1,610 lines against spec 41 D12's ~2k-word target; re-running the split also fixes
+the archive trap in (1) above)._
+
+_**NEXT, in order:** (a) a **fresh Opus session reviews `docs/history.md`** against spec 43's
+AC2/AC5/AC6/AC7 — every era owes a dropped fork and a number, every claim traces to a register, no
+fact lives only there, and it stops at 2026-09-02; (b) merge `--no-ff` + prune the worktree; (c)
+**close #55**; (d) push (the user's call — nothing here is pushed, and `main` is now 3 commits
+behind the branch). **Then THE ORDER's step 4: #85.** #80/#82 remain unblocked; **the tag is still
+LAST**._
+
+_Previously: 2026-09-02 (**STEP 2's MEASUREMENT IS IN — SPEC 57 CONFIRMED ON A REAL RUN.**
 The consumer notebook ran end to end from `rise/` (fsd installed as a dependency, not a checkout),
 which by itself closes the "does the consumer path work at all" question for specs 54/55/56/57 +
 #92. The numbers, 299 cells: **`[collect]` 616 s → 26 s (23.7×)**, **`[stac]` 161 s → 10 s
 (16.1×)**, the window **777 s → 36 s (21.6×)** against a predicted **<100 s** — beaten by 2.8×.
 `[merge]`, the leg D2/D3/D4 deliberately do not touch, went 193 s → 80 s (2.4×) and so serves as a
 **control on the link**: crediting *all* of that to a faster network still leaves ~9.9× for collect
-and ~6.7× for stac as the code's own. **Spec 57 §9 step 5 is discharged**; recorded in `CHANGES.md`._
+and ~6.7× for stac as the code's own. **Spec 57 §9 step 5 is discharged**; recorded in `CHANGES.md`.)_
 
 _**Spec 56 §9 step 10 — discharged the same day, cheaply.** The step's un-mockable half is
 whether real `az ml environment show` reports a missing version as absent, since every other part
