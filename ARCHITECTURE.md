@@ -3,7 +3,9 @@
 The code map. **Where things live, what must stay true, and what runs where.**
 
 Read this before changing code. For *why* a decision was made, see [`docs/adr/`](docs/adr/); for
-where fsd is going, [`ROADMAP.md`](ROADMAP.md); for what a term means, [`CONTEXT.md`](CONTEXT.md).
+how the code got this shape — the forks taken and dropped — [`docs/history.md`](docs/history.md);
+for where fsd is going, [`ROADMAP.md`](ROADMAP.md); for what a term means,
+[`CONTEXT.md`](CONTEXT.md).
 
 Modules and types are **named, not deep-linked** — symbol-search beats a line number that rots.
 
