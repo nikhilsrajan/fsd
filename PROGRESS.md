@@ -8,7 +8,8 @@ _Last updated: 2026-09-02 (**STEP 3 IS DONE — `docs/history.md` APPROVED BY TH
 BRANCHES MERGED, #55 CLOSED.** Two `--no-ff` merges onto `main`: `worktree-spec-43-history`
 (spec 43 + `docs/history.md` + ADR 0027) and `worktree-architecture-refresh` (the
 `ARCHITECTURE.md` refresh). Both worktrees pruned, both branches deleted. **NOT PUSHED** —
-`origin/main` is still @ `f7d4bd0`, so `main` is now well ahead of it and #55's closing comment
+`origin/main` is @ `c49a9fc` (it moved since the #55 handoff was written, which said `f7d4bd0`), so
+`main` is **8 commits ahead** of it and #55's closing comment
 points at commits GitHub cannot yet resolve (the comment says so; same precedent as #64/#65/#66).
 **Pushing is the user's call.** → **THE ORDER's step 4: [#85](https://github.com/nikhilsrajan/fsd/issues/85)**
 (trim the changelog out of `src/` comments, one package per session, 7 left). #80/#82 unblocked;
