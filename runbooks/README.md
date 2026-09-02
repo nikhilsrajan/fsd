@@ -28,6 +28,7 @@ The run-books that realise it, in dependency order (not numeric order):
 | 5 | `40-train-and-bundle.md` | features (driver-side) → **train `adapters:DemoRF` @ T=8** → **bundle** | 39's landed arrays | 🆕 not yet run |
 | 6 | `38-inference-on-aml.md` | `run_inference(roi=…, runner="aml")` at scale → per-cell COGs + STAC | 40's bundle + 37's archive | 🟡 impl+reviewed, cluster run pending |
 | 7 | `45-verify-bundle-carried-code.md` | **spec 44 phase 1:** prove the inference image no longer needs the adapter (Phase 0 is offline, ~10 s) | 40's bundle, re-saved | ✅ **Phases 0–2 green 2026-08-19** — `fsd-infer-sklearn:3` (no adapter in the image), ROI run **9/9 cells + STAC in 8.2 min**; QGIS eyeball outstanding |
+| 8 | `57-consumer-repo-e2e-run.md` | **the consumer-repo run:** the whole pipeline from a repo that installs fsd as a *dependency* — and the two measurements only a real run can make (spec 57 §9 step 5's `[collect]`/`[stac]` timings vs the **616 s / 161 s** baseline; spec 56 §9 step 10's forced stale-entry rebuild) | `fsd@main`, `rise/` | ✅ **ran 2026-09-02** — consumer path green; `[collect]` 616→26 s, `[stac]` 161→10 s (spec 57 §9 step 5 discharged). spec 56 §9 step 10 discharged by a live `environment_exists` probe, full break-and-heal loop not run) |
 
 **Data hand-offs to remember:** 37 writes `$AZ_ROOT/archive/catalog.parquet` (36/38 read it — **not**
 the `mpc/` prefix from runbook 34); 36 Phase 3 writes `runs/<id>/input.csv` (39 reads it); 39 lands

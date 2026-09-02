@@ -4,7 +4,101 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-08-28 (**#92 DONE, CLOSED + PUSHED — `main` @ `ee7277b`, clean.** The AZ_ROOT
+_Last updated: 2026-09-02 (**STEP 2's MEASUREMENT IS IN — SPEC 57 CONFIRMED ON A REAL RUN.**
+The consumer notebook ran end to end from `rise/` (fsd installed as a dependency, not a checkout),
+which by itself closes the "does the consumer path work at all" question for specs 54/55/56/57 +
+#92. The numbers, 299 cells: **`[collect]` 616 s → 26 s (23.7×)**, **`[stac]` 161 s → 10 s
+(16.1×)**, the window **777 s → 36 s (21.6×)** against a predicted **<100 s** — beaten by 2.8×.
+`[merge]`, the leg D2/D3/D4 deliberately do not touch, went 193 s → 80 s (2.4×) and so serves as a
+**control on the link**: crediting *all* of that to a faster network still leaves ~9.9× for collect
+and ~6.7× for stac as the code's own. **Spec 57 §9 step 5 is discharged**; recorded in `CHANGES.md`._
+
+_**Spec 56 §9 step 10 — discharged the same day, cheaply.** The step's un-mockable half is
+whether real `az ml environment show` reports a missing version as absent, since every other part
+of D4 is covered against `tmp_path`. Probed live: `environment_exists("fsd-aml-env", "999999")`
+→ **False**, `environment_exists(..., <real version>)` → **True**. That is the predicate D4 step 3
+branches on, so the "registry entry points at a deleted asset" path provably fires. **Residual gap,
+named not hidden:** the complete break-and-heal loop (corrupt `_aml.json` → build → confirm reuse,
+run-book 57 step 6) was **not** run end to end — its remaining links (fall-through to build,
+`publish` idempotent by digest returning the same registry version, `write_aml_record` repointing
+the sidecar) are unit-covered but not observed together against Azure. Judged not worth a 10–20 min
+ACR build for the marginal evidence; the loop stays available in the run-book if that call changes._
+
+_**STEP 2 IS THEREFORE COMPLETE.** → step 3, **[#55](https://github.com/nikhilsrajan/fsd/issues/55)**
+(docs refactor), which **needs its own spec and a discussion before any work starts**. **#80** and
+**#82** are unblocked; the **tag is still LAST**._
+
+_**#55 SCOPED 2026-09-02 — it is far narrower than its issue text; do not re-derive this.** The
+issue asks for (1) a chronological story and (2) a "≤~5-file C4 doc set" over a **174-file /
+~399k-word** corpus (61 specs, 30 run-books, 43 `docs/`, 13 top-level). **Half is already done and
+was deliberately changed.** **(2) is CLOSED by spec 41 D0**, which demoted C4 from file-count driver
+to the *section outline of one file* — `ARCHITECTURE.md`, which exists — and dropped the file count,
+the Component level as a separate doc, and Level 4 entirely. Its cited trap is worth keeping: C4's
+"container" means a separately runnable thing (c4model.com opens with **"Not Docker!"**), so fsd's
+C4 containers are **driver / AML node / blob / catalog**, *not* its AML images. **Do not re-propose
+a multi-file C4 set.** **(1) is spec 43, which was never written:** spec 41 named the artifact
+(`docs/history.md`), slotted it **P8**, sized it **Opus ~1 session**, and deferred it until P1/P2
+had done the archaeology. The specs jump **42 → 44** and `docs/history.md` does not exist. Its
+source is already staged — **`docs/progress-archive.md`** (364 KB), whose frontmatter names itself
+"the primary archaeology source for spec 43's `docs/history.md`". So **"wrap up #55" = write spec 43
+→ `docs/history.md` → close #55.** **Numbering:** spec 41 + the archive reference "spec 43" in ~8
+places and this repo's own precedent (ADR 0024 / spec 41 D8) was to **force-align numbers rather
+than rewrite references** — so **43, not 58**; confirm at sign-off. **#55's gate is discharged** —
+it required "a timed e2e demo with stepwise time accounting", which step 2 produced._
+
+_**Found during the break, diagnosed 2026-09-02, not a defect:** re-running the notebook rebuilt
+both images. Cause was **not** a commit — `origin/main` never moved off `f7d4bd0`, and `git+…@main`
+resolves against the *remote*, so local commits are invisible to it. `DEFAULT_BASE` is
+`mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04:`**`latest`**, and MCR moved it
+(`7276cbc0…` → `3bd33cab…`) — the digest covers the base's resolved sha, so the rebuild was
+correct. Spec 56 D4's "a base image moved under a tag you did not pin", observed. **Pinning is
+free**: `_resolve_base` maps `repo:latest` → `repo@sha256:X` and passes `repo@sha256:X` through
+unchanged, so both forms produce a byte-identical payload — verified — and pinning to the current
+sha reuses the existing version rather than rebuilding. Recommended through the measurement window,
+re-pinned deliberately after._
+
+_**Two proposals raised, neither filed** (awaiting the user's yes): (a) `ensure_environment` should
+say **why** it rebuilt — it holds both the new digest and the previously-registered definition, so
+`(rebuilt: base moved 7276cbc0… -> 3bd33cab…)` costs nothing and would have replaced a whole
+diagnostic round trip; (b) ship fsd's notebook leak guard (`tests/test_notebooks.py`'s six
+patterns) as `fsd lint-notebooks` + a pre-commit hook, since consumer repos have no equivalent and
+a concrete storage URL reached `rise`'s working tree this week._
+
+_Previously: 2026-08-28 (**STEP 2 PREPARED — `runbooks/57-consumer-repo-e2e-run.md` written and
+handed to the user; the run itself is theirs, not an agent's.** `main` still @ `f7d4bd0`, clean.
+The run-book covers seven steps: patch the notebook (below), rebuild `rise/.venv` from `@main`,
+config+`az` preflight, `build_images.ipynb`, the e2e notebook §0–3, **§4.1+4.2 — the measurement**
+(`[collect]`/`[stac]` vs the **616 s / 161 s** baseline; spec 57 predicts <100 s combined, graded in
+three bands so a miss is a finding rather than a hidden failure), and **last** the forced
+stale-entry rebuild (spec 56 §9 step 10 / D4 step 3: break `_aml.json` to a bogus AML version →
+expect *build* with an unchanged `registry_version`, then *reuse* of that same asset). Every python
+snippet in it compiles; step 0's verifier was run against the live notebook and correctly reports
+`fail`._
+
+_**BLOCKER FOUND, not yet fixed — the consumer notebook cannot run as it stands.**
+`rise/notebooks/e2e_austria_aml.ipynb` is a **verbatim copy of fsd's own developer notebook** (33
+of 34 cells byte-identical; only cell 0's markdown differs, and it is the pre-#92 wording). Its
+**code cell 3** therefore carries two fsd-checkout assumptions that are wrong in a consumer repo:
+`assert (REPO / "pyproject.toml").exists()` — `rise/` has none, so the cell raises immediately —
+and `fsd=f"path:{REPO}"`, which `digest.py:_resolve_fsd` turns into `wheel:<hash>` of that
+directory, while `rise/notebooks/build_images.ipynb` declares
+`fsd="git+https://github.com/nikhilsrajan/fsd@main"` → `git+…@<40-char sha>`. **Different payloads,
+different digests, different images:** even with the assert deleted the e2e notebook would not
+reuse what `build_images.ipynb` built, would start its own ACR build, and would then trip its own
+`assert _r.reused`. The two-line fix is **step 0 of the run-book**, not applied here —
+[[notebooks-are-reference-not-workspace]]: propose in a run-book, edit only on an explicit yes._
+
+_**Also landed this session:** `rise/docs/environment.md` got #92's three deltas (the `root`
+paragraph now names every non-reader — `fsd init` does not prompt, `fsd config` does not print,
+`--from-env-file` parses and drops it; the duplicated `fsd config` paragraph dropped; "six values"
+→ seven keys), mirroring `docs/reference/environment.md` @ `f7d4bd0`. **Separate, not done:** that
+whole file is an fsd-internal copy — it cites `tests/test_docs.py`, `src/fsd/config.py`,
+`runbooks/`, `demos/e2e_austria_aml.py` and `docs/findings/`, none of which exist in `rise`, and
+sections 3/6/7/8/9 are run-book variables with no meaning there. Worth a consumer-shaped rewrite;
+needs the user's call. **NEXT: the user runs run-book 57 and pastes back each step's
+`_result.json`; Claude diffs it.**_
+
+_Previously: 2026-08-28 (**#92 DONE, CLOSED + PUSHED — `main` @ `ee7277b`, clean.** The AZ_ROOT
 cleanup landed (`3a968dc`, merged `--no-ff` as `ee7277b`; worktree pruned, branch deleted). Three
 files, five edits, **no code**: `docs/howto/run-at-scale.md` (its "all six values `fsd init` asks
 for" prerequisite → five required + two optional registries, with the storage root explicitly not
@@ -44,8 +138,8 @@ forgotten at the boundary.** Do not reorder without saying so.
 | # | task | done when | → then |
 |---|---|---|---|
 | ~~**1**~~ | ~~**[#92](https://github.com/nikhilsrajan/fsd/issues/92)** — AZ_ROOT cleanup~~ | **DONE 2026-08-28** — `3a968dc` / `ee7277b`, issue closed + pushed | → **2**, now current |
-| **2** | **The consumer-repo run** — reinstall `rise/.venv` from `@main`, run `rise/notebooks/e2e_austria_aml.ipynb` end to end | `[collect]`/`[stac]` numbers captured against the **616 s / 161 s** baseline, and spec 56 §9 step 10's forced stale-entry rebuild checked | → **3**; also **unblocks #80 + #82** (see the rider below) |
-| **3** | **[#55](https://github.com/nikhilsrajan/fsd/issues/55)** — docs refactor (story + C4 set) | its own gate is step 2's timed report; **needs its OWN spec and a discussion before starting** | → **4** |
+| ~~**2**~~ | ~~**The consumer-repo run**~~ | **MEASUREMENT DONE 2026-09-02** — `[collect]` 26 s / `[stac]` 10 s vs the 616 s / 161 s baseline; spec 57 §9 step 5 discharged. Spec 56 §9 step 10 discharged by a live `environment_exists` probe | → **3**, now current; **#80 + #82 unblocked** |
+| **3** | **[#55](https://github.com/nikhilsrajan/fsd/issues/55)** — **CURRENT.** Now scoped: the C4 half is closed by spec 41 D0; what remains is **spec 43 → `docs/history.md`** | gate discharged by step 2; **needs its OWN spec and a discussion before starting** | → **4** |
 | **4** | **[#85](https://github.com/nikhilsrajan/fsd/issues/85)** — trim the changelog out of `src/` comments | 7 packages left, **one per session**; `storage/` is the done sample (`eb7f29f`) | → the next spec / ROADMAP |
 
 **Rider on step 2 — do not lose these.** #80 (snakemake → `[local]`, s3fs → `[s3]`; zero code

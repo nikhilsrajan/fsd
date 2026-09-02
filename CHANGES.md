@@ -11,6 +11,22 @@ carried over (renames, restructures, behavioral tweaks). Pure removals go in
 300-cell run whose actual inference was skipped (#61, run-book 41 Step 3). Closes #61 fixes (b)
 and (c); fix (d) (node-side Item emission) stays open.
 
+**MEASURED ON A REAL RUN, 2026-09-02** (299 cells, consumer repo, run-book 57 — the gate
+[[real-run-beats-review]] asks for; spec 57 §9 step 5 is discharged):
+
+| segment | before | after | |
+|---|---|---|---|
+| `[collect]` | 616 s (2.05 s/output) | **26 s** (0.088 s/output) | **23.7×** |
+| `[stac]` | 161 s (0.53 s/object) | **10 s** (0.032 s/object) | **16.1×** |
+| **the window** | **777 s** | **36 s** | **21.6×** |
+| `[merge]` (D5 only, incidental) | 193 s | 80 s | 2.4× |
+
+The spec predicted **<100 s** combined; the run came in at 36 s, beating it by 2.8×. `[merge]` is
+the useful control: it is the one leg D2/D3/D4 deliberately do not touch, so its 2.4× bounds how
+much of the gain is a faster link on the day rather than the code. Attributing *all* of merge's
+gain to the environment — conservative, since D5 helps merge too — still leaves ~9.9× for
+`[collect]` and ~6.7× for `[stac]` as the code's own contribution.
+
 - **`_finalize_outputs`/`cog_outputs_to_items`/`write_stac_catalog` now print `[collect]`/`[stac]`
   segment lines** (elapsed + per-unit rate) through the existing `fsd.progress` ticker, matching
   `[merge]`'s existing shape — the window measures itself instead of being read back from blob
