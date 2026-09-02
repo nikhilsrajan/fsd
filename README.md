@@ -86,6 +86,7 @@ registry lands in P6.
 | where fsd is heading | [`ROADMAP.md`](ROADMAP.md) |
 | what a term means | [`CONTEXT.md`](CONTEXT.md) |
 | why something was decided | [`docs/adr/`](docs/adr/) |
+| how fsd got this shape — the forks taken and dropped | [`docs/history.md`](docs/history.md) |
 | a measured result about running at scale | [`docs/findings/`](docs/findings/) |
 | the Azure environment variables | [`docs/reference/environment.md`](docs/reference/environment.md) |
 | a reusable command | [`RECIPES.md`](RECIPES.md) |

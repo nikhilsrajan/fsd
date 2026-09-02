@@ -36,3 +36,4 @@ home. The cited spec/date is the source of record.
 | [0024](0024-todo-migrates-to-issues-with-forced-number-alignment.md) | The TODO migrates to GitHub Issues with forced number alignment; the 448 existing references are never rewritten | spec 41 D8 |
 | [0025](0025-one-fact-one-home.md) | One fact, one home — each topic has exactly one owning document; everything else links | spec 41 D9 |
 | [0026](0026-demo-benchmark-example-tutorial-are-four-things.md) | demo ≠ benchmark ≠ example ≠ tutorial — the "demo" gap is three artifacts, not one document | spec 41 D10 |
+| [0027](0027-history-is-append-only.md) | `docs/history.md` is append-only — a maintained container of point-in-time era sections; closes the class ADR 0022 left it out of | spec 43 D3 |
