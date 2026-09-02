@@ -4,12 +4,15 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-09-02 (**STEP 3 IS BUILT, NOT YET REVIEWED — SPEC 43 SIGNED OFF AND
-`docs/history.md` WRITTEN.** On branch **`worktree-spec-43-history`**, two commits (`d185a3d` the
-spec, `a515335` the document), **not merged to `main`, not pushed**. `main` is still @ `c49a9fc`.
-**#55 IS DELIBERATELY STILL OPEN** — spec 43 §9 puts the Opus review (step 6) before closing it
-(step 8), and this repo's standing rule is that **the authoring session cannot be its own
-reviewer**. That review is the one thing left._
+_Last updated: 2026-09-02 (**STEP 3 IS DONE — `docs/history.md` APPROVED BY THE USER, BOTH
+BRANCHES MERGED, #55 CLOSED.** Two `--no-ff` merges onto `main`: `worktree-spec-43-history`
+(spec 43 + `docs/history.md` + ADR 0027) and `worktree-architecture-refresh` (the
+`ARCHITECTURE.md` refresh). Both worktrees pruned, both branches deleted. **NOT PUSHED** —
+`origin/main` is still @ `f7d4bd0`, so `main` is now well ahead of it and #55's closing comment
+points at commits GitHub cannot yet resolve (the comment says so; same precedent as #64/#65/#66).
+**Pushing is the user's call.** → **THE ORDER's step 4: [#85](https://github.com/nikhilsrajan/fsd/issues/85)**
+(trim the changelog out of `src/` comments, one package per session, 7 left). #80/#82 unblocked;
+**the tag is still LAST**._
 
 _**What landed.** `specs/43-history.md` (signed off by the user 2026-09-02 — the D6 era list
 confirmed, §7's other three questions resolved as proposed) and **`docs/history.md`, 4,994 words,
@@ -45,12 +48,14 @@ eight friction points / four hard stops) and **[#94](https://github.com/nikhilsr
 (`PROGRESS.md` is 1,610 lines against spec 41 D12's ~2k-word target; re-running the split also fixes
 the archive trap in (1) above)._
 
-_**NEXT, in order:** (a) a **fresh Opus session reviews `docs/history.md`** against spec 43's
-AC2/AC5/AC6/AC7 — every era owes a dropped fork and a number, every claim traces to a register, no
-fact lives only there, and it stops at 2026-09-02; (b) merge `--no-ff` + prune the worktree; (c)
-**close #55**; (d) push (the user's call — nothing here is pushed, and `main` is now 3 commits
-behind the branch). **Then THE ORDER's step 4: #85.** #80/#82 remain unblocked; **the tag is still
-LAST**._
+_**Also landed post-merge:** `ARCHITECTURE.md` gained the `docs/history.md` pointer that could not
+be added while the two lived on separate branches — its link would have failed
+`test_relative_links_resolve`._
+
+_**#93 and #94 REMAIN OPEN, deliberately** — they are deferred work filed by spec 43 D9, not
+things this session did. #93 is the front-door pass (`README` → tutorial → how-tos) against
+`docs/findings/consumer-repo-friction.md`; #94 is `PROGRESS.md`'s regrowth past spec 41 D12's
+~2k-word target, which this very entry adds to._
 
 _Previously: 2026-09-02 (**STEP 2's MEASUREMENT IS IN — SPEC 57 CONFIRMED ON A REAL RUN.**
 The consumer notebook ran end to end from `rise/` (fsd installed as a dependency, not a checkout),
