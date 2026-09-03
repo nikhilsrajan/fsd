@@ -1147,3 +1147,39 @@ PY
 
 Check 3 is the one that pays for itself on AML verbs: a typo'd `runner_kwargs` key or a renamed
 parameter otherwise surfaces after the job has been submitted.
+
+---
+
+## Auditing and trimming `src/` comments (#85)
+
+Three small tools in `runbooks/scripts/`, written for #85's sweep and kept because the
+question they answer recurs every time `src/` grows. **All three need the 3.11 venv** —
+`.venv/bin/python`, not system python, which is 3.7 here and silently reports zero
+docstrings (`ast.Constant` does not exist before 3.8, so every docstring parses as
+`ast.Str` and the count comes back empty rather than wrong-looking).
+
+```bash
+# 1. Where is the prose, and where are the backward references?
+.venv/bin/python runbooks/scripts/85_refcount.py src/fsd        # or any subpackage
+# -> per file: refs / prose lines / code lines / prose-per-code, densest first, then a TOTAL
+
+# 2. Bulk-remove reference-only parentheticals -- (spec 50), (D4), (AC6), (spec 35 §7).
+.venv/bin/python runbooks/scripts/85_parens.py src/fsd          # dry run, prints counts
+.venv/bin/python runbooks/scripts/85_parens.py --apply src/fsd
+# Only touches lines ast+tokenize prove are comments/docstrings, and never a parenthetical
+# containing `#` (the TODO #NN -> issue mapping). Reports any module docstring left with no
+# spec reference, so the `Spec:` anchor can be re-added by hand.
+
+# 3. Prove the diff is comments-only, before committing.
+.venv/bin/python runbooks/scripts/85_astcheck.py <ref> src/fsd
+# Compares docstring-stripped ASTs against a git ref. Exits 1 naming every file whose
+# executable AST moved.
+```
+
+**Run check 3 on every comment pass, without exception.** During #85's `sources/` pass it
+caught three edits that read as comments and were in fact inside `raise ValueError(...)` and
+argparse `help=` — a comments-only diff is not comments-only just because it looks it. It is
+also the check that makes such a diff safe to review by reading only the removals.
+
+The convention the sweep applies is `docs/reference/code-comments.md`: **cut the changelog,
+keep the hazard.**
