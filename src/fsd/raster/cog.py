@@ -145,7 +145,7 @@ def stamp_gdal_tags(
     scale: float = 1.0,
     set_nodata_if_missing: float | None = None,
 ) -> None:
-    """Declare radiometry + nodata as GDAL band-level metadata, in place (spec 34 §1a).
+    """Declare radiometry + nodata as GDAL band-level metadata, in place.
 
     A header-tag edit: reopens `filepath` in update ("r+") mode and sets every band's
     `SCALE`/`OFFSET` (what `rio-tiler`/titiler's `unscale=true` reads — STAC
@@ -157,7 +157,7 @@ def stamp_gdal_tags(
     Plain `rasterio.open(...).read()` (what the datacube builder uses) never
     auto-applies these tags — they are inert metadata on a normal read, so this and
     the STAC `raster:bands` declaration (`fsd.catalog.stac`) can coexist with the
-    builder's own read-time `apply_offset` without double-applying (spec 34 §1a).
+    builder's own read-time `apply_offset` without double-applying.
 
     `IGNORE_COG_LAYOUT_BREAK=YES`: GDAL's COG driver refuses an in-place metadata
     edit by default ("has COG layout... updating it will generally result in losing

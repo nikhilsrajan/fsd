@@ -55,15 +55,15 @@ def _timed(store: dict, name: str):
     store[name] = round(time.perf_counter() - t0, 4)
 
 
-# --- declaration resolution (spec 35 §5) --------------------------------------
+# --- declaration resolution ---------------------------------------------------
 
 def _resolve_declaration(
     gdf: gpd.GeoDataFrame, declaration: SourceDeclaration | None,
 ) -> SourceDeclaration:
-    """Resolution order (spec 35 §5): the explicit `declaration=` kwarg, else the
+    """Resolution order: the explicit `declaration=` kwarg, else the
     stamp already on `gdf.attrs` (restored by `fs.read_parquet` from the Parquet
     footer, or attached by a prior call to this function), else the S2 L2A
-    default -- **but only for a hand-built GeoDataFrame** (spec 35 §5a).
+    default -- **but only for a hand-built GeoDataFrame**.
 
     A `gdf` that came from a file (`fs.read_parquet` stamps
     `attrs[fs.SOURCE_PATH_ATTRS_KEY]`) and carries no declaration stamp is an
@@ -106,12 +106,12 @@ def flatten_catalog(
     filename minus ext. `offset` (spec 34 §1, generalizing spec 32's
     `boa_add_offset`) is the tile-row's declared additive radiometric offset for
     reflectance bands (`_is_reflectance`), else 0 — mask/QA bands are never
-    harmonized. `nodata` is the tile-row's declared nodata (spec 34 §1c),
+    harmonized. `nodata` is the tile-row's declared nodata,
     defaulting to 0 when the row doesn't carry one. Missing `offset`/`nodata`
     columns on `catalog_gdf` (a source with no radiometric-offset concept)
     default every row to 0.
 
-    `declaration` (spec 34 §2a) is the *collection-level* builder contract —
+    `declaration` is the *collection-level* builder contract —
     which band is the mask/reference, how to interpret the mask, the source's
     grid shape — resolved per `_resolve_declaration` (spec 35 §5/§5a: explicit
     kwarg, else `catalog_gdf`'s own stamp, else the S2 L2A default for a
@@ -179,7 +179,7 @@ def build_datacube(
     **Declaration-driven, not hardcoded (spec 34 Decision 2 / #35).** What band is
     the mask, how to interpret it, which band is the resample reference, and the
     mosaic method are read from a `SourceDeclaration` (`fsd.catalog.declaration`) —
-    resolved by `_resolve_declaration` (spec 35 §5): the explicit `declaration=`
+    resolved by `_resolve_declaration`: the explicit `declaration=`
     kwarg, else `catalog_subset`'s own stamp (`attrs["fsd:declaration"]`, set by
     `flatten_catalog`), else the S2 L2A default for a hand-built `catalog_subset`
     (§5a — an unstamped catalog that came from a file raises instead).
@@ -194,7 +194,7 @@ def build_datacube(
     also raises `NotImplementedError` — the non-tiled build path is designed-for but
     ships with the ERA5 spec, not this one (`[G2]`).
 
-    Per-row `offset`/`nodata` catalog columns (spec 34 §1) carry the *radiometric*
+    Per-row `offset`/`nodata` catalog columns carry the *radiometric*
     declaration: each image's declared additive offset is applied (read-time only,
     `apply_offset`) before the median mosaic, and the build's nodata is read from
     `catalog_subset["nodata"]` (falling back to the resolved declaration's `nodata`,
@@ -202,7 +202,7 @@ def build_datacube(
     catalog changes the build, proving neither is config-hardcoded.
 
     `startdate` must be on/before the first acquisition and `enddate` on/after the
-    last (median_mosaic requirement). `mosaic_scheme` (spec 15) controls how the
+    last (median_mosaic requirement). `mosaic_scheme` controls how the
     mosaic windows are anchored/labeled — the default "calendar" uses fixed calendar
     windows off `startdate`, so cubes built over the same startdate/enddate/mosaic_days
     share an identical `timestamps` axis (the workflow now threads the caller's
@@ -215,7 +215,7 @@ def build_datacube(
 
     `write_read_log=True` writes a `reads.jsonl` sidecar (one row per windowed read:
     grid id, mgrs_tile, product_id, band, filepath, epoch start/end, duration) — the
-    Part-2 read-instrumentation seam (spec 12). Requires `njobs_load_images == 1` (the
+    Part-2 read-instrumentation seam. Requires `njobs_load_images == 1` (the
     reads must run in this process to be timed); a no-op with a warning otherwise. Uses
     wall-clock `time.time()` so intervals are comparable across grid processes. The
     workflow path enables it via the `FSD_WRITE_READ_LOG` env var (see workflows.task).
@@ -304,7 +304,7 @@ def build_datacube(
         )
 
     with _timed(timings, "ops"):
-        # Declaration-driven op-sequence assembly (spec 34 §2b) — replaces the
+        # Declaration-driven op-sequence assembly — replaces the
         # hardcoded S2 chain. `mask_active` (resolved above from the declaration +
         # the requested `bands`) decides whether the mask/drop pair runs at all; a
         # source with no mask (or one whose mask band wasn't requested) skips both,
@@ -335,7 +335,7 @@ def build_datacube(
         # than raw pickle because a raw pickle written on macOS could not be read on
         # Ubuntu (and vice versa) — np.save's pickling proved cross-platform stable.
         # (xarray is a possible future alternative; see TODO.)
-        # D7 (spec 36): each artifact is written to a per-attempt temp path and renamed
+        # D7: each artifact is written to a per-attempt temp path and renamed
         # into place only once fully written, so a reader never observes a partial file.
         # metadata is published FIRST and datacube.npy LAST — `datacube.npy`'s existence
         # is the resume signal (workflows.task.run_task), so by the time it appears the
@@ -368,7 +368,7 @@ def _save_npy_atomic(path: str, arr, allow_pickle: bool = False) -> None:
 def _write_timings_sidecar(export_folderpath, timings, total_seconds, *, shape_gdf,
                            catalog_subset, catalog_gdf, n_resampled, datacube, metadata,
                            dst_crs):
-    """Dump per-phase timings + a few sizing counts as `timings.json` (spec 11)."""
+    """Dump per-phase timings + a few sizing counts as `timings.json`."""
     payload = {
         "id": (str(shape_gdf["id"].iloc[0]) if "id" in shape_gdf.columns else None),
         "total_seconds": total_seconds,
@@ -385,7 +385,7 @@ def _write_timings_sidecar(export_folderpath, timings, total_seconds, *, shape_g
 
 
 def _write_read_log(export_folderpath, reads):
-    """Dump one JSON row per windowed read as `reads.jsonl` (spec 12)."""
+    """Dump one JSON row per windowed read as `reads.jsonl`."""
     fs.makedirs(export_folderpath)
     with fs.open(os.path.join(export_folderpath, READ_LOG_FILENAME), "w") as f:
         for r in reads:
@@ -497,7 +497,7 @@ def _load_images(catalog_gdf, shape_gdf, nodata, njobs=1, write_read_log=False):
     reads). Adds `image_index` (position in the list) and `crs` (str, for grouping);
     drops rows that failed to read. `image_index` still indexes the full list.
 
-    `reads` is None unless `write_read_log` (spec 12): a per-read timing log built by
+    `reads` is None unless `write_read_log`: a per-read timing log built by
     reading each file serially in-process (so `njobs == 1` is required)."""
     catalog_gdf = catalog_gdf.copy()
     filepaths = catalog_gdf["filepath"].tolist()

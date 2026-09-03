@@ -1,4 +1,6 @@
-"""`ImageDefinition` -- an AML node image, declared as data (spec 56 D1).
+"""`ImageDefinition` -- an AML node image, declared as data.
+
+Spec: specs/56-image-definitions-and-registry.md
 
 A frozen dataclass, no methods that touch the network. It renders a Dockerfile
 (`render_dockerfile`) and a build context (`write_context`); it does not build one --
@@ -33,7 +35,7 @@ __all__ = ["ImageDefinition"]
 
 @dataclasses.dataclass(frozen=True)
 class ImageDefinition:
-    """`name` never affects the digest (D2) -- it is where the image is registered, not
+    """`name` never affects the digest -- it is where the image is registered, not
     what it contains. `fsd` is a pip-installable reference: `"git+https://...@<ref>"`, a
     PyPI spec, or `"path:/local/checkout"` for an fsd developer's own tree (the one case
     `resolve()` builds a wheel for, D5). `extras`/`extra_pip` are fsd's own extras

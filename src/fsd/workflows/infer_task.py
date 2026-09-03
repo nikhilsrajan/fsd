@@ -56,10 +56,10 @@ def run_infer_task(
 
     Returns the output COG path.
 
-    D6 (spec 38): returns immediately, without building or inferring, if `output_filepath`
+    D6: returns immediately, without building or inferring, if `output_filepath`
     already exists and `overwrite=False` — the durable per-cell resume signal (mirrors
     `task.run_task`'s own `datacube.npy`-exists skip), so a group retried on a fresh node
-    (D6/D7) redoes only its unfinished cells.
+ redoes only its unfinished cells.
 
     D7 (spec 38, closes TODO #25): the adapter is resolved via the per-process bundle cache
     (`engine._adapter_from_bundle_cached`), not a fresh `bundle.load` — a bundle loads once
@@ -102,7 +102,7 @@ def run_infer_group(
     skip_nan: bool = True,
     overwrite: bool = False,
 ) -> list[str]:
-    """Build+infer rows `[lo, hi)` of `input_csv` **sequentially in one process** (D7, spec 38).
+    """Build+infer rows `[lo, hi)` of `input_csv` **sequentially in one process**.
 
     The whole point of grouping: every row in the group shares the SAME process, so the
     bundle-cache in `run_infer_task` (`engine._adapter_from_bundle_cached`) loads the bundle

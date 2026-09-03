@@ -73,7 +73,7 @@ def _write_output_cog(out: Output, transform, crs, dst_path: str) -> int:
     """Write an `Output` as a lossless COG (via `raster.cog.to_cog`) at `dst_path`.
 
     Writes a plain GeoTIFF sibling first, then converts. `to_cog` publishes to a remote
-    `dst_path` (spec 38 D5). **The raw scratch tif and its parent dir are always node-local**
+    `dst_path`. **The raw scratch tif and its parent dir are always node-local**
     regardless of `dst_path`: a remote dst (e.g. `abfss://.../output.tif`, the per-cell site
     an AML node writes — spec 38 D5) must NOT `os.makedirs`/`rasterio.open(mode="w")` on the
     remote URL (a forbidden remote write that scatters junk local dirs, TODO #39); it stages

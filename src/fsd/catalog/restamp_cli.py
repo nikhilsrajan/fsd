@@ -2,7 +2,7 @@
 footer (spec 35 §6, `fsd-restamp-catalog`).
 
 Every catalog written before spec 35 carries no stamp and will raise at build
-time (spec 35 §5a). No re-download is needed -- only the catalog Parquet is
+time. No re-download is needed -- only the catalog Parquet is
 rewritten (read + re-write in place, through `fsd.storage`, so it works on any
 backend: `abfss://`, `s3://`, ...); the imagery it points at is untouched.
 Catalogs are KB-MB (one row per granule), so this is a sub-second operation.

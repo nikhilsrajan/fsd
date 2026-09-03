@@ -194,7 +194,7 @@ class DownloadResult:
     circuit_tripped: bool = False  # stopped early: too many consecutive failures
     pool_broken: bool = False     # convert process pool died mid-run (segfault/OOM); resume with a fresh pool
     stopped: bool = False         # user requested a clean stop (should_stop); not a failure
-    # --- timing decomposition (spec 23, D1/D11) — summed across worker threads, so
+    # --- timing decomposition — summed across worker threads, so
     # transfer_seconds + convert_seconds may exceed elapsed_s (they overlap). bytes_downloaded is
     # the JP2 bytes actually pulled from CDSE (basis for throughput MB/s); skips contribute 0. ---
     bytes_downloaded: int = 0            # JP2 bytes transferred this run (excludes skipped)
@@ -202,7 +202,7 @@ class DownloadResult:
     convert_seconds: float = 0.0         # summed local JP2->COG conversion wall-time
     # Wall-clock span the transfer phase actually occupied (earliest start .. latest end), NOT
     # summed across threads — so bytes_downloaded / transfer_wall_seconds is the *effective*
-    # aggregate MB/s to compare apples-to-apples with the single-stream probe (spec 25).
+    # aggregate MB/s to compare apples-to-apples with the single-stream probe.
     transfer_wall_seconds: float = 0.0
     bytes_by_band: dict = dataclasses.field(default_factory=dict)  # {band: bytes} for extrapolation
 
@@ -432,7 +432,7 @@ def _transfer_one(
     tries: int = 3,
     base_delay: float = 0.5,
 ) -> tuple[bool, str, float, int]:
-    """THREAD stage (spec 25). Idempotent skip on the **final** `dst_path`
+    """THREAD stage. Idempotent skip on the **final** `dst_path`
     (`size > 0`, never a 0-byte "touched" leftover — that re-transfers). Otherwise
     transfers with the **fail-fast** retry loop on CDSE's transient S3 auth errors
     (BUG-001: a few quick re-rolls recover a *partial* bad window; a *sustained* one
@@ -468,7 +468,7 @@ def _transfer_one(
 
 
 def _convert_one(staging: str, dst_path: str, *, offset: int = 0) -> tuple[bool, str, float]:
-    """PROCESS stage (spec 25). `to_cog(staging, dst_path)` (spec 14, lossless COG
+    """PROCESS stage. `to_cog(staging, dst_path)` (spec 14, lossless COG
     with overviews) then, spec 34 §1a, stamp the declared GDAL scale/offset (reflectance
     bands only, `offset` — 0 is a no-op) + nodata-if-missing tags (closes #30/#10 — CDSE
     gets this for free since it already re-encodes jp2->COG) — then remove `staging`
@@ -493,7 +493,7 @@ def _convert_one(staging: str, dst_path: str, *, offset: int = 0) -> tuple[bool,
         is_reflectance = _is_reflectance(band)
         stamp_or_reencode(
             dst_path,
-            # reflectance-unit offset to match scale=1/10000 (spec 34 §1a): a viewer's
+            # reflectance-unit offset to match scale=1/10000: a viewer's
             # unscale=true computes DN*scale + offset, so the DN-space offset (-1000)
             # must be scaled to reflectance too (-> -0.1), else unscale yields
             # DN/10000 - 1000 ~= -1000 for every pixel (the black-tile bug).
@@ -521,14 +521,14 @@ def _download_one(
     tries: int = 3,
     base_delay: float = 0.5,
 ) -> tuple[bool, str, tuple[float, float, int]]:
-    """Sequential reference wrapper (spec 25) = `_transfer_one` then, inline,
+    """Sequential reference wrapper = `_transfer_one` then, inline,
     `_convert_one`. Kept for its direct-call unit tests and as the single-worker
     reference unit; `download()` no longer calls this — it drives the two stages
     across a transfer thread pool and a convert process pool instead (see `download`).
 
     Returns `(ok, reason, metrics)` where `reason` is ``"skipped"``/``"ok"`` on
     success or a short error label (transfer or ``"ConvertError"``) on failure, and
-    `metrics` is `(transfer_s, convert_s, bytes)` (spec 23) — zeros on skip/failure.
+    `metrics` is `(transfer_s, convert_s, bytes)` — zeros on skip/failure.
     """
     needs_convert = cog and src_url.endswith(".jp2")
     ok, reason, t_s, nbytes = _transfer_one(
@@ -614,7 +614,7 @@ def _push_scratch_to_remote(scratch_root: str, remote_root: str, catalog) -> Non
 
 def _default_max_staged(root_folderpath: str, max_convert_procs: int,
                         max_concurrent_s3: int = config.MAX_CONCURRENT_S3) -> int:
-    """Disk-aware `MAX_STAGED` sizing (spec 25 D5/D6): a **safety cap** on
+    """Disk-aware `MAX_STAGED` sizing: a **safety cap** on
     staged-but-unconverted JP2s, not a throughput lever — past `floor` a bigger
     buffer gives no throughput gain (bounded-buffer queueing), so free disk only
     *shrinks* the cap, never grows it beyond the saturation target `headroom`.
@@ -635,7 +635,7 @@ def _default_max_staged(root_folderpath: str, max_convert_procs: int,
 
 
 def _make_convert_pool(max_workers: int):
-    """Default convert-process-pool factory (spec 25). A module-level seam: tests
+    """Default convert-process-pool factory. A module-level seam: tests
     monkeypatch this to assert a `cog=False` / all-skip `download()` run never spawns
     a process pool. **Spawn** start-method (GDAL-safe; `fork` + GDAL's internal
     threads can deadlock on Linux/Batch)."""
@@ -687,7 +687,7 @@ def download(
     """THE SOURCE CONTRACT (documented signature; see specs/01-sources.md).
 
     Discover matching tiles and download the requested band files (+ MTD_TL.xml) to
-    `root_folderpath` via a **pipeline** (spec 25): a `MAX_CONCURRENT_S3`-wide thread
+    `root_folderpath` via a **pipeline**: a `MAX_CONCURRENT_S3`-wide thread
     pool transfers bytes while a separate process pool converts fetched JP2s to COGs
     concurrently, chained by `add_done_callback` and bounded by a `max_staged`
     backpressure semaphore (staged-but-unconverted JP2s on disk). Idempotent (skips
@@ -696,7 +696,7 @@ def download(
 
     `cog` (default True, spec 14): convert each fetched JP2 band to a lossless COG
     (`Bxx.tif`, with overviews) on arrival — the native ingest format, which the
-    datacube build reads far faster (spec 13). `cog=False` keeps the native `.jp2`
+    datacube build reads far faster. `cog=False` keeps the native `.jp2`
     (and never staggers a convert pool). A remote (`s3://`/`az://`) `root_folderpath`
     with `cog=True` stages to local scratch, converts there, then pushes the whole
     run to the remote root (spec 34 §5, `_push_scratch_to_remote` below) — a
@@ -867,7 +867,7 @@ def download(
             if not ok:
                 failures.append((src, reason))
             state["done"] += 1
-            # Catalog-flush cadence (spec 25 §4): chunksize no longer batches the
+            # Catalog-flush cadence: chunksize no longer batches the
             # executor (one continuous pipeline) — it now only controls how often the
             # buffer flushes to the catalog (crash resilience).
             if len(pending_results) >= chunksize:
@@ -1044,9 +1044,9 @@ def download_resume(
     stats), keeping file I/O out of the library. Returns the per-pass results.
 
     `max_convert_procs`/`max_staged`/`convert_executor` pass through to each `download`
-    call unchanged (spec 25) — see its docstring.
+    call unchanged — see its docstring.
 
-    `should_stop` (spec 26 §1) passes through to each `download` pass; when a pass
+    `should_stop` passes through to each `download` pass; when a pass
     returns `stopped=True` the resume loop ends immediately (no cooldown, not a
     completion). Also checked once before starting each new pass so a stop between
     passes doesn't launch another.
@@ -1078,7 +1078,7 @@ def download_resume(
 
 
 def sum_results(results: list[DownloadResult]) -> DownloadResult:
-    """Aggregate the per-pass results of `download_resume` into one `DownloadResult` (spec 23).
+    """Aggregate the per-pass results of `download_resume` into one `DownloadResult`.
 
     Counts/bytes/seconds add; a later pass that skips an already-downloaded file contributes 0
     bytes/seconds, so the sum is the true one-time cost. `elapsed_s` is the sum of pass wall-times.
@@ -1119,7 +1119,7 @@ def probe_throughput(
     max_cloudcover: float | None = None,
 ) -> tuple[float, int, float]:
     """Measure achievable CDSE **byte** throughput right now with a single-threaded fetch of ONE
-    representative band file (spec 23, D2). Returns `(mb_per_s, bytes, seconds)`.
+    representative band file. Returns `(mb_per_s, bytes, seconds)`.
 
     A baseline to compare against a run's *aggregate effective* MB/s: probe≈aggregate → CDSE/link
     bound; probe≫aggregate → local contention / concurrency. Transfers the JP2 to a temp path and
@@ -1168,7 +1168,7 @@ def plan_download(
     max_cloudcover: float | None = None,
     cost_model: dict | None = None,
 ) -> dict:
-    """Compute an actionable download plan **without downloading** (spec 23, D13).
+    """Compute an actionable download plan **without downloading**.
 
     Queries the CDSE STAC (anonymous, no bytes) for the tiles this request needs, diffs them
     against what is already in `catalog_filepath` (if given), and returns a plan dict: needed /
@@ -1221,7 +1221,7 @@ def plan_download(
 
 
 def format_download_plan(plan: dict) -> str:
-    """Render a `plan_download` dict as a copy-pasteable message (spec 23, D13)."""
+    """Render a `plan_download` dict as a copy-pasteable message."""
     p = plan["download_params"]
     if plan["missing_count"] == 0:
         # Nothing to download — don't contradict "missing: 0" with a "not present" line

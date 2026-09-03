@@ -1,4 +1,4 @@
-"""In-job entrypoint for the AML inference dispatcher (spec 38 D2/D3/D9).
+"""In-job entrypoint for the AML inference dispatcher.
 
 A thin shim, mirroring `fsd.workflows.shard`'s role for spec 36: `fs.get` the shard CSV and
 the staged bundle to node-local scratch, then call the **existing** `runners.run_local_inference`
@@ -49,7 +49,7 @@ def _status_url(shard_csv_url: str) -> str:
 def fetch_bundle_to_scratch(bundle_url: str, local_dir: str) -> str:
     """D3: fetch a staged bundle to node-local scratch, manifest-driven -- no directory
     listing. Reads `bundle.json` (`fs.open`), then `fs.get`s each file its `artifacts` map
-    and (spec 44) its `code` block name. Returns `local_dir`, ready for `bundle.load` --
+    and its `code` block name. Returns `local_dir`, ready for `bundle.load` --
     which is what puts the fetched `code/` on `sys.path`, so this node needs no
     adapter-specific image."""
     os.makedirs(local_dir, exist_ok=True)
@@ -75,7 +75,7 @@ def _n_final_exists(export_folderpaths) -> int:
 def _resolve_cores_and_group(
     n_units: int, cores: int | None, cubes_per_task: int | None
 ) -> tuple[int, int]:
-    """D7 (spec 38): the NODE computes the load-per-core default from its OWN core count and
+    """D7: the NODE computes the load-per-core default from its OWN core count and
     the shard size. `cores=None` => `os.cpu_count()` (run one group per core, so the bundle
     loads once per core and the node stays fully busy); `cubes_per_task=None` =>
     `ceil(n_units / cores)`, i.e. exactly `cores` groups. So the default (both None) is

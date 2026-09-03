@@ -1,10 +1,10 @@
-"""Resolving and digesting an `ImageDefinition` (spec 56 D2).
+"""Resolving and digesting an `ImageDefinition`.
 
 Two functions: `resolve()` turns every moving reference into a fixed one -- a `git+...@main`
 becomes `git+...@<40-char sha>`, a `path:` `fsd` becomes a wheel content digest, an
 unpinned base tag becomes `@sha256:...` when it can be resolved and stays a tag (recorded
 unresolved) when it can't -- and `digest()` hashes the result. `resolve()`'s output is
-exactly `image.json`'s `definition` field (spec 56 D3).
+exactly `image.json`'s `definition` field.
 
 **The exclusion list is a named constant** (`_DIGEST_EXCLUDE`), not an accident of what the
 dataclass happens to carry: `name` never enters the payload, because renaming an image does
@@ -58,7 +58,7 @@ def wheel_digest(path: str) -> str:
 
 def _digest_directory(path: str) -> str:
     """SHA-256 over every file under `path` (sorted relative path + bytes) -- the
-    `build_context=` escape hatch's digest, content not path (D2)."""
+    `build_context=` escape hatch's digest, content not path."""
     files: list[tuple[str, bytes]] = []
     for root, _dirs, filenames in os.walk(path):
         for fn in filenames:
@@ -122,7 +122,7 @@ def _default_resolve_base_digest(base: str) -> str | None:
     Registry HTTP API v2, which `mcr.microsoft.com` serves unauthenticated for public
     images) -- `Docker-Content-Digest` is the tag's current digest. Anything going wrong
     (offline, private registry, unexpected host shape) returns `None` rather than raising:
-    an unresolvable base is a warning (`base_resolved: false`), never a hard failure (D2)."""
+    an unresolvable base is a warning (`base_resolved: false`), never a hard failure."""
     try:
         host, repo_tag = base.split("/", 1)
         repo, tag = repo_tag.rsplit(":", 1)
@@ -159,12 +159,12 @@ def resolve(
     resolve_git_ref: Callable[[str, str], str] | None = None,
     wheel_dir: str | None = None,
 ) -> dict:
-    """Turn `defn` into the resolved-definition dict `image.json` stores (D2/D3): every
+    """Turn `defn` into the resolved-definition dict `image.json` stores: every
     moving reference fixed, `name` and `build_context` (a path) excluded, `build_context`
     replaced by its content digest when set.
 
     `resolve_base_digest`/`resolve_git_ref` default to the real network calls; a test
-    injects fakes so nothing here needs a live registry or a live git remote (AC8).
+    injects fakes so nothing here needs a live registry or a live git remote.
 
     `wheel_dir`, for a `path:` `fsd` only, is where the wheel this digest is computed from is
     left, so the caller can hand that exact file to `write_context` instead of building a
@@ -194,6 +194,6 @@ def resolve(
 
 def digest(resolved: dict) -> str:
     """SHA-256 over the resolved-definition dict's canonical JSON (sorted keys, no
-    whitespace) -- no `id()`, no dict-iteration order, no absolute paths (AC2)."""
+    whitespace) -- no `id()`, no dict-iteration order, no absolute paths."""
     payload = json.dumps(resolved, sort_keys=True, separators=(",", ":"))
     return f"sha256:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"

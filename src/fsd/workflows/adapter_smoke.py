@@ -1,4 +1,4 @@
-"""Node-side adapter-import smoke (spec 38 D11).
+"""Node-side adapter-import smoke.
 
 The ONE check the driver cannot do alone: whether the adapter (module:attr) actually
 imports and its artifact actually loads **inside the real inference Environment** -- the
@@ -9,7 +9,7 @@ instead of on every fan-out node.
 
 No pipeline logic: fetch the staged bundle to scratch (reuses
 `infer_shard.fetch_bundle_to_scratch`), check the bundle's declared requirements against this
-Environment (spec 44 D5), `bundle.load` it (resolves the import -- since spec 44 usually from
+Environment, `bundle.load` it (resolves the import -- since spec 44 usually from
 the bundle's own `code/` -- and reads the artifact), and confirm `predict` is callable. Writes a `_status/*.json` (spec 24/36 shape).
 
 Run as: python -m fsd.workflows.adapter_smoke <bundle_url> --status-url <url>

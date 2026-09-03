@@ -1,4 +1,4 @@
-"""Azure Key Vault secret access (spec 37 D5).
+"""Azure Key Vault secret access.
 
 The `rise` compute identity already holds `Key Vault Secrets User` on the project's
 Key Vault, so this needs no infra grant -- just a thin read, authenticated by the

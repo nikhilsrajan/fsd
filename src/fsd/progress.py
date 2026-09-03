@@ -1,4 +1,6 @@
-"""`fsd.progress` — one shared, throttled progress ticker (spec 47 D4).
+"""`fsd.progress` — one shared, throttled progress ticker.
+
+Spec: specs/47-driver-side-honesty.md
 
 Promoted from `workflows.create_datacube.setup`'s `_tick` closure, which #65 named as the
 bar to match: `[setup] 34/300 shapes (11%) | 7.9 shapes/s | elapsed 4s | eta 33s`. Every

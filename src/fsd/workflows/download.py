@@ -1,4 +1,4 @@
-"""In-job entrypoint for the AML download dispatcher (spec 37 D3).
+"""In-job entrypoint for the AML download dispatcher.
 
 A thin CLI wrapping the existing download-to-blob path -- no pipeline logic of its
 own, mirroring `fsd.workflows.shard`'s role for spec 36. Two modes, matching the two
@@ -14,7 +14,7 @@ job shapes `runners.run_aml_download` submits (D1: dispatch shape is per-source)
   `sources.mpc.download_shard` over a pre-discovered, pre-partitioned asset-row CSV
   the driver wrote (`sources.mpc.discover_shard_rows` + `runners.shard_units`).
 
-Both write a `_status/<k>.json` (D9), the same `_result.json` shape spec 24/36 use,
+Both write a `_status/<k>.json`, the same `_result.json` shape spec 24/36 use,
 built from the source call's `DownloadResult`.
 
 Run as:
@@ -95,7 +95,7 @@ def run_roi(
     secret_name: str | None = None,
     creds_url: str | None = None,
 ) -> dict:
-    """`--roi` mode (D3): the whole-ROI CDSE job. Reads S3 creds from exactly one
+    """`--roi` mode: the whole-ROI CDSE job. Reads S3 creds from exactly one
     of two mutually exclusive sources (D5 REVISED): Key Vault (`vault_url`/
     `secret_name`) or a blob JSON (`creds_url`), then calls `sources.cdse.download`
     unmodified."""
@@ -125,7 +125,7 @@ def run_roi(
 
 
 def run_shard(*, shard_url: str, dst: str, catalog: str, status_url: str) -> dict:
-    """`--shard` mode (D3): one of N per-shard MPC jobs over a pre-discovered,
+    """`--shard` mode: one of N per-shard MPC jobs over a pre-discovered,
     pre-partitioned asset-row CSV. No credentials needed (anonymous MPC, D4/D5)."""
     with fs.open(shard_url, "r") as f:
         rows = pd.read_csv(f).to_dict("records")

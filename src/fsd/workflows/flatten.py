@@ -1,4 +1,4 @@
-"""In-job entrypoint for the AML flatten reduce (spec 39 D3).
+"""In-job entrypoint for the AML flatten reduce.
 
 A thin CLI wrapping the unmodified `datacube.flatten.flatten` -- no pipeline logic of its
 own, mirroring `fsd.workflows.download`'s shape. Reads the caller's `input_csv` (any

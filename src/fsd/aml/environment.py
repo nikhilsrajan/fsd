@@ -1,9 +1,11 @@
-"""`fsd.aml.environment` -- the AML side of an image (spec 56 D4/D6).
+"""`fsd.aml.environment` -- the AML side of an image.
+
+Spec: specs/56-image-definitions-and-registry.md
 
 **The only module under `fsd.aml` that touches Azure** -- `az ml environment ...` and
 `az ml workspace show`, via `subprocess`. Every function takes its Azure coordinates
 explicitly (`resource_group`, `workspace`); fsd hard-codes nothing (§7 Q2). Tests stub these
-three functions rather than calling `az` (AC8) -- `ensure_environment` (`fsd/aml/__init__.py`)
+three functions rather than calling `az` -- `ensure_environment` (`fsd/aml/__init__.py`)
 takes them as injectable keyword arguments for exactly that reason.
 """
 

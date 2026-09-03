@@ -18,7 +18,7 @@ from fsd.storage.azure import account_from_url, storage_token, to_vsi
 
 __all__ = ["rio_open", "rio_env"]
 
-# D5 (spec 57): every remote VSI open otherwise costs more than one HTTP request, because GDAL
+# D5: every remote VSI open otherwise costs more than one HTTP request, because GDAL
 # lists the containing directory looking for sidecars (.aux.xml/.ovr/.msk). fsd writes plain COGs
 # with statistics inline and no sidecars, so nothing in-repo depends on one -- named risk (spec 57
 # §5): EMPTY_DIR means a sidecar that DOES exist stops being read. Applies to every remote raster

@@ -52,11 +52,11 @@ def run_task(
     `area_contribution`); we band-flatten it and hand it to the builder.
 
     `write_timings` asks the builder to drop a `timings.json` sidecar (benchmark
-    seam, spec 11); `write_read_log` asks for a `reads.jsonl` per-read log (spec 12).
+    seam, spec 11); `write_read_log` asks for a `reads.jsonl` per-read log.
     `main()` sets both from the `FSD_WRITE_TIMINGS` / `FSD_WRITE_READ_LOG` env vars so
     the harness can enable them without any runner/Snakefile plumbing.
 
-    D7 (spec 36): a task whose final artifact (`datacube.npy`) already exists at
+    D7: a task whose final artifact (`datacube.npy`) already exists at
     `export_folderpath` returns immediately without rebuilding -- the resume signal is
     the artifact's own existence, not a sentinel. This is what makes a re-dispatched
     (recovery-retried) shard cheap: it skips every cube it already finished.

@@ -1,4 +1,4 @@
-"""The model registry (P6): a name for a bundle, on the storage seam (D1).
+"""The model registry: a name for a bundle, on the storage seam.
 
     <registry>/
       <name>/
@@ -8,13 +8,13 @@
 
 Everything reads and writes through `fsd.storage.fs`, so a local registry and a blob
 registry are the same code. Versions are immutable; `_aliases.json` is the only mutable
-pointer (D3). `publish` is idempotent by content digest (D2). A version is published **in
-place** (spec 52 D1) -- no staging prefix, no directory rename -- and re-digested before
+pointer. `publish` is idempotent by content digest. A version is published **in
+place** -- no staging prefix, no directory rename -- and re-digested before
 `v<N>/_complete.json` is written last, which is the all-or-nothing moment a directory
 rename used to provide. `migrate` relocates a registry and re-digests every version, so a
-ref that resolves against one root resolves identically against a copy of it (D11).
+ref that resolves against one root resolves identically against a copy of it.
 
-**Concurrency, stated rather than implied.** There is no lock (spec 51 §5). What IS
+**Concurrency, stated rather than implied.** There is no lock. What IS
 guaranteed: a reader never sees a half-written `_aliases.json` (staged and renamed), and
 `publish` never returns a version whose bytes are not the ones it was given -- it
 re-digests what landed before marking it complete, and retries at `v<N+1>` on a genuine
@@ -22,10 +22,10 @@ collision. What is NOT guaranteed: two concurrent `set_alias` calls can lose an 
 two concurrent `publish` calls can leave a gap in the version sequence, and two
 simultaneous publishers writing the same `v<N>` can interleave their files -- neither one
 marks the result complete, so the damage is a stranded, unmarked directory rather than a
-bad model being served (spec 52 §5). See `_write_new_version`.
+bad model being served. See `_write_new_version`.
 
 `resolve`/`publish` are the interface; the storage-seam layout is v1's only backend, but
-a second one can be added without either signature changing (D10).
+a second one can be added without either signature changing.
 
 Spec: specs/51-deploy-model-registry.md, specs/52-registry-on-blob.md
 """
@@ -74,13 +74,13 @@ class Resolved(NamedTuple):
     path: str
 
 
-# --- ref parsing (D3) ---------------------------------------------------------
+# --- ref parsing --------------------------------------------------------------
 
 
 def parse_ref(ref: str) -> tuple[str, str, str]:
     """`'crop-rf:3'` -> `('crop-rf', ':', '3')`; `'crop-rf@champion'` -> `('crop-rf', '@',
     'champion')`. A bare name (no `:` or `@`) raises, naming both forms -- a default that
-    silently picked one would be the failure mode aliases exist to make visible (D3)."""
+    silently picked one would be the failure mode aliases exist to make visible."""
     m = _REF_RE.match(ref)
     if not m:
         raise ValueError(
@@ -132,7 +132,7 @@ def _name_root(registry: str, name: str) -> str:
 def resolve(ref: str, registry: str, *, storage_options: dict | None = None) -> Resolved:
     """Turn a ref into the version it names. Costs one `_aliases.json` read for a named
     alias, and nothing for a version pin (`name:N` or the `name@vN` shorthand) -- pinning
-    a version never lists or reads anything (D9), which keeps N nodes each resolving a
+    a version never lists or reads anything, which keeps N nodes each resolving a
     model off the hot path."""
     name, sep, value = parse_ref(ref)
     if sep == ":":
@@ -167,16 +167,16 @@ def _read_aliases(registry: str, name: str, storage_options: dict | None) -> dic
 def set_alias(
     name: str, alias: str, version: int, registry: str, *, storage_options: dict | None = None,
 ) -> None:
-    """Repoint `alias` at `version` (D3). Never touches a version directory.
+    """Repoint `alias` at `version`. Never touches a version directory.
 
     Refuses an alias shaped `v<digits>`: that spelling is reserved for the `name@vN`
-    version-pin shorthand (D9), so an alias with that name could never be reached by
+    version-pin shorthand, so an alias with that name could never be reached by
     `resolve` -- it would silently pin the literal version number instead.
 
     The new `_aliases.json` is staged and renamed rather than written in place, because
-    `resolve` reads that one file (D9) and a fan-out resolving `@champion` while someone
+    `resolve` reads that one file and a fan-out resolving `@champion` while someone
     promotes must never read a half-written one. Two *concurrent* `set_alias` calls can
-    still lose an update -- the registry has no lock (spec 51 §5) -- but no reader ever
+    still lose an update -- the registry has no lock -- but no reader ever
     sees a torn file.
     """
     if _VERSION_ALIAS_RE.match(alias):
@@ -206,7 +206,7 @@ def set_alias(
         raise
 
 
-# --- content digest (D2) -------------------------------------------------------
+# --- content digest ------------------------------------------------------------
 
 
 def _bundle_content_rels(manifest: dict) -> list[str]:
@@ -254,7 +254,7 @@ def content_digest(bundle_path: str, *, storage_options: dict | None = None) -> 
     return _digest_of(_read_bundle_content(bundle_path, storage_options))
 
 
-# --- the deploy record (D7) ------------------------------------------------------
+# --- the deploy record -----------------------------------------------------------
 
 
 def read_deploy_record(version_dir: str, *, storage_options: dict | None = None) -> dict | None:
@@ -293,11 +293,11 @@ def _read_deploy_digest(version_dir: str, storage_options: dict) -> str | None:
 def write_deploy_record(
     name: str, version: int, record: dict, registry: str, *, storage_options: dict | None = None,
 ) -> None:
-    """Write `_deploy.json` beside `bundle.json` in `<registry>/<name>/v<version>/` (D7) --
+    """Write `_deploy.json` beside `bundle.json` in `<registry>/<name>/v<version>/` --
     the binding between this version, the image that was proven to run it, and the
     verification result. Staged and renamed like `_aliases.json` (`set_alias`), so a reader
     never observes a half-written record; writing it does not touch the version's
-    manifest-declared content, so it never changes the content digest (D2)."""
+    manifest-declared content, so it never changes the content digest."""
     opts = storage_options or {}
     vpath = version_path(registry, name, version)
     if not fs.exists(vpath, **opts):
@@ -312,7 +312,7 @@ def write_deploy_record(
         raise
 
 
-# --- publish (D2) ---------------------------------------------------------------
+# --- publish --------------------------------------------------------------------
 
 
 def _list_names(registry: str, storage_options: dict) -> list[str]:
@@ -328,7 +328,7 @@ def _list_names(registry: str, storage_options: dict) -> list[str]:
 
 
 def _is_version_complete(version_dir: str, storage_options: dict) -> bool:
-    """A version counts once `_complete.json` is there (D2), or -- for content that
+    """A version counts once `_complete.json` is there, or -- for content that
     predates this marker -- once `bundle.json` is there with no marker at all (D5's
     legacy rule). A version published by the pre-spec-52 code was staged under a temp
     prefix and only ever became `v<N>` via a directory rename that lands-or-doesn't, so
@@ -376,13 +376,13 @@ def _write_new_version(
     name_root: str, files: list[tuple[str, bytes]], digest: str, storage_options: dict,
 ) -> int:
     """Write `files` directly under the next free `v<N>` and mark it complete last,
-    returning the version that actually holds them (spec 52 D1, D3). No staging prefix,
+    returning the version that actually holds them. No staging prefix,
     no directory rename -- `storage.fs.rename` is unchanged by this and is not used here.
 
     Three steps land in order: (1) write every file straight into `v<N>/`; (2) re-digest
     what actually landed and confirm it equals the caller's digest -- publishing is only
     complete once the bytes are provably the caller's, the same proof `migrate` uses to
-    accept a copy (D11); (3) write `v<N>/_complete.json` **last**, carrying that digest.
+    accept a copy; (3) write `v<N>/_complete.json` **last**, carrying that digest.
     A single-object write is atomic on every backend fsd targets, so step 3 is the
     all-or-nothing moment the directory rename used to provide.
 
@@ -412,7 +412,7 @@ def _write_new_version(
     is strictly worse than the alternative -- stranding a folder, a cost spec 52 §5 already
     accepts in writing.
 
-    Bounded at `_MAX_PUBLISH_ATTEMPTS` (D3): the loop retries only genuine version
+    Bounded at `_MAX_PUBLISH_ATTEMPTS`: the loop retries only genuine version
     collisions, so an unbounded run here would mean something is structurally wrong, not a
     transient race.
     """
@@ -449,8 +449,8 @@ def _write_new_version(
             ) from exc
 
         if landed_digest != digest:
-            # Someone else's bytes are interleaved with ours at this target (spec 52 §5).
-            # Leaving it unmarked is correct -- it stays invisible (D2) -- but claiming it
+            # Someone else's bytes are interleaved with ours at this target.
+            # Leaving it unmarked is correct -- it stays invisible -- but claiming it
             # as ours would be wrong, so move on rather than retry the same target.
             version += 1
             continue
@@ -480,11 +480,11 @@ def publish(
     """Publish the bundle at `bundle_path` to `<registry>/<name>/`. Returns the version
     integer.
 
-    Idempotent by content digest (D2): if a version with identical content already
+    Idempotent by content digest: if a version with identical content already
     exists, it is returned and nothing is written -- `publish` is safe to call again
     from a re-run notebook cell. Otherwise the next integer version is allocated and
     published in place, marked complete only once its bytes are re-digested and confirmed
-    (spec 52 D1).
+.
 
     `storage_options` reaches the registry; `bundle_storage_options` reaches
     `bundle_path` (only needed when the bundle itself is not local).
@@ -518,7 +518,7 @@ def publish(
     return version
 
 
-# --- migrate (D11) ---------------------------------------------------------------
+# --- migrate ---------------------------------------------------------------------
 
 
 def migrate(
@@ -528,7 +528,7 @@ def migrate(
     src_storage_options: dict | None = None,
     dst_storage_options: dict | None = None,
 ) -> None:
-    """Copy a registry tree onto a new root, re-digesting every version (D11).
+    """Copy a registry tree onto a new root, re-digesting every version.
 
     Not a schema rewrite: nothing the registry writes names its own location (D11's
     invariant), so a ref that resolved against `src_registry` resolves identically
@@ -566,7 +566,7 @@ def _migrate_version(vsrc: str, vdst: str, src_opts: dict, dst_opts: dict) -> No
             f"migrate: {vsrc} -> {vdst} digest mismatch after copy (source {before}, "
             f"copied {after}) -- refusing a possibly-corrupted copy."
         )
-    # Marked last, same as `_write_new_version`'s step 3 (D1): migrate already performs
+    # Marked last, same as `_write_new_version`'s step 3: migrate already performs
     # D1's steps 1 and 2 above (write, re-digest-and-confirm), so its output is first-class
     # marked content, not something that has to fall back on D5's legacy rule to be seen.
     fs.write_text(
@@ -574,7 +574,7 @@ def _migrate_version(vsrc: str, vdst: str, src_opts: dict, dst_opts: dict) -> No
         json.dumps({"digest": after}, indent=2, sort_keys=True),
         **dst_opts,
     )
-    # `_deploy.json` (D7) is not manifest-declared content -- it never affects the digest
+    # `_deploy.json` is not manifest-declared content -- it never affects the digest
     # above -- but it is the durable fact a `deploy` produced, and dropping it silently on
     # a relocation would defeat D11's promise that a move is "a copy plus a changed
     # registry= argument", not a loss of every version's binding record.

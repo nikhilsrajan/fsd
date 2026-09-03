@@ -1,15 +1,15 @@
 """fsd high-level API — the verbs users call.
 
-Spec: specs/16-packaging-and-api.md (P0). A thin façade over the internal modules
+Spec: specs/16-packaging-and-api.md. A thin façade over the internal modules
 (`sources`, `catalog`, `datacube`, `workflows`, `flatten`) that raises the scope from
 implementation vocabulary ("flatten", "input.csv") to user intent ("make training data").
 Adds no pipeline logic.
 
 - `download(...)`            -> fetch S2 L2A tiles + build a TileCatalog (its own verb).
 - `create_training_data(...)`-> label polygons + catalog -> datacubes -> flattened arrays.
-- `run_inference(...)`       -> model over pre-built cubes (spec 18) OR an ROI (spec 21,
+- `run_inference(...)`       -> model over pre-built cubes OR an ROI (spec 21,
                                tile -> per-cell build+infer via the runner seam) -> COG + STAC.
-- `deploy(...)`              -> stub (P6): register a model bundle.
+- `deploy(...)`              -> stub: register a model bundle.
 
 `runner=`/`storage=` are the seams (ROADMAP §2.2/§2.3): only `runner="local"` and local
 `storage` are wired in P0; Azure Batch / blob arrive in P1/P2 as config, not API changes.
@@ -64,11 +64,11 @@ __all__ = [
     "verify_adapter",
 ]
 
-# D4 (spec 49): the three settings `overwrite=` accepts on `create_training_data`.
+# D4: the three settings `overwrite=` accepts on `create_training_data`.
 _VALID_OVERWRITE = (False, True, "datacubes", "flatten")
 
 
-# D2 (spec 47): a cached work list that is a strict superset of the freshly tiled grids by no
+# D2: a cached work list that is a strict superset of the freshly tiled grids by no
 # more than this many ids is named as a probable spec-46 D4 cell-count drift (AT_ROI dropped 1,
 # s2grid=476da24 dropped 8, measured 2026-08-19) rather than a different roi.
 _RESUME_DRIFT_MAX_MISSING = 10
@@ -92,7 +92,7 @@ def compute_n_timestamps(
 ) -> int:
     """`T` for a calendar-mosaic build: ceil((enddate - startdate) / mosaic_days).
 
-    Pure function of the caller's window (spec 15) — computable with no download. This is
+    Pure function of the caller's window — computable with no download. This is
     the hook P4 will use to assert `T == model.n_timestamps` before an inference run.
     """
     start = pd.to_datetime(startdate, utc=True)
@@ -106,7 +106,7 @@ _VALID_RUNNERS = ("local", "aml")
 
 def _check_local_seams(runner: str, storage, *, storage_allowed: bool = True) -> list[str]:
     """`runner` is `"local"` (Snakemake) or `"aml"` (spec 36 P2: the Azure ML scale
-    runner). `storage` is wired to the Azure compute seam in P1 (spec 31) for the verbs
+    runner). `storage` is wired to the Azure compute seam in P1 for the verbs
     that read/write the pipeline's own artifacts (`download`, `create_training_data`) —
     pass `storage_allowed=False` for verbs that are explicitly out of P1 scope
     (`run_inference`/`deploy`: inference/serving-on-blob is P4/P5, stays local for now)."""
@@ -161,12 +161,12 @@ def _raise_preflight(errs: list[str]) -> None:
 
 
 def _check_resume_identity(csv_filepath: str, grids: gpd.GeoDataFrame, output_folderpath: str) -> None:
-    """D1 (spec 47): `input.csv` resumes by EXISTENCE, not identity -- a cached work list from a
+    """D1: `input.csv` resumes by EXISTENCE, not identity -- a cached work list from a
     prior, different roi must not silently win over the freshly tiled grids (#66). Compares the
     `id` sets; ANY difference raises rather than repairing, because both repairs are worse:
     rewriting `input.csv` in place orphans every cell already written under the old id set, and
     deleting the folder is not reliable on blob (#50). Detect-and-refuse is the honest subset of
-    Snakemake's detect-and-rerun (D1)."""
+    Snakemake's detect-and-rerun."""
     with fs.open(csv_filepath, "r") as f:
         cached_ids = set(pd.read_csv(f)["id"].astype(str))
     fresh_ids = set(grids["id"].astype(str))
@@ -199,7 +199,7 @@ def _check_resume_identity(csv_filepath: str, grids: gpd.GeoDataFrame, output_fo
 def _artifacts_present(folder: str, names: list[str]) -> bool:
     """Every named file under `folder` exists AND is non-empty -- a half-written artifact
     (#74's class of defect: a truncated write catalogued as complete) must not read as
-    "done" (spec 49 D2, spec 48 D5)."""
+    "done"."""
     for name in names:
         fp = os.path.join(folder, name)
         if not fs.exists(fp) or fs.size(fp) == 0:
@@ -280,13 +280,13 @@ class TrainingData:
 
 @dataclass
 class InferenceResult:
-    """Handle to a completed local inference run (spec 18)."""
+    """Handle to a completed local inference run."""
 
     output_folderpath: str
     output_filepaths: list[str]
     stac_catalog_filepath: str
     merged_filepath: str | None = None
-    grids_filepath: str | None = None  # ROI mode: the saved gridded-ROI GeoJSON (spec 21)
+    grids_filepath: str | None = None  # ROI mode: the saved gridded-ROI GeoJSON
 
 
 # --- verbs -------------------------------------------------------------------
@@ -311,21 +311,21 @@ def download(
     """Fetch S2 L2A tiles for the ROI/date range into `dst_folderpath`, build/append its
     TileCatalog, and return the catalog filepath (feed it to `create_training_data`).
 
-    `source` (spec 32): `"cdse"` (default) wraps `sources.cdse.download` and requires
+    `source`: `"cdse"` (default) wraps `sources.cdse.download` and requires
     `creds`; `"mpc"` wraps `sources.mpc.download` (Microsoft Planetary Computer,
     anonymous by default — `creds` is not required and `cog` is ignored, MPC assets
     are already COG). Preflighted. `storage` is a seam (local only in P0). See specs/16.
 
     `runner="local"` (default) downloads in-process, as above. `runner="aml"` (spec
     37 P2) dispatches onto an Azure ML cluster instead, colocated with blob: CDSE
-    runs as **one** job; MPC **fans out** across N (D1). `runner_kwargs` carries
+    runs as **one** job; MPC **fans out** across N. `runner_kwargs` carries
     `cluster=`/`environment=`/`root=`/`identity_client_id=`/ and, for CDSE, exactly
     one of `vault_url=`+`secret_name=` (Key Vault) or `creds_url=` (blob JSON) — D5
     REVISED, see `workflows.runners.run_aml_download`. `creds` is ignored for
     `runner="aml"`: the dispatched job reads them on the node instead, so `roi`
     must be a url the node can also read (not an in-memory GeoDataFrame).
 
-    `dst_folderpath` is the identity of this download (spec 47 D3): its `TileCatalog` is what a
+    `dst_folderpath` is the identity of this download: its `TileCatalog` is what a
     re-run diffs against to skip what is already there, so re-running with a different `roi`/
     `startdate`/`enddate`/`bands` into the same `dst_folderpath` appends into one shared catalog
     rather than starting a new one.
@@ -406,14 +406,14 @@ def create_training_data(
     run_folderpath: str | None = None,
 ) -> TrainingData:
     """Label polygons (+ imagery) -> flattened, locally-landed training arrays: the
-    full-pipeline façade (spec 39 D1).
+    full-pipeline façade.
 
     Orchestrates an optional download phase, `workflows.create_datacube` (one datacube per
     polygon, calendar mosaic), then `flatten_training_data` — the user never types "flatten".
     Returns a `TrainingData` handle.
 
-    **Skips work already done (spec 49).** The download leg already diffs against the
-    catalog (spec 47 D8). The build leg diffs `input.csv`'s `datacube_filepath` column
+    **Skips work already done.** The download leg already diffs against the
+    catalog. The build leg diffs `input.csv`'s `datacube_filepath` column
     against what already exists (`run_create_datacube` D1/D2): a shortfall of 0 submits no
     job. The flatten leg is skipped when `_flatten_stamp.json` already records the identity
     (never the modification time, D3) of exactly this cube set + these run parameters
@@ -425,7 +425,7 @@ def create_training_data(
     redoes the flatten; ``True`` does both. Every skip prints one line naming what it
     skipped and why.
 
-    **Download phase (D1):** `download=False` (default, back-compat) requires `catalog_filepath`
+    **Download phase:** `download=False` (default, back-compat) requires `catalog_filepath`
     to already exist (run `fsd.download` first — compute never fetches from a provider
     implicitly, spec 23 D13). `download=True` first calls `fsd.download(roi=label_polygons, ...)`
     into `catalog_filepath`'s folder (`source="mpc"` demo default; `"cdse"` needs `creds` for
@@ -476,7 +476,7 @@ def create_training_data(
             errs.append(f"adapter.required_bands not in requested bands: {missing}")
         # D6: no n_timestamps preflight -- T is caller-set; DemoRF retrains at whatever
         # T the window/mosaic_days produce. The calendar-mosaic same-timestamps
-        # cross-cube invariant (spec 15) still holds -- flatten raises on disagreement.
+        # cross-cube invariant still holds -- flatten raises on disagreement.
     try:
         _resolve_aggregate(aggregate)
     except ValueError as exc:
@@ -500,7 +500,7 @@ def create_training_data(
     if runner == "aml" and not root:
         errs.append("runner_kwargs['root'] (the blob working root) is required for runner='aml'.")
 
-    # D2 (spec 50): raise the STRUCTURAL preflight errors now, before any catalog access.
+    # D2: raise the STRUCTURAL preflight errors now, before any catalog access.
     # The top-level short-circuit below must be reachable without `catalog_filepath` even
     # existing -- catalog/download preflight (wave 2, below) only runs when it is not.
     _raise_preflight(errs)
@@ -525,10 +525,10 @@ def create_training_data(
         run_folderpath = os.path.join(export_folderpath, "run")
 
     # D2/D3 (spec 50 §9 step 2): phase 1, the top-level short-circuit. The target is the
-    # landed arrays; its identity is computed from the REQUEST (D3), never from
+    # landed arrays; its identity is computed from the REQUEST, never from
     # `input.csv` -- so checking it costs zero catalog access, zero `setup`, zero
     # dispatch, even on a call whose `input.csv` has never been written. `overwrite`
-    # anything other than `False` is a forced rebuild (D8) and must never short-circuit.
+    # anything other than `False` is a forced rebuild and must never short-circuit.
     if overwrite is False:
         want_features = adapter is not None or feature_sequence is not None or aggregate is not None
         identity = _flatten_identity_from_request(
@@ -549,7 +549,7 @@ def create_training_data(
                 want_features=want_features,
             )
 
-    # D7 (spec 50): the walk announces what it resolved, before it runs anything. Reached
+    # D7: the walk announces what it resolved, before it runs anything. Reached
     # only when the top-level short-circuit above did NOT fire.
     if overwrite is not False:
         stale_reason = f"overwrite={overwrite!r} forces a rebuild"
@@ -576,7 +576,7 @@ def create_training_data(
     else:
         shapefilepath = label_polygons
 
-    # D2 (spec 50): wave 2 -- catalog/download preflight. Unreachable when the
+    # D2: wave 2 -- catalog/download preflight. Unreachable when the
     # short-circuit above already fired, which is the point: a satisfied re-run needs
     # `catalog_filepath` to exist no more than it needs `setup` to run.
     catalog_errs: list[str] = []
@@ -623,7 +623,7 @@ def create_training_data(
             storage=storage, runner=runner, runner_kwargs=runner_kwargs,
         )
 
-    # D4 (spec 49): `overwrite="datacubes"`/`True` forces a rebuild of the cubes; a
+    # D4: `overwrite="datacubes"`/`True` forces a rebuild of the cubes; a
     # rebuild is NOT itself forced to re-flatten -- that falls out of D3 (the flatten
     # skip compares identity, and `overwrite="datacubes"` unconditionally forces the
     # flatten leg too, below, since a caller who explicitly asked for a rebuild should
@@ -649,9 +649,9 @@ def create_training_data(
         overwrite=build_overwrite, runner=runner, runner_kwargs=runner_kwargs,
     )
 
-    # Flatten phase delegates to `flatten_training_data` (D5) -- no duplicated reduce/
+    # Flatten phase delegates to `flatten_training_data` -- no duplicated reduce/
     # land/features logic. Reuse the SAME run_id (aml) so the flatten reduce writes to a
-    # sibling `.../_flatten` prefix under the build's own run_folderpath (D7).
+    # sibling `.../_flatten` prefix under the build's own run_folderpath.
     flatten_runner_kwargs = runner_kwargs
     if runner == "aml":
         flatten_runner_kwargs = dict(runner_kwargs or {})
@@ -677,13 +677,13 @@ _FLATTEN_STAMP_NAME = "_flatten_stamp.json"
 
 def _flatten_identity(input_df: pd.DataFrame, *, id_col, filepath_col, adapter, feature_sequence,
                       aggregate) -> dict:
-    """D3 (spec 49): "were these arrays derived from exactly this request?" -- the sorted
+    """D3: "were these arrays derived from exactly this request?" -- the sorted
     `(id, datacube_filepath)` pairs `input_df` names, plus the run parameters that shape the
     arrays (read straight off `input_df`'s own columns, written there by
     `create_datacube.setup`: `bands`/`mosaic_days`/window/`scl_mask_classes`), plus the
     feature transform (`aggregate` + `feature_sequence`, fingerprinted by qualname+kwargs,
     §7 Q4 -- editing a feature function's BODY with the same name does not invalidate this).
-    Never a modification time (D3/AC6)."""
+    Never a modification time."""
     cubes = sorted(
         [str(row[id_col]), str(row[filepath_col])] for _, row in input_df.iterrows()
     )
@@ -710,11 +710,11 @@ def _flatten_identity_from_request(
     scl_mask_classes: list[int], mosaic_scheme: str,
     adapter, feature_sequence, aggregate,
 ) -> dict:
-    """D3 (spec 50) -- **the load-bearing decision**: the same identity `_flatten_identity`
+    """D3 -- **the load-bearing decision**: the same identity `_flatten_identity`
     computes, but from the REQUEST rather than from `input.csv` (which is `setup`'s
     OUTPUT -- that is the knot §1 describes). A cube's path is derivable from
-    `(run_folderpath, window, id)` and nothing else (§3 D3), so naming the targets costs
-    no catalog read, no `input.csv` read, and no `setup` call (AC4/AC5).
+    `(run_folderpath, window, id)` and nothing else, so naming the targets costs
+    no catalog read, no `input.csv` read, and no `setup` call.
 
     It does read one small file: D5's `_manifest.json`, to subtract the known-empty ids
     (F4). That is not the knot D3 unties -- the manifest is not produced by the rule this
@@ -819,7 +819,7 @@ def _load_landed_arrays(export_folderpath: str):
 def _land_current_training_data(
     export_folderpath: str, run_folderpath: str, *, label_col, want_features: bool,
 ) -> TrainingData:
-    """D2/D7 (spec 50): the target is already CURRENT -- print the `[fetch]` line and
+    """D2/D7: the target is already CURRENT -- print the `[fetch]` line and
     return the arrays, without touching the catalog, `setup`, or a runner. `want_features`
     only tells us which files to report; nothing here recomputes them (the stamp match
     already proved they match this exact request, D3)."""
@@ -855,7 +855,7 @@ def flatten_training_data(
     storage=None,
 ) -> TrainingData:
     """Flatten already-built cubes (an `input_csv` of `datacube_filepath`s) into one training
-    array, landed locally (spec 39 D5) — the flatten-only sibling of `create_training_data`, for
+    array, landed locally — the flatten-only sibling of `create_training_data`, for
     cubes that already exist on blob (e.g. runbook 36 Phase 3's `input.csv`).
 
     `runner="local"` (default): `datacube.flatten.flatten` runs in-process (cubes stream over the
@@ -869,12 +869,12 @@ def flatten_training_data(
 
     `label_col` (D-labels) optional: `labels.npy` is written only when given.
 
-    **Skip (spec 49 D3/D6):** on completion this writes `_flatten_stamp.json` recording the
+    **Skip:** on completion this writes `_flatten_stamp.json` recording the
     identity of the cubes + run parameters it was derived from. `overwrite=False` (default):
     if a later call's identity matches the stamp AND every array is still present, the reduce
     is skipped entirely and the existing arrays are returned as a `TrainingData` -- otherwise
     (mismatch, missing stamp, missing/corrupt arrays) it reduces as normal. `overwrite=True`
-    always reduces. The comparison never reads a modification time (D3/AC6): a cube rebuilt
+    always reduces. The comparison never reads a modification time: a cube rebuilt
     under the same id/path is caught only if the id/path SET or the run parameters differ --
     see `_flatten_identity`.
     """
@@ -938,7 +938,7 @@ def flatten_training_data(
                 files.append("labels.npy")
             # force=True: this branch only runs when the flatten stamp did NOT match (a
             # genuine re-run), so stale local arrays from a prior, different identity must
-            # be overwritten -- not mistaken for "already landed" (spec 49 D3).
+            # be overwritten -- not mistaken for "already landed".
             _land_local(blob_export, export_folderpath, files, force=True)
         else:
             _flatten.flatten(
@@ -970,7 +970,7 @@ def _land_local(blob_prefix: str, local_folder: str, files: list[str], *, force:
     never leaves a truncated `.npy` and this loop is safe to re-run.
 
     `force=False` (default): existence = already landed, so a retried call after an
-    interrupted transfer skips whatever already arrived. `force=True` (spec 49 D3): the
+    interrupted transfer skips whatever already arrived. `force=True`: the
     caller has already decided this IS a genuine re-run (the flatten identity changed, or
     `overwrite=True`) -- stale local files from a PRIOR, different identity must be
     overwritten, not mistaken for "already landed"."""
@@ -1040,7 +1040,7 @@ def _is_ref_shaped(model: str) -> bool:
 
 
 def _resolve_model_ref(model, registry, *, why):
-    """`model` -> the same thing with any registry ref replaced by its version path (spec 51 D4).
+    """`model` -> the same thing with any registry ref replaced by its version path.
 
     **Idempotent and shape-gated, deliberately.** Two call sites read `model` as a path --
     `_model_spec` (which reads `bundle.json` to preflight bands/T) and `_ensure_bundle` (which
@@ -1050,7 +1050,7 @@ def _resolve_model_ref(model, registry, *, why):
     path included) comes back untouched, so a third call site cannot reintroduce that bug.
 
     `registry=` absent + a `"name@alias"`-shaped string is a `PreflightError` naming the missing
-    argument, never a silent fallback to treating it as a path (AC6). `":"` is never sniffed --
+    argument, never a silent fallback to treating it as a path. `":"` is never sniffed --
     it collides with URL schemes and Windows drive letters -- so a `"name:N"`-shaped path with no
     `registry=` passes through unchanged, as it always has.
 
@@ -1118,7 +1118,7 @@ def _resolve_inference_pairs(inference_datacubes, output_folderpath):
     """-> (pairs, geometries). `pairs` = [(datacube_filepath, output_filepath)]. Accepts an
     input.csv, a folder of datacube subfolders, or an explicit list of `datacube.npy` filepaths.
 
-    `geometries` (spec 28) = `{output_filepath: shapefilepath}` when the source is an `input.csv`
+    `geometries` = `{output_filepath: shapefilepath}` when the source is an `input.csv`
     with a `shapefilepath` column (the manifest-driven STAC-geometry contract); `None` for the
     folder/list modes, which have no manifest to source a footprint from (STAC falls back to the
     raster bbox for those).
@@ -1219,7 +1219,7 @@ def _merge_mosaic(filepaths, nodata, *, reproject_to_dominant: bool, merge_crs):
 
     from fsd.storage.azure import to_vsi
 
-    # D5 (spec 47): tick per input, matching [setup]'s shape exactly. NOTE what each phase
+    # D5: tick per input, matching [setup]'s shape exactly. NOTE what each phase
     # actually costs, so the bar does not claim to be finished while the long leg runs
     # (review, 2026-08-20): opening an input reads its HEADER over /vsiadls/ -- real WAN
     # latency, but small -- while the pixels are read later, inside `rio_merge` (and, in
@@ -1331,7 +1331,7 @@ def _finalize_outputs(output_filepaths, output_folderpath, spec, merge, collecti
                       *, grids_filepath=None, merge_crs=None, geometries=None) -> InferenceResult:
     """Shared tail for both inference modes: STAC catalog + optional merge -> InferenceResult.
 
-    `geometries` (spec 28, D2 spec 57): `{output_filepath: geometry.geojson_path | shapely
+    `geometries`: `{output_filepath: geometry.geojson_path | shapely
     geometry}` — the true per-cell footprint, forwarded to `cog_outputs_to_items` in place of the
     raster bbox (see its docstring for the two accepted value shapes). `None` for geometry-less
     callers (see `_resolve_inference_pairs`).
@@ -1364,7 +1364,7 @@ def run_inference(
     inference_datacubes=None,
     output_folderpath: str | None = None,
     *,
-    # --- ROI mode (spec 21) — mutually exclusive with inference_datacubes ---
+    # --- ROI mode — mutually exclusive with inference_datacubes -------------
     roi=None,
     catalog_filepath: str | None = None,
     startdate: datetime.datetime | None = None,
@@ -1394,7 +1394,7 @@ def run_inference(
 
     Two mutually-exclusive modes:
 
-    - **pre-built cubes** (spec 18): pass ``inference_datacubes`` — an ``input.csv``, a folder of
+    - **pre-built cubes**: pass ``inference_datacubes`` — an ``input.csv``, a folder of
       datacube subfolders, or a list of ``datacube.npy`` filepaths. ``cores=1`` infers in-process
       (sequential); ``cores>1`` fans out via the Snakemake **infer-only** runner (spec 22 — fsd has
       no in-process pool; ``cubes_per_task`` groups cubes per job to amortise the bundle load).
@@ -1410,28 +1410,28 @@ def run_inference(
       (``fsd.grid``), then fans out a per-cell **build-datacube + infer -> COG** task through the
       **runner seam** (Snakemake locally; Batch swaps in at P4 unchanged). Imagery is assumed
       already present in ``catalog_filepath`` — inference never touches CDSE (conserve quota).
-      **``output_folderpath`` is the identity of the run** (spec 47 D3): re-running ROI mode into
+      **``output_folderpath`` is the identity of the run**: re-running ROI mode into
       the same ``output_folderpath`` resumes the cached per-cell work list, so it must name this
       exact ``roi``/``grid_size_km``/``scale_fact`` — reusing it for a different roi raises
-      ``PreflightError`` (D1) rather than silently mixing work lists.
+      ``PreflightError`` rather than silently mixing work lists.
 
     `model` is a live `ModelAdapter`, a **bundle path**, or a **registry ref** (``"name:N"`` /
-    ``"name@alias"``) resolved against ``registry=`` (spec 51 D4) — a ref given without
+    ``"name@alias"``) resolved against ``registry=`` — a ref given without
     ``registry=`` raises ``PreflightError`` naming the missing argument, never a silent fallback to
     treating it as a path. A bundle is required for ROI mode and for
     ``cores>1`` (both cross a subprocess) — a live adapter is auto-saved to a temp bundle. Preflight
     (before any build) asserts bands ⊇ ``required_bands`` and ``T == n_timestamps``. Inference is
-    **idempotent**: existing outputs are skipped unless ``overwrite=True`` (spec 22). ``merge``:
+    **idempotent**: existing outputs are skipped unless ``overwrite=True``. ``merge``:
     ``False`` | ``True`` (strict single-CRS) | ``"reproject"`` (cross-UTM-zone-safe merge to one
     CRS — ``merge_crs`` if given, else the max-total-area zone; lossless where a cell already
     matches the target). `runner`/`storage` are local-only for the pre-built-cubes path and for
-    local ROI mode; **ROI mode + ``runner="aml"``** (spec 38 P4) accepts ``storage="azure"``/an
+    local ROI mode; **ROI mode + ``runner="aml"``** accepts ``storage="azure"``/an
     ``abfss://`` root and dispatches the per-cell build+infer task onto an Azure ML cluster
     instead (`runner_kwargs` carries `cluster=`/`environment=`/`root=`/`identity_client_id=`,
     see `workflows.runners.run_aml_inference`) — the local↔AML equivalence spec 36 Phase 3b
     proved for datacubes, now for inference.
     """
-    # D14 (spec 38): storage-on-blob is P4's own scope -- allowed for ROI mode +
+    # D14: storage-on-blob is P4's own scope -- allowed for ROI mode +
     # runner="aml" (routes to run_aml_inference), unchanged (local only) for the
     # pre-built-cubes path and for local ROI mode.
     roi_mode = roi is not None
@@ -1453,7 +1453,7 @@ def run_inference(
         errs.append("output_folderpath is required.")
     if merge not in (False, True, "reproject"):
         errs.append(f'merge must be False, True, or "reproject" (got {merge!r}).')
-    # D10 (spec 38): `dt` (the STAC output-item datetime) is natural-typed `datetime`/
+    # D10: `dt` (the STAC output-item datetime) is natural-typed `datetime`/
     # `Timestamp` -- coerce a caller-supplied string at this boundary rather than forward
     # it raw into `pystac.Item(datetime=...)`, which expects a real datetime object.
     if dt is not None:
@@ -1467,7 +1467,7 @@ def run_inference(
     if not roi_mode and inference_datacubes is None:
         errs.append("pass roi= (ROI mode) or inference_datacubes= (pre-built cubes).")
 
-    # a ref must become a version path BEFORE `_model_spec` reads `bundle.json` off it (D4).
+    # a ref must become a version path BEFORE `_model_spec` reads `bundle.json` off it.
     model = _resolve_model_ref(model, registry, why="run_inference")
     spec = _model_spec(model)
 
@@ -1483,7 +1483,7 @@ def run_inference(
             registry=registry,
         )
 
-    # --- pre-built cubes path (spec 18) ---
+    # --- pre-built cubes path -------------
     required = set(spec.get("required_bands") or [])
     want_t = int(spec.get("n_timestamps") or 0)
     pairs, geometries = _resolve_inference_pairs(inference_datacubes, output_folderpath)
@@ -1509,7 +1509,7 @@ def run_inference(
     # in-process here, `cores>1` fans out to a LOCAL Snakemake runner (`_run_prebuilt_via_runner`)
     # -- so the driver always loads the bundle on this machine and staging is unconditional. Once
     # per run, before either branch, so `_ensure_bundle`'s own resolve (cores>1) sees an
-    # already-local path and no-ops (AC6).
+    # already-local path and no-ops.
     model = _stage_local_bundle(model, output_folderpath)
     # `None` = auto; the pre-built path has no node to interrogate, so auto == today's default (1).
     pb_cores = 1 if cores is None else cores
@@ -1534,7 +1534,7 @@ def _ensure_bundle(model, output_folderpath, *, why, registry=None):
     """Return a bundle path for `model`, auto-saving a live adapter (needs an importable class),
     resolving a registry ref (`"name:N"` / `"name@alias"`), or passing a bundle path through.
 
-    Ref resolution is `_resolve_model_ref` (spec 51 D4) -- called here so a direct caller of
+    Ref resolution is `_resolve_model_ref` -- called here so a direct caller of
     `_ensure_bundle` resolves too, and called again at `_model_spec`'s call sites, which read a
     bundle path FIRST; it is idempotent, so both are safe.
     """
@@ -1555,13 +1555,13 @@ def _ensure_bundle(model, output_folderpath, *, why, registry=None):
 
 
 def _stage_local_bundle(model, output_folderpath):
-    """D1 (spec 53): a resolved bundle path that is not on THIS machine cannot be `bundle.load`ed
+    """D1: a resolved bundle path that is not on THIS machine cannot be `bundle.load`ed
     -- `sys.path.insert`ing a URL is inert (CPython's two path hooks, `zipimporter` and
     `path_hook_for_FileFinder`, neither reads one; #89). Fetch it once, manifest-driven
     (`infer_shard.fetch_bundle_to_scratch`, D3 -- no directory listing), to
     `<output_folderpath>/_model` (D2: per-run, not a cache), and return that local copy.
 
-    A no-op for a path already local (AC3) and for anything that is not a path at all (a live
+    A no-op for a path already local and for anything that is not a path at all (a live
     adapter, handled by `_ensure_bundle`'s own auto-save). Call only for a shape that actually
     loads the bundle on the driver (D1's runner gate lives at each call site, not here) -- this
     function only knows "is this path local", not "who is about to load it".
@@ -1588,7 +1588,7 @@ def _stage_local_bundle(model, output_folderpath):
 
 def _run_prebuilt_via_runner(model, pairs, output_folderpath, *, cores, cubes_per_task,
                              overwrite, predict_batch_size, skip_nan, registry=None) -> list[str]:
-    """Fan out pre-built-cube inference through the Snakemake infer-only runner (spec 22)."""
+    """Fan out pre-built-cube inference through the Snakemake infer-only runner."""
     from fsd.workflows import runners as _runners
 
     bundle_path = _ensure_bundle(model, output_folderpath, why="cores>1 inference", registry=registry)
@@ -1644,7 +1644,7 @@ def _existing_outputs(candidates, *, run_folderpath: str) -> list[str]:
     migration), so previously written outputs are still found; a further change to this
     layout must still change this pattern too.
     """
-    # D5 (spec 47): TODO #61 already collapsed this to ONE `fs.glob` round trip, so there
+    # D5: TODO #61 already collapsed this to ONE `fs.glob` round trip, so there
     # is no per-candidate loop left to tick against -- print before/after instead, in the
     # same `[label] done/total (...) | elapsed` shape, rather than inventing a per-item
     # loop that no longer exists. The `done` count is candidates PROBED, not outputs found
@@ -1667,7 +1667,7 @@ def _existing_outputs(candidates, *, run_folderpath: str) -> list[str]:
 
 def _imagery_missing_message(roi, startdate, enddate, bands, *, catalog_filepath, why) -> str:
     """Build the D13 guardrail message: the plumbing found no imagery for this request, so turn the
-    error into an actionable `fsd.download(...)` plan (spec 23). Degrades gracefully if the STAC
+    error into an actionable `fsd.download(...)` plan. Degrades gracefully if the STAC
     query itself fails (still says clearly: run download first)."""
     base = (f"imagery for this ROI/window is not present in the catalog "
             f"({catalog_filepath!r}) — run fsd.download first, then re-run. [{why}]")
@@ -1689,7 +1689,7 @@ def _run_inference_roi(
     predict_batch_size, skip_nan, merge, merge_crs, cores, cubes_per_task, overwrite,
     collection_id, dt, runner="local", runner_kwargs=None, registry=None,
 ) -> InferenceResult:
-    """ROI mode (spec 21): preflight -> tile -> per-cell setup -> runner build+infer -> STAC/merge."""
+    """ROI mode: preflight -> tile -> per-cell setup -> runner build+infer -> STAC/merge."""
     from fsd import grid as _grid
     from fsd.workflows import runners as _runners
 
@@ -1698,7 +1698,7 @@ def _run_inference_roi(
                       ("enddate", enddate), ("mosaic_days", mosaic_days), ("bands", bands)]:
         if val is None:
             errs.append(f"roi mode requires {name}=.")
-    # D9 (spec 38): normalize dates to Timestamp HERE, before compute_n_timestamps or any
+    # D9: normalize dates to Timestamp HERE, before compute_n_timestamps or any
     # dispatch -- this is the driver, before any AML job (D11 invariant: an unparseable date
     # must abort in milliseconds, not after a 40-380s node cold-start).
     if startdate is not None and enddate is not None:
@@ -1823,7 +1823,7 @@ def _run_inference_roi(
                 catalog_filepath=catalog_filepath, why=str(exc),
             )) from exc
 
-    # 3) fan out the per-cell build+infer task via the runner seam -- D1a (spec 38): this is
+    # 3) fan out the per-cell build+infer task via the runner seam -- D1a: this is
     #    the ONLY step that swaps; tiling/setup/collect (steps 1-2, 4) are runner-agnostic.
     if runner == "aml":
         # `cores`/`cubes_per_task` pass through as-is: `None` lets the AML node compute D7's
@@ -1846,11 +1846,11 @@ def _run_inference_roi(
     # 4) collect the per-cell outputs (+ each cell's true footprint, for STAC geometry — spec 28)
     with fs.open(csv_filepath, "r") as f:
         rows = pd.read_csv(f)
-    # D2 (spec 57): pass the footprint already held in memory (`grids`, tiled by THIS driver
+    # D2: pass the footprint already held in memory (`grids`, tiled by THIS driver
     # minutes ago) instead of the geometry.geojson path `create_datacube.setup` wrote it to --
     # a sequential blob read per cell that fetches back geometry the driver itself authored.
     # `.buffer(0)` mirrors `create_datacube.setup`'s own `_prepare` exactly (create_datacube.py),
-    # so the Item this produces is byte-identical to the path form's (AC2). Keyed by `id`
+    # so the Item this produces is byte-identical to the path form's. Keyed by `id`
     # (str -- the S2 grid cell id column, `csv_filepath`'s `COL_ID`), matched to each row's own
     # `export_folderpath` -- structurally correct by construction, not by a re-derived id check.
     id_to_geometry = {str(gid): geom.buffer(0) for gid, geom in zip(grids["id"], grids.geometry)}
@@ -1923,7 +1923,7 @@ def verify_adapter(
 ) -> dict:
     """One real grid cell's datacube, built on `runner`, landed locally, run through the
     adapter's ACTUAL inference code -- so `output.tif` can be eyeballed in QGIS before
-    trusting a bundle for a many-cell fan-out (spec 48).
+    trusting a bundle for a many-cell fan-out.
 
     Where this sits in the workflow (D2 -- this is NOT a substitute for either neighbour,
     and answers a different question from both):
@@ -1939,7 +1939,7 @@ def verify_adapter(
     3. `fsd.run_inference` -- the fan-out, N nodes.
 
     `model` is a live adapter, a bundle path, or a registry ref (``"name:N"`` / ``"name@alias"``)
-    resolved against ``registry=`` (spec 51 D4) -- a ref given without ``registry=`` raises
+    resolved against ``registry=`` -- a ref given without ``registry=`` raises
     ``PreflightError`` naming the missing argument. A live adapter is auto-saved by
     `_ensure_bundle` (the same call `run_inference` makes) to `export_folderpath/_bundle`
     -- a real, persistent bundle, **not** a temp one: `code=None` auto-detects and embeds
@@ -1958,15 +1958,15 @@ def verify_adapter(
     in-window catalog coverage, tie-broken by id -- and prints which cell and why, so two
     runs over the same roi/window pick the same cell; `"random"` opts in to a random pick
     and prints the chosen id so a run worth keeping can be pinned by pasting that id back as
-    `cell=` (D3). `grids.geojson` (every cell in the roi) is ALWAYS written next to the
+    `cell=`. `grids.geojson` (every cell in the roi) is ALWAYS written next to the
     output and its path printed -- open it in QGIS, pick an id, re-run with `cell=`.
 
-    `export_folderpath` is where everything lands, LOCALLY, no hidden cache (D8): the cube
+    `export_folderpath` is where everything lands, LOCALLY, no hidden cache: the cube
     (`datacube.npy` + `metadata.pickle.npy`), `output.tif`, `grids.geojson`, `cell.geojson`,
     `_result.json`. No flattened/feature array is written (D7 Q3) -- the adapter is for
     inference, inference output is the grid cell's raster, and `output.tif` is what gets
     checked. A second call with the SAME roi/window/bands/mosaic_days/cell and the cube
-    already landed skips the build+land entirely and goes straight to inference (D5) -- the
+    already landed skips the build+land entirely and goes straight to inference -- the
     resume keys on the REQUEST's identity (`fsd.workflows.stamp`), never on file age
     (mirrors spec 47 D1); a call whose `export_folderpath` already holds a cube for a
     DIFFERENT request raises rather than silently reusing it.
@@ -1979,10 +1979,10 @@ def verify_adapter(
     `runner="aml"`: the node has to be able to write the cube, and a local build folder
     would name a driver path it cannot reach) -- the cube is then transferred DOWN into the
     local `export_folderpath`. No new build path, and the
-    inference leg is a one-row call into `fsd.workflows.infer_only_task.run_infer_only` (D6)
+    inference leg is a one-row call into `fsd.workflows.infer_only_task.run_infer_only`
     -- the SAME unit the cluster runs, so no branch anywhere may special-case this verb.
 
-    Returns a `_result.json`-shaped dict (spec 24): `{"step", "status", "pass", "metrics",
+    Returns a `_result.json`-shaped dict: `{"step", "status", "pass", "metrics",
     "expected", "error"}`. `metrics` carries the cube shape, cube `T` vs the adapter's
     declared `n_timestamps`, the band set after `feature_sequence` vs `required_bands`,
     output dtype vs `output_dtype`, output value range, nodata fraction, and the cube/COG/
@@ -2012,7 +2012,7 @@ def verify_adapter(
     if runner == "aml" and not (runner_kwargs or {}).get("root"):
         errs.append("runner_kwargs['root'] (the blob working root) is required for runner='aml'.")
 
-    # as in `run_inference`: resolve before `_model_spec` reads `bundle.json` off it (D4).
+    # as in `run_inference`: resolve before `_model_spec` reads `bundle.json` off it.
     model = _resolve_model_ref(model, registry, why="verify_adapter")
     spec = _model_spec(model)
     required = set(spec.get("required_bands") or [])
@@ -2296,7 +2296,7 @@ def _verified_matches(result: dict, *, digest: str, environment: str) -> bool:
     """Does `result` (a `_result.json`-shaped `verify_image` output) actually speak to THIS
     deploy call -- same `environment`, and the bundle content it RECORDS having verified
     (`metrics["bundle_digest"]`, written by `verify_image` at verification time) is the
-    content being deployed (D5/AC8)?
+    content being deployed?
 
     It must be that recorded digest, never a re-digest of `metrics["bundle_path"]`: the path
     says where the bundle was, not what it held, and `bundle.save` overwrites in place (spec
@@ -2333,10 +2333,10 @@ def deploy(
     storage=None,
 ) -> str:
     """Publish a SAVED bundle into `registry` under `name`, refusing unless `environment` has
-    been proven to run it (spec 51). Returns a ref `run_inference(model=ref, registry=registry)`
+    been proven to run it. Returns a ref `run_inference(model=ref, registry=registry)`
     accepts unchanged: `"<name>:<version>"`.
 
-    `deploy` establishes the bundle<->image pairing before it records it (D5), one of two ways:
+    `deploy` establishes the bundle<->image pairing before it records it, one of two ways:
 
     * the default -- runs `fsd.model.verify_image(bundle_path, environment=environment,
       runner=runner, runner_kwargs=runner_kwargs)` itself, one real AML node; or
@@ -2346,15 +2346,15 @@ def deploy(
       refused outright, never silently re-verified.
 
     Either way, `pass=False` refuses the deployment and raises with that result's own `error`.
-    No version directory is created on refusal (AC7).
+    No version directory is created on refusal.
 
-    `bundle_path` must be a SAVED bundle (D6) -- a live adapter is refused, naming
+    `bundle_path` must be a SAVED bundle -- a live adapter is refused, naming
     `fsd.model.bundle.save`, because publishing something another machine will fetch by name is
     a deliberate act, distinct from `_ensure_bundle`'s auto-save convenience for running
     something now. The bundle's manifest must declare `requirements` and carry a `code` block;
     missing either is refused, naming the `bundle.save(...)` fix.
 
-    `alias` (e.g. `"champion"`) publishes and repoints the alias in one call (D3) -- promotion
+    `alias` (e.g. `"champion"`) publishes and repoints the alias in one call -- promotion
     is an alias reassignment, never a state transition, and multiple aliases may point at one
     version.
 
@@ -2364,7 +2364,7 @@ def deploy(
     `storage=` reaches the same local/Azure "compute seam" gate `run_inference` and
     `verify_adapter` use -- `storage="azure"` is accepted (spec 52 D4, #86 fixed: a blob
     registry can now actually authenticate) -- it is unrelated to `registry=`, which is
-    resolved/written directly through the storage seam and may itself be a URL (D1).
+    resolved/written directly through the storage seam and may itself be a URL.
     """
     errs = _check_local_seams(runner, storage)
     _raise_preflight(errs)

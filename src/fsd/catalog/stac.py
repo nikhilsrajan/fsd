@@ -1,4 +1,6 @@
-"""STAC export view over the tile catalog (spec 17).
+"""STAC export view over the tile catalog.
+
+Spec: specs/17-stac-catalog.md
 
 The `TileCatalog` GeoParquet stays the working/query format; this module is an **additive**
 STAC interchange view: one STAC Item per catalog row, one asset per band file. The mapping is
@@ -40,7 +42,7 @@ from fsd.storage import fs
 # set wrong; D1's segment line ([collect]/[stac]) is what a future retune reads.
 _COLLECT_THREADS = 16
 
-# Bands with a categorical mask/QA role (spec 34 §2a) rather than a continuous
+# Bands with a categorical mask/QA role rather than a continuous
 # reflectance value — never radiometrically offset, and the default S2 declaration's
 # mask band. Not exhaustive for future non-S2 sources (a source with its own QA band
 # naming supplies its own declaration; this module only needs to render the S2
@@ -72,7 +74,7 @@ class _StorageStacIO(DefaultStacIO):
 
 
 class _ThreadedStorageStacIO(_StorageStacIO):
-    """D4 (spec 57): `Catalog.save()` walks the tree and calls `save_json` -> `write_text` once
+    """D4: `Catalog.save()` walks the tree and calls `save_json` -> `write_text` once
     per object (catalog, collection, one per Item) -- 301 independent small blob writes,
     sequentially, at ~0.53 s each. The tree walk and JSON encoding stay on the driver thread (fast,
     pure Python, no I/O); only the blob write itself is handed to a thread pool, so the catalog
@@ -82,7 +84,7 @@ class _ThreadedStorageStacIO(_StorageStacIO):
     `write_text` submits and returns immediately; `wait()` (called once, after `catalog.save()`
     returns) blocks until every submitted write has finished and re-raises the first exception any
     of them hit -- a worker failure surfaces as that failure, never a silently-incomplete catalog
-    (AC5). The `ThreadPoolExecutor` this is built with is itself a `with` block in the caller, so
+. The `ThreadPoolExecutor` this is built with is itself a `with` block in the caller, so
     even an early exception out of `wait()` lets every in-flight write finish before it propagates
     (same shape as D3 / `workflows.create_datacube.setup`'s threaded loop)."""
 
@@ -231,7 +233,7 @@ def tile_catalog_to_items(
                         RasterBand.create(
                             nodata=row_nodata,
                             # raster:bands offset is reflectance-unit to match scale=1/10000
-                            # (spec 34 §1a) — the catalog `row_offset` is DN-unit, so scale
+                            # — the catalog `row_offset` is DN-unit, so scale
                             # it; `items_to_rows` divides it back out. Keeps unscale=true
                             # unit-consistent (DN*scale + offset == (DN+offset_dn)/10000).
                             offset=row_offset * config.S2_REFLECTANCE_SCALE if is_reflectance else 0,
@@ -281,7 +283,7 @@ def cog_outputs_to_items(cog_filepaths, *, geometries=None, collection_id="fsd-i
     ambiguity). `dt` is the Item datetime for all outputs (defaults to now, UTC) — outputs are
     mosaics over a window, not a single acquisition.
 
-    `geometries` (spec 28, D2 spec 57): an optional `{output_cog_filepath: value}` mapping — the
+    `geometries`: an optional `{output_cog_filepath: value}` mapping — the
     **true S2-cell footprint**, used as the Item geometry/bbox instead of the raster bbox. `value`
     is **either**:
 
@@ -370,7 +372,7 @@ def cog_outputs_to_items(cog_filepaths, *, geometries=None, collection_id="fsd-i
 
         return epsg, shape, transform, geom, bbox
 
-    # D1 (spec 57): the window measures itself -- results placed BY INDEX and reassembled after,
+    # D1: the window measures itself -- results placed BY INDEX and reassembled after,
     # so `items` below is always in `cog_filepaths` order regardless of completion order (same
     # pattern as `workflows.create_datacube.setup`'s threaded loop).
     described: list[tuple | None] = [None] * len(cog_filepaths)
@@ -422,7 +424,7 @@ def cog_outputs_to_items(cog_filepaths, *, geometries=None, collection_id="fsd-i
 
 
 def cog_outputs_to_items_from_manifest(input_csv_filepath, **kwargs) -> list[pystac.Item]:
-    """Convenience wrapper (spec 28): build `geometries` from a `run_inference` build manifest
+    """Convenience wrapper: build `geometries` from a `run_inference` build manifest
     (`input.csv`, columns `export_folderpath, shapefilepath, …`) and call `cog_outputs_to_items`.
 
     Only COGs that exist on disk are included (a manifest row's build may not have produced an
@@ -462,7 +464,7 @@ def items_to_rows(items: list[pystac.Item]):
                 if bands:
                     nodata = bands[0].nodata or 0
                     if bands[0].offset:
-                        # raster:bands offset is reflectance-unit (spec 34 §1a); the catalog
+                        # raster:bands offset is reflectance-unit; the catalog
                         # `offset` column is DN-unit (the builder applies it in DN space), so
                         # divide the scale back out — else a datacube built from a re-imported
                         # catalog would be ~1000 DN high (regression of #10/#30).
@@ -483,17 +485,17 @@ def items_to_rows(items: list[pystac.Item]):
     return gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
 
 
-# --- declaration mirror on the STAC Collection (spec 35 §7) ------------------
+# --- declaration mirror on the STAC Collection -------------------------------
 #
 # Additive, not authoritative: if the Collection and the catalog Parquet footer
-# (spec 35 §1) ever disagree, the footer wins. Both are written from the same
+# ever disagree, the footer wins. Both are written from the same
 # `SourceDeclaration` object (here), so they cannot drift in the write path.
 
 
 def _stamp_collection_declaration(
     collection: pystac.Collection, decl: SourceDeclaration,
 ) -> None:
-    """Mirror `decl` onto `collection` (spec 35 §7): the mask band's classes as
+    """Mirror `decl` onto `collection`: the mask band's classes as
     the STAC Classification extension's `classification:classes` on an
     `item_assets` entry (standard vocabulary, legible to any STAC-aware tool);
     the remaining fields STAC has no vocabulary for (`reference_band`,
@@ -520,7 +522,7 @@ def _stamp_collection_declaration(
 
 def collection_to_declaration(collection: pystac.Collection) -> SourceDeclaration | None:
     """Inverse of `_stamp_collection_declaration`: read the `fsd:declaration`
-    mirror back off a Collection, or `None` if it carries no stamp (spec 35 §7).
+    mirror back off a Collection, or `None` if it carries no stamp.
     Reads the `fsd:declaration` JSON (the footer's authoritative representation,
     §1), not the `classification:classes` mirror -- the two are written from one
     source so they cannot drift, but the JSON is the complete field set.
@@ -544,7 +546,7 @@ def write_stac_catalog(
 ) -> str:
     """Write a static, self-contained STAC catalog (catalog.json + collection + item JSONs).
 
-    `declaration` (spec 35 §7), if given, is mirrored onto the Collection --
+    `declaration`, if given, is mirrored onto the Collection --
     additive, not authoritative (the catalog Parquet footer wins on disagreement,
     spec 35 §1). `None` (the default) writes no mirror, e.g. for a hand-built
     item list with no catalog behind it.
@@ -576,7 +578,7 @@ def write_stac_catalog(
 
     catalog.normalize_hrefs(str(dst_folderpath))
 
-    # D4 (spec 57): catalog + collection + one Item each -- threaded the same way D3 threads the
+    # D4: catalog + collection + one Item each -- threaded the same way D3 threads the
     # collect reads (see `_ThreadedStorageStacIO`'s docstring for why the tree walk itself stays
     # single-threaded and only the blob write is deferred).
     import concurrent.futures

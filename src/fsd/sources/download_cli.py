@@ -1,4 +1,4 @@
-"""Safe download runner CLI (spec 26). A thin driver over `cdse.download_resume` —
+"""Safe download runner CLI. A thin driver over `cdse.download_resume` —
 no download logic of its own: parse args, build the `should_stop` closure, call
 `download_resume` (or `plan_download` for `--dry-run`), write the spec-24
 `_result.json`.
@@ -68,7 +68,7 @@ def _write_result(path: str, result: dict) -> None:
 
 
 def _expected_block(expected_json: str | None, *, run_invariants: bool) -> dict:
-    """The `_result.json` 'expected' block (spec 26 §4). Starts from the universal
+    """The `_result.json` 'expected' block. Starts from the universal
     success invariants the CLI itself gates exit-0 on (a real run only), then merges in
     the runbook's run-specific criteria from `--expected-json` (which wins on overlap).
     """

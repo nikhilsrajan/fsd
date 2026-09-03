@@ -37,7 +37,7 @@ __all__ = [
     "from_attrs",
 ]
 
-# Persistence (spec 35). `ATTRS_KEY` is the key under which the plain-dict JSON
+# Persistence. `ATTRS_KEY` is the key under which the plain-dict JSON
 # form of a `SourceDeclaration` lives inside `GeoDataFrame.attrs` (never the
 # dataclass itself -- spec 35 §2a); `fsd.storage.fs` serializes that whole
 # `.attrs` dict to the Parquet footer's `PANDAS_ATTRS` key.
@@ -77,7 +77,7 @@ class MaskSpec:
 @dataclasses.dataclass(frozen=True)
 class SourceDeclaration:
     """What `build_datacube` needs to know about a source, read once per build
-    instead of hardcoded (spec 34 §2a/§2b).
+    instead of hardcoded.
 
     `reference_band` — the band whose grid (10 m B08 for S2) every other band
     is resampled onto; `None` together with `native_grid=True` means "this
@@ -101,7 +101,7 @@ class SourceDeclaration:
 
     `nodata` — the fallback nodata value when the catalog rows being built
     don't carry a `nodata` column (older/hand-built catalogs); a real
-    ingested catalog carries `nodata` per row (spec 34 §1c) and that value
+    ingested catalog carries `nodata` per row and that value
     wins over this default.
 
     `mosaic_method` — currently only "median" is implemented by
@@ -118,7 +118,7 @@ class SourceDeclaration:
     mosaic_method: str = "median"
 
 
-# The only declaration this spec ships code for (spec 34 §3): both CDSE and
+# The only declaration this spec ships code for: both CDSE and
 # MPC are S2 L2A, so both go through this same declaration/generic path —
 # the "no hollow contract" requirement (spec-32/33 lesson).
 S2_L2A_DECLARATION = SourceDeclaration(
@@ -135,7 +135,7 @@ S2_L2A_DECLARATION = SourceDeclaration(
 )
 
 
-# --- serialization (spec 35 §2a/§3) -------------------------------------------
+# --- serialization ------------------------------------------------------------
 #
 # Pure functions, no I/O. `to_json`/`from_json` convert a `SourceDeclaration` to
 # and from a plain JSON-able dict (field-for-field, `fsd_declaration_version`
@@ -180,7 +180,7 @@ def _mask_spec_from_json(raw: dict | None) -> MaskSpec | None:
 
 
 def to_json(decl: SourceDeclaration) -> dict:
-    """`SourceDeclaration` -> a plain JSON-able dict, field-for-field (spec 35 §3).
+    """`SourceDeclaration` -> a plain JSON-able dict, field-for-field.
 
     Tuples (`MaskSpec.classes`) become JSON arrays; `from_json` rehydrates them
     back into tuples, keeping the dataclass frozen/hashable.

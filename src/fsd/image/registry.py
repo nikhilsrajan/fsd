@@ -1,4 +1,4 @@
-"""The image definition registry (spec 56 D3), mirroring `fsd.model.registry`'s layout:
+"""The image definition registry, mirroring `fsd.model.registry`'s layout:
 
     <registry>/
       <name>/
@@ -13,7 +13,7 @@ Built on `fsd.registry._core` (spec 56 §7 Q1) -- version allocation, `_aliases.
 `_complete.json` and the collision retry are the same mechanism `fsd.model.registry` uses,
 generalized rather than shared by import (see `_core`'s docstring for why).
 
-**The registry path is an argument, always** (D3): every function here takes `registry=`;
+**The registry path is an argument, always**: every function here takes `registry=`;
 nothing under `src/fsd/` reads it from config or an environment variable.
 """
 
@@ -170,7 +170,7 @@ def write_aml_record(
     keeps pointing at the deleted asset, `ensure_environment` finds it missing on every
     subsequent call, and rebuilds a 10-20 minute image forever. Staged and renamed like
     `_aliases.json`, and outside `image.json`, so it never touches the content the digest is
-    computed over -- exactly the role `_deploy.json` plays in `fsd.model.registry` (spec 51 D7).
+    computed over -- exactly the role `_deploy.json` plays in `fsd.model.registry`.
     """
     opts = storage_options or {}
     vpath = core.version_path(registry, name, version)
@@ -189,7 +189,7 @@ def write_aml_record(
 def status(
     name: str, registry: str, digest: str, *, storage_options: dict | None = None,
 ) -> Status:
-    """Do I need to build? A value, not a print (D6): the caller (a notebook, `ensure_environment`)
+    """Do I need to build? A value, not a print: the caller (a notebook, `ensure_environment`)
     decides what to do with it."""
     version = find_by_digest(name, registry, digest, storage_options=storage_options)
     if version is None:

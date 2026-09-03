@@ -1,7 +1,7 @@
 """ROI → S2-geometry grid tiling (spec 19; ROADMAP §4 / P4 groundwork).
 
 Cover a region of interest with fixed-size S2 cells — one cell = one inference datacube = one
-task when `run_inference(roi=…)` lands (P4). Cells are scaled up slightly so adjacent tiles
+task when `run_inference(roi=…)` lands. Cells are scaled up slightly so adjacent tiles
 overlap (no seams at mosaic time) and clipped to the ROI so they don't spill outside it.
 
 Clean-room port of `rsutils.s2_grid_utils.get_s2_grids_gdf` (read-only reference). Needs the

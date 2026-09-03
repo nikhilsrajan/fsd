@@ -12,15 +12,15 @@ so fsd can validate a run *without* importing the code or loading the model (mod
       code/           # spec 44: the adapter's source, layout preserved
         my_adapter.py
 
-`save` derives the `module:attr` string from the adapter object automatically, and (spec 44 D1)
+`save` derives the `module:attr` string from the adapter object automatically, and
 finds and embeds the adapter's source; `load` puts `code/` on `sys.path`, resolves the ref back to
 a class, instantiates it, injects absolute artifact paths, and calls `.load()`.
 
 **Spec 44 — code moves into the bundle; dependencies stay in the image.** Before it, an adapter had
-to be `pip install`ed into a per-adapter Docker image (spec 38 D4); now the inference image differs
+to be `pip install`ed into a per-adapter Docker image; now the inference image differs
 only by *dependency family* (sklearn vs torch), never by model. Dependencies are **declared**
 (`requirements`) and checked by the D11 smoke job — fsd never installs anything at run time.
-Registration/push (P6) is spec 44 phase 2 and is not implemented here.
+Registration/push is spec 44 phase 2 and is not implemented here.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ BUNDLE_MANIFEST = "bundle.json"
 BUNDLE_VERSION = 2
 SUPPORTED_BUNDLE_VERSIONS = (1, 2)
 
-#: Where embedded adapter source lives inside the bundle (spec 44 D1).
+#: Where embedded adapter source lives inside the bundle.
 CODE_DIR = "code"
 
 #: D1 guardrails on auto-detection. A package root is walked automatically, which is convenient
@@ -200,8 +200,8 @@ def adapter_code_files(adapter) -> tuple[str, list[str]] | None:
     layout preserved** -- which is the bug fsd fixes relative to MLflow's `code_paths`, whose
     flattening forces users to rewrite their imports.
 
-    Raises `ValueError` for the `unresolvable` origin (D3) and for a set over `MAX_CODE_FILES` /
-    `MAX_CODE_BYTES` (D1).
+    Raises `ValueError` for the `unresolvable` origin and for a set over `MAX_CODE_FILES` /
+    `MAX_CODE_BYTES`.
     """
     origin, detail = classify_adapter_source(adapter)
     if origin == "installed":
@@ -521,7 +521,7 @@ def save(
 
     `artifacts` maps a name -> a local source filepath, e.g. `{"model": "rf.joblib"}`.
 
-    `code` (spec 44 D1) controls source embedding:
+    `code` controls source embedding:
 
     * `None` (default) -- **auto-detect** from the adapter class. A local module or package is
       embedded under `code/` with its layout preserved; a pip-installed adapter is left alone; an
@@ -530,10 +530,10 @@ def save(
     * `False` -- never embed; keep the spec-38-D4 behavior where the adapter is a pip dependency
       of the inference image.
 
-    `requirements` (D5) is an optional list of PEP 508 strings recorded for the smoke job to check.
+    `requirements` is an optional list of PEP 508 strings recorded for the smoke job to check.
     fsd never installs them.
 
-    Before anything is copied, two checks (spec 45 D2/D3) turn a bundle that would save fine and
+    Before anything is copied, two checks turn a bundle that would save fine and
     die on a cluster node into a `save`-time `ValueError` naming the fix: the adapter's own module
     must sit at the TOP of the resolved `code/` tree (#72), and every sibling import an embedded
     file makes must itself be embedded (#71) -- a dependency (declared via `requirements=`) is

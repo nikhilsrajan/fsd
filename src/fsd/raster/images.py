@@ -235,7 +235,7 @@ _REFLECTANCE_BAND_RE = re.compile(r"^B\d")
 
 def _is_reflectance(band: str) -> bool:
     """Whether `band` is an S2 reflectance band (`B01`…`B12`, `B8A`) vs a
-    non-reflectance product like `SCL`/`AOT`/`WVP`/`visual` (spec 32 D2/§3) —
+    non-reflectance product like `SCL`/`AOT`/`WVP`/`visual` —
     the processing-baseline offset only applies to reflectance bands."""
     return bool(_REFLECTANCE_BAND_RE.match(band)) or band == "B8A"
 

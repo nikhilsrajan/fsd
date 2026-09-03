@@ -5,7 +5,7 @@ job) into a public, reusable library call. Since spec 44 an inference image is g
 *dependency family* (sklearn/xgboost/torch/keras), never per model — so "does this image run
 this bundle?" is now a question worth asking as a function call, not a nine-env-var script.
 
-Behavior is the run-book script's, lifted verbatim and generalised (spec 45 D4):
+Behavior is the run-book script's, lifted verbatim and generalised:
 
 1. driver-side first, free: manifest is v2, a `code` block exists, `check_requirements` against
    the declared list, and — when `build_context` is given — the wheel-staleness gate that refuses
@@ -17,7 +17,7 @@ Behavior is the run-book script's, lifted verbatim and generalised (spec 45 D4):
 
 Three properties are non-negotiable (each a defect the run-book already paid for): it must run as
 a JOB, never on the driver (a local run passes trivially -- ADR 0002); the returned dict is
-`_result.json`-shaped (spec 24) so a run-book can paste it straight back; and it is meant to be
+`_result.json`-shaped so a run-book can paste it straight back; and it is meant to be
 called at the step it protects (immediately before `run_inference`), not hoisted into an upfront
 gate that hardcodes paths a later step creates.
 """
@@ -67,10 +67,10 @@ def _default_fetch_fsd_source(fsd_ref: str, relpath: str) -> str:
 
 def _image_ref_has_spec44(fsd_ref: str, *, fetch=_default_fetch_fsd_source) -> bool:
     """D8's `image_ref=` equivalent of `_wheel_has_spec44`: does the fsd this image was
-    built from already carry `manifest_code_files` (spec 44)? A `wheel:<digest>` reference
+    built from already carry `manifest_code_files`? A `wheel:<digest>` reference
     (an fsd developer's `path:` build) carries no fetchable source -- only its content
     digest -- so it is trusted rather than checked, the same way `fsd="path:..."` always
-    was the developer's own responsibility (D5).
+    was the developer's own responsibility.
 
     **A non-`git+` reference is likewise trusted, and that is a hole in the gate** (Opus
     review, 2026-08-27): a PyPI spec (`fsd==0.2.0`) names a version this function has no
@@ -88,7 +88,7 @@ def _image_ref_has_spec44(fsd_ref: str, *, fetch=_default_fetch_fsd_source) -> b
 
 def _find_wheel(build_context: str) -> str:
     """A caller who passes `build_context` has asserted the folder holds the wheel the image was
-    built from (spec 47 D11). An absent wheel is a statement about the CALL, not the image, so
+    built from. An absent wheel is a statement about the CALL, not the image, so
     this raises rather than returning a verdict -- it must run before `verify_image`'s `try`."""
     wheels = sorted(glob.glob(os.path.join(build_context, "fsd-*.whl")))
     if not wheels:
@@ -98,7 +98,7 @@ def _find_wheel(build_context: str) -> str:
 
 def _wheel_has_spec44(wheel: str) -> bool:
     """D4 step 1's wheel-staleness gate: does the fsd wheel this image was built from already
-    carry `manifest_code_files` (spec 44)? A pre-spec-44 wheel's `fetch_bundle_to_scratch` never
+    carry `manifest_code_files`? A pre-spec-44 wheel's `fetch_bundle_to_scratch` never
     downloads `code/` and its `bundle.load` never touches `sys.path` -- the node then raises
     `ModuleNotFoundError` however good the bundle is, and cannot self-diagnose it (an old fsd has
     none of the code that would report it), so this has to be checked here, on the driver. Unlike
@@ -127,7 +127,7 @@ def verify_image(
     `run_inference`/`verify_adapter`/`deploy` take. `environment` is the inference
     Environment reference to verify (e.g. `"fsd-infer-sklearn:3"`).
 
-    `runner` must be `"aml"` (D5) -- `runner="local"` **raises** rather than returning a pass,
+    `runner` must be `"aml"` -- `runner="local"` **raises** rather than returning a pass,
     because "verified locally" is the exact false positive this helper exists to prevent: the
     driver's venv already has the adapter's source on `sys.path` and its dependencies installed
     (ADR 0002), so a local run tells you nothing about the image.
@@ -141,14 +141,14 @@ def verify_image(
 
     `build_context`, if given, is the folder holding the fsd wheel the image was built from --
     enables the wheel-staleness gate (see `_check_wheel_has_spec44`). `image_ref`/`registry`
-    (spec 56 D8) are the alternative: an image built by `fsd.aml.ensure_environment` names no
+ are the alternative: an image built by `fsd.aml.ensure_environment` names no
     checkout folder, so instead `image_ref` (e.g. `"fsd-infer-sklearn:4"`) is resolved through
     the image `registry` and its resolved `fsd` reference is checked the same way a wheel is.
     `build_context` wins if both are given; neither is required.
 
-    Returns a `_result.json`-shaped dict (spec 24): `{"step", "status", "pass", "metrics",
+    Returns a `_result.json`-shaped dict: `{"step", "status", "pass", "metrics",
     "expected", "error"}`. `metrics["bundle_digest"]` records the content digest of what was
-    verified, which is what `fsd.deploy(verified=...)` matches against (spec 51 D5). Every driver-detectable failure (no `code` block, a stale wheel, a
+    verified, which is what `fsd.deploy(verified=...)` matches against. Every driver-detectable failure (no `code` block, a stale wheel, a
     partial stage, a missing node status file) sets `pass=False` with a populated `error`.
     `verify_image` raises only on caller misuse it cannot report as a verification result --
     a non-`"aml"` `runner`, or `runner_kwargs` missing `cluster`/`root`/`identity_client_id`.
@@ -197,7 +197,7 @@ def verify_image(
         code = manifest.get("code")
         result["metrics"].update({
             "bundle_path": str(bundle_path),
-            # WHAT was verified, not WHERE it was (spec 51 D5/AC8). `deploy(verified=...)`
+            # WHAT was verified, not WHERE it was. `deploy(verified=...)`
             # honours a prior result only if this digest matches the bundle being deployed;
             # re-digesting `bundle_path` at deploy time instead would prove nothing, because
             # `bundle.save` overwrites in place (spec 51 §1 H1) -- the same path can hold

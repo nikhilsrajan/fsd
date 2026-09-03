@@ -1,6 +1,8 @@
-"""`fsd.aml` -- the AML builder for `fsd.image.ImageDefinition` (spec 56 D4).
+"""`fsd.aml` -- the AML builder for `fsd.image.ImageDefinition`.
 
-`fsd.image` is backend-agnostic by construction; this module is not (§2). It is the only
+Spec: specs/56-image-definitions-and-registry.md
+
+`fsd.image` is backend-agnostic by construction; this module is not. It is the only
 place that shells out to `az`, and it is check-then-build:
 
 1. resolve + digest the definition (`fsd.image.digest`),
@@ -9,7 +11,7 @@ place that shells out to `az`, and it is check-then-build:
 4. on a miss: render the context and `az ml environment create`,
 5. publish the (possibly new) definition, record the AML asset it became, set the alias.
 
-`ensure_environment` never waits for the build to finish (D4): an AML v2 image build is an
+`ensure_environment` never waits for the build to finish: an AML v2 image build is an
 ACR task run, not an AML job, so it returns the version and the Studio URL immediately.
 """
 
@@ -48,7 +50,7 @@ class EnsureResult(NamedTuple):
 
 
 def _provenance(resolved: dict) -> dict:
-    """`image.json`'s OCI-annotation-named fields (D3), derived from the resolved
+    """`image.json`'s OCI-annotation-named fields, derived from the resolved
     definition rather than invented."""
     prov: dict = {"org.opencontainers.image.created": datetime.now(timezone.utc).isoformat()}
     fsd_ref = resolved.get("fsd")
@@ -102,7 +104,7 @@ def ensure_environment(
     image on every call.
 
     The `_find_by_digest`/`_resolve`/`_publish`/`_write_aml_record`/`_environment_exists`/
-    `_create_environment`/`_build_link` parameters are the seam tests stub (AC8/AC4) -- override them to avoid a
+    `_create_environment`/`_build_link` parameters are the seam tests stub -- override them to avoid a
     real registry or a real `az` call; production code never passes them.
     """
     # Before the first storage access -- `_find_by_digest` below (spec 52 D4's rule).

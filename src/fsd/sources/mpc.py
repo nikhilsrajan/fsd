@@ -16,7 +16,7 @@ spec 32's `boa_add_offset`). Since spec 34, MPC's download is no longer a *pure*
 byte-copy: after `fs.transfer`, ingest stamps the GDAL scale/offset + nodata-if-
 missing tags on the local COG (`fsd.raster.cog.stamp_or_reencode`) and pushes the
 result to `root_folderpath` (local or blob) — a cheap header edit, no pixel
-decode (spec 34 §3).
+decode.
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ def _item_self_href(item) -> str:
 
 
 def _mgrs_tile_from_item(item) -> str:
-    """`s2:mgrs_tile` (spec 32 §1), falling back to the item id if absent."""
+    """`s2:mgrs_tile`, falling back to the item id if absent."""
     return item.properties.get("s2:mgrs_tile") or item.id
 
 
@@ -80,7 +80,7 @@ def _generation_time(item) -> str:
     """`s2:generation_time` (RFC-3339 str) — the reliable "which processing pass"
     property (cross-validated over the id's trailing field, which ESA's own
     naming-convention doc does not guarantee is monotonic). Raises if missing -
-    only called when a duplicate group actually needs a tie-break (spec 33)."""
+    only called when a duplicate group actually needs a tie-break."""
     gt = item.properties.get("s2:generation_time")
     if gt is None:
         raise ValueError(
@@ -109,7 +109,7 @@ def _dedupe_reprocessed_items(items: list) -> list:
 
 def _search_items(roi_gdf: gpd.GeoDataFrame, startdate, enddate, max_cloudcover=None):
     """Query the MPC STAC API for S2 L2A items intersecting the ROI, signed via
-    the official `planetary-computer` package (spec 32 D4)."""
+    the official `planetary-computer` package."""
     import planetary_computer as pc
     import pystac_client
 
@@ -130,7 +130,7 @@ def _search_items(roi_gdf: gpd.GeoDataFrame, startdate, enddate, max_cloudcover=
 
 def _search_items_unsigned(roi_gdf: gpd.GeoDataFrame, startdate, enddate, max_cloudcover=None):
     """Same query as `_search_items`, but **without** the `pc.sign_inplace` modifier
-    (spec 37 D2/D5): the AML fan-out's driver-side discovery must not stamp asset
+: the AML fan-out's driver-side discovery must not stamp asset
     hrefs with a SAS token that can expire before a job actually runs on its node --
     signing happens **on the node**, in `download_shard`, right before the transfer."""
     import pystac_client
@@ -252,7 +252,7 @@ def _transfer_and_stamp_one(
                 fs.transfer(src_url, scratch)
                 stamp_or_reencode(
                     scratch,
-                    # reflectance-unit offset to match scale=1/10000 (spec 34 §1a): a
+                    # reflectance-unit offset to match scale=1/10000: a
                     # viewer's unscale=true computes DN*scale + offset, so the DN-space
                     # offset (-1000) must be scaled to reflectance too (-> -0.1), else
                     # unscale yields DN/10000 - 1000 ~= -1000 for every pixel (black tile).
@@ -402,7 +402,7 @@ def download(
     )
 
 
-# --- AML fan-out: driver-side discovery + per-shard download (spec 37 D2) ----
+# --- AML fan-out: driver-side discovery + per-shard download -----------------
 
 # A `discover_shard_rows` row (also the shard CSV's columns): one MPC asset,
 # unsigned, plus the per-tile catalog metadata `_append_downloaded` needs to
@@ -422,7 +422,7 @@ def discover_shard_rows(
     *,
     max_cloudcover: float | None = None,
 ) -> list[dict]:
-    """Driver-side discovery for the AML fan-out (spec 37 D2): query MPC STAC
+    """Driver-side discovery for the AML fan-out: query MPC STAC
     (cheap, no bytes -- `_search_items_unsigned`, so no href carries a token yet)
     and flatten the matched items to **one row per asset**. `run_aml_download`
     partitions the result with `shard_units` (asset-level round-robin, open
@@ -474,9 +474,9 @@ def download_shard(
     max_concurrent: int | None = None,
     progress: bool = False,
 ) -> DownloadResult:
-    """Download one pre-discovered shard of MPC assets (spec 37 D2) -- one of the
+    """Download one pre-discovered shard of MPC assets -- one of the
     N per-node jobs `run_aml_download` fans a `discover_shard_rows` work list out
-    to. Each `href` is unsigned (D2/D5): signed here, **on the node**, right
+    to. Each `href` is unsigned: signed here, **on the node**, right
     before the transfer, so a SAS token never sits idle between AML job submit
     and the job actually starting. Reuses the same per-asset transfer `download()`
     uses (`_transfer_and_stamp_one`); `download()` itself is untouched.
