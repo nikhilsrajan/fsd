@@ -1,4 +1,6 @@
-"""stac-geoparquet export (spec 30 Deliverable B) — the #26 north-star catalog interchange.
+"""stac-geoparquet export — the #26 north-star catalog interchange.
+
+Spec: specs/30-tier2-mini-mpc-validation.md
 
 Additive: a list of `pystac.Item` (e.g. from `catalog.stac.cog_outputs_to_items`) -> one compact
 GeoParquet file via the **`stac-geoparquet`** library (optional `[serving]` extra, isolated here
@@ -6,7 +8,7 @@ like `grid.py` so the core `.venv` stays lean). Not wired into any default write
 full catalog-format migration (`run_inference` writing this instead of the JSON STAC catalog) is
 the #26 follow-on.
 
-Pinned API (installed `stac-geoparquet==0.8.1`, the source of truth per spec 29's rio-tiler note):
+Pinned API (the installed `stac-geoparquet==0.8.1` is the source of truth):
 `stac_geoparquet.arrow.parse_stac_items_to_parquet(items, output_path=...)` takes
 `Iterable[pystac.Item | dict]` and writes local GeoParquet directly (it opens `output_path` itself
 via `pyarrow.parquet.ParquetWriter`, so there is no in-memory bytes handle to hand to
@@ -15,7 +17,7 @@ Item `dict`s from a `pyarrow.Table`/`RecordBatchReader` read off a GeoParquet fi
 
 Both directions go through the `fsd.storage` seam by **staging a local tmp file**: the lib always
 wants a real filesystem path, so we write/read that local path and `storage.put`/read-bytes it to
-the (possibly remote) `dst_filepath`/`src_filepath` — the same stage-local pattern spec 29 used for
+the (possibly remote) `dst_filepath`/`src_filepath` — the same stage-local pattern used for
 rio-tiler's COG reads.
 """
 

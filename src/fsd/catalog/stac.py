@@ -35,18 +35,18 @@ from fsd.catalog.declaration import SourceDeclaration
 from fsd.raster.images import _is_reflectance
 from fsd.storage import fs
 
-# D3/D4 (spec 57 §7 Q1): a fixed default, not `cores` -- `cores` means the node's inference
-# parallelism elsewhere in fsd, so overloading it here would be misleading. Tuned for
-# latency-bound round-trips (a blob header read / small blob write, ~1 s each over VPN), not for
-# core count. No public knob until a real run asks for one -- an unused knob is a knob that gets
-# set wrong; D1's segment line ([collect]/[stac]) is what a future retune reads.
+# A fixed default, deliberately NOT `cores`: `cores` means the node's inference parallelism
+# everywhere else in fsd, so overloading it here would mislead. Tuned for latency-bound
+# round-trips -- a blob header read or a small blob write, ~1 s each over VPN -- not for core
+# count. No public knob until a real run asks for one, because an unused knob is a knob that
+# gets set wrong; the [collect]/[stac] segment lines are what a future retune reads.
 _COLLECT_THREADS = 16
 
 # Bands with a categorical mask/QA role rather than a continuous
 # reflectance value — never radiometrically offset, and the default S2 declaration's
 # mask band. Not exhaustive for future non-S2 sources (a source with its own QA band
-# naming supplies its own declaration; this module only needs to render the S2
-# ingest path's roles today, spec 34 §3).
+# naming supplies its own declaration; this module only needs to render the S2 ingest
+# path's roles).
 _MASK_BANDS = {"SCL"}
 
 # STAC extension URIs we populate beyond eo/proj (added via their helper classes).
@@ -74,19 +74,24 @@ class _StorageStacIO(DefaultStacIO):
 
 
 class _ThreadedStorageStacIO(_StorageStacIO):
-    """D4: `Catalog.save()` walks the tree and calls `save_json` -> `write_text` once
-    per object (catalog, collection, one per Item) -- 301 independent small blob writes,
-    sequentially, at ~0.53 s each. The tree walk and JSON encoding stay on the driver thread (fast,
-    pure Python, no I/O); only the blob write itself is handed to a thread pool, so the catalog
-    **layout** (link order, one Item per object) is untouched -- this only changes how the bytes
-    reach storage.
+    """Defer `Catalog.save()`'s per-object blob writes to a thread pool.
+
+    `Catalog.save()` walks the tree and calls `save_json` -> `write_text` once per object
+    (catalog, collection, one per Item) -- for a 300-cell run that is 301 independent small
+    blob writes, sequentially, at ~0.53 s each.
+
+    The tree walk and JSON encoding stay on the driver thread (fast, pure Python, no I/O);
+    only the blob write itself is handed to the pool, so the catalog **layout** -- link
+    order, one Item per object -- is untouched. This changes only how the bytes reach
+    storage.
 
     `write_text` submits and returns immediately; `wait()` (called once, after `catalog.save()`
     returns) blocks until every submitted write has finished and re-raises the first exception any
-    of them hit -- a worker failure surfaces as that failure, never a silently-incomplete catalog
-. The `ThreadPoolExecutor` this is built with is itself a `with` block in the caller, so
-    even an early exception out of `wait()` lets every in-flight write finish before it propagates
-    (same shape as D3 / `workflows.create_datacube.setup`'s threaded loop)."""
+    of them hit -- a worker failure surfaces as that failure, never a silently-incomplete
+    catalog. The `ThreadPoolExecutor` this is built with is itself a `with` block in the
+    caller, so even an early exception out of `wait()` lets every in-flight write finish
+    before it propagates (same shape as `workflows.create_datacube.setup`'s threaded loop).
+    """
 
     def __init__(self, executor, tick):
         super().__init__()
@@ -142,8 +147,8 @@ def _band_role(band: str, reference_band: str = "B08") -> str:
 def _media_type_and_roles(filename: str, band: str | None = None) -> tuple[str | None, list[str]]:
     lower = filename.lower()
     role = [_band_role(band)] if band else []
-    # spec 34 §2a: the role classification rides alongside "data" (never replaces it,
-    # and never duplicates it when _band_role already returned "data").
+    # The role classification rides ALONGSIDE "data" -- never replaces it, and never
+    # duplicates it when `_band_role` already returned "data".
     data_roles = ["data", *role] if role and role[0] != "data" else ["data"]
     if lower.endswith((".tif", ".tiff")):
         return pystac.MediaType.COG, data_roles
@@ -277,7 +282,7 @@ def _read_footprint_geometry(geom_path):
 
 def cog_outputs_to_items(cog_filepaths, *, geometries=None, collection_id="fsd-inference",
                          band_names=None, dt=None) -> list[pystac.Item]:
-    """Map inference-output COGs to STAC Items (spec 17 SO-6; used by run_inference, spec 18).
+    """Map inference-output COGs to STAC Items; used by `run_inference`.
 
     One Item per output COG. `proj:*` is read straight from the COG we just wrote (cheap, no
     ambiguity). `dt` is the Item datetime for all outputs (defaults to now, UTC) — outputs are
@@ -293,7 +298,7 @@ def cog_outputs_to_items(cog_filepaths, *, geometries=None, collection_id="fsd-i
     - an **already-loaded** `shapely` geometry, used as-is with **no round-trip read**. Checked
       **structurally** rather than by id: the caller looked this geometry up *by* the item id
       when building the mapping, so a mismatch cannot be constructed the way it can for the path
-      form (D2 — only ROI mode, which holds `grids` in memory, uses this form).
+      form. Only ROI mode, which holds `grids` in memory, uses this form.
 
     This is a **deterministic, manifest-driven contract, not a per-item fallback**: when
     `geometries` is given, every `fp` in `cog_filepaths` must have an entry — a missing/unreadable/
@@ -302,10 +307,11 @@ def cog_outputs_to_items(cog_filepaths, *, geometries=None, collection_id="fsd-i
     behavior, for geometry-less callers (unit tests; a bare list of COGs; pre-built folder/list
     inference modes with no manifest).
 
-    The COG opens are threaded (D3, spec 57, `_COLLECT_THREADS` workers): each is I/O-bound and
-    independent, and `rio_open` already owns its own `rasterio.Env` per call (`raster/__init__.py`)
-    — a fresh, credentialed env per worker thread, since rasterio's env stack is thread-local (an
-    env entered on one thread is invisible to another). Item order in the returned list always
+    The COG opens are threaded (`_COLLECT_THREADS` workers): each is I/O-bound and
+    independent, and `rio_open` already owns its own `rasterio.Env` per call
+    (`raster/__init__.py`) — a fresh, credentialed env per worker thread, which matters
+    because rasterio's env stack is thread-local and an env entered on one thread is
+    invisible to another. Item order in the returned list always
     matches `cog_filepaths`, regardless of completion order; a failure in one worker surfaces as
     that failure via `fut.result()`, not as a silently short list.
     """
@@ -372,9 +378,9 @@ def cog_outputs_to_items(cog_filepaths, *, geometries=None, collection_id="fsd-i
 
         return epsg, shape, transform, geom, bbox
 
-    # D1: the window measures itself -- results placed BY INDEX and reassembled after,
-    # so `items` below is always in `cog_filepaths` order regardless of completion order (same
-    # pattern as `workflows.create_datacube.setup`'s threaded loop).
+    # Results are placed BY INDEX and reassembled after, so `items` below is always in
+    # `cog_filepaths` order regardless of completion order (same pattern as
+    # `workflows.create_datacube.setup`'s threaded loop).
     described: list[tuple | None] = [None] * len(cog_filepaths)
     tick = _progress.ticker(len(cog_filepaths), "collect", unit="outputs")
     tick(0, force=True)
@@ -546,10 +552,9 @@ def write_stac_catalog(
 ) -> str:
     """Write a static, self-contained STAC catalog (catalog.json + collection + item JSONs).
 
-    `declaration`, if given, is mirrored onto the Collection --
-    additive, not authoritative (the catalog Parquet footer wins on disagreement,
-    spec 35 §1). `None` (the default) writes no mirror, e.g. for a hand-built
-    item list with no catalog behind it.
+    `declaration`, if given, is mirrored onto the Collection -- additive, never
+    authoritative: the catalog Parquet footer wins on disagreement. `None` (the default)
+    writes no mirror, e.g. for a hand-built item list with no catalog behind it.
 
     Returns the catalog.json path. Written through `fsd.storage`.
     """
@@ -578,8 +583,8 @@ def write_stac_catalog(
 
     catalog.normalize_hrefs(str(dst_folderpath))
 
-    # D4: catalog + collection + one Item each -- threaded the same way D3 threads the
-    # collect reads (see `_ThreadedStorageStacIO`'s docstring for why the tree walk itself stays
+    # catalog + collection + one Item each -- threaded the same way the collect reads are
+    # (see `_ThreadedStorageStacIO`'s docstring for why the tree walk itself stays
     # single-threaded and only the blob write is deferred).
     import concurrent.futures
 

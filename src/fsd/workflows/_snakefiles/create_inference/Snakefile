@@ -4,10 +4,10 @@
 # Groups `cubes_per_task` rows of input.csv per job, each shelling ONE process that loops its
 # group:
 #     python -m fsd.workflows.infer_task --input-csv <csv> --rows i:j --bundle ...
-# This is the SAME build+infer unit an Azure Batch node dispatches at P4 (the runner seam).
+# This is the SAME build+infer unit an Azure Batch node dispatches (the runner seam).
 # `infer_task.run_infer_group` loads the bundle ONCE per group via the per-process cache
-# (`engine._adapter_from_bundle_cached`) instead of once per cell (D7, closes TODO #25's root
-# cause). D6: a group's sentinel lives on node-local scratch (this invocation's own
+# (`engine._adapter_from_bundle_cached`) instead of once per cell (TODO #25).
+# A group's sentinel lives on node-local scratch (this invocation's own
 # bookkeeping, keyed by the group's own row range -- never touches export_folderpath, so a
 # remote/abfss export_folderpath needs no is_local guard here). The durable "already inferred"
 # signal is each cell's OWN output.tif existence, checked by `infer_task.run_infer_task`'s
@@ -45,7 +45,7 @@ overwrite = int(config.get("overwrite", 0))
 njobs = int(config.get("njobs", 1))
 njobs_load_images = int(config.get("njobs_load_images", 1))
 jitter_span = int(config.get("jitter_span", 1))
-# Node-local scratch root for sentinels only (never the artifact destination -- D6).
+# Node-local scratch root for sentinels only -- never the artifact destination.
 scratch_dir = config.get("scratch_dir") or os.path.join(tempfile.gettempdir(), "fsd-snakemake-scratch")
 
 n = len(pd.read_csv(input_csv))

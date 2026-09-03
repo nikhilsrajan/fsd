@@ -84,7 +84,7 @@ MPC_MAX_CONCURRENT = 4
 # Concurrency for `workflows.create_datacube.setup`'s per-shape control-file writes.
 # Unlike MAX_CONCURRENT_S3 (a CDSE *credential* cap) this bounds nothing but our own
 # round-trips: each shape is ~4-7 tiny blob calls whose cost is pure latency, so the
-# loop is latency-bound and scales with threads. Measured 2026-07-22 on `rise`: 900
+# loop is latency-bound and scales with threads. Measured: 900
 # shapes serially = ~1.8 s/shape (~27 min) with the catalog already read once.
 SETUP_MAX_CONCURRENT = 16
 
@@ -110,7 +110,7 @@ APPROX_GB_PER_TILE = 0.725
 # drops to 1 MB/s / 1 connection. https://documentation.dataspace.copernicus.eu/Quotas.html
 CDSE_MONTHLY_QUOTA_GB = 12 * 1000
 
-# --- COG conversion (convert-on-download; spec 14) ---------------------------
+# --- COG conversion (convert-on-download) ------------------------------------
 # Native on-disk format at ingest. DEFLATE + PREDICTOR=2 is fully lossless
 # (reversible integer differencing); uint16 S2 reflectance declares NBITS=15, which
 # PREDICTOR=2 rejects, so to_cog promotes the *declared* depth to NBITS=16 (pixels
@@ -138,7 +138,7 @@ STAGING_ITEM_GB = 0.2          # rough disk per in-flight band file (the JP2 + i
 # `fsd.download` / `create_training_data` / `run_inference` take every storage location as
 # an argument and never look here. This section exists so an operator can write
 # `cfg = fsd.config.load()` at the top of a notebook and pass `cfg.workspace` etc down explicitly
-# -- the seam spec 41 D7 wanted, with the bootstrap moved to a place a `pip install`
+# -- the seam, with the bootstrap moved to a place a `pip install`
 # consumer can actually reach.
 # ==============================================================================
 
@@ -200,7 +200,7 @@ class MissingConfig(KeyError):
 
 
 def config_dir() -> Path:
-    """The config directory, per D1's resolution order.
+    """The config directory, in resolution order.
 
     1. `$FSD_CONFIG_DIR`, if set and absolute.
     2. `$XDG_CONFIG_HOME/fsd`, if `XDG_CONFIG_HOME` is set and absolute.
@@ -250,7 +250,7 @@ def _toml_escape(value: str) -> str:
 
 
 def _emit_toml(values: dict[str, str]) -> str:
-    """Render the `[azure]` table as TOML text. Stdlib `tomllib` cannot write (D2's
+    """Render the `[azure]` table as TOML text. Stdlib `tomllib` cannot write (
     constraint); this is the ~20-line emitter that stands in for `tomli-w` while the schema
     stays six flat strings.
     """

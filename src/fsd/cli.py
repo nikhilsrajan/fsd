@@ -28,7 +28,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
-        # write_config drops empty values, so a blank file cannot go through it (spec 55 D4:
+        # write_config drops empty values, so a blank file cannot go through it (
         # keys present and empty, so the file PARSES and `load()` names the gaps instead of
         # `tomllib` reporting a syntax error).
         path = fsd_config.write_blank_config()

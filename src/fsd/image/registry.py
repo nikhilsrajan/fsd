@@ -9,7 +9,7 @@
           _aml.json            [optional] the AML asset it currently is, if it was rebuilt
         v8/ ...
 
-Built on `fsd.registry._core` (spec 56 §7 Q1) -- version allocation, `_aliases.json`,
+Built on `fsd.registry._core` -- version allocation, `_aliases.json`,
 `_complete.json` and the collision retry are the same mechanism `fsd.model.registry` uses,
 generalized rather than shared by import (see `_core`'s docstring for why).
 
@@ -96,9 +96,9 @@ def publish(
 ) -> int:
     """Publish a resolved definition to `<registry>/<name>/`. Returns the version integer.
 
-    Idempotent by digest (D2/D3 mirroring `fsd.model.registry.publish`): a version whose
+    Idempotent by digest, mirroring `fsd.model.registry.publish`: a version whose
     content digest already equals `digest` is returned and nothing is written. `aml` is
-    the `{"name", "version", "workspace"}` the definition became (D3's `image.json` example);
+    the `{"name", "version", "workspace"}` the definition became;
     `provenance` carries the `org.opencontainers.image.*` fields, merged in verbatim.
     """
     core.check_name(name)
@@ -163,9 +163,9 @@ def write_aml_record(
 ) -> None:
     """Repoint a published definition at the AML asset it currently is (`_aml.json`).
 
-    **Why a sidecar and not an edit to `image.json`** (Opus review, 2026-08-27): a definition
+    **Why a sidecar and not an edit to `image.json`:** a definition
     version is immutable and content-addressed -- `publish` is idempotent by digest, so a
-    rebuild of the *same* definition (D4 step 3's deleted asset, or `force=True`) can never
+    rebuild of the *same* definition (a deleted asset, or `force=True`) can never
     allocate a new version to record the new AML version in. Without this file the registry
     keeps pointing at the deleted asset, `ensure_environment` finds it missing on every
     subsequent call, and rebuilds a 10-20 minute image forever. Staged and renamed like

@@ -1,13 +1,11 @@
 """TileCatalog — read/append/filter the downloaded-tile catalog.
 
-Spec: specs/02-catalog.md; schema per spec 34 §5 `[G4]` (retires spec 32's
-`boa_add_offset` column — no back-compat shim, see `read()`).
+Spec: specs/02-catalog.md
 
-Columns: id (unique), satellite, timestamp (UTC), s3url, local_folderpath,
-files (comma-joined band filenames), cloud_cover, offset (additive declared
-radiometric offset for reflectance bands, spec 34 §1; 0 when a source has no
-such concept), nodata (declared nodata value, spec 34 §1c; defaults 0),
-geometry (EPSG:4326).
+Columns: id (unique), satellite, timestamp (UTC), s3url, local_folderpath, files
+(comma-joined band filenames), cloud_cover, offset (the additive declared radiometric
+offset for reflectance bands; 0 when a source has no such concept), nodata (the declared
+nodata value; defaults 0), geometry (EPSG:4326).
 """
 
 from __future__ import annotations
@@ -176,12 +174,11 @@ class TileCatalog:
     def read(self) -> gpd.GeoDataFrame:
         """Return the full catalog as a GeoDataFrame.
 
-        **No back-compat shim (spec 34 `[G4]`):** a catalog written before the
-        `offset`/`nodata` columns existed (spec 32's `boa_add_offset` schema) is
-        NOT patched up here — it is disposable and must be re-ingested (spec 34
-        "Data" section), not silently defaulted, so a stale catalog fails loudly
-        downstream (`flatten_catalog`/`build_datacube`) instead of building a cube
-        against unfilled/wrong radiometry.
+        ⚠️ **No back-compat shim, deliberately.** A catalog predating the
+        `offset`/`nodata` columns is NOT patched up here. It is disposable and must be
+        re-ingested, never silently defaulted -- so it fails loudly downstream
+        (`flatten_catalog`/`build_datacube`) instead of quietly building a cube against
+        wrong radiometry.
         """
         gdf = fs.read_parquet(self.filepath)
         gdf["timestamp"] = pd.to_datetime(gdf["timestamp"], utc=True)

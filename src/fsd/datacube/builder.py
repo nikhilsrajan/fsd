@@ -10,8 +10,8 @@ Artifact contract (specs/00 §6):
                          data_shape_desc, geometry{shape, crs},
                          actual_start, actual_end, ...}
                          (actual_start/actual_end: this shape's own min/max acquisition
-                         timestamp, spec 46 D1 Q3 -- the run FOLDER now names the
-                         REQUESTED window, not this data-derived one.)
+                         timestamp. The run FOLDER names the REQUESTED window, never
+                         this data-derived one.)
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ READ_LOG_FILENAME = "reads.jsonl"
 
 @contextmanager
 def _timed(store: dict, name: str):
-    """Record wall-seconds for a build phase into `store` (benchmark seam, spec 11)."""
+    """Record wall-seconds for a build phase into `store` -- the benchmark seam."""
     t0 = time.perf_counter()
     yield
     store[name] = round(time.perf_counter() - t0, 4)
@@ -103,22 +103,20 @@ def flatten_catalog(
 
     Output cols: `id, filepath, band, timestamp, geometry, area_contribution,
     offset, nodata`. Non-raster files (e.g. `MTD_TL.xml`) are skipped; `band` =
-    filename minus ext. `offset` (spec 34 §1, generalizing spec 32's
-    `boa_add_offset`) is the tile-row's declared additive radiometric offset for
-    reflectance bands (`_is_reflectance`), else 0 — mask/QA bands are never
-    harmonized. `nodata` is the tile-row's declared nodata,
+    filename minus ext. `offset` is the tile-row's declared additive radiometric offset for
+    reflectance bands (`_is_reflectance`), else 0 — mask/QA bands are never harmonized.
+    `nodata` is the tile-row's declared nodata,
     defaulting to 0 when the row doesn't carry one. Missing `offset`/`nodata`
     columns on `catalog_gdf` (a source with no radiometric-offset concept)
     default every row to 0.
 
     `declaration` is the *collection-level* builder contract —
     which band is the mask/reference, how to interpret the mask, the source's
-    grid shape — resolved per `_resolve_declaration` (spec 35 §5/§5a: explicit
-    kwarg, else `catalog_gdf`'s own stamp, else the S2 L2A default for a
-    hand-built `catalog_gdf`, else raise for an unstamped file). The resolved
-    declaration is attached to the output as the JSON-able
-    `GeoDataFrame.attrs["fsd:declaration"]` (spec 35 §2a — never the dataclass
-    itself), which `build_datacube` reads instead of hardcoding S2.
+    grid shape — resolved by `_resolve_declaration`: the explicit kwarg, else
+    `catalog_gdf`'s own stamp, else the S2 L2A default for a hand-built `catalog_gdf`, else
+    raise for an unstamped file. The resolved declaration is attached to the output as the
+    JSON-able `GeoDataFrame.attrs["fsd:declaration"]` — never the dataclass itself — which
+    `build_datacube` reads instead of hardcoding S2.
     """
     declaration = _resolve_declaration(catalog_gdf, declaration)
     data = {k: [] for k in
@@ -170,31 +168,31 @@ def build_datacube(
 ) -> None:
     """Assemble one cloud-masked, time-mosaicked datacube and save it.
 
-    Steps (specs/03, generalized by spec 34 §2b): missing-files check -> load+crop ->
+    Steps: missing-files check -> load+crop ->
     dst_crs (max mean area contribution) -> reference profile (merge the declared
     reference band) -> resample all to ref -> stack by timestamp x band -> declared
     op-sequence assembly (radiometry offset -> mask -> drop mask band -> median
     mosaic) -> save.
 
-    **Declaration-driven, not hardcoded (spec 34 Decision 2 / #35).** What band is
-    the mask, how to interpret it, which band is the resample reference, and the
-    mosaic method are read from a `SourceDeclaration` (`fsd.catalog.declaration`) —
-    resolved by `_resolve_declaration`: the explicit `declaration=`
-    kwarg, else `catalog_subset`'s own stamp (`attrs["fsd:declaration"]`, set by
-    `flatten_catalog`), else the S2 L2A default for a hand-built `catalog_subset`
-    (§5a — an unstamped catalog that came from a file raises instead).
-    `scl_mask_classes`/`reference_band`, if given, override the resolved
-    declaration's fields (back-compat for existing S2 callers). The declared mask is
-    skipped entirely (no `apply_cloud_mask_scl`, no drop) when `mask_spec` is `None`
-    **or** its `band` is not in the requested `bands` — this is what closes #35:
-    `bands=["B04"]` no longer requires an SCL band to exist. A `mask_spec.mask_type`
-    other than `"categorical_classes"` raises `NotImplementedError` (a growable-but-
-    partially-unimplemented seam, spec 34 `[G3]`), never a silently wrong mask. A
-    declaration with `native_grid=True` (a source with one native grid, e.g. ERA5)
-    also raises `NotImplementedError` — the non-tiled build path is designed-for but
-    ships with the ERA5 spec, not this one (`[G2]`).
+    **Declaration-driven, never hardcoded (#35).** What band is the mask, how to interpret
+    it, which band is the resample reference, and the mosaic method are all read from a
+    `SourceDeclaration` (`fsd.catalog.declaration`) — resolved by `_resolve_declaration`: the
+    explicit `declaration=` kwarg, else `catalog_subset`'s own stamp
+    (`attrs["fsd:declaration"]`, set by `flatten_catalog`), else the S2 L2A default for a
+    hand-built `catalog_subset`. An unstamped catalog that came from a FILE raises instead.
 
-    Per-row `offset`/`nodata` catalog columns carry the *radiometric*
+    `scl_mask_classes`/`reference_band`, if given, override the resolved declaration's
+    fields, for existing S2 callers. The declared mask is skipped entirely — no
+    `apply_cloud_mask_scl`, no drop — when `mask_spec` is `None` **or** its `band` is not in
+    the requested `bands`, which is what lets `bands=["B04"]` build without an SCL band
+    existing (#35).
+
+    An unimplemented `mask_spec.mask_type` raises `NotImplementedError` rather than masking
+    approximately: a growable seam must fail loudly, never produce a silently wrong mask.
+    `native_grid=True` (a source with one native grid, e.g. ERA5) raises for the same reason
+    -- the non-tiled build path is designed for but not implemented.
+
+    Per-row `offset`/`nodata` catalog columns carry the **radiometric**
     declaration: each image's declared additive offset is applied (read-time only,
     `apply_offset`) before the median mosaic, and the build's nodata is read from
     `catalog_subset["nodata"]` (falling back to the resolved declaration's `nodata`,
@@ -209,14 +207,14 @@ def build_datacube(
     calendar dates, not per-shape actual acquisition; "acquisition" keeps legacy).
 
     `write_timings=True` writes a `timings.json` sidecar (per-phase wall-seconds +
-    counts) next to the artifact — the benchmark seam for spec 11. Off by default so
+    counts) next to the artifact — the benchmark seam. Off by default so
     normal builds leave no extra file; the workflow path enables it via the
     `FSD_WRITE_TIMINGS` env var (see workflows.task).
 
     `write_read_log=True` writes a `reads.jsonl` sidecar (one row per windowed read:
     grid id, mgrs_tile, product_id, band, filepath, epoch start/end, duration) — the
     Part-2 read-instrumentation seam. Requires `njobs_load_images == 1` (the
-    reads must run in this process to be timed); a no-op with a warning otherwise. Uses
+    reads must run in this process to be timed) and is a no-op with a warning otherwise. Uses
     wall-clock `time.time()` so intervals are comparable across grid processes. The
     workflow path enables it via the `FSD_WRITE_READ_LOG` env var (see workflows.task).
     """
@@ -257,21 +255,21 @@ def build_datacube(
         )
 
     # Load + crop each (tile, band) to the shape; adds crs/image_index, drops
-    # unreadable rows. Raster pixel reads use rasterio directly (documented seam
-    # exception in CLAUDE.md). This is the read phase spec 11/12 scrutinise.
+    # unreadable rows. Raster pixel reads use rasterio directly -- the documented seam
+    # exception. This is the read phase the benchmarks scrutinise.
     with _timed(timings, "load_images"):
         catalog_gdf, data_profile_list, reads = _load_images(
             catalog_gdf=catalog_subset, shape_gdf=shape_gdf, nodata=nodata,
             njobs=njobs_load_images, write_read_log=write_read_log,
         )
-        # Harmonize each image's declared radiometric offset (spec 34 §1, generalizing
-        # spec 32's S2-only version) HERE — before dst_crs/reference/resample/mosaic —
-        # so a calendar window straddling e.g. the S2 baseline 04.00 cutover
-        # (2022-01-25) never medians unharmonized DN together (correctness debt #10).
-        # The cube still clips to uint16 after this (spec 34 §1f `[G1]`, intentional —
-        # see test_build_datacube_still_clips_after_offset_pinned_behavior): the
-        # lossless win is that the on-disk COG kept raw DN (this apply is read-time
-        # only, never written back).
+        # ⚠️ Harmonize each image's declared radiometric offset HERE -- before
+        # dst_crs/reference/resample/mosaic -- so a calendar window straddling the S2
+        # baseline 04.00 cutover (2022-01-25) never medians unharmonized DN together (#10).
+        # Move it later and the mosaic silently mixes two radiometries.
+        #
+        # The cube still clips to uint16 after this, intentionally (see
+        # test_build_datacube_still_clips_after_offset_pinned_behavior). The win is that
+        # the on-disk COG keeps raw DN: this apply is read-time only, never written back.
         _apply_offsets(catalog_gdf, data_profile_list)
 
     # Collapse into a single UTM zone so rasterio.merge (single-CRS) can run.
@@ -321,10 +319,10 @@ def build_datacube(
                                                   mosaic_scheme=mosaic_scheme,
                                                   mask_value=nodata)))
         datacube, metadata = ops.run_ops(datacube, metadata, sequence=sequence)
-        # spec 46 D1/Q3: the run folder is now named from the REQUESTED window
-        # (startdate/enddate), not each shape's actual acquisition min/max — so that
-        # data-derived fact needs a home other than the path. It's real information
-        # about the data (not the request), so it goes into the cube's own metadata.
+        # The run folder is named from the REQUESTED window (startdate/enddate), never
+        # each shape's actual acquisition min/max -- so that data-derived fact needs a home
+        # other than the path. It is real information about the DATA rather than the
+        # request, so it goes into the cube's own metadata.
         metadata["actual_start"] = catalog_subset["timestamp"].min()
         metadata["actual_end"] = catalog_subset["timestamp"].max()
 
@@ -335,11 +333,12 @@ def build_datacube(
         # than raw pickle because a raw pickle written on macOS could not be read on
         # Ubuntu (and vice versa) — np.save's pickling proved cross-platform stable.
         # (xarray is a possible future alternative; see TODO.)
-        # D7: each artifact is written to a per-attempt temp path and renamed
-        # into place only once fully written, so a reader never observes a partial file.
-        # metadata is published FIRST and datacube.npy LAST — `datacube.npy`'s existence
-        # is the resume signal (workflows.task.run_task), so by the time it appears the
-        # metadata it depends on is already durable.
+        # ⚠️ Each artifact is written to a per-attempt temp path and renamed into place only
+        # once fully written, so a reader never observes a partial file. metadata is
+        # published FIRST and datacube.npy LAST: `datacube.npy`'s existence is the resume
+        # signal (workflows.task.run_task), so by the time it appears the metadata it
+        # depends on is already durable. Swap the order and a resume can find a cube whose
+        # metadata is missing.
         _save_npy_atomic(os.path.join(export_folderpath, "metadata.pickle.npy"),
                           metadata, allow_pickle=True)
         _save_npy_atomic(os.path.join(export_folderpath, "datacube.npy"), datacube)
@@ -356,10 +355,11 @@ def build_datacube(
 
 
 def _save_npy_atomic(path: str, arr, allow_pickle: bool = False) -> None:
-    """`fs.save_npy` a temp sidecar next to `path`, then `fs.rename` onto it (D7,
-    spec 36) -- the write-to-temp-then-rename publish pattern (also used by
-    `fs.transfer`). A crash mid-write leaves the temp path orphaned and `path` absent;
-    it never leaves `path` partially written."""
+    """`fs.save_npy` a temp sidecar next to `path`, then `fs.rename` onto it -- the
+    write-to-temp-then-rename publish pattern, also used by `fs.transfer`.
+
+    A crash mid-write leaves the temp path orphaned and `path` absent; it never leaves
+    `path` partially written."""
     tmp = f"{path}.tmp-{uuid.uuid4().hex}"
     fs.save_npy(tmp, arr, allow_pickle=allow_pickle)
     fs.rename(tmp, path)
@@ -628,12 +628,13 @@ def _stack_datacube(catalog_gdf, data_profile_list, bands, reference_profile,
     same shape (legacy filled (H, W), which could not stack — fixed, see CHANGES).
 
     When several tiles of the SAME acquisition cover the shape (it straddles an MGRS
-    tile boundary) they collide on (timestamp, band); spec 20 merges ALL of them onto
-    the reference grid by nodata-fill instead of silently keeping one (which dropped
-    the coverage of every other tile). Overlap tie-break: dst_crs-native tiles win
+    tile boundary) they collide on (timestamp, band). ALL of them are merged onto the
+    reference grid by nodata-fill, never one kept and the rest dropped -- keeping one
+    silently discards the coverage of every other tile. Overlap tie-break: dst_crs-native
+    tiles win
     over reprojected ones, then lower image_index (deterministic first-valid-wins).
     Each band is merged independently — S2 tiles share one valid footprint across
-    bands, so a pixel resolves to the same tile for every band (see spec 20 SO-2)."""
+    bands, so a pixel resolves to the same tile for every band."""
     dst_crs = reference_profile["crs"]
     native_crs = {c for c in catalog_gdf["crs"].dropna().unique()
                   if CRS.from_string(c) == dst_crs}

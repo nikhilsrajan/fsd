@@ -1,4 +1,6 @@
-"""ROI → S2-geometry grid tiling (spec 19; ROADMAP §4 / P4 groundwork).
+"""ROI → S2-geometry grid tiling.
+
+Spec: specs/21-roi-inference-verb.md
 
 Cover a region of interest with fixed-size S2 cells — one cell = one inference datacube = one
 task when `run_inference(roi=…)` lands. Cells are scaled up slightly so adjacent tiles
@@ -71,15 +73,15 @@ def roi_to_s2_grids(roi, *, grid_size_km: float = 5, scale_fact: float = 1.1,
     `grid_size_km` (5 km → res 11), keep cells that **intersect** the ROI, **scale** each by
     `scale_fact` (1.1 → 10 % overlap per side), then **clip** to the ROI so grids stay inside it
     (`clip=False` keeps the scaled, unclipped cells). Finally, any cell fully `covered_by`
-    another cell in the result is dropped (spec 46 D4/#69) -- e.g. an ROI that is itself one S2
+    another cell in the result is dropped (#69) -- e.g. an ROI that is itself one S2
     cell polyfills its 8 neighbours too, and after clip+scale those come back as slivers wholly
     inside the central cell. A dropped cell is always a subset of a kept one, so the union of
-    the returned cells is unchanged; the drop count is always printed (never silent, spec 46 D5).
+    the returned cells is unchanged, and the drop count is always printed -- never silent.
 
     **An ROI is one region, not a list of shapes.** A multi-row `roi` is `unary_union`-ed into a
     single (multi)polygon *first*, and every step — hull, intersect, clip — works against that
     union. So the output is **one row per S2 cell, ids unique**, whether you pass 1 polygon or
-    900 (spec 21 D-GRID-1). If you want one datacube per *shape*, that is not this function:
+    900. If you want one datacube per *shape*, that is not this function:
     pass your shapefile straight to `workflows.create_datacube` with your own `id_col`.
 
     `roi` is a GeoDataFrame, a file path, or a geojson mapping. Returns a GeoDataFrame with
@@ -123,13 +125,13 @@ def roi_to_s2_grids(roi, *, grid_size_km: float = 5, scale_fact: float = 1.1,
         # and `create_datacube.setup(id_col="id")` derives `export_folderpath` from it --
         # so repeated ids mean N tasks writing the SAME folder concurrently. On blob that
         # is a guaranteed `InvalidBlockList` block-commit collision, and the surviving
-        # `geometry.geojson` is whichever fragment committed last. Measured 2026-07-28 on
+        # `geometry.geojson` is whichever fragment committed last. Measured on
         # a 900-field ROI: 1167 rows for 172 cells, one cell repeated 43x, each row
-        # ~0.016 km2 of a 49.6 km2 cell (spec 21 D-GRID-1).
+        # ~0.016 km2 of a 49.6 km2 cell.
         #
         # `overlay` is NOT inherently unusable -- `overlay(grids, <union as one row>)`
         # gives the identical result with unique ids. It is simply not faster, which is
-        # the only reason one would switch. Measured 2026-07-31 (max symmetric difference
+        # the only reason one would switch. Measured (max symmetric difference
         # 0.0 across all four; only the un-unioned form breaks id uniqueness):
         #
         #     clip method                    AT_ROI (1 poly)   900-poly ROI
@@ -196,7 +198,7 @@ def _drop_covered_cells(grids: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
 
     Covered-by, not `contains`/IoU: a clipped sliver *shares boundary* with the cell
     that covers it, which `contains` (boundary-exclusive) misses -- measured 2 of 8 on
-    the 476da24 case vs 8 of 8 here (spec 46 D4, shapely DE-9IM; see `_covered` for why
+    the 476da24 case vs 8 of 8 here (shapely DE-9IM; see `_covered` for why
     the exact `.covered_by()` predicate itself isn't used directly). A dropped cell is
     always a geometric subset of a kept cell, so the union of the output is unchanged
     -- that's the whole safety argument.

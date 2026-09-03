@@ -6,10 +6,11 @@ over them. `fsd.workflows.infer_task` (the unit of work) and `runners.run_local_
 unchanged; this file adds no pipeline logic of its own -- it exists only so the same local
 orchestration can be invoked from an AML node instead of a laptop.
 
-D3: the bundle fetch is **manifest-driven** (`fs.open` the staged `bundle.json`, then `fs.get`
-each file its `artifacts` map names) -- `fsd.storage.get` is single-file (`fs.get_file`), not
-recursive, so this is the fetch-without-a-directory-listing shape the spec locks. `bundle.load`
-itself is untouched: it only ever sees a local directory.
+The bundle fetch is **manifest-driven** (`fs.open` the staged `bundle.json`, then `fs.get`
+each file its `artifacts` map names). `fsd.storage.get` is single-file (`fs.get_file`), not
+recursive, so this is a fetch that needs no directory listing -- keep it that way, or the node
+starts paying a WAN listing per bundle. `bundle.load` itself is untouched: it only ever sees a
+local directory.
 
 Run as: python -m fsd.workflows.infer_shard <shard_csv_url> <bundle_url> --cores N
 """

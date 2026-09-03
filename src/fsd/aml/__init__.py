@@ -31,7 +31,7 @@ __all__ = ["EnsureResult", "ensure_environment"]
 
 
 class EnsureResult(NamedTuple):
-    """**Two version numbers, deliberately both present** (Opus review, 2026-08-27). `version`
+    """**Two version numbers, deliberately both present.** `version`
     /`ref` are AML's -- what `az` assigned, the string every `environment=` argument wants.
     `registry_version`/`registry_ref` are the image registry's -- an independent integer
     sequence over *definitions*, and the only thing `fsd.model.verify_image(image_ref=...,
@@ -91,14 +91,14 @@ def ensure_environment(
 ) -> EnsureResult:
     """Digest `defn`, reuse a matching registered environment if one still exists in AML,
     otherwise build and publish a new one. `force=True` rebuilds regardless of a digest hit
-    (a base image moved under a tag you did not pin -- flytekit's `force_push()`, D4).
+    (a base image moved under a tag you did not pin -- flytekit's `force_push()`).
 
     `storage="azure"` forbids the anonymous fallback for an `abfss://` registry, exactly as
-    `deploy`/`run_inference`/`verify_image` do (Opus review, 2026-08-27: this was the one
+    `deploy`/`run_inference`/`verify_image` do (this was the one
     public verb reaching the storage seam without configuring it). It is a **hardening, not a
     fix for a broken path** -- `adlfs` defaults to `anon=None`, which tries a credential
-    first, so a registry read with `az login` in place already worked (verified on a real run,
-    2026-08-27). What it buys is the failure mode: with `anon=False` a credential problem
+    first, so a registry read with `az login` in place already worked. What it buys is the
+    failure mode: with `anon=False` a credential problem
     raises, instead of silently degrading to an anonymous read that returns nothing and looks
     exactly like "this definition is not registered yet" -- which would rebuild a 10-20 minute
     image on every call.
@@ -107,11 +107,11 @@ def ensure_environment(
     `_create_environment`/`_build_link` parameters are the seam tests stub -- override them to avoid a
     real registry or a real `az` call; production code never passes them.
     """
-    # Before the first storage access -- `_find_by_digest` below (spec 52 D4's rule).
+    # Before the first storage access -- `_find_by_digest` below.
     _configure_storage(storage)
     # One temp directory spans resolve AND build on purpose: for `fsd="path:..."` the digest
     # is of a wheel this function builds, and the image must be built from THAT wheel, not a
-    # second one built moments later (Opus review, 2026-08-27). For every other `fsd` form
+    # second one built moments later. For every other `fsd` form
     # nothing is written here until the build branch runs.
     with tempfile.TemporaryDirectory() as tmp:
         return _ensure(
@@ -186,7 +186,7 @@ def _ensure(
     # `publish` is idempotent by digest, so a rebuild of an UNCHANGED definition (a deleted
     # asset, or force=True) returns the version that already exists and writes no image.json
     # -- leaving the registry pointing at the AML version we just replaced. Without this the
-    # next call finds that asset missing again and rebuilds forever (Opus review, 2026-08-27).
+    # next call finds that asset missing again and rebuilds forever.
     # `_aml.json` is a mutable sidecar, so it cannot disturb the content digest.
     _write_aml_record(
         defn.name, published_version, aml_record, registry, storage_options=storage_options,

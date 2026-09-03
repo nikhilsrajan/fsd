@@ -35,8 +35,8 @@ def apply_cloud_mask_scl(datacube, metadata, *, mask_classes, mask_band="SCL",
     default `"SCL"`) has a value in `mask_classes`, across the requested
     (non-mask) bands. The mask band itself is left untouched (drop it separately).
 
-    `mask_band` generalizes this beyond S2 (spec 34 §2b `[G3]`
-    `mask_type="categorical_classes"`) — any source whose QA band encodes
+    `mask_band` generalizes this beyond S2 (`mask_type="categorical_classes"`) — any
+    source whose QA band encodes
     "masked" as a small set of discrete values (not just SCL) can reuse this op
     by declaring its own `mask_band`."""
     band_indices = {band: i for i, band in enumerate(metadata["bands"])}
@@ -71,7 +71,7 @@ def median_mosaic(datacube, metadata, *, startdate: datetime.datetime,
     """Bucket timestamps into `mosaic_days` windows; per-bucket nanmedian (treating
     `mask_value` as NaN). Numba-accelerated core.
 
-    `mosaic_scheme` (spec 15; default `config.MOSAIC_SCHEME` = "calendar"):
+    `mosaic_scheme` (default `config.MOSAIC_SCHEME` = "calendar"):
 
     - **"calendar"** — fixed calendar windows `[startdate + k*mosaic_days, ...)` over
       `[startdate, enddate)`; label = the window-start boundary; **every** window is

@@ -2,7 +2,7 @@
 
 The `rise` compute identity already holds `Key Vault Secrets User` on the project's
 Key Vault, so this needs no infra grant -- just a thin read, authenticated by the
-same `AZURE_CLIENT_ID` spec 36 D4 sets for blob (`DefaultAzureCredential` selects a
+same `AZURE_CLIENT_ID` the runner sets for blob (`DefaultAzureCredential` selects a
 user-assigned identity by that env var for every Azure SDK, Key Vault included --
 one identity covers storage and secrets, on the node and the driver alike).
 
@@ -19,7 +19,7 @@ def get_secret(vault_url: str, name: str) -> str:
     Lazy-imports `azure-keyvault-secrets` / `azure-identity` (mirrors
     `workflows.runners._import_aml_command`'s injection pattern) so `import fsd`
     never needs the `[azure]` extra, and tests substitute this function instead of
-    requiring the extra ("no test may require Azure", spec 37 §7).
+    requiring the extra -- no test may require Azure.
     """
     from azure.identity import DefaultAzureCredential
     from azure.keyvault.secrets import SecretClient

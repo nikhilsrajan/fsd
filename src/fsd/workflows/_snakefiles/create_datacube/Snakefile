@@ -8,7 +8,7 @@
 # jitter staggers parallel job starts. Located at runtime via importlib.resources
 # (see runners._snakefile_path).
 #
-# D7 (spec 36): sentinels live on node-local scratch, keyed by a hash of
+# Sentinels live on node-local scratch, keyed by a hash of
 # export_folderpath, decoupled from the artifact destination -- they are this
 # invocation's own bookkeeping, not durable state. The durable "did this cube
 # already get built" signal is the artifact's own existence (datacube.npy), checked

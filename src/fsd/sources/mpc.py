@@ -343,7 +343,7 @@ def download(
 
     roi_gdf = _roi_gdf(roi)
     items = _search_items(roi_gdf, startdate, enddate, max_cloudcover=max_cloudcover)
-    items = _dedupe_reprocessed_items(items)  # spec 33
+    items = _dedupe_reprocessed_items(items)
     tiles = _finalize_catalog_gdf(_items_to_gdf(items), roi_gdf, max_cloudcover)
 
     if len(tiles) > max_tiles:
@@ -430,7 +430,7 @@ def discover_shard_rows(
     """
     roi_gdf = _roi_gdf(roi)
     items = _search_items_unsigned(roi_gdf, startdate, enddate, max_cloudcover=max_cloudcover)
-    items = _dedupe_reprocessed_items(items)  # spec 33
+    items = _dedupe_reprocessed_items(items)
     tiles = _finalize_catalog_gdf(_items_to_gdf(items), roi_gdf, max_cloudcover)
     tile_meta = {row["id"]: row for _, row in tiles.iterrows()}
     kept_items = [it for it in items if it.id in tile_meta]

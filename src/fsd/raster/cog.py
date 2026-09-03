@@ -14,10 +14,10 @@ NOTE (specs/10): like all pixel I/O, conversion reads/writes **local** paths thr
 rasterio/GDAL (VSI), not fsspec — the documented raster-I/O exception. A remote source
 must be fetched to local scratch first (`fsd.storage.get`).
 
-**Remote dst (spec 38 D5, ADR 0001):** when `dst_path` is a remote `fsd.storage` URL (e.g.
+**Remote dst:** when `dst_path` is a remote `fsd.storage` URL (e.g.
 `abfss://...`), the COG is still produced by GDAL on **node-local scratch** (the identical
 local path above, byte-for-byte), then published to `dst_path` via `storage.transfer`
-(itself a write-to-`.part`-then-atomic-`mv`, spec 36 D7's publish pattern) — never a
+(itself a write-to-`.part`-then-atomic-`mv`) — never a
 remote `rasterio.open(mode="w")` (TODO #39). This is the single chokepoint that lets both
 the per-cell `output.tif` (`model.engine._write_output_cog`, on an AML node) and the
 merged `merged.tif` (`api._merge_outputs`, on the driver) land on blob — both callers are
@@ -85,7 +85,7 @@ def to_cog(
     onto ``dst`` — a crash never leaves a truncated ``.tif`` that a resume would mistake
     for done.
 
-    **Remote `dst_path`** (D5, ADR 0001): GDAL still writes the COG to node-local scratch
+    **Remote `dst_path`:** GDAL still writes the COG to node-local scratch
     (byte-identical to the local path above), then `storage.transfer` publishes it to
     `dst_path` (write-to-`.part`-then-atomic-`mv` on the destination filesystem) and the
     scratch file is removed. Never a remote `rasterio.open(mode="w")` (TODO #39).
@@ -124,7 +124,7 @@ def to_cog(
         os.remove(scratch)  # GDAL's COG driver must create the file itself
         try:
             rasterio.shutil.copy(src_path, scratch, **opts)
-            fs.transfer(scratch, dst_path)  # -> dst_path.part -> atomic mv (spec 36 D7 pattern)
+            fs.transfer(scratch, dst_path)  # -> dst_path.part -> atomic mv
         finally:
             if os.path.exists(scratch):
                 os.remove(scratch)
@@ -151,7 +151,7 @@ def stamp_gdal_tags(
     `SCALE`/`OFFSET` (what `rio-tiler`/titiler's `unscale=true` reads — STAC
     `raster:bands` alone is **not** forwarded to the viewer, per titiler discussion
     #803) and, if the raster has no nodata tag yet, sets it to `set_nodata_if_missing`
-    (spec 34 §1c — never overwrites an already-declared nodata). Never decodes pixels:
+    (never overwrites an already-declared nodata). Never decodes pixels:
     no radiometric loss, cheap even on a large COG.
 
     Plain `rasterio.open(...).read()` (what the datacube builder uses) never
@@ -180,7 +180,7 @@ def stamp_or_reencode(
     set_nodata_if_missing: float | None = None,
 ) -> str:
     """`stamp_gdal_tags`, falling back to a GDAL-COG-driver re-encode if the in-place
-    stamp breaks COG validity (spec 34 §1a "runbook observation" — whether an in-place
+    stamp breaks COG validity (whether an in-place
     tag edit keeps a strictly-valid COG is source/GDAL-version dependent; this is the
     documented fallback, not the expected path). Returns ``"stamped"`` or
     ``"reencoded"`` (informational, for a runbook to report which path was taken).

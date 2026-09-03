@@ -152,7 +152,7 @@ def rename(src_path: str, dst_path: str, **storage_options: Any) -> None:
     Locally it calls `os.rename` **directly** rather than fsspec's `LocalFileSystem.mv`,
     which is `shutil.move` -- and `shutil.move` moves the source *inside* `dst_path` when
     that already exists as a directory, instead of failing. For a caller staging a
-    directory and renaming it onto its final name (spec 51 D2's publish), that silently
+    directory and renaming it onto its final name, that silently
     turns a lost race into a corrupted destination rather than an error it can retry.
     `os.rename` gives the documented semantics: atomic replace for a file, `EEXIST`/
     `ENOTEMPTY` for a non-empty directory. Cross-device moves have no atomic form at all,
