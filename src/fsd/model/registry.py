@@ -91,8 +91,8 @@ def parse_ref(ref: str) -> tuple[str, str, str]:
 
 
 def check_name(name: str) -> None:
-    """Refuse a model name that cannot round-trip through a ref (AC1: `deploy` returns a ref
-    `run_inference` accepts unchanged).
+    """Refuse a model name that cannot round-trip through a ref -- `deploy` returns a ref
+    `run_inference` must accept unchanged.
 
     `deploy` returns `f"{name}:{version}"`, and the reader of that string is `api._is_ref_shaped`
     -> `parse_ref`. A name carrying `/` or `\\` makes the ref look like a *path*, so it is never
@@ -101,9 +101,9 @@ def check_name(name: str) -> None:
     publish successfully and hand back a ref nothing can resolve -- so they are refused here,
     where the name is chosen, rather than surfacing at the first run.
 
-    A leading `.` is refused for a different reason: `_list_names` skips dot-entries (that is how
-    `.staging-*` stays invisible), so such a name would be silently dropped by `migrate` -- and
-    D11's "a move is a copy" would quietly lose it."""
+    A leading `.` is refused for a different reason: `_list_names` skips dot-entries (that is
+    how `.staging-*` stays invisible), so such a name would be silently dropped by `migrate`
+    -- a "move" that quietly loses a model is worse than a refused name."""
     if not name or not name.strip():
         raise ValueError("model name must be a non-empty string.")
     bad = [c for c in ("/", "\\", ":", "@") if c in name]
@@ -210,9 +210,9 @@ def set_alias(
 
 
 def _bundle_content_rels(manifest: dict) -> list[str]:
-    """The file set D2's digest is computed over: the manifest itself, every artifact,
-    every embedded code file -- exactly what `bundle.load` needs, nothing a caller added
-    beside it."""
+    """The file set the content digest is computed over: the manifest itself, every artifact,
+    every embedded code file -- exactly what `bundle.load` needs, and nothing a caller
+    happened to drop beside it."""
     rels = {bundle_mod.BUNDLE_MANIFEST}
     rels.update(manifest.get("artifacts", {}).values())
     rels.update(bundle_mod.manifest_code_files(manifest))
@@ -248,9 +248,10 @@ def _digest_of(files: list[tuple[str, bytes]]) -> str:
 
 
 def content_digest(bundle_path: str, *, storage_options: dict | None = None) -> str:
-    """SHA-256 over a bundle's manifest-declared files (sorted relative path + bytes,
-    D2). Two bundles with this equal are the same content; used by `publish` for
-    idempotency and by `migrate` to prove a copy arrived intact."""
+    """SHA-256 over a bundle's manifest-declared files (sorted relative path + bytes).
+
+    Two bundles with this equal are the same content. Used by `publish` for idempotency and
+    by `migrate` to prove a copy arrived intact."""
     return _digest_of(_read_bundle_content(bundle_path, storage_options))
 
 
@@ -261,8 +262,8 @@ def read_deploy_record(version_dir: str, *, storage_options: dict | None = None)
     """`version_dir`'s `_deploy.json` as a dict, or `None` if there is no such file (a version
     published before step 2, or by a caller that never called `deploy`) -- and also `None` for
     an empty or malformed file, since a print-line degrading to "no record" is the correct
-    failure mode (spec 51 step 3): a ref that resolved must never fail to run because its
-    bookkeeping record was unreadable.
+    failure mode: a ref that resolved must never fail to run because its bookkeeping record
+    was unreadable.
 
     **Never raises**, and the catch is deliberately wide enough to mean it. `ValueError` covers
     both `json.JSONDecodeError` *and* `UnicodeDecodeError` -- a truncated or byte-corrupted
@@ -328,15 +329,18 @@ def _list_names(registry: str, storage_options: dict) -> list[str]:
 
 
 def _is_version_complete(version_dir: str, storage_options: dict) -> bool:
-    """A version counts once `_complete.json` is there, or -- for content that
-    predates this marker -- once `bundle.json` is there with no marker at all (D5's
-    legacy rule). A version published by the pre-spec-52 code was staged under a temp
-    prefix and only ever became `v<N>` via a directory rename that lands-or-doesn't, so
-    `bundle.json`'s presence there already proves completeness; the cost is that a
-    freshly interrupted (post-spec-52) publish is indistinguishable from legacy content
-    once its files have landed -- accepted in spec 52 §5 as a stranded, harmless
-    directory, never served because nothing resolves "the latest version" through this
-    function (`resolve` doesn't call it -- D2)."""
+    """A version counts once `_complete.json` is there, or -- for content predating that
+    marker -- once `bundle.json` is there with no marker at all.
+
+    The legacy rule is safe for legacy content: such a version was staged under a temp prefix
+    and only became `v<N>` via a directory rename that lands or does not, so `bundle.json`
+    being there already proves completeness.
+
+    The cost is that a freshly interrupted publish is indistinguishable from legacy content
+    once its files have landed. That is accepted: it strands a harmless directory, never
+    served, because nothing resolves "the latest version" through this function -- `resolve`
+    does not call it.
+    """
     if fs.exists(os.path.join(version_dir, _COMPLETE_FILE), **storage_options):
         return True
     return fs.exists(os.path.join(version_dir, bundle_mod.BUNDLE_MANIFEST), **storage_options)
@@ -386,31 +390,29 @@ def _write_new_version(
     A single-object write is atomic on every backend fsd targets, so step 3 is the
     all-or-nothing moment the directory rename used to provide.
 
-    A target that already exists and is complete (`_is_version_complete`) is a genuine
-    collision only if it does not hold the caller's digest, in which case it retries at
-    `v<N+1>` -- D2's idempotency, reached without writing anything. A target that exists
-    but is *not* complete (an interrupted publish, D1's step 3 never ran) is nobody's, so
-    it is **cleared** and then rewritten -- clearing it is what keeps the previous
-    attempt's undeclared leftovers out of the version the re-digest is about to bless.
-    A target where the freshly landed bytes do not match the caller's digest (two
-    publishers interleaved their files at the same `v<N>`, spec 52 §5) is left unmarked
-    and the loop moves to `v<N+1>` rather than claiming it -- note that such a directory
-    is *not* invisible, because both writers wrote a `bundle.json` and D5's legacy rule
-    reads that as complete; it burns the version number and can still be reached by an
-    explicit pin, which is why §5's risk is stated in terms of a stranded directory
-    rather than an unreachable one.
+    A target that already exists and is complete is a genuine collision only if it does not
+    hold the caller's digest, in which case the loop retries at `v<N+1>` -- idempotency,
+    reached without writing anything. A target that exists but is *not* complete (an
+    interrupted publish) is nobody's, so it is **cleared** and rewritten; clearing is what
+    keeps the previous attempt's undeclared leftovers out of the version the re-digest is
+    about to bless. A target whose freshly landed bytes do not match the caller's digest --
+    two publishers interleaving files at the same `v<N>` -- is left unmarked and the loop
+    moves on rather than claiming it. Such a directory is not invisible: both writers wrote a
+    `bundle.json`, which the legacy rule reads as complete, so it burns a version number and
+    is still reachable by an explicit pin.
 
-    `bundle.json` is written **last** among the content files, deliberately out of the
-    caller's `files` order (D5 amendment, 2026-08-24): `_is_version_complete`'s legacy
-    check is "does `bundle.json` exist", so writing it last means an interruption *during*
-    the write -- where all the bytes and all the elapsed time are -- leaves no manifest,
-    stays invisible to `_list_versions`, and is reused in place by the next `publish`. Only
-    the one-object-write window between the manifest landing and `_complete.json` landing
-    is left indistinguishable from legacy content, and D5 resolves that window in favor of
-    treating it as complete: misreading real legacy content as incomplete would hide a
-    published version and let a later `publish` allocate over it, destroying a model, which
-    is strictly worse than the alternative -- stranding a folder, a cost spec 52 §5 already
-    accepts in writing.
+    ⚠️ `bundle.json` is written **last** among the content files, deliberately out of the
+    caller's `files` order. The legacy completeness check is "does `bundle.json` exist", so
+    writing it last means an interruption *during* the write -- where all the bytes and all
+    the elapsed time are -- leaves no manifest, stays invisible to `_list_versions`, and is
+    reused in place by the next `publish`. Reorder this and every interrupted publish strands
+    a directory.
+
+    That leaves one window, between the manifest landing and `_complete.json` landing,
+    indistinguishable from legacy content. It is resolved in favour of treating it as
+    complete, because the other choice is worse: misreading real legacy content as incomplete
+    would hide a published version and let a later `publish` allocate over it, destroying a
+    model. Stranding a folder is the cheaper failure.
 
     Bounded at `_MAX_PUBLISH_ATTEMPTS`: the loop retries only genuine version
     collisions, so an unbounded run here would mean something is structurally wrong, not a
@@ -428,16 +430,16 @@ def _write_new_version(
             continue
 
         if fs.exists(target, **storage_options):
-            # Opus review, 2026-08-24. An incomplete target holds a *previous* attempt's
-            # leftovers, and the re-digest below cannot see them: `content_digest` covers
+            # An incomplete target holds a *previous* attempt's leftovers, and the re-digest
+            # below cannot see them: `content_digest` covers
             # only manifest-declared files, so an artifact or a `code/*.py` that THIS
             # bundle does not declare survives into the version and is then marked
             # complete. `bundle.load` puts a version's `code/` on `sys.path`, so a stale
             # module left there is importable by the adapter that lands next. The old
-            # stage-then-rename got a clean directory for free (a fresh staging prefix
-            # every attempt); publishing in place has to ask for one. Best-effort, like
-            # every other `_discard` -- a blob backend where recursive rm is unreliable
-            # (#50) is no worse off than before this call existed.
+            # stage-then-rename got a clean directory for free -- a fresh staging prefix
+            # every attempt -- but publishing in place has to ask for one. Best-effort, like
+            # every other `_discard`: a blob backend where recursive rm is unreliable (#50) is
+            # no worse off than if this call did not exist.
             _discard(target, storage_options)
         try:
             for rel, data in ordered_files:
@@ -493,8 +495,8 @@ def publish(
     `_deploy.json` (a small metadata read) and falls back to recomputing the content
     digest only for a version that has none -- e.g. one published before step 2 landed
     `_deploy.json`, or by a direct `publish` call that was never `deploy`ed. `publish`
-    itself never writes `_deploy.json` (that is `deploy`'s job, D7); this is just where
-    it reads one if a prior `deploy` left it behind.
+    itself never writes `_deploy.json` -- that is `deploy`'s job; this is just where it reads
+    one if a prior `deploy` left it behind.
     """
     check_name(name)
     files = _read_bundle_content(bundle_path, bundle_storage_options)
@@ -530,10 +532,11 @@ def migrate(
 ) -> None:
     """Copy a registry tree onto a new root, re-digesting every version.
 
-    Not a schema rewrite: nothing the registry writes names its own location (D11's
-    invariant), so a ref that resolved against `src_registry` resolves identically
-    against `dst_registry` once callers pass the new `registry=`. A version whose
-    recomputed digest disagrees with what was copied is refused, not silently accepted.
+    Not a schema rewrite: nothing the registry writes names its own location, so a ref that
+    resolved against `src_registry` resolves identically against `dst_registry` once callers
+    pass the new `registry=`. That invariant is what makes a move "a copy plus a changed
+    argument" -- do not write an absolute registry path into any registry file. A version
+    whose recomputed digest disagrees with what was copied is refused, not silently accepted.
     """
     src_opts = src_storage_options or {}
     dst_opts = dst_storage_options or {}
@@ -566,18 +569,17 @@ def _migrate_version(vsrc: str, vdst: str, src_opts: dict, dst_opts: dict) -> No
             f"migrate: {vsrc} -> {vdst} digest mismatch after copy (source {before}, "
             f"copied {after}) -- refusing a possibly-corrupted copy."
         )
-    # Marked last, same as `_write_new_version`'s step 3: migrate already performs
-    # D1's steps 1 and 2 above (write, re-digest-and-confirm), so its output is first-class
-    # marked content, not something that has to fall back on D5's legacy rule to be seen.
+    # Marked last, same as `_write_new_version`: migrate has already written and
+    # re-digest-confirmed above, so its output is first-class marked content rather than
+    # something that has to fall back on the legacy rule to be seen.
     fs.write_text(
         os.path.join(vdst, _COMPLETE_FILE),
         json.dumps({"digest": after}, indent=2, sort_keys=True),
         **dst_opts,
     )
-    # `_deploy.json` is not manifest-declared content -- it never affects the digest
-    # above -- but it is the durable fact a `deploy` produced, and dropping it silently on
-    # a relocation would defeat D11's promise that a move is "a copy plus a changed
-    # registry= argument", not a loss of every version's binding record.
+    # `_deploy.json` is not manifest-declared content, so it never affects the digest above
+    # -- but it is the durable record that a `deploy` happened. Dropping it on a relocation
+    # would silently lose every version's binding record.
     deploy_src = os.path.join(vsrc, DEPLOY_FILE)
     if fs.exists(deploy_src, **src_opts):
         with fs.open(deploy_src, "r", **src_opts) as f:

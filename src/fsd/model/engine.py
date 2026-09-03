@@ -1,12 +1,14 @@
-"""Inference engine (spec 18, F2/F3): fsd owns the predict loop and output writing.
+"""Inference engine: fsd owns the predict loop and output writing.
+
+Spec: specs/18-model-adapter.md
 
 `infer_datacube` runs one datacube through the contract — feature transform (F1) →
 `datacube_to_X` → drop-NaN pixels → chunked `predict` → scatter into a nodata-filled
 `(bands, H, W)` array (F2) → `to_output` (F3). `infer_datacube_to_cog` adds the COG write
 (reusing `fsd.raster.cog.to_cog`, lossless + overviews) with the datacube's transform/crs.
-`run_local` runs many datacubes **sequentially in-process** (spec 22 retired the process pool;
+`run_local` runs many datacubes **sequentially in-process** (there is no process pool;
 `api.run_inference` fans out `cores>1` via the Snakemake infer-only runner instead). The
-ROI→tiling→download front-end that produces the datacubes is spec 21 (`run_inference(roi=…)`).
+ROI→tiling→download front-end that produces the datacubes is `run_inference(roi=…)`.
 """
 
 from __future__ import annotations
@@ -75,7 +77,7 @@ def _write_output_cog(out: Output, transform, crs, dst_path: str) -> int:
     Writes a plain GeoTIFF sibling first, then converts. `to_cog` publishes to a remote
     `dst_path`. **The raw scratch tif and its parent dir are always node-local**
     regardless of `dst_path`: a remote dst (e.g. `abfss://.../output.tif`, the per-cell site
-    an AML node writes — spec 38 D5) must NOT `os.makedirs`/`rasterio.open(mode="w")` on the
+    an AML node writes) must NOT `os.makedirs`/`rasterio.open(mode="w")` on the
     remote URL (a forbidden remote write that scatters junk local dirs, TODO #39); it stages
     locally, and `to_cog` transfers it to blob. Mirrors `api._merge_outputs`' own local-scratch
     guard for the identical pattern.
@@ -142,8 +144,8 @@ def run_local(model, pairs: list[tuple[str, str]], *,
 
     `model` is a live adapter **or** a bundle path (str). This is the `cores=1` / test / debug /
     small-run path; `api.run_inference` routes `cores>1` through the Snakemake **infer-only** runner
-    instead — fsd has **no in-process process pool** (spec 22 retired `mp.Pool`). Existing outputs
-    are **skipped** unless `overwrite` (idempotency, spec 22). Returns every output path.
+    instead — fsd has **no in-process process pool**. Existing outputs are **skipped** unless
+    `overwrite`. Returns every output path.
     """
     is_bundle = isinstance(model, str)
     adapter = _adapter_from_bundle_cached(model) if is_bundle else model

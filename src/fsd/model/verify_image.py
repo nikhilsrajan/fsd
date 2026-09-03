@@ -1,25 +1,23 @@
-"""`fsd.model.verify_image` — does an inference IMAGE actually run THIS bundle? (spec 45 D4/#67)
+"""`fsd.model.verify_image` — does an inference IMAGE actually run THIS bundle?
 
-Promotes `runbooks/scripts/45_phase1_generic_image_smoke.py` (the spec-44 phase-1 verification
-job) into a public, reusable library call. Since spec 44 an inference image is generic per
-*dependency family* (sklearn/xgboost/torch/keras), never per model — so "does this image run
-this bundle?" is now a question worth asking as a function call, not a nine-env-var script.
+Spec: specs/45-bundle-transparency-and-image-verification.md
 
-Behavior is the run-book script's, lifted verbatim and generalised:
+An inference image is generic per *dependency family* (sklearn/xgboost/torch/keras), never per
+model, so "does this image run this bundle?" is a question worth asking as a function call.
 
 1. driver-side first, free: manifest is v2, a `code` block exists, `check_requirements` against
-   the declared list, and — when `build_context` is given — the wheel-staleness gate that refuses
-   a pre-spec-44 image in ~2 s instead of paying for a 40-380 s cold start;
+   the declared list, and — when `build_context` is given — the wheel-staleness gate that
+   refuses a too-old image in ~2 s instead of paying for a 40-380 s cold start;
 2. stage the bundle exactly as `run_aml_inference` does (`runners._stage_bundle`);
-3. submit **one node** running the existing `python -m fsd.workflows.adapter_smoke`;
-4. always read `_status/*.json` back, and treat a *missing* status file as its own diagnosis (the
-   job died before the entrypoint ran -> image or node auth, not the adapter).
+3. submit **one node** running `python -m fsd.workflows.adapter_smoke`;
+4. always read `_status/*.json` back, and treat a *missing* status file as its own diagnosis:
+   the job died before the entrypoint ran, so it is the image or node auth, not the adapter.
 
-Three properties are non-negotiable (each a defect the run-book already paid for): it must run as
-a JOB, never on the driver (a local run passes trivially -- ADR 0002); the returned dict is
-`_result.json`-shaped so a run-book can paste it straight back; and it is meant to be
-called at the step it protects (immediately before `run_inference`), not hoisted into an upfront
-gate that hardcodes paths a later step creates.
+⚠️ Three properties are non-negotiable, each of them a defect already paid for once: it must
+run as a JOB, never on the driver, because a local run passes trivially; the returned dict is
+`_result.json`-shaped so a run-book can paste it straight back; and it is meant to be called at
+the step it protects, immediately before `run_inference`, not hoisted into an upfront gate that
+hardcodes paths a later step creates.
 """
 
 from __future__ import annotations
@@ -42,18 +40,18 @@ __all__ = ["verify_image"]
 
 
 def _default_fetch_fsd_source(fsd_ref: str, relpath: str) -> str:
-    """`relpath` of the fsd source tree named by `fsd_ref` (a resolved `git+...@<sha>`
-    reference, D8) -- via GitHub's raw-content host, since fsd is public on GitHub and this
-    avoids a local clone for a one-file check. Raises on anything unexpected; the caller
-    turns that into a `pass=False` result, not a crash (D8's gate must keep failing, not
-    become unable to report)."""
+    """`relpath` of the fsd source tree named by `fsd_ref` (a resolved `git+...@<sha>`).
+
+    Read via GitHub's raw-content host, since fsd is public there and this avoids a local
+    clone for a one-file check. Raises on anything unexpected; the caller turns that into a
+    `pass=False` result rather than a crash -- the gate must keep failing, never become
+    unable to report."""
     url_part, _, sha = fsd_ref.partition("@")
     repo_url = url_part[len("git+"):].removesuffix(".git")
     if not repo_url.startswith("https://github.com/"):
         # Said plainly rather than mis-fetched: `removeprefix` on a non-GitHub URL is a no-op,
         # so the raw URL would come out as `raw.githubusercontent.com/https://gitlab.com/...`
-        # and 404 -- a confusing pass=False instead of "this gate only reads GitHub"
-        # (Opus review, 2026-08-27).
+        # and 404 -- a confusing pass=False instead of "this gate only reads GitHub".
         raise ValueError(
             f"verify_image cannot check {fsd_ref!r}: the image_ref= gate reads fsd's source "
             "from raw.githubusercontent.com, so it only understands a "
@@ -66,18 +64,19 @@ def _default_fetch_fsd_source(fsd_ref: str, relpath: str) -> str:
 
 
 def _image_ref_has_spec44(fsd_ref: str, *, fetch=_default_fetch_fsd_source) -> bool:
-    """D8's `image_ref=` equivalent of `_wheel_has_spec44`: does the fsd this image was
-    built from already carry `manifest_code_files`? A `wheel:<digest>` reference
-    (an fsd developer's `path:` build) carries no fetchable source -- only its content
-    digest -- so it is trusted rather than checked, the same way `fsd="path:..."` always
-    was the developer's own responsibility.
+    """The `image_ref=` equivalent of `_wheel_has_spec44`: does the fsd this image was built
+    from already carry `manifest_code_files`?
 
-    **A non-`git+` reference is likewise trusted, and that is a hole in the gate** (Opus
-    review, 2026-08-27): a PyPI spec (`fsd==0.2.0`) names a version this function has no
-    cheap way to read `bundle.py` out of, so it passes unchecked. Harmless while fsd is not
-    on PyPI (#82 is deliberately last on the phase-2 path) and the resolved reference is
-    recorded in `metrics["image_ref_fsd"]` either way -- but it must be closed, by reading
-    the sdist's `bundle.py`, before a PyPI-installed image is verified this way."""
+    A `wheel:<digest>` reference carries no fetchable source, only its content digest, so it
+    is trusted rather than checked -- a developer's own `path:` build was always their
+    responsibility.
+
+    ⚠️ **A non-`git+` reference is likewise trusted, and that is a HOLE in this gate.** A
+    PyPI spec (`fsd==0.2.0`) names a version this function has no cheap way to read
+    `bundle.py` out of, so it passes unchecked. Harmless while fsd is not on PyPI (#82), and
+    the resolved reference is recorded in `metrics["image_ref_fsd"]` either way -- but it
+    must be closed, by reading the sdist's `bundle.py`, before a PyPI-installed image is
+    verified this way."""
     if fsd_ref.startswith("wheel:"):
         return True
     if not fsd_ref.startswith("git+"):
@@ -97,12 +96,16 @@ def _find_wheel(build_context: str) -> str:
 
 
 def _wheel_has_spec44(wheel: str) -> bool:
-    """D4 step 1's wheel-staleness gate: does the fsd wheel this image was built from already
-    carry `manifest_code_files`? A pre-spec-44 wheel's `fetch_bundle_to_scratch` never
-    downloads `code/` and its `bundle.load` never touches `sys.path` -- the node then raises
-    `ModuleNotFoundError` however good the bundle is, and cannot self-diagnose it (an old fsd has
-    none of the code that would report it), so this has to be checked here, on the driver. Unlike
-    an absent wheel, a stale one IS a statement about the image -- it stays inside the `try`."""
+    """The wheel-staleness gate: does the fsd wheel this image was built from already carry
+    `manifest_code_files`?
+
+    A wheel too old to know about embedded code never downloads `code/` and never touches
+    `sys.path`, so the node raises `ModuleNotFoundError` however good the bundle is -- and it
+    cannot self-diagnose, because an old fsd has none of the code that would report it. That
+    is why this is checked here, on the driver.
+
+    Unlike an absent wheel, a stale one IS a statement about the image, so it stays inside the
+    `try` and returns a verdict rather than raising."""
     with zipfile.ZipFile(wheel) as zf:
         src = zf.read("fsd/model/bundle.py").decode()
     return "def manifest_code_files" in src
@@ -123,18 +126,18 @@ def verify_image(
     """Does `environment` actually run `bundle_path`? Submits one real node and reports.
 
     `bundle_path` is a local bundle folder or an already-staged URL -- `storage="azure"`
-    authenticates adlfs for that read (spec 52 D4, #86), the same `storage=` kwarg
+    authenticates adlfs for that read (#86), the same `storage=` kwarg
     `run_inference`/`verify_adapter`/`deploy` take. `environment` is the inference
     Environment reference to verify (e.g. `"fsd-infer-sklearn:3"`).
 
     `runner` must be `"aml"` -- `runner="local"` **raises** rather than returning a pass,
     because "verified locally" is the exact false positive this helper exists to prevent: the
-    driver's venv already has the adapter's source on `sys.path` and its dependencies installed
-    (ADR 0002), so a local run tells you nothing about the image.
+    driver's venv already has the adapter's source on `sys.path` and its dependencies
+    installed, so a local run tells you nothing about the image.
 
     `runner_kwargs` carries the AML dispatch parameters, the same names `run_aml_inference` takes:
-    required `cluster`, `root`, `identity_client_id`; optional `ml_client` (spec 36 D3 invariant 3
-    -- inject one for tests, otherwise a real `MLClient` is built from `subscription_id`/
+    required `cluster`, `root`, `identity_client_id`; optional `ml_client` (inject one for
+    tests, otherwise a real `MLClient` is built from `subscription_id`/
     `resource_group_name`/`workspace_name`), `poll_interval_seconds` (default 30), and `run_id`
     (an opaque tag under `root` that namespaces the staged bundle + status file for this call --
     defaults to a fresh uuid; pass one explicitly to make the status URL predictable).
@@ -167,14 +170,14 @@ def verify_image(
         raise ValueError(
             f"verify_image(runner='aml') requires runner_kwargs{sorted(missing_kwargs)!r}."
         )
-    # spec 52 D4: before the first storage access -- `_bundle.read_spec(bundle_path)` below.
+    # Before the first storage access -- `_bundle.read_spec(bundle_path)` below.
     _configure_storage(storage)
-    # D11: a caller who passes build_context has asserted the folder holds the wheel -- an
-    # absent wheel is caller misuse and must raise here, before the try, not become pass=False.
+    # A caller who passes build_context has asserted the folder holds the wheel, so an absent
+    # wheel is caller misuse: it must raise here, before the try, never become pass=False.
     wheel = _find_wheel(build_context) if build_context else None
-    # D8: build_context wins if both are given (checkout path unchanged, spec 47 behaviour
-    # intact). A caller who passes image_ref without registry, or a ref the registry cannot
-    # resolve, is misuse -- same treatment as an absent wheel.
+    # build_context wins if both are given, so the checkout path behaves unchanged. A caller
+    # who passes image_ref without registry, or a ref the registry cannot resolve, is misuse
+    # -- same treatment as an absent wheel.
     image_ref_fsd = None
     if image_ref and not build_context:
         if not registry:
@@ -200,7 +203,7 @@ def verify_image(
             # WHAT was verified, not WHERE it was. `deploy(verified=...)`
             # honours a prior result only if this digest matches the bundle being deployed;
             # re-digesting `bundle_path` at deploy time instead would prove nothing, because
-            # `bundle.save` overwrites in place (spec 51 §1 H1) -- the same path can hold
+            # `bundle.save` overwrites in place -- the same path can hold
             # different content on different days, and a same-path comparison is a tautology.
             # Recording it here also makes a `_result.json` portable between machines.
             "bundle_digest": _registry.content_digest(bundle_path),
@@ -218,8 +221,8 @@ def verify_image(
                 "ModuleNotFoundError. Re-save it with fsd.model.bundle.save so the adapter's "
                 "source is embedded."
             )
-        # Informational, not fatal: the driver's venv need not mirror the image (ADR 0002) --
-        # the real check is `check_requirements` running INSIDE the smoke job, below.
+        # Informational, not fatal: the driver's venv need not mirror the image. The real
+        # check is `check_requirements` running INSIDE the smoke job, below.
         result["metrics"]["requirement_problems_here"] = _bundle.check_requirements(
             manifest.get("requirements"))
 
@@ -265,8 +268,8 @@ def verify_image(
 
         root = str(kwargs["root"]).rstrip("/")
         # A deterministic tag can be supplied via runner_kwargs["run_id"] -- lets a caller (or a
-        # test, injecting a fake ml_client per spec 36 D3 invariant 3) predict status_url ahead of
-        # the call; otherwise a fresh one per call, same as run_aml_inference's own run_id.
+        # test, injecting a fake ml_client) predict status_url ahead of the call; otherwise a
+        # fresh one per call, same as run_aml_inference's own run_id.
         run_tag = str(kwargs.get("run_id") or uuid.uuid4().hex[:8])
         staged = runners._stage_bundle(bundle_path, f"{root}/_verify_image/{run_tag}/bundle")
         result["metrics"]["staged_bundle_url"] = staged
@@ -324,7 +327,7 @@ def verify_image(
             result["metrics"]["smoke_status"] == "ok" and version == _bundle.BUNDLE_VERSION
         )
         result["status"] = "ok" if result["pass"] else "fail"
-    except Exception as exc:  # noqa: BLE001 - spec 24: always return a shaped result, never a bare traceback
+    except Exception as exc:  # noqa: BLE001 - always a shaped result, never a bare traceback
         result["status"] = "fail"
         result["pass"] = False
         result["error"] = str(exc)
