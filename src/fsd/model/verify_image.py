@@ -1,6 +1,6 @@
 """`fsd.model.verify_image` — does an inference IMAGE actually run THIS bundle?
 
-Spec: specs/45-bundle-transparency-and-image-verification.md
+Spec: specs/45-bundle-transparency-and-image-verification.md (#67)
 
 An inference image is generic per *dependency family* (sklearn/xgboost/torch/keras), never per
 model, so "does this image run this bundle?" is a question worth asking as a function call.
