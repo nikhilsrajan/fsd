@@ -1,8 +1,8 @@
 """Print a catalog Parquet file's stamped `SourceDeclaration`, footer-only --
-no row group is read (spec 35 §6, `fsd-catalog-inspect`).
+no row group is read (`fsd-catalog-inspect`).
 
 Recovers the sidecar-JSON option's one real advantage (human legibility)
-without its separation risk (spec 35 §1's rejected alternatives): the
+without its separation risk: the
 declaration always lives in the catalog file itself, this just prints it.
 
 Run as:  python -m fsd.catalog.inspect_cli <catalog.parquet>

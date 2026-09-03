@@ -1,7 +1,9 @@
-"""The single feature-transform chokepoint + per-id aggregation (spec 18, F1/F4).
+"""The single feature-transform chokepoint + per-id aggregation.
+
+Spec: specs/18-model-adapter.md
 
 Everything that turns raw bands into model features flows through `apply_features` — the ONE
-place the transform runs, so training and inference cannot drift (the F1 anti-skew invariant).
+place the transform runs, so training and inference cannot drift apart.
 It works on the 5-D contract `(samples, timestamps, H, W, bands)` used by `fsd.bands.modify`.
 """
 

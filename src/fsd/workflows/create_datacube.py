@@ -4,9 +4,9 @@ Spec: specs/08-workflows.md. Preserves the demo_01 UX of run_create_datacube.
 
 Setup reads the catalog once, then pre-slices it per shape (via `catalog.filter_gdf`)
 so each parallel build job reads only its small subset — no shared-file contention. The
-per-row start/end dates written to `input.csv` are the caller's requested window (the
-calendar mosaic anchor, spec 15) — the run-folder name is derived from that same window
-too (spec 46 D1). This is the shape-centric workflow TODO #15 will later optimize.
+per-row start/end dates written to `input.csv` are the caller's requested window — the
+calendar mosaic anchor — and the run-folder name is derived from that same window. This is
+the shape-centric workflow TODO #15 will later optimize.
 """
 
 from __future__ import annotations
@@ -31,10 +31,10 @@ from fsd.workflows import runners
 COL_ID = "id"
 COL_LABEL = "label"
 
-# D13 (spec 38, TODO #53): a unit's CONTENT identity -- same id+params means the same
-# work, safe to collapse to one row. `export_folderpath` is keyed by `id` ALONE
-# (below), a narrower thing than this tuple -- two rows can share this identity and
-# still collide on folder (that's the guard in `workflows.runners`, not this dedupe).
+# A unit's CONTENT identity: same id + params means the same work, safe to collapse to one
+# row. `export_folderpath` is keyed by `id` ALONE (below), which is NARROWER than this tuple
+# -- so two rows can differ here and still collide on folder. Catching that is the guard in
+# `workflows.runners`, not this dedupe (TODO #53).
 _UNIT_IDENTITY_COLS = (
     COL_ID, "startdate", "enddate", "bands", "mosaic_days", "mosaic_scheme", "scl_mask_classes",
 )
@@ -46,20 +46,23 @@ class NoWorkUnitsError(ValueError):
     A `ValueError` subclass so every existing `except ValueError` caller (notably
     `api.verify_adapter`, which turns it into an actionable `PreflightError`) keeps
     working unchanged. It exists so `build_shortfall_only` can catch THIS condition --
-    an entirely out-of-coverage shortfall, D5's known-empty case -- without also
+    an entirely out-of-coverage shortfall, the known-empty case -- without also
     swallowing `setup`'s OTHER `ValueError`, the duplicate-`id_col` guard, which is a
     loud refusal that must never be silently reinterpreted as "no imagery".
     """
 
 
 def params_key(bands: list[str], mosaic_scheme: str, scl_mask_classes: list[int]) -> str:
-    """Spec 50 D6: a short digest of the params EVERY cell in a run shares (never the
-    set of ids -- that is the thing Q1 rejected). Folded into the `<window>` path
-    segment so path granularity matches `_UNIT_IDENTITY_COLS`: two requests differing
-    only in `bands` must resolve to different paths, or the second silently overwrites
-    the first and the build skip reads the wrong-band cube as "present" (D6). Same
-    string form `setup` already writes to `input.csv` (`",".join(...)`), so a digest
-    computed here and one computed from a read-back `input.csv` row agree byte-for-byte."""
+    """A short digest of the params EVERY cell in a run shares -- never the set of ids.
+
+    Folded into the `<window>` path segment so path granularity matches
+    `_UNIT_IDENTITY_COLS`: two requests differing only in `bands` MUST resolve to different
+    paths, or the second silently overwrites the first and the build skip reads the
+    wrong-band cube as "present".
+
+    Uses the same string form `setup` writes to `input.csv` (`",".join(...)`), so a digest
+    computed here and one computed from a read-back `input.csv` row agree byte-for-byte.
+    """
     raw = "|".join([
         ",".join(bands), mosaic_scheme, ",".join(str(v) for v in scl_mask_classes),
     ])
@@ -70,10 +73,12 @@ def window_folder_segment(
     startdate: datetime.datetime, enddate: datetime.datetime, mosaic_days: int, *,
     bands: list[str], mosaic_scheme: str, scl_mask_classes: list[int],
 ) -> str:
-    """The one run-folder segment shared by every cell of a request (spec 46 D1/D2,
-    extended by spec 50 D6): `<startdate>_<enddate>_m<mosaic_days>_<params_key>`. Callers
-    that need to name an expected cube path WITHOUT running `setup` (D3/D4) call this with
-    the same arguments `setup` was given -- same inputs, same string, no catalog access."""
+    """The one run-folder segment shared by every cell of a request:
+    `<startdate>_<enddate>_m<mosaic_days>_<params_key>`.
+
+    Callers that need to name an expected cube path WITHOUT running `setup` call this with
+    the same arguments `setup` was given -- same inputs, same string, no catalog access.
+    """
     startdate = pd.to_datetime(startdate, utc=True)
     enddate = pd.to_datetime(enddate, utc=True)
     key = params_key(bands, mosaic_scheme, scl_mask_classes)
@@ -82,7 +87,7 @@ def window_folder_segment(
 
 def cube_export_folderpath(run_folderpath: str, window_segment: str, id_value) -> str:
     """A cube's `export_folderpath` is derivable from `(run_folderpath, window, id)` and
-    NOTHING else (spec 50 D3) -- no catalog access is needed to NAME it, only to BUILD it.
+    NOTHING else -- no catalog access is needed to NAME it, only to BUILD it.
     Shared by `setup`'s `_prepare` and by `api._flatten_identity_from_request`, which must
     compute the exact same string without reading `input.csv`."""
     export_folderpath = os.path.join(run_folderpath, window_segment, str(id_value))
@@ -124,19 +129,20 @@ def setup(
     The mosaic anchor written to each row is the caller's `startdate`/`enddate` (not
     the per-shape actual acquisition min/max), so every shape mosaics on the same
     calendar grid and the resulting cubes share a `timestamps` axis that `flatten` can
-    concatenate (spec 15). The run-folder name is now built from that same requested
-    window + `mosaic_days` (spec 46 D1/D2), not the per-shape actual acquisition
-    range, so every cell of one run lands under one folder that identifies the cube
-    contract it was built against. `timestamp_col` no longer feeds the folder name
-    (`actual_start`/`actual_end` moved into the cube's own metadata, spec 46 Q3) but
-    stays a parameter — `filter_gdf`'s catalog rows already fix "timestamp" as the
-    column, so this is unused today; kept for the caller-facing signature.
+    concatenate. The run-folder name is built from that same requested window +
+    `mosaic_days`, never the per-shape actual acquisition range, so every cell of one run
+    lands under one folder that identifies the cube contract it was built against; each
+    shape's own `actual_start`/`actual_end` live in its cube metadata instead.
+
+    `timestamp_col` does not feed the folder name and is unused today -- `filter_gdf`'s
+    catalog rows already fix "timestamp" as the column -- but stays in the caller-facing
+    signature.
     """
     startdate = pd.to_datetime(startdate, utc=True)
     enddate = pd.to_datetime(enddate, utc=True)
-    # D6a (spec 36, TODO #40): read via fsd.storage + BytesIO -- a local path behaves
-    # exactly as before (fsd.storage routes file:// transparently), and this closes the
-    # last raw-path geometry read that a cluster node (no `shapefiles/` checkout) can't do.
+    # Read via fsd.storage + BytesIO, never a raw path: a cluster node has no `shapefiles/`
+    # checkout, so a raw-path geometry read cannot work there. A local path is unaffected --
+    # fsd.storage routes file:// transparently (TODO #40).
     with fs.open(shapefilepath, "rb") as f:
         shapes_gdf = gpd.read_file(io.BytesIO(f.read()))
 
@@ -144,9 +150,9 @@ def setup(
     # work-units writing the SAME folder -- concurrently, once `max_concurrent > 1`. On blob
     # that collides on the block-blob commit (`InvalidBlockList`) and the surviving
     # geometry.geojson is whichever shape committed last; locally it silently overwrites.
-    # Either way the run is wrong, so refuse it here rather than race. (Found 2026-07-28: a
-    # multi-polygon ROI made `roi_to_s2_grids` repeat cell ids -- fixed at source in grid.py,
-    # but the guard belongs here too, for every caller.)
+    # Either way the run is wrong, so refuse it here rather than race. A multi-polygon ROI
+    # has made `roi_to_s2_grids` repeat cell ids before; that is fixed at source in grid.py,
+    # but the guard belongs here too, for every caller.
     if shapes_gdf[id_col].duplicated().any():
         counts = shapes_gdf[id_col].value_counts()
         repeated = counts[counts > 1]
@@ -174,10 +180,10 @@ def setup(
     print(f"[setup] catalog read once: {len(catalog_gdf)} rows, for {n_shapes} shapes",
           flush=True)
 
-    # D4 (spec 47): the throttle + rate + ETA math itself now lives in `fsd.progress`
-    # (extracted verbatim from what was here) so every driver-side loop shares one
-    # implementation and one output format -- setup does per-shape network I/O and can
-    # run for many minutes on a remote run folder; silence is indistinguishable from a hang.
+    # The throttle + rate + ETA math lives in `fsd.progress` so every driver-side loop
+    # shares one implementation and one output format. setup does per-shape network I/O and
+    # can run for many minutes on a remote run folder, where silence is indistinguishable
+    # from a hang.
     _tick = _progress.ticker(n_shapes, "setup", unit="shapes")
 
     def _prepare(srow) -> dict | None:
@@ -200,7 +206,7 @@ def setup(
         fs.makedirs(export_folderpath)
         shape_path = os.path.join(export_folderpath, "geometry.geojson")
         catalog_path = os.path.join(export_folderpath, "catalog.parquet")
-        # D6a (spec 36): write via fsd.storage rather than gpd.to_file(path) directly, so
+        # D6a: write via fsd.storage rather than gpd.to_file(path) directly, so
         # this per-unit geometry lands correctly on a remote export_folderpath too.
         # write_text (not fs.open) so a concurrent adlfs InvalidBlockList retries (TODO #57).
         fs.write_text(shape_path, shape_gdf.to_json())
@@ -208,7 +214,7 @@ def setup(
 
         row = {
             "shapefilepath": shape_path,
-            # Calendar anchor = the caller's window (spec 15), not per-shape actual
+            # Calendar anchor = the caller's window, not per-shape actual
             # acquisition min/max — so all shapes mosaic on the same grid. actual_start/
             # actual_end are used above for the run-folder name only.
             "startdate": startdate,
@@ -227,8 +233,8 @@ def setup(
     # (`makedirs` + `geometry.geojson` + the `catalog.parquet` slice), so the loop is
     # latency-bound and the GIL is released for the duration of each call. Same
     # pattern `sources.mpc.download`/`download_shard` already run concurrently through
-    # `fsd.storage` against blob. Measured 2026-07-22: 900 shapes serially = ~1.8
-    # s/shape (~27 min) on `rise` over VPN.
+    # `fsd.storage` against blob. Serially this has measured ~1.8 s/shape over VPN -- ~27
+    # minutes for 900 shapes, before a single job is submitted.
     #
     # Results are placed BY INDEX and compacted afterwards, so `input.csv` row order
     # is the shapefile's order regardless of completion order — parallelism must not
@@ -270,13 +276,17 @@ def setup(
 
 
 def _dedupe_on_unit_identity(input_df: pd.DataFrame) -> pd.DataFrame:
-    """D13 (spec 38, TODO #53): collapse rows sharing the same content identity
-    (`_UNIT_IDENTITY_COLS`) to one, keeping the NEWEST (`added_on`) -- an idempotent
-    re-run of `setup` (which appends unconditionally) must not grow `input.csv` by one
-    duplicate copy of every unit each time. A re-run adding a genuinely new shape (or a
-    changed window/params for an existing id) still adds a distinct row -- this is a
-    dedupe, not a "one row per id" collapse. Order otherwise preserved (`setup`'s own
-    manifest-order contract, `test_setup_manifest_order_is_shapefile_order_not_completion_order`)."""
+    """Collapse rows sharing the same content identity (`_UNIT_IDENTITY_COLS`) to one,
+    keeping the newest by `added_on`.
+
+    `setup` appends unconditionally, so without this an idempotent re-run grows `input.csv`
+    by a duplicate copy of every unit each time (TODO #53). A re-run adding a genuinely new
+    shape, or a changed window/params for an existing id, still adds a distinct row: this is
+    a dedupe, not a "one row per id" collapse.
+
+    Order is otherwise preserved -- `setup`'s manifest order is the shapefile's order, not
+    completion order, and that is a contract other code relies on.
+    """
     cols = [c for c in _UNIT_IDENTITY_COLS if c in input_df.columns]
     if not cols:
         return input_df
@@ -301,10 +311,13 @@ def _dedupe_on_unit_identity(input_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _cube_present(datacube_filepath: str) -> bool:
-    """D2 (spec 49): a cube counts as present only when BOTH `datacube.npy` and its
-    `metadata.pickle.npy` sibling exist and are non-empty -- a half-written cube is the
-    same class of defect spec 47 §3a documented for downloads (#74), and this must not
-    repeat it."""
+    """A cube counts as present only when BOTH `datacube.npy` and its `metadata.pickle.npy`
+    sibling exist and are non-empty.
+
+    A half-written cube counted as done is the same defect as a truncated download
+    catalogued as complete (#74) -- do not reintroduce it by checking one file, or by
+    checking existence without size.
+    """
     metadata_filepath = os.path.join(os.path.dirname(datacube_filepath), "metadata.pickle.npy")
     for filepath in (datacube_filepath, metadata_filepath):
         if not fs.exists(filepath) or fs.size(filepath) == 0:
@@ -319,9 +332,9 @@ def _present_cube_ids_at(window_folderpath: str) -> set[str] | None:
     """The ids whose cube is fully built, from ONE recursive listing of the window folder.
 
     `_cube_present` costs four blob round-trips per cell (`exists` + `size`, twice), and
-    both driver-side sweeps run it per cell, serially: 900 cells was ~3600 sequential
-    round-trips over the WAN with no output, which reads as a hang (2026-08-21). A
-    directory walk answers the same question in a couple of paginated requests.
+    both driver-side sweeps run it per cell, serially: 900 cells is ~3600 sequential
+    round-trips over the WAN with no output, which reads as a hang. A directory walk answers
+    the same question in a couple of paginated requests.
 
     Keyed by the `<id>` path leaf, never the full path, so it does not have to reconcile
     `os.path.abspath` (local) against a backend's own path spelling (`abfss://` -> adlfs
@@ -336,7 +349,7 @@ def _present_cube_ids_at(window_folderpath: str) -> set[str] | None:
     have: dict[str, set[str]] = {}
     for path, nbytes in listing.items():
         if nbytes <= 0:
-            continue  # a zero-byte artifact is not present (D2/#74)
+            continue  # a zero-byte artifact is not present (#74)
         parts = path.replace("\\", "/").rstrip("/").split("/")
         if len(parts) < 2 or parts[-1] not in _CUBE_FILES:
             continue
@@ -371,7 +384,7 @@ def _presence_for_paths(datacube_filepaths, *, label: str) -> dict[str, bool]:
     The fast path is one recursive listing per `<window>` folder (`_present_cube_ids_at`);
     anything that cannot be listed falls back to concurrent, ticked per-path checks. Both
     driver-side sweeps -- the announced plan and the dispatch decision -- go through here,
-    so neither can be the silent serial walk they both were (2026-08-21).
+    so neither can regress into the silent serial walk they both once were.
     """
     paths = list(datacube_filepaths)
     by_folder: dict[str, list[str]] = {}
@@ -419,7 +432,7 @@ def _row_matches_window(
         if col in ("startdate", "enddate"):
             got = str(pd.to_datetime(got, utc=True))
         else:
-            # F5: `",".join([])` -> `""` -> an empty CSV field -> read back as NaN,
+            # `",".join([])` -> `""` -> an empty CSV field -> read back as NaN,
             # not `""`. Without this, `scl_mask_classes=[]` ("mask nothing", a
             # legitimate request) round-trips to "nan" and never matches its own
             # freshly-written request value, purging every row on every call.
@@ -432,18 +445,17 @@ def _row_matches_window(
 def _row_matches_path(row, *, run_folderpath: str, window_segment: str) -> bool:
     """Does an existing `input.csv` row name the path THIS request derives for its id?
 
-    `_row_matches_window` compares the run PARAMETERS, which is not sufficient on its own:
-    spec 50 D6 changed the path shape (the `<window>` segment gained a `_<params_key>`
-    digest), so a row written before that change matches on every parameter and still
-    points at the OLD folder. Adopting it means the new addressing silently never takes
-    effect -- the plan announces a full rebuild while the build leg, reading the row's own
-    stale `datacube_filepath`, finds the old cube present and dispatches nothing. Worse,
-    the flatten stamp then records old paths that the request-derived identity can never
+    ⚠️ `_row_matches_window` compares the run PARAMETERS, and that is NOT sufficient on its
+    own. Change the path shape -- as adding the `_<params_key>` digest to the `<window>`
+    segment did -- and a row written before the change still matches on every parameter
+    while pointing at the OLD folder. Adopt such a row and the new addressing silently never
+    takes effect: the plan announces a full rebuild, while the build leg reads the row's own
+    stale `datacube_filepath`, finds the old cube present, and dispatches nothing. Worse,
+    the flatten stamp then records old paths the request-derived identity can never
     reproduce, so the top-level short-circuit is dead for that request forever.
 
-    So the path is part of what makes a row current. A row that fails this is purged and
-    its id goes back into the shortfall, which regenerates the row at the right path.
-    (Found on the first real AML run after D6 landed, 2026-08-21.)
+    So the path is part of what makes a row current. A row that fails this is purged and its
+    id goes back into the shortfall, which regenerates the row at the right path.
     """
     if COL_ID not in row.index:
         return False
@@ -462,10 +474,12 @@ def _manifest_filepath(run_folderpath: str) -> str:
 
 
 def _read_known_empty(run_folderpath: str, window_segment: str) -> set[str]:
-    """D5/§7 Q2: the known-empty manifest, keyed to the window/params segment (which
-    already carries the request identity D6 needs -- reusing it here keeps ONE identity
-    granularity for both the cube path and the known-empty record, per D5's risk note: a
-    changed window or band set clears it automatically, because the key itself changes)."""
+    """The known-empty manifest, keyed to the window/params segment.
+
+    That segment already carries the request identity, so reusing it keeps ONE identity
+    granularity for both the cube path and the known-empty record -- which is what makes a
+    changed window or band set clear the record automatically, since the key itself changes.
+    """
     path = _manifest_filepath(run_folderpath)
     if not fs.exists(path):
         return set()
@@ -517,8 +531,7 @@ def _forget_known_empty(run_folderpath: str, window_segment: str, recovered_ids)
     is no longer empty, and leaving it recorded makes `api._flatten_identity_from_request`
     subtract an id that `input.csv` genuinely names. The two identities could then never
     agree again and the top-level short-circuit would be dead for that request forever:
-    the exact failure D5's manifest was introduced to remove, relocated (Opus re-review
-    2026-08-21).
+    the exact failure the manifest exists to prevent, moved one step downstream.
     """
     recovered = {str(v) for v in recovered_ids}
     if not recovered:
@@ -544,19 +557,18 @@ def build_shortfall_only(
     label_col: str | None, mosaic_scheme: str = config.MOSAIC_SCHEME,
     max_concurrent: int = config.SETUP_MAX_CONCURRENT,
 ) -> tuple[int, int, int]:
-    """D2/D3/D4/D5 (spec 50 §9 step 4) -- the backward walk's build leg. Every id's cube
-    target is named from the REQUEST alone (D3: `window_folder_segment` +
-    `cube_export_folderpath`), so `setup` is called only for shapes whose cube is
-    genuinely missing and not already recorded as known-empty (D5) -- not for the whole
-    shapefile every time (D4).
+    """The build leg of the backward walk: call `setup` only for the shapes that need it.
 
-    Rows in an existing `csv_filepath` for a DIFFERENT window/params are dropped before
-    anything else: this function only ever GROWS `input.csv` within ONE window. Full
-    cross-window accumulation is D9 (§9 step 3), deliberately BLOCKED on #84 (two
-    windows of one id would collide in `ids.npy`) -- this stays inside one window on
-    purpose, so it delivers D4's cost reduction without reaching into D9's territory.
+    Every id's cube target is named from the REQUEST alone (`window_folder_segment` +
+    `cube_export_folderpath`), so `setup` runs only for shapes whose cube is genuinely
+    missing and not already recorded as known-empty -- never for the whole shapefile.
 
-    Prints the D7 `[plan]` build line before any `setup` call. Returns
+    Rows in an existing `csv_filepath` for a DIFFERENT window/params are dropped first: this
+    function only ever GROWS `input.csv` within ONE window. Accumulating ACROSS windows is
+    deliberately out of scope and blocked on #84 -- two windows of one id would collide in
+    `ids.npy`.
+
+    Prints the `[plan]` build line before any `setup` call. Returns
     `(n_present, n_missing, n_known_empty)`.
     """
     shapes_gdf = _load_shapes_gdf(shapefilepath)
@@ -611,20 +623,20 @@ def build_shortfall_only(
             present_ids.append(id_value)
             continue
         if id_value in cube_ids:
-            # F1: a cube with no row is not "satisfied" -- nothing downstream (the
-            # build leg, flatten) ever looks at the cube directly, only at
-            # `input.csv` rows, and nothing else ever calls `setup` for this id. Route
-            # it through `setup` (idempotent, and `_build_shortfall` still skips the
-            # cube itself) so the row comes back. A real cube also overrules a stale
-            # known-empty record, which is why this branch is tested first.
+            # A cube with no row is not "satisfied": nothing downstream (the build leg,
+            # flatten) ever looks at a cube directly, only at `input.csv` rows, and nothing
+            # else calls `setup` for this id. Route it through `setup` -- idempotent, and
+            # `_build_shortfall` still skips the cube itself -- so the row comes back. A
+            # real cube also overrules a stale known-empty record, which is why this branch
+            # is tested first.
             missing_srows.append(srow)
         elif id_value in known_empty:
-            pass  # D5: known-empty, satisfied -- never rediscovered
+            pass  # known-empty, satisfied -- never rediscovered
         else:
             missing_srows.append(srow)
 
-    # F3: `present_ids`/`missing_srows` above answer "does setup need to run for this
-    # id" (a ROW question) -- but the announced plan must match what `_build_shortfall`
+    # `present_ids`/`missing_srows` above answer "does setup need to run for this id" (a
+    # ROW question) -- but the announced plan must match what `_build_shortfall`
     # actually dispatches next (a CUBE question). An interrupted prior run can have a
     # row with no cube behind it yet; count that as missing for the printed line
     # without changing whether `setup` reruns for it (it doesn't need to -- the row is
@@ -662,17 +674,15 @@ def build_shortfall_only(
                 max_concurrent=max_concurrent,
             )
         except NoWorkUnitsError:
-            # F2: `setup` raises when NONE of the shapes it was handed have tiles in
-            # range -- reachable here because this call is scoped to just the
-            # shortfall, unlike the old whole-shapefile path where one out-of-coverage
-            # polygon among hundreds could never trigger it. Record the whole
-            # shortfall as known-empty (D5) and let the caller's request converge,
-            # rather than crashing the entire `create_training_data` call.
+            # `setup` raises when NONE of the shapes it was handed have tiles in range.
+            # That is reachable here precisely because this call is scoped to the shortfall,
+            # where one out-of-coverage polygon can be the whole batch. Record the shortfall
+            # as known-empty and let the caller's request converge, rather than crashing the
+            # entire `create_training_data` call.
             #
-            # Deliberately NOT `except ValueError`: `setup`'s duplicate-`id_col` guard
-            # raises that too, and swallowing it would silently record a caller's
-            # duplicated shapes as "no imagery" -- turning a loud refusal into missing
-            # training data (Opus re-review 2026-08-21).
+            # ⚠️ Deliberately NOT `except ValueError`: `setup`'s duplicate-`id_col` guard
+            # raises that too, and swallowing it would record a caller's duplicated shapes
+            # as "no imagery" -- turning a loud refusal into silently missing training data.
             newly_empty = [str(srow[id_col]) for srow in missing_srows]
             _record_known_empty(run_folderpath, window_segment, newly_empty)
             print(f"[setup] shortfall of {len(missing_srows)} had no tiles in range/overlap "
@@ -692,17 +702,18 @@ def build_shortfall_only(
 
 
 def _build_shortfall(csv_filepath: str, *, force: bool) -> tuple[str, int, int]:
-    """D1 (spec 49): which `input.csv` rows still need a cube built -- the driver-side
-    analogue of spec 47 D8's download diff, one level up. Returns `(dispatch_csv_filepath,
-    n_total, n_missing)`. `force=True` (an `overwrite=` rebuild) treats every row as
-    missing without touching the filesystem (the driver dispatches every row again; the
-    node then actually rebuilds only because the caller is expected to have cleared the
-    old artifacts -- see `_force_rebuild`).
+    """Which `input.csv` rows still need a cube built -- the driver-side diff, one level up
+    from the download diff. Returns `(dispatch_csv_filepath, n_total, n_missing)`.
 
-    When nothing is missing, or NOTHING is present yet (today's full-dispatch shape),
-    `dispatch_csv_filepath` is `csv_filepath` itself -- no temp file, no extra write. Only
-    a PARTIAL shortfall gets its own sibling CSV holding just the missing rows, so a run
-    that is 95% built does not fan out 100% (spec 47's own reasoning, D1)."""
+    `force=True` (an `overwrite=` rebuild) treats every row as missing without touching the
+    filesystem: the driver dispatches every row again, and the node actually rebuilds only
+    because the caller is expected to have cleared the old artifacts first (`_force_rebuild`).
+
+    When nothing is missing, or nothing is present yet, `dispatch_csv_filepath` IS
+    `csv_filepath` -- no temp file, no extra write. Only a PARTIAL shortfall gets its own
+    sibling CSV holding just the missing rows, so a run that is 95% built does not fan out
+    100%.
+    """
     with fs.open(csv_filepath, "r") as f:
         df = pd.read_csv(f)
     n_total = len(df)
@@ -720,11 +731,13 @@ def _build_shortfall(csv_filepath: str, *, force: bool) -> tuple[str, int, int]:
 
 
 def _force_rebuild(csv_filepath: str) -> None:
-    """D4 (spec 49): `overwrite="datacubes"`/`True` forces a rebuild. `workflows.task`'s
-    own node-side skip (`fs.exists(datacube.npy)`) would otherwise no-op every row whose
-    cube still exists, so the driver clears each row's existing cube files FIRST -- this is
-    still an identity-free operation (no mtime read anywhere, D3/AC6): it removes whatever
-    is there, unconditionally, for exactly the rows this run addresses."""
+    """Clear each row's existing cube files so a forced rebuild actually rebuilds.
+
+    `workflows.task`'s own node-side skip (`fs.exists(datacube.npy)`) would otherwise no-op
+    every row whose cube still exists. This stays identity-free -- no modification time is
+    read -- and removes whatever is there, unconditionally, for exactly the rows this run
+    addresses.
+    """
     with fs.open(csv_filepath, "r") as f:
         df = pd.read_csv(f)
     for datacube_filepath in df["datacube_filepath"]:
@@ -759,24 +772,22 @@ def run_create_datacube(
 ):
     """Run setup (unless csv exists), then dispatch only the cubes that are still missing.
 
-    `runner_kwargs` (spec 36 D3) is forwarded to `runners.run_aml` when `runner="aml"`
+    `runner_kwargs` is forwarded to `runners.run_aml` when `runner="aml"`
     (e.g. `cluster=`, `environment=`, `root=`, `identity_client_id=`) -- the local runner
     takes no extra kwargs, so it is ignored for `runner="local"`.
 
-    `overwrite=True` (spec 49 D1/D4/§7 Q1) forces every cube in `csv_filepath` to be
-    rebuilt (clearing existing artifacts first, `_force_rebuild`); `False` (default) skips
+    `overwrite=True` forces every cube in `csv_filepath` to be rebuilt (clearing existing
+    artifacts first, `_force_rebuild`); `False` (default) skips
     per-cell (`_build_shortfall`): a shortfall of 0 prints and returns WITHOUT submitting a
     single job; a partial shortfall dispatches only the missing rows. No modification time
-    is read anywhere in this decision (D3/AC6) -- presence is `datacube.npy` +
-    `metadata.pickle.npy`, both non-empty (D2).
+    is read anywhere in this decision -- presence is `datacube.npy` +
+    `metadata.pickle.npy`, both non-empty.
 
-    `overwrite_setup_csv` (spec 50 D4/§9 step 4): `True` (default, unchanged -- no
-    production caller sets this) keeps the legacy behaviour, delete-then-regenerate the
-    whole `input.csv` every call. `False` -- which is what `create_training_data` now
-    passes -- runs `build_shortfall_only` instead: `setup` is called ONLY for shapes
-    whose cube target (named from the request, D3, no catalog access) is missing and not
-    already known-empty (D5). `overwrite_setup_csv` itself is not removed here -- that is
-    D9/§9 step 3, blocked on #84.
+    `overwrite_setup_csv=True` (default) delete-then-regenerates the whole `input.csv` every
+    call. `False` -- what `create_training_data` passes -- runs `build_shortfall_only`
+    instead, calling `setup` ONLY for shapes whose cube target (named from the request, no
+    catalog access) is missing and not already known-empty. Removing the flag entirely is
+    blocked on #84.
     """
     if overwrite_setup_csv:
         if fs.exists(csv_filepath):
@@ -792,8 +803,8 @@ def run_create_datacube(
             # This pass just re-derived every shape straight from the catalog, so any
             # known-empty record for this window is superseded by what `input.csv` now
             # says. Clearing it here is what makes a forced rebuild the escape hatch
-            # from a stale manifest (D5's risk note) rather than a way to leave the
-            # manifest disagreeing with `input.csv` (Opus re-review 2026-08-21).
+            # from a stale manifest, rather than a way to leave the manifest and
+            # `input.csv` disagreeing.
             _clear_known_empty(
                 run_folderpath,
                 window_folder_segment(startdate, enddate, mosaic_days, bands=bands,

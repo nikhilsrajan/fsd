@@ -1,9 +1,11 @@
-"""`fsd.aml.environment` -- the AML side of an image (spec 56 D4/D6).
+"""`fsd.aml.environment` -- the AML side of an image.
+
+Spec: specs/56-image-definitions-and-registry.md
 
 **The only module under `fsd.aml` that touches Azure** -- `az ml environment ...` and
 `az ml workspace show`, via `subprocess`. Every function takes its Azure coordinates
 explicitly (`resource_group`, `workspace`); fsd hard-codes nothing (§7 Q2). Tests stub these
-three functions rather than calling `az` (AC8) -- `ensure_environment` (`fsd/aml/__init__.py`)
+three functions rather than calling `az` -- `ensure_environment` (`fsd/aml/__init__.py`)
 takes them as injectable keyword arguments for exactly that reason.
 """
 
@@ -25,8 +27,9 @@ _ENV_YML_TEMPLATE = (
 
 def latest_registered(name: str, *, resource_group: str, workspace: str) -> str | None:
     """The highest version AML currently holds for `name`, or `None` if it has never been
-    registered. Proves the AML **asset** exists -- never that its image finished building
-    (moved verbatim in spirit from `00_build_images.ipynb`'s `latest_registered`, D6)."""
+    registered.
+
+    Proves the AML **asset** exists -- never that its image finished building."""
     out = subprocess.run(
         ["az", "ml", "environment", "list", "-n", name, "-g", resource_group,
          "-w", workspace, "--query", "[].version", "-o", "tsv"],
@@ -43,7 +46,7 @@ def create_environment(
     version AML assigned. Writes `environment.yml` there if `write_context`/the caller
     didn't already leave one (the `build_context=` escape hatch may).
 
-    Guarded on purpose (moved from the notebook's `register()`, D6): `v = !az ...` cannot
+    Guarded on purpose: `v = !az ...` cannot
     fail on its own -- a broken `az` once silently produced
     `built fsd-aml-env:No module named 'rpds.rpds'`. A non-numeric version raises, loudly.
     """
@@ -70,7 +73,7 @@ def create_environment(
 def environment_exists(
     name: str, version: str, *, resource_group: str, workspace: str,
 ) -> bool:
-    """Does AML still hold `name:version`? (D4 step 3.) A registry entry whose asset was
+    """Does AML still hold `name:version`? A registry entry whose asset was
     deleted is stale -- `ensure_environment` must not hand back a version that will fail
     at job submission."""
     out = subprocess.run(
@@ -84,7 +87,7 @@ def environment_exists(
 def build_link(name: str, version: str, *, resource_group: str, workspace: str) -> str:
     """Studio URL for one environment version -- the only way to see build status: an AML
     v2 image build is an ACR task run, not an AML job, so nothing in `az ml job list` shows
-    it (an earlier notebook version polled for one and printed `0/0` forever, D4/D6).
+    it -- polling for one prints `0/0` forever.
     Returns a URL string -- a library function must not import IPython; the caller (a
     notebook) does `display(Markdown(...))` with it.
 

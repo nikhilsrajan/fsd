@@ -1,4 +1,4 @@
-"""Safe download runner CLI (spec 26). A thin driver over `cdse.download_resume` —
+"""Safe download runner CLI. A thin driver over `cdse.download_resume` —
 no download logic of its own: parse args, build the `should_stop` closure, call
 `download_resume` (or `plan_download` for `--dry-run`), write the spec-24
 `_result.json`.
@@ -68,7 +68,7 @@ def _write_result(path: str, result: dict) -> None:
 
 
 def _expected_block(expected_json: str | None, *, run_invariants: bool) -> dict:
-    """The `_result.json` 'expected' block (spec 26 §4). Starts from the universal
+    """The `_result.json` 'expected' block. Starts from the universal
     success invariants the CLI itself gates exit-0 on (a real run only), then merges in
     the runbook's run-specific criteria from `--expected-json` (which wins on overlap).
     """
@@ -100,7 +100,7 @@ def main(argv=None) -> int:
     try:
         return _run(args, result_json, cog)
     except Exception as e:  # noqa: BLE001 - any failure must still leave a pasteable result
-        # spec 26 §4: on a crash (network, creds, disk, …) still write a _result.json so
+        # On a crash (network, creds, disk, ...) still write a _result.json so
         # the runbook flow has something to paste, then re-raise so the traceback shows.
         _write_result(result_json, {
             "step": "download-confirm-run",
@@ -186,7 +186,7 @@ def _run(args, result_json: str, cog: bool) -> int:
         agg.bytes_downloaded / 1e6 / agg.transfer_wall_seconds
         if agg.transfer_wall_seconds > 0 else 0.0
     )
-    # spec 26 review, finding 1: sum_results SUMS failed_count across passes, so a resume that
+    # `sum_results` SUMS failed_count across passes, so a resume that
     # recovers a transient failure on a later pass has agg.failed_count > 0 even though every file
     # ultimately landed. Judge completion by the TERMINAL pass (download_resume's own break
     # condition — a clean final pass), NOT the historical sum. An empty results list means
@@ -249,7 +249,7 @@ def _run(args, result_json: str, cog: bool) -> int:
         "expected": _expected_block(args.expected_json, run_invariants=True),
         "error": error,
     })
-    # spec 26 C4: exit 0 on clean completion OR a user stop; non-zero otherwise.
+    # Exit 0 on clean completion OR a user stop; non-zero otherwise.
     return 0 if (stopped or not failed) else 1
 
 

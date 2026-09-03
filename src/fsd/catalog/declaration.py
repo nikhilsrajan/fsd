@@ -1,11 +1,13 @@
-"""Source -> builder declaration contract (spec 34 §2a, persisted by spec 35).
+"""Source -> builder declaration contract.
+
+Spec: specs/34-ingest-normalization-contract.md
 
 `build_datacube` (fsd.datacube.builder) is a generic engine: it has no
 `if source == "s2"` anywhere. Instead it reads what it needs from a
 `SourceDeclaration`, attached to the flattened, band-exploded catalog it is
 given as the JSON-able `GeoDataFrame.attrs["fsd:declaration"]` (`ATTRS_KEY`,
 set by `flatten_catalog` and restored from the catalog Parquet's footer by
-`fsd.storage.fs.read_parquet` — never the dataclass itself, spec 35 §2a), or
+`fsd.storage.fs.read_parquet` — never the dataclass itself), or
 passed explicitly. A new source (ERA5/CHIRPS/S1/...) that wants a *different*
 mask/reference/mosaic behavior supplies its own `SourceDeclaration` — no
 change to `builder.py` is required. See `fsd/docs/adding-a-source.md`.
@@ -37,10 +39,10 @@ __all__ = [
     "from_attrs",
 ]
 
-# Persistence (spec 35). `ATTRS_KEY` is the key under which the plain-dict JSON
-# form of a `SourceDeclaration` lives inside `GeoDataFrame.attrs` (never the
-# dataclass itself -- spec 35 §2a); `fsd.storage.fs` serializes that whole
-# `.attrs` dict to the Parquet footer's `PANDAS_ATTRS` key.
+# Persistence. `ATTRS_KEY` is the key under which the plain-dict JSON form of a
+# `SourceDeclaration` lives inside `GeoDataFrame.attrs` -- never the dataclass itself, which
+# would not survive the round-trip. `fsd.storage.fs` serializes that whole `.attrs` dict to
+# the Parquet footer's `PANDAS_ATTRS` key.
 FSD_DECLARATION_VERSION = 1
 ATTRS_KEY = "fsd:declaration"
 
@@ -50,7 +52,7 @@ _DECLARATION_FIELDS = (
 )
 _MASK_SPEC_FIELDS = ("band", "mask_type", "classes")
 
-# The only implemented `MaskSpec.mask_type` (spec 34 [G3]): mask wherever the
+# The only implemented `MaskSpec.mask_type`: mask wherever the
 # mask band's pixel value is one of `classes` (covers S2 SCL). `bitmask`
 # (Landsat/HLS QA) and `threshold` (continuous cloud-probability) are the
 # named-but-unimplemented seam for a later source — see `SourceDeclaration`.
@@ -77,7 +79,7 @@ class MaskSpec:
 @dataclasses.dataclass(frozen=True)
 class SourceDeclaration:
     """What `build_datacube` needs to know about a source, read once per build
-    instead of hardcoded (spec 34 §2a/§2b).
+    instead of hardcoded.
 
     `reference_band` — the band whose grid (10 m B08 for S2) every other band
     is resampled onto; `None` together with `native_grid=True` means "this
@@ -95,13 +97,12 @@ class SourceDeclaration:
     "closed" for a `bands=["B04"]` build without needing a second
     declaration.
 
-    `mask_keep` — spec 34 §2c: default False drops the mask band after
-    masking (today's behavior); True keeps it in the output cube (e.g. for a
-    workflow that wants SCL/QA available downstream).
+    `mask_keep` — default False drops the mask band after masking; True keeps it in the
+    output cube, e.g. for a workflow that wants SCL/QA available downstream.
 
     `nodata` — the fallback nodata value when the catalog rows being built
     don't carry a `nodata` column (older/hand-built catalogs); a real
-    ingested catalog carries `nodata` per row (spec 34 §1c) and that value
+    ingested catalog carries `nodata` per row and that value
     wins over this default.
 
     `mosaic_method` — currently only "median" is implemented by
@@ -118,7 +119,7 @@ class SourceDeclaration:
     mosaic_method: str = "median"
 
 
-# The only declaration this spec ships code for (spec 34 §3): both CDSE and
+# The only declaration this spec ships code for: both CDSE and
 # MPC are S2 L2A, so both go through this same declaration/generic path —
 # the "no hollow contract" requirement (spec-32/33 lesson).
 S2_L2A_DECLARATION = SourceDeclaration(
@@ -135,7 +136,7 @@ S2_L2A_DECLARATION = SourceDeclaration(
 )
 
 
-# --- serialization (spec 35 §2a/§3) -------------------------------------------
+# --- serialization ------------------------------------------------------------
 #
 # Pure functions, no I/O. `to_json`/`from_json` convert a `SourceDeclaration` to
 # and from a plain JSON-able dict (field-for-field, `fsd_declaration_version`
@@ -180,7 +181,7 @@ def _mask_spec_from_json(raw: dict | None) -> MaskSpec | None:
 
 
 def to_json(decl: SourceDeclaration) -> dict:
-    """`SourceDeclaration` -> a plain JSON-able dict, field-for-field (spec 35 §3).
+    """`SourceDeclaration` -> a plain JSON-able dict, field-for-field.
 
     Tuples (`MaskSpec.classes`) become JSON arrays; `from_json` rehydrates them
     back into tuples, keeping the dataclass frozen/hashable.
@@ -199,9 +200,8 @@ def to_json(decl: SourceDeclaration) -> dict:
 def from_json(raw: dict) -> SourceDeclaration:
     """Inverse of `to_json`. Raises on a version newer than this fsd supports, an
     unknown field at a known version, or a `mask_spec` object missing `band`
-    (spec 35 §3, the `[G4]` "fail loudly, don't half-understand" rule) -- a
-    missing *optional* field takes the dataclass default (forward-compat for a
-    future v2)."""
+    -- fail loudly rather than half-understand a declaration. A missing *optional* field
+    takes the dataclass default, which is what keeps a future v2 readable."""
     if not isinstance(raw, dict):
         raise ValueError(
             f"declaration JSON must be a JSON object, got {type(raw).__name__}: {raw!r}."
@@ -241,8 +241,8 @@ def from_json(raw: dict) -> SourceDeclaration:
 
 
 def to_attrs(gdf, decl: SourceDeclaration) -> None:
-    """Stamp `decl` onto `gdf.attrs[ATTRS_KEY]` as a plain JSON-able dict (never
-    the dataclass itself, spec 35 §2a). Mutates `gdf.attrs` in place."""
+    """Stamp `decl` onto `gdf.attrs[ATTRS_KEY]` as a plain JSON-able dict, never the
+    dataclass itself. Mutates `gdf.attrs` in place."""
     gdf.attrs[ATTRS_KEY] = to_json(decl)
 
 

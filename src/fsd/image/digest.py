@@ -1,14 +1,14 @@
-"""Resolving and digesting an `ImageDefinition` (spec 56 D2).
+"""Resolving and digesting an `ImageDefinition`.
 
 Two functions: `resolve()` turns every moving reference into a fixed one -- a `git+...@main`
 becomes `git+...@<40-char sha>`, a `path:` `fsd` becomes a wheel content digest, an
 unpinned base tag becomes `@sha256:...` when it can be resolved and stays a tag (recorded
 unresolved) when it can't -- and `digest()` hashes the result. `resolve()`'s output is
-exactly `image.json`'s `definition` field (spec 56 D3).
+exactly `image.json`'s `definition` field.
 
 **The exclusion list is a named constant** (`_DIGEST_EXCLUDE`), not an accident of what the
 dataclass happens to carry: `name` never enters the payload, because renaming an image does
-not change its contents (flytekit's `parameters_to_exclude`, spec 56 §8). `build_context`
+not change its contents (the same rule as flytekit's `parameters_to_exclude`). `build_context`
 is excluded from the payload as a path and replaced by `build_context_digest` -- a digest of
 its file *contents*, never its location (flytekit nullifies `registry_config` for the same
 reason: "a path that does not affect the image must not affect the key").
@@ -33,12 +33,12 @@ from fsd.image.definition import ImageDefinition, _build_wheel
 __all__ = ["digest", "resolve", "wheel_digest"]
 
 _DIGEST_EXCLUDE = frozenset({"name"})
-# A full sha is the canonical pin. An ABBREVIATED one (>=7 hex, as in spec 56 D1's own
-# `@9a00f2b` example) is already immutable and pip installs it fine, but `git ls-remote`
-# cannot expand it -- it matches REF PATTERNS, not object ids, and returns exit 0 with an
-# empty stdout for a sha (verified 2026-08-27). So it is kept verbatim rather than sent to a
-# lookup that would fail. The cost is that two abbreviations of one commit digest
-# differently, i.e. a rebuild for nothing -- spec 56 §5's explicitly cheaper failure.
+# A full sha is the canonical pin. An ABBREVIATED one (>=7 hex, e.g. `@9a00f2b`) is already
+# immutable and pip installs it fine, but `git ls-remote` CANNOT expand it: it matches REF
+# PATTERNS, not object ids, and returns exit 0 with empty stdout for a sha. So an abbreviation
+# is kept verbatim rather than sent to a lookup that would silently succeed-with-nothing. The
+# cost is that two abbreviations of one commit digest differently -- a rebuild for nothing,
+# which is the cheaper of the two failures.
 _GIT_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 
 
@@ -58,7 +58,7 @@ def wheel_digest(path: str) -> str:
 
 def _digest_directory(path: str) -> str:
     """SHA-256 over every file under `path` (sorted relative path + bytes) -- the
-    `build_context=` escape hatch's digest, content not path (D2)."""
+    `build_context=` escape hatch's digest, content not path."""
     files: list[tuple[str, bytes]] = []
     for root, _dirs, filenames in os.walk(path):
         for fn in filenames:
@@ -99,8 +99,8 @@ def _resolve_fsd(
             # Build into the caller's directory so the wheel this digest describes is the
             # SAME file that goes into the build context. Building twice (once here, once in
             # `write_context`) both doubles the slow path and opens a window where an edit
-            # between the two makes the registry record a digest the image does not have --
-            # spec 56 §5's worse failure (Opus review, 2026-08-27).
+            # between the two makes the registry record a digest the image does not have,
+            # which is the expensive failure.
             return f"wheel:{wheel_digest(_build_wheel(src, wheel_dir))}"
         with tempfile.TemporaryDirectory() as tmp:
             wheel = _build_wheel(src, tmp)
@@ -122,7 +122,7 @@ def _default_resolve_base_digest(base: str) -> str | None:
     Registry HTTP API v2, which `mcr.microsoft.com` serves unauthenticated for public
     images) -- `Docker-Content-Digest` is the tag's current digest. Anything going wrong
     (offline, private registry, unexpected host shape) returns `None` rather than raising:
-    an unresolvable base is a warning (`base_resolved: false`), never a hard failure (D2)."""
+    an unresolvable base is a warning (`base_resolved: false`), never a hard failure."""
     try:
         host, repo_tag = base.split("/", 1)
         repo, tag = repo_tag.rsplit(":", 1)
@@ -130,7 +130,7 @@ def _default_resolve_base_digest(base: str) -> str | None:
         req = urllib.request.Request(url, method="HEAD", headers={
             # A multi-arch tag resolves to an index/manifest-list, not a manifest; omitting
             # those two media types is how a HEAD against such a tag comes back 404/406 and
-            # silently degrades to `base_resolved: false` (Opus review, 2026-08-27).
+            # silently degrades to `base_resolved: false`.
             "Accept": "application/vnd.docker.distribution.manifest.list.v2+json,"
                       "application/vnd.oci.image.index.v1+json,"
                       "application/vnd.docker.distribution.manifest.v2+json,"
@@ -159,12 +159,12 @@ def resolve(
     resolve_git_ref: Callable[[str, str], str] | None = None,
     wheel_dir: str | None = None,
 ) -> dict:
-    """Turn `defn` into the resolved-definition dict `image.json` stores (D2/D3): every
+    """Turn `defn` into the resolved-definition dict `image.json` stores: every
     moving reference fixed, `name` and `build_context` (a path) excluded, `build_context`
     replaced by its content digest when set.
 
     `resolve_base_digest`/`resolve_git_ref` default to the real network calls; a test
-    injects fakes so nothing here needs a live registry or a live git remote (AC8).
+    injects fakes so nothing here needs a live registry or a live git remote.
 
     `wheel_dir`, for a `path:` `fsd` only, is where the wheel this digest is computed from is
     left, so the caller can hand that exact file to `write_context` instead of building a
@@ -194,6 +194,6 @@ def resolve(
 
 def digest(resolved: dict) -> str:
     """SHA-256 over the resolved-definition dict's canonical JSON (sorted keys, no
-    whitespace) -- no `id()`, no dict-iteration order, no absolute paths (AC2)."""
+    whitespace) -- no `id()`, no dict-iteration order, no absolute paths."""
     payload = json.dumps(resolved, sort_keys=True, separators=(",", ":"))
     return f"sha256:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"

@@ -3,9 +3,8 @@
 `rio_open` is the one sanctioned exception to "all I/O via fsd.storage" (specs/10): rasterio
 reads pixels through GDAL's VSI layer, not fsspec. It is a plain passthrough for local paths
 (the regression-safety hinge — zero behavior change to every existing read/write) and routes an
-`abfss://`/`az://` source through GDAL's `/vsiadls/` handler with a fresh access token (spec 31
-§4). Writing to a remote path is out of scope for P1 and raises rather than silently attempting
-a partial write.
+`abfss://`/`az://` source through GDAL's `/vsiadls/` handler with a fresh access token.
+Writing to a remote path raises, rather than silently attempting a partial write.
 """
 
 from __future__ import annotations
@@ -18,20 +17,23 @@ from fsd.storage.azure import account_from_url, storage_token, to_vsi
 
 __all__ = ["rio_open", "rio_env"]
 
-# D5 (spec 57): every remote VSI open otherwise costs more than one HTTP request, because GDAL
-# lists the containing directory looking for sidecars (.aux.xml/.ovr/.msk). fsd writes plain COGs
-# with statistics inline and no sidecars, so nothing in-repo depends on one -- named risk (spec 57
-# §5): EMPTY_DIR means a sidecar that DOES exist stops being read. Applies to every remote raster
-# open (download, datacube, merge, collect), not just one call site -- both `rio_env` (N-datasets)
-# and `rio_open` (one dataset) build their env_kwargs from this same dict so the two never drift.
-# Sources (GDAL config docs, gdal.org/en/stable/user/configoptions.html, fetched 2026-08-27):
+# Without these, every remote VSI open costs more than one HTTP request: GDAL lists the
+# containing directory looking for sidecars (.aux.xml/.ovr/.msk). fsd writes plain COGs with
+# statistics inline and no sidecars, so nothing in-repo depends on one.
+#
+# ⚠️ The named risk: EMPTY_DIR means a sidecar that DOES exist stops being read. This applies
+# to every remote raster open (download, datacube, merge, collect), not just one call site --
+# both `rio_env` (N datasets) and `rio_open` (one) build their env_kwargs from this same dict
+# so the two cannot drift.
+#
+# Sources (GDAL config docs, gdal.org/en/stable/user/configoptions.html):
 # GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR -- "only the target file is visible; side-car/auxiliary
 # files aren't loaded". CPL_VSIL_CURL_ALLOWED_EXTENSIONS -- "Consider that only the files whose
 # extension ends up with one that is listed in CPL_VSIL_CURL_ALLOWED_EXTENSIONS exist on the
 # server. This can speed up dramatically open experience, in case the server cannot return a
 # file list."
 #
-# ⚠️ That second option is a WHITELIST, not a hint (review, 2026-08-27): a remote file whose
+# ⚠️ That second option is a WHITELIST, not a hint: a remote file whose
 # extension is not listed is reported as NOT EXISTING, so the list must cover every extension fsd
 # can open remotely -- not just the one at the call site that motivated it. Remote here is always
 # `abfss://`/`az://` -> `/vsiadls/` (`storage.to_vsi`), i.e. fsd's own run folders and staged
@@ -48,7 +50,7 @@ def rio_env(paths):
     """ONE `rasterio.Env` covering MANY remote datasets — use this when several must be open
     at the same time (e.g. `rasterio.merge` over N COGs).
 
-    **Why this exists (found by run-book 38 Phase 4, 2026-07-28).** `rio_open` enters a
+    **Why this exists.** `rio_open` enters a
     `rasterio.Env` *per dataset* and exits it on `close()`. rasterio's env stack is LIFO and
     thread-local: the first `Env.__enter__` records `_has_parent_env=False`, and *its* `__exit__`
     sets `local._env = None`. So holding N `rio_open` handles and closing them in creation order

@@ -1,4 +1,6 @@
-"""Infer-only unit-of-work (spec 22): infer one or more PRE-BUILT datacubes -> COG(s).
+"""Infer-only unit-of-work: infer one or more PRE-BUILT datacubes -> COG(s).
+
+Spec: specs/22-unify-inference-runner.md
 
 No build step (unlike `infer_task`). Replaces `engine.run_local`'s retired `mp.Pool`: the
 `cores>1` pre-built-cubes inference fans out through this task via the Snakemake infer-only

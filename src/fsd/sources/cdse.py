@@ -91,9 +91,9 @@ class CdseCredentials:
 
     @classmethod
     def from_json_str(cls, s: str) -> "CdseCredentials":
-        """Sibling of `from_json`: parse an in-memory JSON string using the same
-        legacy key format, instead of a file path (spec 37 D5 — the value read
-        back from a Key Vault secret, which has no filepath of its own)."""
+        """Sibling of `from_json`: parse an in-memory JSON string in the same key format,
+        instead of a file path -- the shape a Key Vault secret comes back in, having no
+        filepath of its own."""
         data = json.loads(s)
         return cls(
             sh_client_id=data.get(_JSON_SH_CLIENT_ID),
@@ -194,7 +194,7 @@ class DownloadResult:
     circuit_tripped: bool = False  # stopped early: too many consecutive failures
     pool_broken: bool = False     # convert process pool died mid-run (segfault/OOM); resume with a fresh pool
     stopped: bool = False         # user requested a clean stop (should_stop); not a failure
-    # --- timing decomposition (spec 23, D1/D11) — summed across worker threads, so
+    # --- timing decomposition — summed across worker threads, so
     # transfer_seconds + convert_seconds may exceed elapsed_s (they overlap). bytes_downloaded is
     # the JP2 bytes actually pulled from CDSE (basis for throughput MB/s); skips contribute 0. ---
     bytes_downloaded: int = 0            # JP2 bytes transferred this run (excludes skipped)
@@ -202,7 +202,7 @@ class DownloadResult:
     convert_seconds: float = 0.0         # summed local JP2->COG conversion wall-time
     # Wall-clock span the transfer phase actually occupied (earliest start .. latest end), NOT
     # summed across threads — so bytes_downloaded / transfer_wall_seconds is the *effective*
-    # aggregate MB/s to compare apples-to-apples with the single-stream probe (spec 25).
+    # aggregate MB/s to compare apples-to-apples with the single-stream probe.
     transfer_wall_seconds: float = 0.0
     bytes_by_band: dict = dataclasses.field(default_factory=dict)  # {band: bytes} for extrapolation
 
@@ -213,14 +213,13 @@ class DownloadResult:
 def _roi_gdf(roi) -> gpd.GeoDataFrame:
     """Accept a GeoDataFrame or a path/url to one.
 
-    Reads through `fsd.storage` rather than handing the path to `gpd.read_file` --
-    same fix `workflows/task.py` already carries (spec 36 D6a, TODO #40), extended
-    here because spec 37 dispatches downloads with the roi on **blob**: pyogrio/GDAL
-    does not understand `abfss://` and reports the very misleading `No such file or
-    directory` for a file that exists. fsspec does.
+    Reads through `fsd.storage` rather than handing the path to `gpd.read_file`: a
+    dispatched download has its roi on **blob**, and pyogrio/GDAL does not understand
+    `abfss://` -- it reports the very misleading `No such file or directory` for a file that
+    demonstrably exists. fsspec does understand it.
 
-    Now delegates to `fs.read_geo`, the one shared reader (TODO #47) -- this function
-    was the prototype for it, and three more sites had the same bug.
+    Delegates to `fs.read_geo`, the one shared reader (TODO #47). This function was the
+    prototype for it, and several other sites had the same bug.
     """
     if isinstance(roi, str):
         return fs.read_geo(roi)
@@ -257,10 +256,9 @@ def _items_to_gdf(items) -> gpd.GeoDataFrame:
     Pure — no network — so it is unit-testable with duck-typed fake items
     (`.id`, `.datetime`, `.geometry`, `.properties`, `.assets[*].href`).
 
-    `offset` (spec 34 §1, closes #30/#10) is derived from the item's
-    `processing:version` property (spec 34 §3a Amendment A1 — CDSE's v1
-    catalogue exposes the STAC Processing extension, not MPC's `s2:` extension)
-    via `fsd.sources._s2_radiometry.offset_for_item`. `nodata` defaults to the
+    `offset` (#10, #30) is derived from the item's `processing:version` property -- CDSE's
+    v1 catalogue exposes the STAC Processing extension, not MPC's `s2:` extension -- via
+    `fsd.sources._s2_radiometry.offset_for_item`. `nodata` defaults to the
     S2 convention (`config.NODATA`); CDSE's own jp2->COG conversion stamps it
     (`_convert_one`), so it is never missing for a CDSE-ingested artifact.
     """
@@ -356,8 +354,8 @@ def _select_item_files(
     smallest `_NNm`) and take its S3 `href`; add `MTD_TL.xml` from the
     `granule_metadata` asset. Returns `[(src_s3_url, local_filepath), ...]` with
     short band filenames, matching the on-disk layout. The band source href is always
-    the `.jp2` asset; when `cog` the local destination is `Bxx.tif` (converted on
-    arrival, spec 14), else `Bxx.jp2`.
+    the `.jp2` asset; when `cog` the local destination is `Bxx.tif`, converted on arrival,
+    else `Bxx.jp2`.
     """
     dst_folder = _download_folderpath(_safe_root_from_item(item), root_folderpath)
     band_ext = "tif" if cog else "jp2"
@@ -381,8 +379,8 @@ def _select_item_files(
 # CDSE S3 auth errors that are transient (permanent on real AWS) — see BUGS.md
 # BUG-001. Retryable ONLY because this is the CDSE-specific source: on CDSE these are
 # transient (node-inconsistency roulette), whereas on real AWS they'd be permanent.
-# `Forbidden`/403 and `InvalidAccessKeyId` were both observed at scale 2026-07-02 —
-# retrying re-rolls onto a (possibly good) node, so include them.
+# `Forbidden`/403 and `InvalidAccessKeyId` have both been observed at scale here; retrying
+# re-rolls onto a possibly-good node, so they are included.
 _RETRYABLE_S3 = (
     "InvalidAccessKeyId",
     "SignatureDoesNotMatch",
@@ -432,7 +430,7 @@ def _transfer_one(
     tries: int = 3,
     base_delay: float = 0.5,
 ) -> tuple[bool, str, float, int]:
-    """THREAD stage (spec 25). Idempotent skip on the **final** `dst_path`
+    """THREAD stage. Idempotent skip on the **final** `dst_path`
     (`size > 0`, never a 0-byte "touched" leftover — that re-transfers). Otherwise
     transfers with the **fail-fast** retry loop on CDSE's transient S3 auth errors
     (BUG-001: a few quick re-rolls recover a *partial* bad window; a *sustained* one
@@ -468,17 +466,19 @@ def _transfer_one(
 
 
 def _convert_one(staging: str, dst_path: str, *, offset: int = 0) -> tuple[bool, str, float]:
-    """PROCESS stage (spec 25). `to_cog(staging, dst_path)` (spec 14, lossless COG
-    with overviews) then, spec 34 §1a, stamp the declared GDAL scale/offset (reflectance
-    bands only, `offset` — 0 is a no-op) + nodata-if-missing tags (closes #30/#10 — CDSE
-    gets this for free since it already re-encodes jp2->COG) — then remove `staging`
-    (`finally` — `to_cog` is atomic, so a crash leaves at most the staging JP2, never a
-    half-written `.tif`; the next resume pass re-transfers and re-converts).
+    """PROCESS stage: `to_cog(staging, dst_path)` -- a lossless COG with overviews -- then
+    stamp the declared GDAL scale/offset (reflectance bands only; `offset=0` is a no-op) and
+    nodata-if-missing tags (#10, #30), then remove `staging`.
 
-    Top-level & picklable (`ProcessPoolExecutor`, spawn) — operates only on real local
-    files, so it never needs a parent-process monkeypatch. A failure here is a local/
-    data fault (``"ConvertError"``), never a CDSE window — the caller must not fold it
-    into the transfer-failure circuit breaker (spec 25 C4).
+    The removal is in a `finally`, and `to_cog` is atomic, so a crash leaves at most the
+    staging JP2 and never a half-written `.tif`; the next resume pass re-transfers and
+    re-converts.
+
+    Top-level and picklable, for `ProcessPoolExecutor` under spawn -- it operates only on
+    real local files, so it never needs a parent-process monkeypatch.
+
+    ⚠️ A failure here is a local/data fault (`"ConvertError"`), never a bad CDSE window, so
+    the caller must NOT fold it into the transfer-failure circuit breaker.
 
     Returns `(ok, reason, convert_s)`.
     """
@@ -493,7 +493,7 @@ def _convert_one(staging: str, dst_path: str, *, offset: int = 0) -> tuple[bool,
         is_reflectance = _is_reflectance(band)
         stamp_or_reencode(
             dst_path,
-            # reflectance-unit offset to match scale=1/10000 (spec 34 §1a): a viewer's
+            # reflectance-unit offset to match scale=1/10000: a viewer's
             # unscale=true computes DN*scale + offset, so the DN-space offset (-1000)
             # must be scaled to reflectance too (-> -0.1), else unscale yields
             # DN/10000 - 1000 ~= -1000 for every pixel (the black-tile bug).
@@ -521,14 +521,14 @@ def _download_one(
     tries: int = 3,
     base_delay: float = 0.5,
 ) -> tuple[bool, str, tuple[float, float, int]]:
-    """Sequential reference wrapper (spec 25) = `_transfer_one` then, inline,
+    """Sequential reference wrapper = `_transfer_one` then, inline,
     `_convert_one`. Kept for its direct-call unit tests and as the single-worker
     reference unit; `download()` no longer calls this — it drives the two stages
     across a transfer thread pool and a convert process pool instead (see `download`).
 
     Returns `(ok, reason, metrics)` where `reason` is ``"skipped"``/``"ok"`` on
     success or a short error label (transfer or ``"ConvertError"``) on failure, and
-    `metrics` is `(transfer_s, convert_s, bytes)` (spec 23) — zeros on skip/failure.
+    `metrics` is `(transfer_s, convert_s, bytes)` — zeros on skip/failure.
     """
     needs_convert = cog and src_url.endswith(".jp2")
     ok, reason, t_s, nbytes = _transfer_one(
@@ -571,8 +571,8 @@ def _append_downloaded(catalog, tile_meta: dict, results: list[tuple]) -> int:
             "geometry": r["geometry"],
         })
     if rows:
-        # spec 35 §4: CDSE is S2 L2A -- stamp the collection-level declaration at
-        # the one place this source appends to the catalog (hop 1, spec 35 table).
+        # CDSE is S2 L2A -- stamp the collection-level declaration at the one place this
+        # source appends to the catalog.
         catalog.append(rows, declaration=S2_L2A_DECLARATION)
     return sum(len(f) for f in files_by_tile.values())
 
@@ -614,7 +614,7 @@ def _push_scratch_to_remote(scratch_root: str, remote_root: str, catalog) -> Non
 
 def _default_max_staged(root_folderpath: str, max_convert_procs: int,
                         max_concurrent_s3: int = config.MAX_CONCURRENT_S3) -> int:
-    """Disk-aware `MAX_STAGED` sizing (spec 25 D5/D6): a **safety cap** on
+    """Disk-aware `MAX_STAGED` sizing: a **safety cap** on
     staged-but-unconverted JP2s, not a throughput lever — past `floor` a bigger
     buffer gives no throughput gain (bounded-buffer queueing), so free disk only
     *shrinks* the cap, never grows it beyond the saturation target `headroom`.
@@ -635,7 +635,7 @@ def _default_max_staged(root_folderpath: str, max_convert_procs: int,
 
 
 def _make_convert_pool(max_workers: int):
-    """Default convert-process-pool factory (spec 25). A module-level seam: tests
+    """Default convert-process-pool factory. A module-level seam: tests
     monkeypatch this to assert a `cog=False` / all-skip `download()` run never spawns
     a process pool. **Spawn** start-method (GDAL-safe; `fork` + GDAL's internal
     threads can deadlock on Linux/Batch)."""
@@ -650,8 +650,8 @@ def _make_convert_pool(max_workers: int):
 def _fmt_progress(done, total, ok_n, fail_n, skipped, elapsed_s) -> str:
     """A single newline-terminated progress line (log-friendly, with rate + ETA).
 
-    ETA is derived from `done/elapsed_s` and shown as `ETA ~?` until `done > 0`
-    (no rate to extrapolate from yet) — spec 26 §3.
+    ETA is derived from `done/elapsed_s`, and shown as `ETA ~?` until `done > 0` -- there is
+    no rate to extrapolate from before that.
     """
     rate = done / elapsed_s if elapsed_s > 0 else 0.0
     pct = 100 * done // max(1, total)
@@ -687,20 +687,20 @@ def download(
     """THE SOURCE CONTRACT (documented signature; see specs/01-sources.md).
 
     Discover matching tiles and download the requested band files (+ MTD_TL.xml) to
-    `root_folderpath` via a **pipeline** (spec 25): a `MAX_CONCURRENT_S3`-wide thread
+    `root_folderpath` via a **pipeline**: a `MAX_CONCURRENT_S3`-wide thread
     pool transfers bytes while a separate process pool converts fetched JP2s to COGs
     concurrently, chained by `add_done_callback` and bounded by a `max_staged`
     backpressure semaphore (staged-but-unconverted JP2s on disk). Idempotent (skips
     files already on disk); the catalog is upserted every `chunksize` completions so a
     crash doesn't lose progress; refuses if matched tiles exceed `max_tiles`.
 
-    `cog` (default True, spec 14): convert each fetched JP2 band to a lossless COG
+    `cog` (default True): convert each fetched JP2 band to a lossless COG
     (`Bxx.tif`, with overviews) on arrival — the native ingest format, which the
-    datacube build reads far faster (spec 13). `cog=False` keeps the native `.jp2`
+    datacube build reads far faster. `cog=False` keeps the native `.jp2`
     (and never staggers a convert pool). A remote (`s3://`/`az://`) `root_folderpath`
     with `cog=True` stages to local scratch, converts there, then pushes the whole
-    run to the remote root (spec 34 §5, `_push_scratch_to_remote` below) — a
-    whole-run batch push, not per-file streaming (that's TODO #31).
+    run to the remote root (`_push_scratch_to_remote` below) — a whole-run batch push, not
+    per-file streaming (TODO #31).
 
     `max_convert_procs` (default `config.MAX_CONVERT_PROCS`), `max_staged` (default:
     `_default_max_staged`, disk-aware) and `convert_executor` (default: a real
@@ -711,16 +711,16 @@ def download(
     zero processes.
 
     `max_consecutive_failures` is the **circuit breaker**, keyed on consecutive
-    **transfer** failures only (a `_convert_one` failure is a local fault, not a CDSE
-    window, spec 25 C4): if that many transfers fail back-to-back (a bad CDSE window,
-    BUG-001), the submit loop stops queuing new work, in-flight transfers/converts
+    **transfer** failures only -- a `_convert_one` failure is a local fault, not a CDSE
+    window. If that many transfers fail back-to-back (a bad CDSE window, BUG-001), the
+    submit loop stops queuing new work, in-flight transfers/converts
     drain, and the pass returns with `circuit_tripped=True` instead of grinding — it
     stops within roughly `max_staged` items of the trip (streaming, no exact chunk
     boundary). Pair with `download_resume` to retry the remainder later — the catalog
     makes it a clean resume.
 
-    `should_stop` (spec 26 §1, default None = today's behavior) is a generic
-    user-stop predicate checked in the submit loop, alongside `tripped`/`pool_broken`,
+    `should_stop` (default None) is a generic user-stop predicate checked in the submit
+    loop, alongside `tripped`/`pool_broken`,
     throttled to at most once per `config.PROGRESS_EVERY_S` (a filesystem check isn't
     stat-ed per granule). Halts **new** submissions only — every already-submitted
     transfer/convert finalizes normally and drains; a stopped item is never attempted,
@@ -734,14 +734,13 @@ def download(
 
     creds.require_s3()  # discovery (STAC) is anonymous; only download needs S3 keys
 
-    # Spec 34 §5 lifts the local-only guard: a remote (blob) root_folderpath runs the
-    # whole existing local pipeline (transfer/convert/stamp) against LOCAL scratch —
-    # every path below stays local, so nothing else in this function changes — then,
-    # once the pass completes, the scratch tree is pushed to the real remote root and
-    # the catalog rows are rewritten to point at it (`_push_scratch_to_remote`). This is
-    # a whole-run batch push, not per-file streaming-to-blob (that's TODO #31, out of
-    # this spec's scope) — acceptable for the cloud-VM-first runbook (spec 34 [G5]),
-    # where the scratch dir and the blob destination are both close to the VM.
+    # A remote (blob) root_folderpath runs the whole existing local pipeline
+    # (transfer/convert/stamp) against LOCAL scratch -- every path below stays local, so
+    # nothing else in this function has to change -- and once the pass completes, the scratch
+    # tree is pushed to the real remote root and the catalog rows are rewritten to point at
+    # it (`_push_scratch_to_remote`). A whole-run batch push, not per-file streaming to blob
+    # (TODO #31): acceptable while the scratch dir and the blob destination are both close to
+    # the machine doing the work.
     import tempfile
 
     remote_root = None
@@ -806,10 +805,10 @@ def download(
     }
     convert_pool_holder: dict = {"pool": None}
     pool_create_lock = threading.Lock()
-    # Serializes the actual catalog (parquet) write, which happens outside `lock`
-    # (spec 25b §3) so it doesn't block metric updates — but concurrent writers to
-    # the same file would otherwise race/corrupt it. This lock is around the I/O
-    # only, so chunk-flushes still don't stall the counter updates in `_finalize`.
+    # Serializes the actual catalog (parquet) write, which happens OUTSIDE `lock` so it does
+    # not block metric updates -- but concurrent writers to the same file would otherwise
+    # race and corrupt it. This lock covers the I/O only, so chunk-flushes still do not stall
+    # the counter updates in `_finalize`.
     flush_lock = threading.Lock()
 
     def _emit():
@@ -854,10 +853,9 @@ def download(
             return convert_pool_holder["pool"]
 
     def _finalize(tid, src, dst, ok, reason):
-        # `remaining`/`sem_staged` accounting must never sit behind a fallible call
-        # (spec 25b): decrement `remaining` under `lock` first, then flush the
-        # catalog (parquet write, can raise) OUTSIDE the lock so a write failure
-        # can't strand the drain.
+        # `remaining`/`sem_staged` accounting must never sit behind a fallible call:
+        # decrement `remaining` under `lock` FIRST, then flush the catalog (a parquet write,
+        # which can raise) outside the lock, so a write failure cannot strand the drain.
         snapshot = None
         with lock:
             pending_results.append((tid, dst, ok))
@@ -867,7 +865,7 @@ def download(
             if not ok:
                 failures.append((src, reason))
             state["done"] += 1
-            # Catalog-flush cadence (spec 25 §4): chunksize no longer batches the
+            # Catalog-flush cadence: chunksize no longer batches the
             # executor (one continuous pipeline) — it now only controls how often the
             # buffer flushes to the catalog (crash resilience).
             if len(pending_results) >= chunksize:
@@ -1044,9 +1042,9 @@ def download_resume(
     stats), keeping file I/O out of the library. Returns the per-pass results.
 
     `max_convert_procs`/`max_staged`/`convert_executor` pass through to each `download`
-    call unchanged (spec 25) — see its docstring.
+    call unchanged — see its docstring.
 
-    `should_stop` (spec 26 §1) passes through to each `download` pass; when a pass
+    `should_stop` passes through to each `download` pass; when a pass
     returns `stopped=True` the resume loop ends immediately (no cooldown, not a
     completion). Also checked once before starting each new pass so a stop between
     passes doesn't launch another.
@@ -1078,7 +1076,7 @@ def download_resume(
 
 
 def sum_results(results: list[DownloadResult]) -> DownloadResult:
-    """Aggregate the per-pass results of `download_resume` into one `DownloadResult` (spec 23).
+    """Aggregate the per-pass results of `download_resume` into one `DownloadResult`.
 
     Counts/bytes/seconds add; a later pass that skips an already-downloaded file contributes 0
     bytes/seconds, so the sum is the true one-time cost. `elapsed_s` is the sum of pass wall-times.
@@ -1119,7 +1117,7 @@ def probe_throughput(
     max_cloudcover: float | None = None,
 ) -> tuple[float, int, float]:
     """Measure achievable CDSE **byte** throughput right now with a single-threaded fetch of ONE
-    representative band file (spec 23, D2). Returns `(mb_per_s, bytes, seconds)`.
+    representative band file. Returns `(mb_per_s, bytes, seconds)`.
 
     A baseline to compare against a run's *aggregate effective* MB/s: probe≈aggregate → CDSE/link
     bound; probe≫aggregate → local contention / concurrency. Transfers the JP2 to a temp path and
@@ -1168,7 +1166,7 @@ def plan_download(
     max_cloudcover: float | None = None,
     cost_model: dict | None = None,
 ) -> dict:
-    """Compute an actionable download plan **without downloading** (spec 23, D13).
+    """Compute an actionable download plan **without downloading**.
 
     Queries the CDSE STAC (anonymous, no bytes) for the tiles this request needs, diffs them
     against what is already in `catalog_filepath` (if given), and returns a plan dict: needed /
@@ -1221,7 +1219,7 @@ def plan_download(
 
 
 def format_download_plan(plan: dict) -> str:
-    """Render a `plan_download` dict as a copy-pasteable message (spec 23, D13)."""
+    """Render a `plan_download` dict as a copy-pasteable message."""
     p = plan["download_params"]
     if plan["missing_count"] == 0:
         # Nothing to download — don't contradict "missing: 0" with a "not present" line

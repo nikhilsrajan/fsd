@@ -1,13 +1,11 @@
 """TileCatalog — read/append/filter the downloaded-tile catalog.
 
-Spec: specs/02-catalog.md; schema per spec 34 §5 `[G4]` (retires spec 32's
-`boa_add_offset` column — no back-compat shim, see `read()`).
+Spec: specs/02-catalog.md
 
-Columns: id (unique), satellite, timestamp (UTC), s3url, local_folderpath,
-files (comma-joined band filenames), cloud_cover, offset (additive declared
-radiometric offset for reflectance bands, spec 34 §1; 0 when a source has no
-such concept), nodata (declared nodata value, spec 34 §1c; defaults 0),
-geometry (EPSG:4326).
+Columns: id (unique), satellite, timestamp (UTC), s3url, local_folderpath, files
+(comma-joined band filenames), cloud_cover, offset (the additive declared radiometric
+offset for reflectance bands; 0 when a source has no such concept), nodata (the declared
+nodata value; defaults 0), geometry (EPSG:4326).
 """
 
 from __future__ import annotations
@@ -22,7 +20,7 @@ from fsd.catalog import declaration as declaration_module
 from fsd.catalog.declaration import SourceDeclaration
 from fsd.storage import fs
 
-# On-disk column order (spec 02). geometry is always last for GeoParquet.
+# On-disk column order. geometry is always last for GeoParquet.
 COLUMNS = [
     "id",
     "satellite",
@@ -89,7 +87,7 @@ def filter_gdf(
 class TileCatalog:
     def __init__(self, filepath: str, declaration: SourceDeclaration | None = None):
         self.filepath = filepath
-        # `append`'s default when its own `declaration=` kwarg is None (spec 35 §4).
+        # `append`'s default when its own `declaration=` kwarg is None.
         self._declaration_default = declaration
 
     def _existing_stamp(self) -> SourceDeclaration | None:
@@ -104,7 +102,7 @@ class TileCatalog:
     def declaration(self) -> SourceDeclaration | None:
         """The declaration a build against this catalog would resolve to right
         now: the on-disk stamp if the file exists, else the constructor default
-        (spec 35 §4)."""
+."""
         if fs.exists(self.filepath):
             return self._existing_stamp()
         return self._declaration_default
@@ -115,7 +113,7 @@ class TileCatalog:
         A re-download of more bands extends the recorded `files` list rather than
         replacing it; all other columns take the newest value.
 
-        `declaration` (spec 35 §4) stamps the collection-level `SourceDeclaration`
+        `declaration` stamps the collection-level `SourceDeclaration`
         on this catalog file (constructor's `declaration=` is the default when this
         kwarg is `None`). One catalog file = one collection = one declaration:
         appending a declaration that differs from the one already stamped on an
@@ -131,7 +129,7 @@ class TileCatalog:
         new = gpd.GeoDataFrame(rows, crs=CRS)
         # Normalize timestamp to tz-aware UTC for a stable on-disk dtype.
         new["timestamp"] = pd.to_datetime(new["timestamp"], utc=True)
-        # offset/nodata are per-row declared values (spec 34 §1); a source that
+        # offset/nodata are per-row declared values; a source that
         # doesn't set one (no radiometric-offset concept, or nodata already
         # implicit) defaults to 0 rather than fail column selection below. This is
         # an ergonomic default for a *fresh* append, not a legacy-catalog shim
@@ -176,19 +174,18 @@ class TileCatalog:
     def read(self) -> gpd.GeoDataFrame:
         """Return the full catalog as a GeoDataFrame.
 
-        **No back-compat shim (spec 34 `[G4]`):** a catalog written before the
-        `offset`/`nodata` columns existed (spec 32's `boa_add_offset` schema) is
-        NOT patched up here — it is disposable and must be re-ingested (spec 34
-        "Data" section), not silently defaulted, so a stale catalog fails loudly
-        downstream (`flatten_catalog`/`build_datacube`) instead of building a cube
-        against unfilled/wrong radiometry.
+        ⚠️ **No back-compat shim, deliberately.** A catalog predating the
+        `offset`/`nodata` columns is NOT patched up here. It is disposable and must be
+        re-ingested, never silently defaulted -- so it fails loudly downstream
+        (`flatten_catalog`/`build_datacube`) instead of quietly building a cube against
+        wrong radiometry.
         """
         gdf = fs.read_parquet(self.filepath)
         gdf["timestamp"] = pd.to_datetime(gdf["timestamp"], utc=True)
         return gdf
 
     def to_stac(self, dst_folderpath: str, **kwargs) -> str:
-        """Export the catalog as a static, self-contained STAC catalog (spec 17).
+        """Export the catalog as a static, self-contained STAC catalog.
 
         Additive interchange view — the GeoParquet stays the query format. Returns the
         catalog.json path. See `fsd.catalog.stac`.

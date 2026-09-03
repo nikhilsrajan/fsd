@@ -1,9 +1,9 @@
 """Generic registry mechanics: version allocation, `_aliases.json`, `_complete.json`, the
-collision retry (spec 56 §7 Q1, D3).
+collision retry.
 
-`fsd.model.registry` (spec 51/52) proved this shape first, and its guarantees are documented
+`fsd.model.registry` proved this shape first, and its guarantees are documented
 in its own module docstring -- read that before touching this file. **This module is a
-parameterized copy of that logic, not an import of it** (spec 56 §7 Q1's approved fallback):
+parameterized copy of that logic, not an import of it**:
 `fsd/model/registry.py`'s tests monkeypatch its own module-level `_list_versions` /
 `_write_new_version` and call them directly, which only works if those functions stay defined
 in `fsd/model/registry.py`'s own namespace -- a real "move + re-export" would leave those
@@ -62,7 +62,7 @@ def list_names(registry: str, storage_options: dict) -> list[str]:
 
 def is_version_complete(version_dir: str, storage_options: dict) -> bool:
     """A version counts once `_complete.json` is there -- there is no legacy carve-out
-    here (unlike `fsd.model.registry`'s D5): every caller of this module writes
+    here, unlike `fsd.model.registry`: every caller of this module writes
     `_complete.json` from day one."""
     return fs.exists(os.path.join(version_dir, COMPLETE_FILE), **storage_options)
 
@@ -105,7 +105,7 @@ def write_new_version(
 ) -> int:
     """Write `files` under the next free `v<N>` and mark it complete last, returning the
     version that actually holds them. Mirrors `fsd.model.registry._write_new_version`
-    (spec 52 D1, D3) exactly, generalized over the content digest and the "write this file
+ exactly, generalized over the content digest and the "write this file
     last" manifest convention (bundle.json there, image.json here).
     """
     version = max(list_versions(root, storage_options), default=0) + 1

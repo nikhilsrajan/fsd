@@ -1,9 +1,11 @@
-"""fsd's console script (spec 54 D5).
+"""fsd's console script.
+
+Spec: specs/54-user-level-config.md
 
 `fsd init` writes `~/.config/fsd/config.toml` (or wherever `fsd.config.config_dir()`
 resolves to); `fsd config` shows the resolved values and where each came from. Both are
 operator-facing tools that ship with the library -- `src/fsd/` itself never calls this
-module or reads the file it writes (spec 54 D3).
+module or reads the file it writes.
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
-        # write_config drops empty values, so a blank file cannot go through it (spec 55 D4:
+        # write_config drops empty values, so a blank file cannot go through it (
         # keys present and empty, so the file PARSES and `load()` names the gaps instead of
         # `tomllib` reporting a syntax error).
         path = fsd_config.write_blank_config()

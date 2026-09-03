@@ -1,13 +1,14 @@
-"""S2 processing-baseline -> radiometric-offset derivation, shared by CDSE + MPC
-(spec 34 §1/§3, generalizing spec 32's MPC-only version). The baseline property
-name is provider-specific — MPC's S2 STAC extension uses `s2:processing_baseline`,
-while CDSE's v1 catalogue uses the generic STAC Processing extension's
-`processing:version` — but the value format (`"MM.mm"`) and semantics are
-identical across both (spec 34 §3a Amendment A1).
+"""S2 processing-baseline -> radiometric-offset derivation, shared by CDSE + MPC.
 
-ESA: reflectance = (DN + offset) / QUANTIFICATION_VALUE; offset = -1000 for
-processing baseline >= 04.00 (2022-01-25), else 0 (spec 34 Best-practice
-alignment, ESA S2 L2A algorithm docs).
+Spec: specs/34-ingest-normalization-contract.md
+
+The baseline property name is provider-specific — MPC's S2 STAC extension uses
+`s2:processing_baseline`, while CDSE's v1 catalogue uses the generic STAC Processing
+extension's `processing:version` — but the value format (`"MM.mm"`) and the semantics are
+identical across both.
+
+ESA: reflectance = (DN + offset) / QUANTIFICATION_VALUE; offset = -1000 for processing
+baseline >= 04.00 (2022-01-25), else 0. (Source: the ESA S2 L2A algorithm documentation.)
 """
 
 from __future__ import annotations
@@ -28,13 +29,15 @@ def baseline_tuple(baseline: str) -> tuple[int, int]:
 
 
 def offset_for_item(item) -> int:
-    """The additive reflectance-band offset for one STAC item (spec 34 §1/§3a
-    A1, spec 32 D2/D3), keyed on **baseline**, not acquisition date
-    (reprocessing can stamp a >=04.00 baseline on a pre-2022 date; the offset
-    still applies). Resolves the baseline from the first of `_BASELINE_PROPS`
-    present on the item — the property name differs per provider, but the
-    format/semantics are identical. Raises if none is present — deterministic,
-    no silent 0 (this is the correctness-critical field)."""
+    """The additive reflectance-band offset for one STAC item.
+
+    ⚠️ Keyed on **baseline**, never on acquisition date: reprocessing can stamp a >= 04.00
+    baseline onto a pre-2022 acquisition, and the offset still applies.
+
+    Resolves the baseline from the first of `_BASELINE_PROPS` present on the item, since the
+    property name differs per provider while the format and semantics do not. Raises when
+    none is present -- never a silent 0, because this is the correctness-critical field.
+    """
     baseline = None
     for prop in _BASELINE_PROPS:
         baseline = item.properties.get(prop)

@@ -1,26 +1,27 @@
-"""The self-describing model **bundle** (spec 18, F5; spec 44; see the bundle explainer).
+"""The self-describing model **bundle** — see also `specs/18-model-bundle-explainer.md`.
+
+Spec: specs/18-model-adapter.md
 
 A bundle is a folder carrying the things fsd needs to run a model anywhere: the **code** (an
-adapter class, referenced by a `module:attribute` import string — and, since spec 44, usually
-*carried inside the bundle*), the **artifact(s)** (weights, referenced by paths relative to the
-bundle), and the **spec** (required bands, T, output dtype/nodata/names) — mirrored as plain text
-so fsd can validate a run *without* importing the code or loading the model (model-free preflight).
+adapter class, referenced by a `module:attribute` import string, and usually *carried inside
+the bundle*), the **artifact(s)** (weights, referenced by paths relative to the bundle), and
+the **spec** (required bands, T, output dtype/nodata/names) — mirrored as plain text so fsd
+can validate a run *without* importing the code or loading the model (model-free preflight).
 
     bundle/
       bundle.json     # manifest (below)
       rf.joblib       # artifact(s)
-      code/           # spec 44: the adapter's source, layout preserved
+      code/           # the adapter's source, layout preserved
         my_adapter.py
 
-`save` derives the `module:attr` string from the adapter object automatically, and (spec 44 D1)
+`save` derives the `module:attr` string from the adapter object automatically, and
 finds and embeds the adapter's source; `load` puts `code/` on `sys.path`, resolves the ref back to
 a class, instantiates it, injects absolute artifact paths, and calls `.load()`.
 
-**Spec 44 — code moves into the bundle; dependencies stay in the image.** Before it, an adapter had
-to be `pip install`ed into a per-adapter Docker image (spec 38 D4); now the inference image differs
-only by *dependency family* (sklearn vs torch), never by model. Dependencies are **declared**
-(`requirements`) and checked by the D11 smoke job — fsd never installs anything at run time.
-Registration/push (P6) is spec 44 phase 2 and is not implemented here.
+**Code moves into the bundle; dependencies stay in the image.** The inference image differs
+only by *dependency family* (sklearn vs torch), never by model, so an adapter never needs its
+own Docker image. Dependencies are **declared** (`requirements`) and checked by the one-node
+smoke job — fsd never installs anything at run time.
 """
 
 from __future__ import annotations
@@ -53,10 +54,10 @@ BUNDLE_MANIFEST = "bundle.json"
 BUNDLE_VERSION = 2
 SUPPORTED_BUNDLE_VERSIONS = (1, 2)
 
-#: Where embedded adapter source lives inside the bundle (spec 44 D1).
+#: Where embedded adapter source lives inside the bundle.
 CODE_DIR = "code"
 
-#: D1 guardrails on auto-detection. A package root is walked automatically, which is convenient
+#: Guardrails on auto-detection. A package root is walked automatically, which is convenient
 #: right up until it sweeps a `data/` folder into every run's upload -- so refuse loudly and early.
 MAX_CODE_FILES = 64
 MAX_CODE_BYTES = 5 * 1024 * 1024
@@ -75,8 +76,8 @@ def resolve_ref(ref: str):
     """`'crop_mapper.adapters:CropRF'` -> the `CropRF` class object (not an instance).
 
     An import path in `module:attribute` form (the setuptools entry-point / gunicorn
-    convention). `module` must be importable (i.e. on `sys.path`) -- which, since spec 44, is
-    usually satisfied by the bundle's own `code/` directory rather than by a pip install.
+    convention). `module` must be importable (i.e. on `sys.path`), which is usually satisfied
+    by the bundle's own `code/` directory rather than by a pip install.
     """
     module_path, sep, attr = ref.partition(":")
     if not sep or not attr:
@@ -91,7 +92,7 @@ def adapter_ref(adapter) -> str:
     return f"{cls.__module__}:{cls.__qualname__}"
 
 
-# --- spec 44 D3: where does the adapter's code come from? --------------------
+# --- where does the adapter's code come from? --------------------------------
 
 
 def _installed_roots() -> tuple[str, ...]:
@@ -113,14 +114,14 @@ def _is_installed(filepath: str) -> bool:
 
 
 def classify_adapter_source(adapter) -> tuple[str, str | None]:
-    """D3: `("bundled", <abs source file>)`, `("installed", None)`, or `("unresolvable", <why>)`.
+    """`("bundled", <abs source file>)`, `("installed", None)`, or `("unresolvable", <why>)`.
 
     Three origins, three behaviors:
 
-    * **local source** -- a real file that is not under a site-packages/stdlib root. **Embed it**;
-      this is the case spec 44 exists for.
-    * **installed package** -- the adapter really is a pip dependency of the image, which is spec
-      38 D4's world and stays valid. **Skip**; the manifest records no `code` block.
+    * **local source** -- a real file that is not under a site-packages/stdlib root. **Embed
+      it**; this is the case code-in-the-bundle exists for.
+    * **installed package** -- the adapter really is a pip dependency of the image, which is
+      still valid. **Skip**; the manifest records no `code` block.
     * **unresolvable** -- `__main__` (a script or, in practice, a notebook cell, where
       `getsourcefile` yields a `/tmp/ipykernel_*/1234.py` that does not exist), a C extension, or
       anything else with no readable source. **Refuse** at `save` -- otherwise the run fails much
@@ -194,14 +195,14 @@ def _walk_code_files(root: str, start: str) -> list[str]:
 
 
 def adapter_code_files(adapter) -> tuple[str, list[str]] | None:
-    """D1 auto-detection: `(root_dir, [paths relative to root_dir])`, or `None` if not embeddable.
+    """Auto-detection: `(root_dir, [paths relative to root_dir])`, or `None` if not embeddable.
 
     For a plain module the set is one `.py`; for a package it is the **whole package tree with its
     layout preserved** -- which is the bug fsd fixes relative to MLflow's `code_paths`, whose
     flattening forces users to rewrite their imports.
 
-    Raises `ValueError` for the `unresolvable` origin (D3) and for a set over `MAX_CODE_FILES` /
-    `MAX_CODE_BYTES` (D1).
+    Raises `ValueError` for the `unresolvable` origin and for a set over `MAX_CODE_FILES` /
+    `MAX_CODE_BYTES`.
     """
     origin, detail = classify_adapter_source(adapter)
     if origin == "installed":
@@ -228,15 +229,17 @@ def adapter_code_files(adapter) -> tuple[str, list[str]] | None:
     return root, rels
 
 
-# --- spec 45 D2/D3: catch a bundle that saves fine but dies on a cold-start node ----
+# --- catch a bundle that saves fine but dies on a cold-start node ------------------
 
 
 def _check_adapter_at_top(module_name: str, rels: list[str]) -> None:
-    """D2 (#72): before anything is copied, the adapter's OWN module must sit at the
-    top level of the resolved `code/` tree -- `my_adapter` -> `my_adapter.py`,
-    `my_pkg.adapters` -> `my_pkg/adapters.py`. If it doesn't, the manifest's
-    unqualified `module:attr` ref can never import once `code/` is put on `sys.path`
-    (D2 wins: `resolve_ref` looks up exactly `module_name`, nothing deeper).
+    """Before anything is copied, the adapter's OWN module must sit at the top level of the
+    resolved `code/` tree -- `my_adapter` -> `my_adapter.py`, `my_pkg.adapters` ->
+    `my_pkg/adapters.py`.
+
+    If it does not, the manifest's unqualified `module:attr` ref can never import once
+    `code/` is on `sys.path`: `resolve_ref` looks up exactly `module_name`, nothing deeper
+    (#72).
 
     A pure path computation over `rels` -- no imports, no network, no node -- so it
     catches `code=[...]` files pulled from two different trees (the common root then
@@ -279,9 +282,9 @@ def _is_installed_distribution(name: str) -> bool:
     """Is top-level import name `name` satisfied by something OTHER than a file this
     bundle would embed -- stdlib, a C extension/namespace package, or a pip-installed
     distribution? Uses `importlib.util.find_spec` to LOCATE the module (finders don't
-    execute module code) -- D3 never imports an embedded file, but classifying a
-    dependency name this way is the same mechanism `classify_adapter_source` already
-    uses for the adapter itself (via `_is_installed`)."""
+    execute module code) -- an embedded file is never imported here, but classifying a
+    dependency name this way is the same mechanism `classify_adapter_source` already uses
+    for the adapter itself, via `_is_installed`."""
     if name in sys.stdlib_module_names:
         return True
     try:
@@ -296,10 +299,11 @@ def _is_installed_distribution(name: str) -> bool:
 
 
 def _check_no_unembedded_siblings(root: str, rels: list[str]) -> None:
-    """D3 (#71): refuse a bundle whose embedded `.py` files import a SIBLING module
-    that lives under the same resolved root but was not embedded -- the node raises
-    `ModuleNotFoundError` after a cold start, and the only reason `save` succeeded is
-    that the driver still has the sibling on its own `sys.path`/cwd.
+    """Refuse a bundle whose embedded `.py` files import a SIBLING module that lives under
+    the same resolved root but was not embedded (#71).
+
+    The node raises `ModuleNotFoundError` after a cold start, and the only reason `save`
+    succeeded is that the driver still has the sibling on its own `sys.path`/cwd.
 
     Parses each embedded file with `ast` (never imports it -- the module may need
     dependencies the driver lacks). For every top-level `import X` / `from X import
@@ -310,9 +314,9 @@ def _check_no_unembedded_siblings(root: str, rels: list[str]) -> None:
     same `rels` this bundle would already embed (MAX_CODE_FILES/MAX_CODE_BYTES were
     already enforced upstream in `adapter_code_files`/`_resolve_explicit_code`).
 
-    Known limits (all shared with MLflow's `infer_code_paths`, spec 45 §3 D3): a
-    module imported dynamically (`importlib.import_module(name)`) is invisible to an
-    ast scan; a non-Python data file opened by relative path is not detected.
+    Known limits, all shared with MLflow's `infer_code_paths`: a module imported dynamically
+    (`importlib.import_module(name)`) is invisible to an ast scan, and a non-Python data file
+    opened by relative path is not detected.
     """
     processed: set[str] = set()
     checked_names: set[str] = set()
@@ -383,15 +387,15 @@ def _resolve_explicit_code(code) -> tuple[str, list[str]]:
     return root, rels
 
 
-# --- spec 44 D5: declared dependencies (never installed) ---------------------
+# --- declared dependencies (never installed) ---------------------------------
 
 
 def check_requirements(requirements) -> list[str]:
-    """D5: which of `requirements` are unsatisfied *here*? Returns human-readable lines, `[]` = ok.
+    """Which of `requirements` are unsatisfied *here*? Human-readable lines; `[]` means ok.
 
-    Declared, never installed -- spec 38 D4's rule that dependency installation is front-loaded to
-    image build time is unchanged. This is the check the D11 one-node smoke job runs so a missing
-    `sklearn` fails once, before the fan-out, naming the dependency instead of a traceback.
+    Declared, never installed: dependency installation stays front-loaded to image build time.
+    This is the check the one-node smoke job runs, so a missing `sklearn` fails once, before
+    the fan-out, naming the dependency instead of raising a traceback on every node.
 
     PEP 508 is parsed by `packaging`, not by hand: it gets extras, environment markers and version
     specifiers right in ways a hand-rolled parser does not.
@@ -421,8 +425,10 @@ def check_requirements(requirements) -> list[str]:
 
 
 def _feature_descriptor(adapter) -> dict:
-    """Human-readable provenance for the transform. Since spec 44 the *executable* version usually
-    ships in the bundle too (`code/`), so this is a summary, not the only record."""
+    """Human-readable provenance for the transform.
+
+    The *executable* version usually ships in the bundle too, under `code/`, so this is a
+    summary rather than the only record."""
     seq = getattr(adapter, "feature_sequence", None)
     if seq is None:
         return {"kind": "callable", "steps": ["<adapter.features>"]}
@@ -455,7 +461,7 @@ def manifest_code_files(manifest: dict) -> list[str]:
 
     The single place that knows the `code` block's shape, so the two manifest-driven transports
     (`runners._stage_bundle`, `infer_shard.fetch_bundle_to_scratch`) stay dumb -- they enumerate
-    files, they never list directories (the property spec 38 D3 locked).
+    files, they never list directories -- a property the remote transports depend on.
     """
     code = manifest.get("code") or {}
     root = code.get("root", CODE_DIR)
@@ -472,7 +478,7 @@ def _human_size(num_bytes: int) -> str:
 
 
 def _print_save_report(root: str | None, code_rel: list[str] | None, manifest: dict) -> None:
-    """D1 (#70): say what `save` embedded, before it returns. Print, not `logging` --
+    """Say what `save` embedded, before it returns (#70). Print, not `logging` --
     the audience is a notebook cell, matching the repo's rule that a consequential
     operation shows what it did (memory `long-process-progress`)."""
     req = manifest.get("requirements")
@@ -521,27 +527,26 @@ def save(
 
     `artifacts` maps a name -> a local source filepath, e.g. `{"model": "rf.joblib"}`.
 
-    `code` (spec 44 D1) controls source embedding:
+    `code` controls source embedding:
 
     * `None` (default) -- **auto-detect** from the adapter class. A local module or package is
       embedded under `code/` with its layout preserved; a pip-installed adapter is left alone; an
       adapter defined in `__main__`/a notebook cell **raises** with the fix in the message.
     * a list of paths -- embed exactly these (files or directories).
-    * `False` -- never embed; keep the spec-38-D4 behavior where the adapter is a pip dependency
-      of the inference image.
+    * `False` -- never embed; the adapter is a pip dependency of the inference image.
 
-    `requirements` (D5) is an optional list of PEP 508 strings recorded for the smoke job to check.
+    `requirements` is an optional list of PEP 508 strings recorded for the smoke job to check.
     fsd never installs them.
 
-    Before anything is copied, two checks (spec 45 D2/D3) turn a bundle that would save fine and
+    Before anything is copied, two checks turn a bundle that would save fine and
     die on a cluster node into a `save`-time `ValueError` naming the fix: the adapter's own module
     must sit at the TOP of the resolved `code/` tree (#72), and every sibling import an embedded
     file makes must itself be embedded (#71) -- a dependency (declared via `requirements=`) is
     left alone.
 
-    `verbose=True` (default, spec 45 D1/#70) prints what got embedded -- the resolved import
-    root, the file list with sizes, the adapter ref and the declared requirements -- before
-    returning. `verbose=False` silences it; the return value is unaffected either way.
+    `verbose=True` (default) prints what got embedded -- the resolved import root, the file
+    list with sizes, the adapter ref and the declared requirements -- before returning.
+    `verbose=False` silences it; the return value is unaffected either way.
     """
     dst = str(dst)
     fs.makedirs(dst)
@@ -588,7 +593,7 @@ def save(
     return dst
 
 
-# --- spec 44 D2 (+ amendment A1): putting the bundle's code on sys.path -------
+# --- putting the bundle's code on sys.path -----------------------------------
 
 
 def _module_source_bytes(module) -> bytes | None:
@@ -648,7 +653,7 @@ def _guard_module_collision(module_name: str, code_root: str) -> None:
 
 
 def _activate_bundle_code(bundle_path: str, manifest: dict) -> None:
-    """D2: prepend `<bundle>/code` to `sys.path` so the bundle's adapter wins.
+    """Prepend `<bundle>/code` to `sys.path` so the bundle's adapter wins.
 
     Bundle-first is deliberate: `sys.path` is searched in order and the first match wins, so an
     embedded adapter shadows a same-named module in the image. The bundle is the authority on which
@@ -667,7 +672,7 @@ def _activate_bundle_code(bundle_path: str, manifest: dict) -> None:
 def load(bundle_path: str, *, validate: bool = True):
     """Turn a bundle folder back into a ready-to-use adapter.
 
-    Puts the bundle's `code/` on `sys.path` (spec 44 D2 -- **mutates `sys.path`**), resolves the
+    Puts the bundle's `code/` on `sys.path` (**mutates `sys.path`**), resolves the
     adapter `module:attr` -> class, instantiates it, injects **absolute** artifact paths onto
     `adapter.artifacts`, (optionally) checks the class's declared spec matches the manifest, and
     calls `adapter.load()`.
@@ -707,10 +712,10 @@ def load(bundle_path: str, *, validate: bool = True):
             if declared is None or declared == [] or (field == "n_timestamps" and declared == 0):
                 continue
             if manifest.get(field) is not None and declared != manifest[field]:
-                # D4: the check survives, but it means different things per origin. For an
-                # installed adapter it catches genuine code/bundle version skew (the image's pip
-                # version vs this bundle). For a bundled adapter both sides came out of the same
-                # save() call, so a disagreement means the bundle was edited.
+                # The same check means different things per origin. For an installed adapter it
+                # catches genuine code/bundle version skew -- the image's pip version against
+                # this bundle. For a bundled adapter both sides came out of one `save()` call,
+                # so a disagreement can only mean the bundle was edited.
                 why = (
                     "the adapter source INSIDE this bundle — the bundle has been edited"
                     if bundled else

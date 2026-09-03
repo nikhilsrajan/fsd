@@ -235,7 +235,7 @@ _REFLECTANCE_BAND_RE = re.compile(r"^B\d")
 
 def _is_reflectance(band: str) -> bool:
     """Whether `band` is an S2 reflectance band (`B01`…`B12`, `B8A`) vs a
-    non-reflectance product like `SCL`/`AOT`/`WVP`/`visual` (spec 32 D2/§3) —
+    non-reflectance product like `SCL`/`AOT`/`WVP`/`visual` —
     the processing-baseline offset only applies to reflectance bands."""
     return bool(_REFLECTANCE_BAND_RE.match(band)) or band == "B8A"
 
@@ -243,13 +243,12 @@ def _is_reflectance(band: str) -> bool:
 def apply_offset(
     data: np.ndarray, profile: dict, *, offset: int
 ) -> tuple[np.ndarray, dict]:
-    """Shift DN by a declared additive radiometric offset (spec 34 §1b, generalizing
-    spec 32's S2-only `apply_boa_offset`): `clip(DN + offset, 0, 65535)`, dtype
+    """Shift DN by a declared additive radiometric offset: `clip(DN + offset, 0, 65535)`, dtype
     preserved. `offset=0` is a no-op passthrough. Nodata (0) with a negative offset
     clips to 0 (stays nodata, order-independent of when this runs relative to masking).
 
     This is the READ-TIME apply the datacube builder uses (science needs physical
-    reflectance before the median mosaic, spec 34 §1f) — it never touches the on-disk
+    reflectance before the median mosaic) — it never touches the on-disk
     bytes. The on-disk COG stays raw DN; the offset is metadata (GDAL tag + STAC
     `raster:bands`), applied here and, independently, by an `unscale`-aware viewer."""
     if offset == 0:

@@ -1,4 +1,4 @@
-"""`fsd.image` — declarative AML node-image definitions and a registry for them (spec 56).
+"""`fsd.image` — declarative AML node-image definitions and a registry for them.
 
 An `ImageDefinition` is data, not a Dockerfile: what base image, what fsd reference, what
 extras. It renders a Dockerfile and a build context; it never builds one and never touches

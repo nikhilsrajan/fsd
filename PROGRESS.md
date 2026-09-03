@@ -4,7 +4,45 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-09-03 (**STEP 4 IS PREPPED AND HANDED OFF — #85, the `src/` comment trim.**
+_Last updated: 2026-09-03 (**STEP 4 IS DONE — #85's `src/` COMMENT SWEEP IS COMPLETE, on branch
+`worktree-issue-85-comment-trim` (6 commits), NOT YET MERGED.** Backward references across `src/fsd`
+went **1,187 → 91 (−92 %)**. Every commit is gated on `pytest -q` (**1073 passed / 101 skipped**,
+identical to `6ed05bb`), `ruff check src tests demos examples` clean, and a **docstring-stripped AST
+byte-identical to `6ed05bb` across all 58 files** — the diff is provably comments-only._
+
+_**The open question was settled as option (a): the sweep was EXTENDED** to `image/`, `aml/`,
+`registry/`, `config.py` and `cli.py`, which #85's landing order predates. They were the freshest
+instance of the habit — every one written *after* the convention landed — and folding them in is the
+whole point of doing this before the next development push. The two Snakefiles were swept too; they
+are package data, so every earlier `*.py` sweep had missed them._
+
+_**Six commits, in order:** a scripted mechanical pass (340 reference-only parentheticals, refs
+1,187 → 733), then judgment passes on `api.py` (285 → 16), `workflows/` (341 → 26), `model/`
+(179 → 11), `sources/` (112 → 16), and everything remaining. The 91 refs left are the ones that
+should be: GitHub issue refs (**the `TODO #NN` → issue mapping is intact**), `Spec:` module anchors,
+and `spec NN Dn` inside user-facing error/argparse strings, which are code._
+
+_**⚠️ The AST check earned its place.** In `sources/` it caught three "comment" edits that were
+actually inside `raise ValueError(...)` and argparse help — reverted before commit. A comments-only
+diff is not comments-only just because it looks it._
+
+_**Prose density did NOT move (0.49 → 0.49), and that is the honest result, not a miss.** #85's own
+classification put ~21 % of prose in the narrative categories and 68 % in "plain description: keep,
+tighten". What made `src/` *read* like a changelog was tag density, and that fell 92 %. Roughly as
+many lines came back as reformatting (summary / blank / body, per the convention) as came out as
+narration. `api.py` and the public verb docstrings sit deliberately above the ~0.30 guide — they are
+the user documentation, and this sprint is about notebook usability._
+
+_**Three things for the user to decide:** (1) **merge + prune** — the standing practice wants
+"reviewed + green"; it is green, but the authoring session cannot be its own reviewer, so an Opus
+review of the branch is the missing half; (2) **pushing** — `main` is 12 commits ahead of
+`origin/main` (`c49a9fc`) once this lands, still the user's call; (3) **two follow-ups worth filing
+rather than bolting on** — a ref-density gate so this cannot re-accrete (the handoff already flagged
+it as scope beyond #85), and the ~15 user-facing error/argparse strings that cite internal spec
+decisions ("spec 51 D6", "spec 47 D3") at operators who cannot read `specs/`. Fixing the latter is a
+behaviour change, so it stayed out of a comments-only pass._
+
+_Previously: 2026-09-03 (**STEP 4 IS PREPPED AND HANDED OFF — #85, the `src/` comment trim.**
 Baton: **`/tmp/handoff-issue-85-comment-trim-2026-09-03.md`**; the per-file counter it names is at
 `/tmp/refcount.py`. `main` @ `d5a7814`, clean, **10 commits ahead of `origin/main` (`c49a9fc`),
 still unpushed**. `1075 passed / 103 skipped`, ruff clean._

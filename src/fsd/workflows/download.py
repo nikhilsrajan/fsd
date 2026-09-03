@@ -1,12 +1,12 @@
-"""In-job entrypoint for the AML download dispatcher (spec 37 D3).
+"""In-job entrypoint for the AML download dispatcher.
 
 A thin CLI wrapping the existing download-to-blob path -- no pipeline logic of its
-own, mirroring `fsd.workflows.shard`'s role for spec 36. Two modes, matching the two
-job shapes `runners.run_aml_download` submits (D1: dispatch shape is per-source):
+own, mirroring `fsd.workflows.shard`'s role for the build fan-out. Two modes, matching the
+two job shapes `runners.run_aml_download` submits -- dispatch shape is per-source:
 
 - `--roi <url> ...` -> the whole-ROI CDSE job (exactly one per run). Calls the
   unmodified `sources.cdse.download` directly, reading its S3 creds **on the
-  node** from exactly one of two mutually exclusive sources (D5 REVISED):
+  node** from exactly one of two mutually exclusive sources:
   Key Vault (`--vault-url`/`--secret-name`, non-secret command args) or a blob
   JSON (`--creds-url`, a non-secret location). The secret value itself is never
   in the job spec.
@@ -14,8 +14,8 @@ job shapes `runners.run_aml_download` submits (D1: dispatch shape is per-source)
   `sources.mpc.download_shard` over a pre-discovered, pre-partitioned asset-row CSV
   the driver wrote (`sources.mpc.discover_shard_rows` + `runners.shard_units`).
 
-Both write a `_status/<k>.json` (D9), the same `_result.json` shape spec 24/36 use,
-built from the source call's `DownloadResult`.
+Both write a `_status/<k>.json` -- the same `_result.json` shape every fsd job reports in
+-- built from the source call's `DownloadResult`.
 
 Run as:
   python -m fsd.workflows.download --roi <url> --startdate <iso> --enddate <iso> \\
@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import datetime as _dt
 
-# spec 40 D2: stamped before any heavy import (see workflows/shard.py for the same pattern).
+# Stamped before any heavy import, so it is process start (see workflows/shard.py).
 _PROCESS_START_AT = _dt.datetime.now(_dt.timezone.utc).isoformat()
 
 import argparse  # noqa: E402
@@ -55,12 +55,13 @@ def _write_status(status_url: str, status: dict) -> None:
 def _status_from_download_result(
     dr, *, unit: str, process_start_at: str, work_start_at: str, work_end_at: str,
 ) -> dict:
-    """`DownloadResult` (cdse or mpc) -> the D9 status dict. Both dataclasses carry
-    the same core fields; `circuit_tripped`/`bytes_downloaded` are CDSE-only, so
-    they default off/0 for an MPC shard (which has no circuit breaker or its own
-    transfer-byte accounting). `process_start_at`/`work_start_at`/`work_end_at` are the
-    spec 40 D2 in-job stamps; `ended_at` is added by the caller right before the
-    `_status` write."""
+    """`DownloadResult` (cdse or mpc) -> the status dict.
+
+    Both dataclasses carry the same core fields; `circuit_tripped`/`bytes_downloaded` are
+    CDSE-only, so they default off/0 for an MPC shard, which has neither a circuit breaker
+    nor its own transfer-byte accounting. `ended_at` is added by the caller, right before
+    the `_status` write.
+    """
     circuit_tripped = bool(getattr(dr, "circuit_tripped", False))
     failed = dr.failed_count > 0 or circuit_tripped
     return {
@@ -95,10 +96,12 @@ def run_roi(
     secret_name: str | None = None,
     creds_url: str | None = None,
 ) -> dict:
-    """`--roi` mode (D3): the whole-ROI CDSE job. Reads S3 creds from exactly one
-    of two mutually exclusive sources (D5 REVISED): Key Vault (`vault_url`/
-    `secret_name`) or a blob JSON (`creds_url`), then calls `sources.cdse.download`
-    unmodified."""
+    """`--roi` mode: the whole-ROI CDSE job.
+
+    Reads S3 creds from exactly one of two mutually exclusive sources -- Key Vault
+    (`vault_url`/`secret_name`) or a blob JSON (`creds_url`) -- then calls
+    `sources.cdse.download` unmodified.
+    """
     if creds_url:
         creds = cdse.CdseCredentials.from_json(creds_url)
     else:
@@ -125,8 +128,8 @@ def run_roi(
 
 
 def run_shard(*, shard_url: str, dst: str, catalog: str, status_url: str) -> dict:
-    """`--shard` mode (D3): one of N per-shard MPC jobs over a pre-discovered,
-    pre-partitioned asset-row CSV. No credentials needed (anonymous MPC, D4/D5)."""
+    """`--shard` mode: one of N per-shard MPC jobs over a pre-discovered,
+    pre-partitioned asset-row CSV. No credentials needed: MPC is anonymous."""
     with fs.open(shard_url, "r") as f:
         rows = pd.read_csv(f).to_dict("records")
 

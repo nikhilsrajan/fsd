@@ -1,10 +1,10 @@
-"""In-job entrypoint for the AML flatten reduce (spec 39 D3).
+"""In-job entrypoint for the AML flatten reduce.
 
 A thin CLI wrapping the unmodified `datacube.flatten.flatten` -- no pipeline logic of its
 own, mirroring `fsd.workflows.download`'s shape. Reads the caller's `input_csv` (any
 `fsd.storage` url) via the storage seam, concatenates every listed datacube into ONE array
 under `--export` (a reduce, not a fan-out -- `runners.run_aml_flatten` submits exactly one
-job), and writes a `_status/<k>.json`, the same `_result.json` shape spec 24/36/37 use.
+job), and writes a `_status/<k>.json` -- the same `_result.json` shape every fsd job uses.
 
 Runs on the **general-purpose** fsd Environment (ADR-0020): no adapter import here, ever --
 the feature transform stays on the driver, after land-local.
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import datetime as _dt
 
-# spec 40 D2: stamped before any heavy import (see workflows/shard.py for the same pattern).
+# Stamped before any heavy import, so it is process start (see workflows/shard.py).
 _PROCESS_START_AT = _dt.datetime.now(_dt.timezone.utc).isoformat()
 
 import argparse  # noqa: E402

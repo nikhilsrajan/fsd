@@ -2,9 +2,9 @@
 
 Spec: specs/08-workflows.md, specs/10-storage-and-scale.md, specs/36-scale-runner.md.
 
-v1 backend: local (Snakemake). P2 backend: Azure ML (`run_aml`, spec 36) -- shards
-`input_csv` and dispatches each shard onto an AML cluster, where it calls back into
-this same module's `run_local`. Same interface; runner is swappable.
+Two backends: local (Snakemake), and Azure ML (`run_aml`) -- which shards `input_csv` and
+dispatches each shard onto an AML cluster, where it calls back into this same module's
+`run_local`. Same interface; runner is swappable.
 """
 
 from __future__ import annotations
@@ -34,9 +34,9 @@ _SNAKEFILE = "workflows/_snakefiles/create_datacube/Snakefile"
 _INFER_SNAKEFILE = "workflows/_snakefiles/create_inference/Snakefile"
 _INFER_ONLY_SNAKEFILE = "workflows/_snakefiles/infer_only/Snakefile"
 
-# D13 (spec 38, TODO #53): a unit's content identity -- kept in sync with
-# `create_datacube._UNIT_IDENTITY_COLS` (not imported from there: `create_datacube`
-# already imports this module, and importing back would be circular).
+# A unit's content identity. Kept in sync with `create_datacube._UNIT_IDENTITY_COLS` by
+# hand, not imported from there: `create_datacube` already imports this module, so the
+# import back would be circular (TODO #53).
 _UNIT_IDENTITY_COLS = (
     "id", "startdate", "enddate", "bands", "mosaic_days", "mosaic_scheme", "scl_mask_classes",
 )
@@ -116,21 +116,21 @@ def run_local_inference(
     njobs_load_images: int = 1,
     jitter_span: int = 1,
 ) -> subprocess.CompletedProcess:
-    """Local runner for ROI inference (spec 21): drive the per-cell **build+infer** Snakefile
+    """Local runner for ROI inference: drive the per-cell **build+infer** Snakefile
     over `input_csv` rows.
 
     Same seam as `run_local` — `cores` = how many groups run at once — but each job shells one
     `fsd.workflows.infer_task` group process (build each cell's datacube, then infer ->
     output.tif) instead of the build-only task. `bundle_path` is the model the workers reload.
-    `cubes_per_task` (spec 38 D7, closes TODO #25's root cause: this used to be silently
-    dropped) groups K cells per job so the bundle loads once per group, not once per cell --
-    default 1 (today's per-cell behaviour). `overwrite` forces a recompute of every cell
-    (`--forceall` **and** `infer_task`'s own per-cell skip is bypassed, config `overwrite=1`);
-    otherwise each cell's `output.tif` existence (D6) makes it resumable, decoupled from group
-    size. Azure Batch (P4) dispatches this same task; only this runner is swapped.
+    `cubes_per_task` groups K cells per job so the bundle loads once per group, not once per
+    cell (TODO #25); default 1. `overwrite` forces a recompute of every cell (`--forceall`
+    **and** `infer_task`'s own per-cell skip is bypassed, config `overwrite=1`); otherwise
+    each cell's `output.tif` existence makes it resumable, decoupled from group size. Azure
+    Batch dispatches this same task; only this runner is swapped.
 
-    D13: raises before dispatch if `input_csv` has two distinct-content rows sharing an
-    `export_folderpath` (a malformed manifest -- same exposure as `run_aml`/`run_aml_inference`).
+    Raises before dispatch if `input_csv` has two distinct-content rows sharing an
+    `export_folderpath` -- a malformed manifest, the same exposure as
+    `run_aml`/`run_aml_inference`.
     """
     with fs.open(input_csv, "r") as f:
         _dupe_errs = _duplicate_unit_errors(pd.read_csv(f).to_dict("records"))
@@ -165,13 +165,13 @@ def run_local_infer_only(
     dry_run: bool = False,
     unlock: bool = False,
 ) -> subprocess.CompletedProcess:
-    """Local runner for **infer-only** fan-out over pre-built datacubes (spec 22) — the replacement
+    """Local runner for **infer-only** fan-out over pre-built datacubes — the replacement
     for `engine.run_local`'s retired `mp.Pool`.
 
     `input_csv` has `datacube_filepath`, `output_filepath`. `cores` = how many groups run at once
     (Snakemake — the only parallel primitive); `cubes_per_task` groups K cubes per sequential job to
     amortise the one-per-job bundle load. `overwrite` forces recompute (`--forceall`); otherwise
-    per-group sentinels + the task's skip-existing make it resumable. Azure Batch (P4) dispatches
+    per-group sentinels + the task's skip-existing make it resumable. Azure Batch dispatches
     this same task.
     """
     conf = {
@@ -205,20 +205,20 @@ def _run_snakemake(snakefile_rel, cores, conf, *, overwrite=False, dry_run=False
     return subprocess.CompletedProcess(args=cmd, returncode=returncode)
 
 
-# --- P2: the Azure ML runner (spec 36) ---------------------------------------
+# --- P2: the Azure ML runner -------------------------------------------------
 
 _TERMINAL_JOB_STATUSES = {"Completed", "Failed", "Canceled"}
 
 
 def _now_iso() -> str:
-    """Driver-clock timestamp, ISO8601 UTC (spec 40 D2/D11)."""
+    """Driver-clock timestamp, ISO8601 UTC."""
     return pd.Timestamp.now(tz="UTC").isoformat()
 
 
 def _seconds_between(start_iso: str | None, end_iso: str | None) -> float | None:
     """`end - start` in seconds between two ISO8601 timestamps; `None` if either is
     missing (e.g. a job whose `_status/<k>.json` never got written). Never floored at
-    0 (spec 40 D11): a negative result is the clock-skew bound being exceeded, not an
+    0: a negative result is the clock-skew bound being exceeded, not an
     error to hide."""
     if start_iso is None or end_iso is None:
         return None
@@ -230,11 +230,12 @@ def _derive_timing(
     t_last_submit: str, t_end: str,
     submitted_at: dict, returned_at: dict, reports: dict, poll_interval_seconds: int,
 ) -> dict:
-    """Pure function (spec 40 D2/D11, ADR 0021): per-job dispatch telemetry plus the
-    additive wall-clock split, from the driver's own `submitted_at`/`returned_at` stamps
-    and each job's in-job stamps (already read into `reports[k]` from `_status/<k>.json`).
-    Kept separate from `_aml_submit_and_wait` so it is unit-testable on hand-written
-    stamps (spec 40 §6) without a fake `ml_client`'s polling loop.
+    """Per-job dispatch telemetry plus the additive wall-clock split, from the driver's own
+    `submitted_at`/`returned_at` stamps and each job's in-job stamps (already read into
+    `reports[k]` from `_status/<k>.json`).
+
+    A pure function, kept separate from `_aml_submit_and_wait` so it is unit-testable on
+    hand-written stamps without a fake `ml_client`'s polling loop.
 
     The wall-clock split is five contiguous, non-overlapping legs that telescope back to
     `t_end - t_start` by construction:
@@ -244,24 +245,16 @@ def _derive_timing(
       teardown_detect     latest ended_at  -> latest returned_at (poll-quantized detection)
       post_collect        latest returned_at -> t_end (aggregating `_status/*.json`)
 
-    **`first_admission` is measured from the FIRST submission, not the last** (revised
-    2026-07-29 against real data). Submitting N jobs is sequential and takes real time --
-    40 s for 32 jobs on the d16 cluster (`cluster-<proj>-d16`, concrete name in
-    `AZURE_INFRA_PRIVATE.md`) -- while admission of the *early* jobs happens
-    concurrently. Anchoring on `t_last_submit` therefore made the leg go negative whenever
-    a node started before the final job was submitted: run 20260729T132222Z reported
-    `driver_prep=40.1, first_admission=-5.0`. Both numbers were arithmetically fine and
-    telescoped correctly, but neither meant what its name said, and the negative masked
-    D11's actual purpose for a negative -- *"reported as negative, never floored at zero:
-    it is the signal the [clock-skew] bound was exceeded"*. Submission and admission
-    overlap; they are not sequential phases, so they cannot be adjacent legs.
-
-    Anchored on the first submission, `driver_prep` is genuinely pre-dispatch driver work,
-    `first_admission` is genuinely "how long until a node was executing" (the submission
-    loop is *part* of that wait, which is what a reader wants), and a negative once again
-    means only what D11 says it means. The submission span is not lost -- it is reported
-    as `submission_span_seconds`, deliberately **outside** the additive split, because it
-    overlaps `first_admission` rather than partitioning it.
+    ⚠️ **`first_admission` is measured from the FIRST submission, never the last.**
+    Submitting N jobs is sequential and takes real time (40 s for 32 jobs was measured),
+    while admission of the *early* jobs is already happening. Submission and admission
+    overlap, so they cannot be adjacent legs: anchor on `t_last_submit` and the leg goes
+    negative whenever a node starts before the final job is submitted. Those numbers still
+    telescope correctly, so nothing catches it -- but neither leg means what its name says,
+    and worse, a negative here is RESERVED as the signal that the clock-skew bound was
+    exceeded. The submission span is not lost; it is reported as `submission_span_seconds`,
+    deliberately **outside** the additive split, because it overlaps `first_admission`
+    rather than partitioning it.
 
     `t_first_submit` defaults to `t_last_submit` so a caller that has only the old stamp
     still gets the old (contiguous, additive) behaviour rather than an error.
@@ -330,23 +323,27 @@ def _derive_timing(
 
 
 def _import_aml_command():
-    """Lazy handle to `azure.ai.ml.command` (D3 invariant 3: the sole azure-ai-ml
-    import in `fsd/`, inside a function -- `import fsd` never needs the extra). Indirected
-    through this helper so the AML job-builder is part of `run_aml`'s injection boundary:
-    tests substitute a fake and never require the `[aml]` extra ("no test may require
-    Azure", spec 36 §7). Production behaviour is unchanged -- a real `runner="aml"` with
-    the extra absent still raises ImportError here, exactly as a direct import would."""
+    """Lazy handle to `azure.ai.ml.command` -- the sole azure-ai-ml import in `fsd/`, and
+    inside a function, so `import fsd` never needs the `[aml]` extra.
+
+    Indirected through a helper so the AML job-builder sits on `run_aml`'s injection
+    boundary: no test may require Azure, so tests substitute a fake here. Production
+    behaviour is unchanged -- a real `runner="aml"` without the extra still raises
+    ImportError at this line, exactly as a direct import would.
+    """
     from azure.ai.ml import command
 
     return command
 
 
 def _duplicate_export_folderpaths(rows: list[dict]) -> list[str]:
-    """D13 (spec 38, TODO #53): `export_folderpath` is keyed by `id` ALONE
-    (`create_datacube.setup`), a narrower key than the content-identity dedupe
-    (`_UNIT_IDENTITY_COLS`) -- so two rows can pass the dedupe (distinct content) and
-    still collide on the SAME folder (a malformed manifest: which content should that
-    folder hold?). Returns the offending `export_folderpath`s, or `[]` if none."""
+    """The `export_folderpath`s that two distinct-content rows collide on, or `[]`.
+
+    `export_folderpath` is keyed by `id` ALONE (`create_datacube.setup`), a NARROWER key
+    than the content-identity dedupe (`_UNIT_IDENTITY_COLS`) -- so two rows can pass that
+    dedupe and still name the same folder, and nothing downstream can say which content the
+    folder should hold (TODO #53).
+    """
     seen: dict[str, set] = {}
     for r in rows:
         identity = tuple(str(r.get(c)) for c in _UNIT_IDENTITY_COLS)
@@ -355,7 +352,7 @@ def _duplicate_export_folderpaths(rows: list[dict]) -> list[str]:
 
 
 def _duplicate_unit_errors(rows: list[dict]) -> list[str]:
-    """D13 aggregatable-error form of `_duplicate_export_folderpaths`, shared by every
+    """The aggregatable-error form of `_duplicate_export_folderpaths`, shared by every
     dispatcher (`run_aml`, `run_aml_inference`, `run_local_inference`) -- same exposure."""
     dupes = _duplicate_export_folderpaths(rows)
     if not dupes:
@@ -369,10 +366,11 @@ def _duplicate_unit_errors(rows: list[dict]) -> list[str]:
 
 
 def shard_units(units: list, n_shards: int) -> list[list]:
-    """Partition `units` into up to `n_shards` non-empty groups, round-robin (spec 36
-    D2 / test 1). A partition: every unit appears in exactly one shard. `n_shards` >
-    `len(units)` degrades to `len(units)` non-empty shards (no empty shard is ever
-    produced)."""
+    """Partition `units` into up to `n_shards` non-empty groups, round-robin.
+
+    A true partition: every unit appears in exactly one shard. `n_shards > len(units)`
+    degrades to `len(units)` shards -- an empty shard is never produced.
+    """
     n_shards = max(int(n_shards), 1)
     n_groups = min(n_shards, len(units)) or 1
     groups: list[list] = [[] for _ in range(n_groups)]
@@ -382,8 +380,8 @@ def shard_units(units: list, n_shards: int) -> list[list]:
 
 
 def _aml_preflight_common(ml_client, *, cluster: str, environment: str, root: str) -> list[str]:
-    """Cluster/environment/storage-root checks shared by `run_aml` (spec 36 D10)
-    and `run_aml_download` (spec 37 D7). Returns error strings; never raises --
+    """Cluster/environment/storage-root checks shared by `run_aml`
+    and `run_aml_download`. Returns error strings; never raises --
     each caller aggregates alongside its own source-specific checks."""
     errs = []
     try:
@@ -414,8 +412,8 @@ def _aml_preflight_common(ml_client, *, cluster: str, environment: str, root: st
 
 def _aml_preflight(ml_client, *, cluster: str, environment: str, root: str,
                     input_csv: str, n_shards: int | None) -> None:
-    """D10: know before you spend. Cheap checks that turn a 20-minutes-later cluster
-    failure into an instant one."""
+    """Know before you spend: cheap checks that turn a 20-minutes-later cluster failure
+    into an instant one."""
     errs = _aml_preflight_common(ml_client, cluster=cluster, environment=environment, root=root)
     if not fs.exists(input_csv):
         errs.append(f"input_csv does not exist: {input_csv!r}")
@@ -440,24 +438,23 @@ def _aml_download_preflight(
     n_tiles: int | None = None,
     max_tiles: int | None = None,
 ) -> list[str]:
-    """D7: know before you spend, for a download dispatch. Cluster/environment/root
-    (shared, `_aml_preflight_common`) + discovery non-emptiness + the `max_tiles`
-    guardrail + (CDSE-only) the supplied creds source resolves/parses and its S3 keys
-    are not expired. Raises on any hard failure; returns a (possibly empty) list of
-    **warnings** (non-fatal) -- today just the CDSE quota estimate (D1/D7).
+    """Know before you spend, for a download dispatch.
 
-    D5 REVISED: CDSE creds come from **exactly one** of two mutually exclusive
-    sources -- Key Vault (`vault_url`+`secret_name`) or a blob JSON (`creds_url`).
-    Neither or both supplied is a hard preflight error. `source='mpc'` is anonymous
-    and refuses all three (TODO #49).
+    Cluster/environment/root (shared, `_aml_preflight_common`) + discovery non-emptiness +
+    the `max_tiles` guardrail + (CDSE-only) that the supplied creds source resolves/parses
+    and its S3 keys are not expired. Raises on any hard failure; returns a possibly-empty
+    list of non-fatal **warnings** -- today just the CDSE quota estimate.
 
-    `max_tiles` is enforced **here, on the driver**, for both sources, mirroring the
-    guard the local paths already apply (`sources/mpc.py`, `sources/cdse.py`): the
-    runner must not change what a call means (spec 36 D3). It previously reached
-    only CDSE -- via `--max-tiles` on the node, i.e. after the cluster had already
-    spun up -- and the MPC path dropped it entirely, so an `api.download(source=
-    'mpc', max_tiles=N)` that raises locally would silently download everything on
-    AML. Checking at dispatch time also fails before a single node starts."""
+    CDSE creds come from **exactly one** of two mutually exclusive sources: Key Vault
+    (`vault_url`+`secret_name`) or a blob JSON (`creds_url`). Neither or both is a hard
+    preflight error. `source='mpc'` is anonymous and refuses all three (TODO #49).
+
+    ⚠️ `max_tiles` is enforced **here, on the driver**, for BOTH sources, mirroring the
+    guard the local paths apply (`sources/mpc.py`, `sources/cdse.py`). The runner must not
+    change what a call means: enforce it on the node instead and MPC drops it entirely, so
+    an `api.download(source='mpc', max_tiles=N)` that raises locally silently downloads
+    everything on AML. Checking at dispatch also fails before a single node starts.
+    """
     errs = _aml_preflight_common(ml_client, cluster=cluster, environment=environment, root=root)
     if n_assets < 1:
         errs.append("discovery matched 0 assets for this roi/date-window.")
@@ -504,7 +501,7 @@ def _aml_download_preflight(
                 "(https://documentation.dataspace.copernicus.eu/Quotas.html)."
             )
     else:
-        # MPC is anonymous (D4/D5): it reads no credentials at all, so a creds
+        # MPC is anonymous: it reads no credentials at all, so a creds
         # argument here is not merely inert -- `creds_url` would put the secret on
         # blob for the whole run in exchange for nothing. Refuse it rather than
         # ignore it (TODO #49; found when a hand-written Phase 3 script did exactly
@@ -530,21 +527,21 @@ def _aml_submit_and_wait(
 ) -> dict:
     """Submit each prebuilt AML `command(...)` job in `jobs` (`{k: job}`), wait for
     all to reach a terminal status, aggregate `<run_root>/_status/<k>.json`, and
-    raise on any failed/circuit-tripped job. Shared by `run_aml` (spec 36 -- one job
-    per datacube shard) and `run_aml_download` (spec 37 -- one CDSE job or N MPC
-    shard jobs, D1/D9); the only difference between the two callers is how `jobs`
-    gets built, not how submission/waiting/aggregation works.
+    raise on any failed/circuit-tripped job. Shared by `run_aml` (one job per datacube
+    shard) and `run_aml_download` (one CDSE job, or N MPC shard jobs); the only difference
+    between the two callers is how `jobs` gets built, not how submission, waiting and
+    aggregation work.
 
-    Also writes `<run_root>/_timing.json` (spec 40 D2, ADR 0021): per-job
-    `submitted_at` (as each `create_or_update` returns) and `returned_at` (the first
-    poll at which that job is observed terminal -- so `teardown_detect` carries up to
-    `poll_interval_seconds` of quantization error, spec 40 D11), plus the derived
-    per-job/per-run metrics (`_derive_timing`). Written **before** raising on failure,
-    so a crashed dispatch still leaves every completed step's telemetry on disk (D3).
-    Nothing new is returned -- no `timing` field, per ADR 0021."""
-    # D6 (spec 47): name run_id + run_root BEFORE any job is submitted -- the cheapest
-    # line in the whole spec, and the one that most directly answers "is it stuck?" from
-    # outside the notebook (`_status/*.json`/`_timing.json` live under run_root).
+    Also writes `<run_root>/_timing.json`: per-job `submitted_at` (as each
+    `create_or_update` returns) and `returned_at` (the first poll at which that job is
+    observed terminal -- so `teardown_detect` carries up to `poll_interval_seconds` of
+    quantization error), plus the derived metrics from `_derive_timing`. Written **before**
+    raising on failure, so a crashed dispatch still leaves every completed step's telemetry
+    on disk. The return value is unchanged -- timing is a file, not a field.
+    """
+    # Name run_id + run_root BEFORE any job is submitted: it is the one line that answers
+    # "is it stuck?" from outside the notebook, since `_status/*.json` and `_timing.json`
+    # live under run_root.
     print(f"[aml] run_id={run_id} run_root={run_root}", flush=True)
 
     t_start = _now_iso()
@@ -563,10 +560,10 @@ def _aml_submit_and_wait(
         submitted_at[k] = t_last_submit
         job_names[k] = submitted.name
 
-    # D5 (spec 47): tick from the statuses dict this loop already maintains -- no extra
-    # AML calls. A fan-out's per-second completion rate isn't meaningful (show_rate=False);
-    # a single job additionally has no rate to derive an ETA from, so it prints elapsed
-    # only rather than inventing one (show_eta=False).
+    # Tick from the statuses dict this loop already maintains -- no extra AML calls. A
+    # fan-out's per-second completion rate is not meaningful (show_rate=False), and a single
+    # job has no rate to derive an ETA from, so it prints elapsed only rather than inventing
+    # one (show_eta=False).
     n_jobs = len(job_names)
     tick = _progress.ticker(n_jobs, "aml", unit="jobs terminal", show_rate=False,
                             show_eta=(n_jobs > 1))
@@ -579,9 +576,9 @@ def _aml_submit_and_wait(
             if s in _TERMINAL_JOB_STATUSES and k not in returned_at:
                 returned_at[k] = _now_iso()
         n_terminal = sum(1 for s in statuses.values() if s in _TERMINAL_JOB_STATUSES)
-        # One tick per poll, forced on the last one so the 100% line always lands regardless
-        # of the throttle. Forcing it as a SECOND call printed the same line twice whenever
-        # every job was already terminal on the first poll (review, 2026-08-20).
+        # One tick per poll, forced on the last so the 100% line always lands regardless of
+        # the throttle. Force it as a SECOND call instead and the line prints twice whenever
+        # every job is already terminal on the first poll.
         done = n_terminal == n_jobs
         tick(n_terminal, force=done, suffix=f"{n_jobs - n_terminal} running")
         if done:
@@ -634,29 +631,29 @@ def run_aml(
     workspace_name: str | None = None,
     poll_interval_seconds: int = 30,
 ) -> dict:
-    """AML runner (spec 36 D2/D3/D9/D10): shard `input_csv`, submit one command job per
+    """AML runner: shard `input_csv`, submit one command job per
     shard onto `cluster`, wait, aggregate `_status/<k>.json`, raise on any failure.
 
-    Each dispatched unit is a **shard** (D2), not a cube: the job runs
+    Each dispatched unit is a **shard**, not a cube: the job runs
     `python -m fsd.workflows.shard <shard_csv_url> --cores <cores>`, which calls back
     into this module's `run_local` -- the same Snakemake orchestration a laptop runs.
     No AML-specific pipeline code exists; only this dispatcher knows about AML.
 
-    `identity_client_id` (D4) is set as the job's `AZURE_CLIENT_ID` env var -- the AML
+    `identity_client_id` is set as the job's `AZURE_CLIENT_ID` env var -- the AML
     cluster carries only a user-assigned managed identity, which is never selected
     implicitly, so `fsd/storage/azure.py`'s bare `DefaultAzureCredential()` needs this
     to authenticate on the node. **fsd never hardcodes it** (a concrete `rise` identity
     id has no business in a public repo) -- the caller resolves it (e.g. via
     `az identity show --query clientId`) and passes it in.
 
-    `ml_client` is the test/injection seam (D3 invariant 3): pass a fake with
+    `ml_client` is the test/injection seam: pass a fake with
     `.compute.get`, `.environments.get`, `.jobs.create_or_update`, `.jobs.get` to avoid
     any network call; when omitted, a real `azure.ai.ml.MLClient` is constructed here
     (lazy import -- this is the only place in `fsd/` that imports `azure-ai-ml`).
 
     `root` is the storage root (any `fsd.storage` URL, typically `abfss://...`) under
-    which `runs/<run_id>/{shards,_status}/...` (D6) is laid out. `n_shards` defaults to
-    the cluster's `max_instances` (D2).
+    which `runs/<run_id>/{shards,_status}/...` is laid out. `n_shards` defaults to
+    the cluster's `max_instances`.
     """
     if ml_client is None:
         from azure.ai.ml import MLClient
@@ -703,17 +700,19 @@ def run_aml(
             "job_statuses": result["job_statuses"], "shards": result["reports"]}
 
 
-# --- P2: the Azure ML flatten reduce dispatcher (spec 39) ---------------------
+# --- P2: the Azure ML flatten reduce dispatcher -------------------------------
 
 
 def _aml_flatten_preflight(
     ml_client, *, cluster: str, environment: str, root: str,
     input_csv: str, id_col: str, label_col: str | None,
 ) -> None:
-    """D3: cluster/environment/root (shared, `_aml_preflight_common`) + `input_csv`
-    non-empty and carrying `id_col` (+ `label_col` iff requested). No `_duplicate_unit_errors`
-    check here -- unlike a build/inference fan-out, a flatten reduce reads every row into ONE
-    job; a duplicate `id` is a labeling question for the caller, not a dispatch hazard."""
+    """Cluster/environment/root (shared, `_aml_preflight_common`) + `input_csv` non-empty and
+    carrying `id_col` (+ `label_col` iff requested).
+
+    Deliberately no `_duplicate_unit_errors` check: unlike a build/inference fan-out, a
+    flatten reduce reads every row into ONE job, so a duplicate `id` is a labeling question
+    for the caller, not a dispatch hazard."""
     errs = _aml_preflight_common(ml_client, cluster=cluster, environment=environment, root=root)
     if not fs.exists(input_csv):
         errs.append(f"input_csv does not exist: {input_csv!r}")
@@ -750,18 +749,18 @@ def run_aml_flatten(
     workspace_name: str | None = None,
     poll_interval_seconds: int = 30,
 ) -> dict:
-    """AML flatten dispatcher (spec 39 D3): flatten concatenates ALL cubes into ONE array, so
+    """AML flatten dispatcher: flatten concatenates ALL cubes into ONE array, so
     the cluster form is exactly **one** command job (`python -m fsd.workflows.flatten ...`) --
-    no `shard_units`, no fan-out. Submits via the shared `_aml_submit_and_wait` (spec 37) and
-    reuses `_aml_preflight_common`. Runs on the **general-purpose** fsd Environment (spec 36) --
-    flatten is pure `fsd`, no adapter, no new image (ADR-0020).
+    no `shard_units`, no fan-out. Submits via the shared `_aml_submit_and_wait` and
+    reuses `_aml_preflight_common`. Runs on the **general-purpose** fsd Environment --
+    flatten is pure `fsd`, no adapter, so it needs no new image.
 
-    `input_csv` is a blob url of `id`/[`label`]/`datacube_filepath` rows (e.g. runbook-36
-    Phase 3's `input.csv`). `export_folderpath` is the **blob** prefix the reduce writes its raw
-    output to (`data.npy`/`coords.npy`/`ids.npy`/`metadata.pickle.npy`/`labels.npy?`) -- landing
-    it locally is the caller's job (D4, `api._land_local`), not this dispatcher's.
+    `input_csv` is a blob url of `id`/[`label`]/`datacube_filepath` rows.
+    `export_folderpath` is the **blob** prefix the reduce writes its raw output to
+    (`data.npy`/`coords.npy`/`ids.npy`/`metadata.pickle.npy`/`labels.npy?`) -- landing it
+    locally is `api._land_local`'s job, not this dispatcher's.
 
-    `identity_client_id`/`ml_client`/`root` follow spec 36 D4'/D3 exactly (see `run_aml`'s
+    `identity_client_id`/`ml_client`/`root` behave exactly as in `run_aml` (see its
     docstring).
     """
     if ml_client is None:
@@ -800,26 +799,26 @@ def run_aml_flatten(
             "job_statuses": result["job_statuses"], "reports": result["reports"]}
 
 
-# --- P4: the Azure ML inference dispatcher (spec 38) --------------------------
+# --- P4: the Azure ML inference dispatcher ------------------------------------
 
 
 def _stage_bundle(bundle_path: str, dst_url: str) -> str:
-    """D3: stage a bundle (local, or already on some `fsd.storage` backend) to `dst_url`
-    -- copy `bundle.json` + every file its `artifacts` map names. No directory
-    listing/new primitive: the manifest already enumerates every file the bundle needs
-    (spec 18 §3.4 -- relative hrefs, no absolute path baked in), so this is the same
-    manifest-driven shape the node uses to fetch it back down (`infer_shard.
-    fetch_bundle_to_scratch`). Spec 44 adds the embedded adapter source under `code/` to
-    that enumeration -- more files, same shape, still no directory listing. Returns
-    `dst_url`."""
+    """Stage a bundle (local, or on any `fsd.storage` backend) to `dst_url`; returns `dst_url`.
+
+    Copies `bundle.json` plus every file its `artifacts` map and `code` block name. No
+    directory listing and no new storage primitive: the manifest already enumerates every
+    file the bundle needs, with relative hrefs and no absolute path baked in, so this is the
+    same manifest-driven shape the node uses to fetch it back down
+    (`infer_shard.fetch_bundle_to_scratch`).
+    """
     manifest = _bundle.read_spec(bundle_path)
     with fs.open(os.path.join(bundle_path, _bundle.BUNDLE_MANIFEST), "r") as f:
         raw = f.read()
     with fs.open(os.path.join(dst_url, _bundle.BUNDLE_MANIFEST), "w") as f:
         f.write(raw)
     rels = list(manifest.get("artifacts", {}).values()) + _bundle.manifest_code_files(manifest)
-    # D5 (spec 47): the destination + total size is printed BEFORE the upload starts --
-    # this is the leg measured at 627 s for 13 MB over VPN, the one silence costs most on.
+    # Destination + total size print BEFORE the upload starts: this leg has measured 627 s
+    # for 13 MB over VPN, and it is the one silence costs most on.
     total_bytes = sum(fs.size(os.path.join(bundle_path, rel)) for rel in rels)
     print(f"[stage] bundle -> {dst_url} | {len(rels)} files, {total_bytes / 1e6:.1f} MB",
           flush=True)
@@ -836,13 +835,15 @@ def _aml_inference_preflight(
     ml_client, *, cluster: str, environment: str, root: str,
     input_csv: str, n_shards: int | None, max_cells: int | None,
 ) -> None:
-    """D11: every check that CAN run on the driver MUST run on the driver, before any
-    AML job is submitted (node cold-start is 40-380s, TODO #48) -- cluster/environment/
-    root (shared, `_aml_preflight_common`), input_csv non-empty, the D13 duplicate-unit
-    guard, and the `max_cells` guardrail (mirrors spec 37's `max_tiles`: refuse an ROI
-    that tiles into more cells than intended, before dispatching thousands of jobs).
-    Model-spec checks (bands/T) already run in `api._run_inference_roi`'s own preflight,
-    ahead of this call (hoisted, not duplicated here)."""
+    """Every check that CAN run on the driver MUST run here, before any AML job is submitted
+    -- node cold-start is 40-380 s (TODO #48).
+
+    Covers cluster/environment/root (shared, `_aml_preflight_common`), input_csv
+    non-emptiness, the duplicate-unit guard, and the `max_cells` guardrail: refuse an ROI
+    that tiles into more cells than intended, before dispatching thousands of jobs.
+    Model-spec checks (bands/T) are hoisted into `api._run_inference_roi`'s own preflight,
+    ahead of this call, rather than duplicated here.
+    """
     errs = _aml_preflight_common(ml_client, cluster=cluster, environment=environment, root=root)
     if not fs.exists(input_csv):
         errs.append(f"input_csv does not exist: {input_csv!r}")
@@ -887,28 +888,28 @@ def run_aml_inference(
     workspace_name: str | None = None,
     poll_interval_seconds: int = 30,
 ) -> dict:
-    """AML inference dispatcher (spec 38 D1/D1a/D2/D11): the **thin step-4 swap** over
-    the spec-21 per-cell build+infer unit. Receives the already-produced `input_csv`
-    (tiling + `setup` already ran on the driver -- `api._run_inference_roi` steps 1-3)
-    and `bundle_path`, and does only: stage the bundle to blob (D3) -> shard the cells
-    (reusing `shard_units`, same self-balancing dispatch spec 36 proved) -> submit one
-    job per shard running `python -m fsd.workflows.infer_shard` -> wait -> aggregate
-    `_status/<k>.json` -> raise on any failure. Mirrors `run_aml` almost exactly; the
-    only difference is what each node runs and that a bundle is staged first.
+    """AML inference dispatcher: the thin runner swap under the per-cell build+infer unit.
 
-    `identity_client_id`/`ml_client`/`root` follow spec 36 D4'/D3 exactly (see `run_aml`'s
-    docstring) -- no storage-seam or identity-mechanism change for inference.
+    Receives the already-produced `input_csv` (tiling and `setup` ran on the driver, in
+    `api._run_inference_roi`) plus `bundle_path`, and does only: stage the bundle to blob ->
+    shard the cells (reusing `shard_units`) -> submit one job per shard running `python -m
+    fsd.workflows.infer_shard` -> wait -> aggregate `_status/<k>.json` -> raise on any
+    failure. Mirrors `run_aml`; the only differences are what each node runs and that a
+    bundle is staged first.
 
-    `skip_smoke=False` (default, D11) runs a one-node adapter-import smoke BEFORE the
-    N-node fan-out -- the only preflight check that needs a real node (the driver's venv
-    is not guaranteed to mirror the inference Environment, ADR 0002); pass `True` once an
-    Environment is already proven, to skip the extra node spin-up on repeat runs.
+    `identity_client_id`/`ml_client`/`root` behave exactly as in `run_aml` (see its
+    docstring) -- inference changes neither the storage seam nor the identity mechanism.
 
-    `cores`/`cubes_per_task` default to `None` = D7's **load-per-core**: the flag is left off
-    the node command so `infer_shard` computes it from the node's own `os.cpu_count()` and the
-    shard size (bundle loads once per core, node stays fully busy -- not once per cell, TODO
-    #25). Pass `cores=1` for the heavy-model **load-once-per-node** opt-out (one whole-shard
-    group, one bundle load); pass explicit values to override entirely.
+    `skip_smoke=False` (default) runs a one-node adapter-import smoke BEFORE the N-node
+    fan-out. It is the only preflight check that needs a real node, because the driver's venv
+    is not guaranteed to mirror the inference Environment. Pass `True` once an Environment is
+    proven, to skip the extra spin-up on repeat runs.
+
+    `cores`/`cubes_per_task` default to `None` = **load-per-core**: the flag is left off the
+    node command so `infer_shard` computes it from the node's own `os.cpu_count()` and the
+    shard size -- the bundle loads once per core rather than once per cell (TODO #25), and
+    the node stays fully busy. Pass `cores=1` for the heavy-model **load-once-per-node**
+    opt-out (one whole-shard group, one bundle load); pass explicit values to override.
     """
     if ml_client is None:
         from azure.ai.ml import MLClient
@@ -956,7 +957,7 @@ def run_aml_inference(
         with fs.open(shard_url, "w") as f:
             pd.DataFrame(rows).to_csv(f, index=False)
 
-        # `cores`/`cubes_per_task` left off the command when None (D7): the NODE then computes
+        # `cores`/`cubes_per_task` left off the command when None: the NODE then computes
         # the load-per-core default from `os.cpu_count()` + the shard size (`infer_shard`).
         cmd = f"python -m fsd.workflows.infer_shard {shard_url} {bundle_url}"
         if cores is not None:
@@ -985,13 +986,13 @@ def run_aml_inference(
             "job_statuses": result["job_statuses"], "shards": result["reports"]}
 
 
-# --- P2: the Azure ML download dispatcher (spec 37) --------------------------
+# --- P2: the Azure ML download dispatcher ------------------------------------
 
 
 def _import_command_job_limits():
-    """Lazy handle to `azure.ai.ml.entities.CommandJobLimits` (D6) -- same
-    injection-boundary pattern as `_import_aml_command` (spec 36 D3 invariant 3),
-    so tests substitute a fake and never require the `[aml]` extra."""
+    """Lazy handle to `azure.ai.ml.entities.CommandJobLimits` -- same injection-boundary
+    pattern as `_import_aml_command`, so tests substitute a fake and never require the
+    `[aml]` extra."""
     from azure.ai.ml.entities import CommandJobLimits
 
     return CommandJobLimits
@@ -1000,10 +1001,11 @@ def _import_command_job_limits():
 def _estimate_timeout_seconds(
     estimated_gb: float, *, conservative_mb_per_s: float = 10.0, floor_seconds: int = 1800,
 ) -> int:
-    """D6: size an explicit job timeout from a GB estimate at a conservative
-    throughput (well under CDSE's 4x20 MB/s ceiling and MPC's blob throughput, so a
-    healthy transfer never trips it), with a floor so a tiny/empty estimate still
-    gets a sane timeout."""
+    """Size an explicit job timeout from a GB estimate at a conservative throughput.
+
+    Well under CDSE's 4x20 MB/s ceiling and MPC's blob throughput, so a healthy transfer
+    never trips it, with a floor so a tiny or empty estimate still gets a sane timeout.
+    """
     return max(int(estimated_gb * 1024 / conservative_mb_per_s), floor_seconds)
 
 
@@ -1012,18 +1014,18 @@ def _iso(dt) -> str:
 
 
 def _mpc_catalog_shortfall(catalog_filepath: str, rows: list[dict]) -> list[dict]:
-    """D8/D9 (spec 47, #64): which of `rows` (`_mpc.discover_shard_rows`'s own shape --
-    one row per `(tile_id, band)` asset) the existing catalog does NOT already cover.
+    """Which of `rows` (`_mpc.discover_shard_rows`'s shape -- one row per `(tile_id, band)`
+    asset) the existing catalog does NOT already cover (#64).
 
-    "Already present" means the catalog already carries a row for `tile_id` whose
-    `files` column (comma-separated basenames, `mpc._append_downloaded`) covers `band`
-    -- a catalog READ, never a destination `fs.exists`/`fs.stat` (D9: one WAN listing
-    per asset would approach the cold-start cost this diff exists to avoid). This rests
-    on the catalog's own invariant that a row exists only if its file does (D9) --
-    currently violated by an interrupted MPC transfer leaving a truncated file under
-    the final name (spec 47 §3a); restoring it is #74, out of scope here. An absent
-    catalog means nothing is present, unchanged from today's behaviour (dispatch
-    everything)."""
+    "Already present" means the catalog carries a row for `tile_id` whose `files` column
+    covers `band`. That is a catalog READ, never a destination `fs.exists`/`fs.stat`: one WAN
+    listing per asset would approach the very cold-start cost this diff exists to avoid.
+
+    ⚠️ It therefore rests on the catalog's invariant that a row exists only if its file does
+    -- an invariant an interrupted MPC transfer still violates by leaving a truncated file
+    under the final name (#74). An absent catalog means nothing is present, so everything is
+    dispatched.
+    """
     if not fs.exists(catalog_filepath):
         return rows
     catalog_df = _TileCatalog(catalog_filepath).read()
@@ -1065,7 +1067,7 @@ def run_aml_download(
     poll_interval_seconds: int = 30,
     get_secret=None,
 ) -> dict:
-    """AML download dispatcher (spec 37 D1/D2/D3/D5/D6/D7/D9): per-source dispatch
+    """AML download dispatcher: per-source dispatch
     shape -- CDSE submits **exactly one** whole-ROI job; MPC discovers on the
     driver, `shard_units` the asset list, and submits **N** per-shard jobs. Both
     wait, aggregate `_status/<k>.json`, and raise on any failed/circuit-tripped job
@@ -1074,31 +1076,27 @@ def run_aml_download(
     `roi` must be a url (any `fsd.storage`/geopandas-readable path) rather than an
     in-memory GeoDataFrame -- the job that reads it runs on a different machine.
 
-    `vault_url`/`secret_name` (D5, CDSE only) are Key Vault coordinates, and
-    `creds_url` (D5 REVISED, CDSE only) is a blob JSON location -- **exactly one**
-    of the two CDSE creds sources is required (mutually exclusive; preflight errs
-    on neither and on both). Neither is a concrete `rise` identifier hardcoded here
-    (public repo) -- caller-supplied. Secrets never ride in the job spec: only
-    these non-secret names/locations go into the command args; the node reads the
-    value itself at run time -- via `fsd.secrets.get_secret` (KV, substitutable
-    here via `get_secret`, the D5 test seam) or `fsd.storage.fs.open` (blob, via
-    `cdse.CdseCredentials.from_json`). The same `identity_client_id` (D4) that
-    authorises blob also authorises Key Vault.
+    `vault_url`/`secret_name` (CDSE only) are Key Vault coordinates and `creds_url` (CDSE
+    only) is a blob JSON location -- **exactly one** of the two is required; preflight errs
+    on neither and on both. Both are caller-supplied; fsd hardcodes no concrete identifier.
 
-    `ml_client` is the test/injection seam (D3 invariant 3, mirrors `run_aml`): pass
-    a fake with `.compute.get`, `.environments.get`, `.jobs.create_or_update`,
-    `.jobs.get` to avoid any network call.
+    ⚠️ Secrets never ride in the job spec. Only these non-secret names and locations go into
+    the command args, and the node reads the value itself at run time -- via
+    `fsd.secrets.get_secret` (Key Vault, substitutable here through `get_secret`) or
+    `fsd.storage.fs.open` (blob, via `cdse.CdseCredentials.from_json`). The same
+    `identity_client_id` that authorises blob also authorises Key Vault.
 
-    **MPC only** (spec 47 D8, #64): discovery already runs on the driver here, so before
-    any preflight or dispatch the discovered `(tile_id, band)` assets are diffed against
-    `catalog_filepath` -- "already present" means the catalog already has a row for
-    `tile_id` whose `files` covers `band` (`_mpc_catalog_shortfall`; a catalog READ, not
-    a per-asset destination stat, D9). A shortfall of zero returns without calling
-    `ml_client.jobs.create_or_update` at all; a partial shortfall shards and dispatches
-    only the missing assets, not the full discovered list. **CDSE is explicitly out**:
-    it submits exactly one whole-ROI job and discovery happens on the node inside it
-    (D1's asymmetry), so the same driver-side diff would need a new CDSE discovery pass
-    on the driver -- a larger change, deferred (D8).
+    `ml_client` is the test/injection seam (mirrors `run_aml`): pass a fake with
+    `.compute.get`, `.environments.get`, `.jobs.create_or_update`, `.jobs.get` to avoid any
+    network call.
+
+    **MPC only** (#64): discovery runs on the driver here, so before any preflight or
+    dispatch the discovered `(tile_id, band)` assets are diffed against `catalog_filepath`
+    (`_mpc_catalog_shortfall` -- a catalog READ, not a per-asset destination stat). A
+    shortfall of zero returns without calling `ml_client.jobs.create_or_update` at all; a
+    partial shortfall shards and dispatches only the missing assets. **CDSE is out**: it
+    submits one whole-ROI job and discovers on the node inside it, so the same diff would
+    need a new driver-side CDSE discovery pass.
     """
     if source not in ("cdse", "mpc"):
         raise ValueError(f"source={source!r} must be one of 'cdse', 'mpc'.")
@@ -1157,11 +1155,10 @@ def run_aml_download(
         )
         n_discovered = len(rows)
 
-        # D8 (spec 47, #64): diff against the existing catalog BEFORE any preflight or
-        # dispatch -- a request whose every discovered asset is already catalogued must
-        # not submit a single job (measured 5m31s of cold start to discover there was
-        # nothing to do); a partially-present request must shard only the shortfall, not
-        # the full discovered list (a 95%-present request must not dispatch 100%).
+        # Diff against the existing catalog BEFORE any preflight or dispatch (#64). A
+        # request whose every discovered asset is already catalogued must not submit a
+        # single job -- 5m31s of cold start has been spent discovering there was nothing to
+        # do -- and a 95%-present request must dispatch the shortfall, not 100%.
         rows = _mpc_catalog_shortfall(catalog_filepath, rows)
         n_assets = len(rows)
         if n_assets == 0:
@@ -1191,14 +1188,13 @@ def run_aml_download(
             n_assets * config.APPROX_GB_PER_TILE / max(len(bands), 1)
         )
 
-        # D8 (spec 38, TODO #51 -- MPC only): each shard writes its OWN catalog file
-        # (single writer, no lock) instead of all N shards racing an unsynchronised
-        # read-whole-parquet -> concat -> write-whole-parquet against the SAME
-        # `catalog_filepath` (`TileCatalog.append`, last-writer-wins on blob -- a
-        # silent lost update that under-declares the archive). The driver merges them
-        # sequentially below, after every shard has finished. CDSE is untouched: it
-        # runs as one job writing the canonical catalog directly (D1's asymmetry), so
-        # the race cannot occur there.
+        # MPC only: each shard writes its OWN catalog file -- single writer, no lock --
+        # instead of N shards racing an unsynchronised read-whole-parquet -> concat ->
+        # write-whole-parquet against the SAME `catalog_filepath`. `TileCatalog.append` is
+        # last-writer-wins on blob, so that race is a SILENT lost update that under-declares
+        # the archive. The driver merges the shard catalogs sequentially below, after every
+        # shard has finished. CDSE runs as one job writing the canonical catalog directly,
+        # so the race cannot occur there (TODO #51).
         shard_catalog_urls: dict[int, str] = {}
         jobs = {}
         for k, shard_rows in enumerate(shards):
@@ -1232,12 +1228,13 @@ def run_aml_download(
 
 
 def _merge_shard_catalogs(shard_catalog_urls: dict[int, str], canonical_filepath: str) -> None:
-    """D8 (spec 38, TODO #51): sequentially `TileCatalog.append` each MPC shard's own
-    catalog file into the canonical one, in shard order -- a deliberate single-writer
-    SERIALIZATION (no lock, no ETag/lease -- TODO #50 shows those go badly on
-    `abfss://`), run once after every shard has already finished, so it is not a race.
-    A shard that produced no assets (e.g. every asset in it failed) writes no catalog
-    file at all -- skipped, not an error."""
+    """Sequentially `TileCatalog.append` each MPC shard's catalog into the canonical one.
+
+    A deliberate single-writer SERIALIZATION, in shard order: no lock and no ETag/lease
+    (those go badly on `abfss://` -- TODO #50), run once after every shard has already
+    finished, so there is nothing to race. A shard that produced no assets writes no catalog
+    file at all and is skipped, not an error. TODO #51.
+    """
     canonical = _TileCatalog(canonical_filepath)
     for k in sorted(shard_catalog_urls):
         shard_url = shard_catalog_urls[k]

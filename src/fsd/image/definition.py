@@ -1,11 +1,13 @@
-"""`ImageDefinition` -- an AML node image, declared as data (spec 56 D1).
+"""`ImageDefinition` -- an AML node image, declared as data.
+
+Spec: specs/56-image-definitions-and-registry.md
 
 A frozen dataclass, no methods that touch the network. It renders a Dockerfile
 (`render_dockerfile`) and a build context (`write_context`); it does not build one --
 that is `fsd.aml.ensure_environment`'s job.
 
-**Why `[azure,mpc]` and not `[aml]` or `[grid]`** (moved from the old Dockerfile comments,
-D1): `azure` brings `adlfs` + `azure-identity` + `azure-keyvault-secrets` -- blob I/O
+**Why `[azure,mpc]` and not `[aml]` or `[grid]`:** `azure` brings `adlfs` +
+`azure-identity` + `azure-keyvault-secrets` -- blob I/O
 through the storage seam, managed-identity auth, Key Vault creds on the node. `mpc` brings
 `planetary-computer` -- it signs asset hrefs on the node, right before transfer. NOT
 `aml`: `azure-ai-ml` is the driver-side dispatch SDK: the node never submits jobs. NOT
@@ -33,10 +35,10 @@ __all__ = ["ImageDefinition"]
 
 @dataclasses.dataclass(frozen=True)
 class ImageDefinition:
-    """`name` never affects the digest (D2) -- it is where the image is registered, not
+    """`name` never affects the digest -- it is where the image is registered, not
     what it contains. `fsd` is a pip-installable reference: `"git+https://...@<ref>"`, a
     PyPI spec, or `"path:/local/checkout"` for an fsd developer's own tree (the one case
-    `resolve()` builds a wheel for, D5). `extras`/`extra_pip` are fsd's own extras
+    `resolve()` builds a wheel for). `extras`/`extra_pip` are fsd's own extras
     (`azure`, `mpc`, ...) and any additional plain pip packages (an inference image's
     `scikit-learn`, `joblib`). `build_context`, when set, is the escape hatch above and
     makes every other field except it purely informational.
@@ -89,9 +91,9 @@ class ImageDefinition:
 
     def write_context(self, dir: str) -> str:
         """Materialize a build context at the local directory `dir`: the rendered
-        Dockerfile, plus a built wheel for a `path:` `fsd` reference (the one slow path,
-        D5 -- everything else installs straight from the pip-installable `fsd` reference
-        inside the image, no local build needed). Returns `dir`. Not used when
+        Dockerfile, plus a built wheel for a `path:` `fsd` reference -- the one slow path;
+        everything else installs straight from the pip-installable `fsd` reference inside the
+        image, with no local build. Returns `dir`. Not used when
         `build_context` is set -- point the builder at that directory directly."""
         if self.build_context is not None:
             raise ValueError(
@@ -104,7 +106,7 @@ class ImageDefinition:
         if self.fsd and self.fsd.startswith("path:"):
             # A wheel already here is the one `digest.resolve(..., wheel_dir=dir)` just built
             # and hashed; rebuilding would put a DIFFERENT file in the image than the one the
-            # registry records (Opus review, 2026-08-27).
+            # registry records.
             if not glob.glob(os.path.join(dir, "fsd-*.whl")):
                 _build_wheel(self.fsd[len("path:"):], dir)
         return dir
@@ -115,12 +117,12 @@ def _build_wheel(src_dir: str, dest_dir: str) -> str:
     `00_build_images.ipynb` made, now library code. `--no-deps`: the fsd wheel alone; the
     rendered Dockerfile's `pip install` resolves its dependencies inside the image.
 
-    `--no-build-isolation` first, then a retry without it (Opus review, 2026-08-27). With it,
-    the build backend has to already be importable here -- true in an fsd dev venv on 3.11,
-    and the only way `tests/test_image_digest.py` builds a wheel without reaching PyPI (AC8's
-    "no test requires a network"). Without it, pip downloads `setuptools` into an isolated
-    env, which is what a 3.12+ venv (no bundled setuptools) needs. Trying the offline form
-    first keeps the fast, network-free path fast and still works where it cannot apply."""
+    `--no-build-isolation` first, then a retry without it. With it, the build backend has to
+    already be importable here -- true in an fsd dev venv on 3.11, and the only way
+    `tests/test_image_digest.py` builds a wheel without reaching the network. Without it, pip
+    downloads `setuptools` into an isolated env, which is what a 3.12+ venv (no bundled
+    setuptools) needs. Trying the offline form first keeps the network-free path fast and
+    still works where it cannot apply."""
     def _run(extra: list[str]):
         return subprocess.run(
             [sys.executable, "-m", "pip", "wheel", src_dir, "--no-deps", *extra,

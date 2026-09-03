@@ -35,8 +35,8 @@ def apply_cloud_mask_scl(datacube, metadata, *, mask_classes, mask_band="SCL",
     default `"SCL"`) has a value in `mask_classes`, across the requested
     (non-mask) bands. The mask band itself is left untouched (drop it separately).
 
-    `mask_band` generalizes this beyond S2 (spec 34 §2b `[G3]`
-    `mask_type="categorical_classes"`) — any source whose QA band encodes
+    `mask_band` generalizes this beyond S2 (`mask_type="categorical_classes"`) — any
+    source whose QA band encodes
     "masked" as a small set of discrete values (not just SCL) can reuse this op
     by declaring its own `mask_band`."""
     band_indices = {band: i for i, band in enumerate(metadata["bands"])}
@@ -71,14 +71,14 @@ def median_mosaic(datacube, metadata, *, startdate: datetime.datetime,
     """Bucket timestamps into `mosaic_days` windows; per-bucket nanmedian (treating
     `mask_value` as NaN). Numba-accelerated core.
 
-    `mosaic_scheme` (spec 15; default `config.MOSAIC_SCHEME` = "calendar"):
+    `mosaic_scheme` (default `config.MOSAIC_SCHEME` = "calendar"):
 
     - **"calendar"** — fixed calendar windows `[startdate + k*mosaic_days, ...)` over
       `[startdate, enddate)`; label = the window-start boundary; **every** window is
       emitted (an empty window → an all-`mask_value` slice). The output `timestamps`
       are thus a pure function of `(startdate, enddate, mosaic_days)`, identical across
       any two datacubes built with those inputs — so `flatten` can concatenate cubes
-      from different tiles/orbits/zones (spec 05).
+      from different tiles/orbits/zones.
 
       How the window vs the revisit cadence interact:
         * `mosaic_days` > cadence  → several acquisitions per window get composited
@@ -203,7 +203,7 @@ def _get_mosaic_ts_index_ranges(timestamps, startdate, enddate, mosaic_days=20):
 
 def _calendar_windows(timestamps, startdate, enddate, mosaic_days=20):
     """Fixed calendar windows `[lo, lo+mosaic_days)` tiling `[startdate, enddate)`
-    (spec 15). Returns `(labels, index_intervals)`:
+. Returns `(labels, index_intervals)`:
 
     - `labels[k]` = the window-start `pd.Timestamp` (tz-aware UTC).
     - `index_intervals[k]` = `(min_i, max_i)` of the sorted `timestamps` falling in

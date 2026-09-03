@@ -1,4 +1,6 @@
-"""`fsd.progress` — one shared, throttled progress ticker (spec 47 D4).
+"""`fsd.progress` — one shared, throttled progress ticker.
+
+Spec: specs/47-driver-side-honesty.md
 
 Promoted from `workflows.create_datacube.setup`'s `_tick` closure, which #65 named as the
 bar to match: `[setup] 34/300 shapes (11%) | 7.9 shapes/s | elapsed 4s | eta 33s`. Every
@@ -29,9 +31,9 @@ def ticker(
     last tick of a run so both endpoints always print regardless of throttling.
 
     Line shape: `[label] done/total unit (pct%) | rate unit/s | elapsed Es | eta Xs[ |
-    suffix]`. `show_rate=False` drops the rate segment (e.g. the AML poll leg, D5: a
+    suffix]`. `show_rate=False` drops the rate segment (e.g. the AML poll leg: a
     fan-out's per-second job-completion rate is not a meaningful number). `show_eta=False`
-    drops the eta segment (D5: a single-job wait has no rate to derive an ETA from --
+    drops the eta segment (a single-job wait has no rate to derive an ETA from --
     print the elapsed and omit the ETA rather than inventing one). `suffix`, if given, is
     appended as a trailing ` | suffix` segment on that call only.
     """
