@@ -4,11 +4,14 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-09-03 (**STEP 4 IS DONE — #85's `src/` COMMENT SWEEP IS COMPLETE, on branch
-`worktree-issue-85-comment-trim` (6 commits), NOT YET MERGED.** Backward references across `src/fsd`
-went **1,187 → 91 (−92 %)**. Every commit is gated on `pytest -q` (**1073 passed / 101 skipped**,
-identical to `6ed05bb`), `ruff check src tests demos examples` clean, and a **docstring-stripped AST
-byte-identical to `6ed05bb` across all 58 files** — the diff is provably comments-only._
+_Last updated: 2026-09-03 (**STEP 4 IS DONE — #85's `src/` COMMENT SWEEP IS COMPLETE AND MERGED
+INTO `main` @ `816823c`** (`--no-ff`, 7 commits; worktree pruned, branch deleted). Backward
+references across `src/fsd` went **1,187 → 91 (−92 %)**. Every commit is gated on `pytest -q`, on
+`ruff check src tests demos examples`, and on a **docstring-stripped AST byte-identical to `6ed05bb`
+across all 58 files** — the diff is provably comments-only. On merged `main`: **1075 passed / 103
+skipped**, matching the pre-sweep baseline exactly. (Inside the worktree the same suite reported
+1073/101; that two-test gap is a worktree artifact — it reproduces on a clean checkout of `6ed05bb`
+and was verified as such before any edit — not the sweep.)_
 
 _**The open question was settled as option (a): the sweep was EXTENDED** to `image/`, `aml/`,
 `registry/`, `config.py` and `cli.py`, which #85's landing order predates. They were the freshest
@@ -33,10 +36,14 @@ many lines came back as reformatting (summary / blank / body, per the convention
 narration. `api.py` and the public verb docstrings sit deliberately above the ~0.30 guide — they are
 the user documentation, and this sprint is about notebook usability._
 
-_**Three things for the user to decide:** (1) **merge + prune** — the standing practice wants
-"reviewed + green"; it is green, but the authoring session cannot be its own reviewer, so an Opus
-review of the branch is the missing half; (2) **pushing** — `main` is 12 commits ahead of
-`origin/main` (`c49a9fc`) once this lands, still the user's call; (3) **two follow-ups worth filing
+_**⚠️ Merged and pruned at the user's instruction — note what that skipped.** The standing practice
+wants "reviewed + green"; this landed **green but NOT independently reviewed**, because the authoring
+session cannot be its own reviewer. The AST-equivalence gate is what stands in for that review: it
+proves no executable code moved, so the residual risk is prose quality, never behaviour._
+
+_**Still open:** (1) **pushing** — `main` is **21 commits ahead of `origin/main` (`c49a9fc`)** (measured, not tallied --
+earlier entries in this file undercounted it), still
+the user's call; (2) **two follow-ups worth filing
 rather than bolting on** — a ref-density gate so this cannot re-accrete (the handoff already flagged
 it as scope beyond #85), and the ~15 user-facing error/argparse strings that cite internal spec
 decisions ("spec 51 D6", "spec 47 D3") at operators who cannot read `specs/`. Fixing the latter is a
