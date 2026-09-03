@@ -4,7 +4,40 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-09-02 (**STEP 3 IS DONE — `docs/history.md` APPROVED BY THE USER, BOTH
+_Last updated: 2026-09-03 (**STEP 4 IS PREPPED AND HANDED OFF — #85, the `src/` comment trim.**
+Baton: **`/tmp/handoff-issue-85-comment-trim-2026-09-03.md`**; the per-file counter it names is at
+`/tmp/refcount.py`. `main` @ `d5a7814`, clean, **10 commits ahead of `origin/main` (`c49a9fc`),
+still unpushed**. `1075 passed / 103 skipped`, ruff clean._
+
+_**#85's own measurements are STALE, and re-measuring confirmed its thesis** (posted as a comment on
+the issue). `src/fsd` grew **13,271 → 15,889 lines** since 2026-08-21 as specs 51–56 landed, and
+backward references went **986 → 1,223, up 24 %**. The issue argued for doing the trim *"before the
+next major development push — new code written alongside it inherits the habit"*; every one of
+`model/registry.py` (59 refs), `config.py` (38), `image/digest.py` (18), `aml/__init__.py` (14),
+`image/registry.py` (12), `image/definition.py` (10) and `registry/_core.py` (8) was written **after**
+the convention landed in `eb7f29f`. **The encouraging half: the worked sample is holding** —
+`storage/fs.py` is still **4 refs / 380 lines**, untouched. The convention sticks once applied; it is
+just not being applied to new code._
+
+_**Two things the next session must settle before sweeping:** (1) #85's landing order predates
+`image/`, `aml/`, `registry/`, `config.py` and `cli.py` — fold them in (~100 refs, the freshest
+instance of the habit) or file separately, but say which; (2) nothing prevents re-accretion, since
+the convention is a document rather than a gate — a ref-density check is a real idea but is **scope
+beyond #85**, so file it rather than bolting it on. Also note one constraint has drifted: the fourth
+source-text test is at `tests/test_verify_adapter.py:311`, not `:305` as the issue says._
+
+_**#93 grew a scoped item (user, 2026-09-03): a notebook front door.** The team prefers notebooks to
+`.md` files. Assessed: **not** `e2e_austria_aml.ipynb` — it needs VPN + `az login` + a workspace +
+RBAC + two ACR builds, it is not in the wheel, and `tests/test_notebooks.py` strips its outputs, so
+it renders resultless on GitHub, which is exactly what a notebook reader came for. **The proposal is
+`docs/tutorial.ipynb`** — the markdown tutorial is 241 lines with 5 python blocks, offline, fixture-
+backed, ~4 min — and it **can ship WITH outputs**, because the tutorial fixture holds no cloud
+identifiers to leak (`TRACKED_NOTEBOOKS` is an explicit opt-in list). `e2e_austria_aml.ipynb` becomes
+the advertised **worked cloud example**. Risk to design around: two tutorials drifting — pick one
+canonical and generate the other under test. **Deferred behind #85 by the user; wants its own spec**
+(it touches spec 41 D1's audience table and ADR 0026's taxonomy)._
+
+_Previously: 2026-09-02 (**STEP 3 IS DONE — `docs/history.md` APPROVED BY THE USER, BOTH
 BRANCHES MERGED, #55 CLOSED.** Two `--no-ff` merges onto `main`: `worktree-spec-43-history`
 (spec 43 + `docs/history.md` + ADR 0027) and `worktree-architecture-refresh` (the
 `ARCHITECTURE.md` refresh). Both worktrees pruned, both branches deleted. **NOT PUSHED** —
@@ -13,7 +46,7 @@ BRANCHES MERGED, #55 CLOSED.** Two `--no-ff` merges onto `main`: `worktree-spec-
 points at commits GitHub cannot yet resolve (the comment says so; same precedent as #64/#65/#66).
 **Pushing is the user's call.** → **THE ORDER's step 4: [#85](https://github.com/nikhilsrajan/fsd/issues/85)**
 (trim the changelog out of `src/` comments, one package per session, 7 left). #80/#82 unblocked;
-**the tag is still LAST**._
+**the tag is still LAST**.)_
 
 _**What landed.** `specs/43-history.md` (signed off by the user 2026-09-02 — the D6 era list
 confirmed, §7's other three questions resolved as proposed) and **`docs/history.md`, 4,994 words,
