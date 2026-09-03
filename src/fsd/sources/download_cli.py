@@ -100,7 +100,7 @@ def main(argv=None) -> int:
     try:
         return _run(args, result_json, cog)
     except Exception as e:  # noqa: BLE001 - any failure must still leave a pasteable result
-        # spec 26 §4: on a crash (network, creds, disk, …) still write a _result.json so
+        # On a crash (network, creds, disk, ...) still write a _result.json so
         # the runbook flow has something to paste, then re-raise so the traceback shows.
         _write_result(result_json, {
             "step": "download-confirm-run",
@@ -186,7 +186,7 @@ def _run(args, result_json: str, cog: bool) -> int:
         agg.bytes_downloaded / 1e6 / agg.transfer_wall_seconds
         if agg.transfer_wall_seconds > 0 else 0.0
     )
-    # spec 26 review, finding 1: sum_results SUMS failed_count across passes, so a resume that
+    # `sum_results` SUMS failed_count across passes, so a resume that
     # recovers a transient failure on a later pass has agg.failed_count > 0 even though every file
     # ultimately landed. Judge completion by the TERMINAL pass (download_resume's own break
     # condition — a clean final pass), NOT the historical sum. An empty results list means
@@ -249,7 +249,7 @@ def _run(args, result_json: str, cog: bool) -> int:
         "expected": _expected_block(args.expected_json, run_invariants=True),
         "error": error,
     })
-    # spec 26 C4: exit 0 on clean completion OR a user stop; non-zero otherwise.
+    # Exit 0 on clean completion OR a user stop; non-zero otherwise.
     return 0 if (stopped or not failed) else 1
 
 

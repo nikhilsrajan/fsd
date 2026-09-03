@@ -1,22 +1,24 @@
-"""MPC source: Sentinel-2 L2A discovery + pure-copy tile download. See specs/32.
+"""MPC source: Sentinel-2 L2A discovery + near-pure-copy tile download.
 
-Microsoft Planetary Computer (MPC) serves S2 L2A assets **already as COG on
-Azure** — unlike CDSE (spec 01/14/25) there is no `jp2->COG` conversion, so a
-download here is a pure byte copy via `fsd.storage.transfer` (signed HTTPS ->
-local). Discovery mirrors CDSE's STAC-item pattern (`pystac_client`), signed via
-the official `planetary-computer` package (anonymous by default; an optional
-`PC_SDK_SUBSCRIPTION_KEY` env var, read by that package itself, raises rate
-limits — no `CdseCredentials` for this source).
+Spec: specs/32-mpc-source-baseline-harmonization.md
 
-MPC serves raw, unharmonized DN and does not expose the per-band S2
-processing-baseline offset in STAC (`raster:bands` absent) — it must be derived
-from the item property `s2:processing_baseline` (`_s2_radiometry.offset_for_item`)
-and is stored as the additive `offset` catalog column (spec 34 §1, generalizing
-spec 32's `boa_add_offset`). Since spec 34, MPC's download is no longer a *pure*
-byte-copy: after `fs.transfer`, ingest stamps the GDAL scale/offset + nodata-if-
-missing tags on the local COG (`fsd.raster.cog.stamp_or_reencode`) and pushes the
-result to `root_folderpath` (local or blob) — a cheap header edit, no pixel
-decode.
+Microsoft Planetary Computer serves S2 L2A assets **already as COG on Azure**, so unlike
+CDSE there is no `jp2->COG` conversion and a download here is essentially a byte copy via
+`fsd.storage.transfer` (signed HTTPS -> local). Discovery mirrors CDSE's STAC-item pattern
+(`pystac_client`), signed via the official `planetary-computer` package — anonymous by
+default, with an optional `PC_SDK_SUBSCRIPTION_KEY` env var (read by that package itself)
+raising rate limits. There is no `CdseCredentials` for this source.
+
+⚠️ MPC serves raw, UNHARMONIZED DN and does not expose the per-band S2 processing-baseline
+offset in STAC — `raster:bands` is absent. It must be derived from the item property
+`s2:processing_baseline` (`_s2_radiometry.offset_for_item`) and stored as the additive
+`offset` catalog column, or every cube built from this archive is off by the baseline
+offset.
+
+That is why the download is not a *pure* byte-copy: after `fs.transfer`, ingest stamps the
+GDAL scale/offset + nodata-if-missing tags on the local COG
+(`fsd.raster.cog.stamp_or_reencode`) and pushes the result to `root_folderpath`, local or
+blob — a cheap header edit, no pixel decode.
 """
 
 from __future__ import annotations
@@ -93,10 +95,10 @@ def _generation_time(item) -> str:
 
 
 def _dedupe_reprocessed_items(items: list) -> list:
-    """Collapse multiple STAC items covering the SAME acquisition (identical
-    sensing `item.datetime` + MGRS tile, spec 33) down to one - the item with
-    the latest `s2:generation_time` wins. A no-op for items with distinct
-    (timestamp, tile) keys (the overwhelmingly common case)."""
+    """Collapse multiple STAC items covering the SAME acquisition -- identical sensing
+    `item.datetime` + MGRS tile -- down to one; the latest `s2:generation_time` wins.
+
+    A no-op for items with distinct (timestamp, tile) keys, which is the common case."""
     groups: dict[tuple, list] = {}
     for it in items:
         key = (it.datetime, _mgrs_tile_from_item(it))
@@ -191,12 +193,12 @@ def query_catalog(
     """
     roi_gdf = _roi_gdf(roi)
     items = _search_items(roi_gdf, startdate, enddate, max_cloudcover=max_cloudcover)
-    items = _dedupe_reprocessed_items(items)  # spec 33
+    items = _dedupe_reprocessed_items(items)
     gdf = _items_to_gdf(items)
     return _finalize_catalog_gdf(gdf, roi_gdf, max_cloudcover)
 
 
-# --- tile download (byte-copy + GDAL metadata stamp, spec 34 §3) -------------
+# --- tile download (byte-copy + GDAL metadata stamp) -------------------------
 
 
 def _select_item_files(
@@ -219,16 +221,16 @@ def _transfer_and_stamp_one(
     src_url: str, dst_path: str, *, band: str, offset: int,
     tries: int = 3, base_delay: float = 0.5,
 ) -> tuple[bool, str]:
-    """Byte-copy one already-COG asset (`fs.transfer`), then stamp the declared
-    GDAL scale/offset (reflectance bands only) + nodata-if-missing tags (spec 34
-    §1a/§3) — a cheap header edit, not a pixel-decoding re-encode
-    (`fsd.raster.cog.stamp_or_reencode`, whose documented fallback is a
-    GDAL-COG-driver re-encode if the in-place stamp breaks COG validity).
+    """Byte-copy one already-COG asset, then stamp the declared GDAL scale/offset
+    (reflectance bands only) + nodata-if-missing tags.
 
-    Stamping needs a real local file, so when `dst_path` is remote (blob) the
-    transfer lands in local scratch first, gets stamped there, then `fs.put`
-    pushes it to `dst_path` (lifts spec 31/32's local-only guard, spec 34 §5).
-    Idempotent skip on an existing non-empty `dst_path`. Returns `(ok, reason)`.
+    A cheap header edit, not a pixel-decoding re-encode -- though
+    `fsd.raster.cog.stamp_or_reencode` does fall back to a GDAL-COG-driver re-encode if the
+    in-place stamp would break COG validity.
+
+    Stamping needs a real LOCAL file, so when `dst_path` is remote the transfer lands in
+    local scratch first, gets stamped there, and is then pushed to `dst_path`. Idempotent
+    skip on an existing non-empty `dst_path`. Returns `(ok, reason)`.
     """
     import shutil
     import tempfile
@@ -303,8 +305,8 @@ def _append_downloaded(catalog, tile_meta: dict, results: list[tuple]) -> int:
             "geometry": r["geometry"],
         })
     if rows:
-        # spec 35 §4: MPC is also S2 L2A -- stamp the collection-level declaration
-        # at the one place this source appends to the catalog.
+        # MPC is also S2 L2A -- stamp the collection-level declaration at the one place
+        # this source appends to the catalog.
         catalog.append(rows, declaration=S2_L2A_DECLARATION)
     return sum(len(f) for f in files_by_tile.values())
 
@@ -324,18 +326,14 @@ def download(
     should_stop: Callable[[], bool] | None = None,
 ) -> DownloadResult:
     """Discover matching MPC S2 L2A tiles and download the requested band files
-    to `root_folderpath`, local or remote/blob (spec 34 §3/§5 — lifts spec 32's
-    local-only guard). No credentials required (anonymous MPC access, D4).
+    to `root_folderpath`, local or remote/blob. No credentials required: MPC is anonymous.
 
-    Unlike `cdse.download`, source assets are already COG — no jp2->COG
-    conversion, so this uses a straightforward thread-pool transfer + stamp (no
-    convert-process-pool, no disk-aware staging cap; a single tile/band run is
-    trivial — spec 32 §1 scope note, still true post-spec-34). Idempotent (skips
-    files already on disk).
+    Unlike `cdse.download`, source assets are already COG — no jp2->COG conversion — so this
+    uses a straightforward thread-pool transfer + stamp, with no convert-process-pool and no
+    disk-aware staging cap. Idempotent: files already on disk are skipped.
 
-    `should_stop` (optional) is checked in the submit loop, same halt-new-
-    submissions-only semantics as `cdse.download` — not exercised by the
-    Phase-1 single-tile runbook but kept for interface parity.
+    `should_stop` (optional) is checked in the submit loop, with the same
+    halt-new-submissions-only semantics as `cdse.download`.
     """
     import concurrent.futures
     import time
@@ -458,9 +456,9 @@ def discover_shard_rows(
 
 
 def _import_pc_sign():
-    """Lazy handle to `planetary_computer.sign` -- same injection-boundary pattern
-    as `workflows.runners._import_aml_command` (spec 36 D3 invariant 3): keeps
-    `download_shard` substitutable in tests without requiring the `[mpc]` extra."""
+    """Lazy handle to `planetary_computer.sign` -- same injection-boundary pattern as
+    `workflows.runners._import_aml_command`, so `download_shard` stays substitutable in tests
+    without requiring the `[mpc]` extra."""
     import planetary_computer as pc
 
     return pc.sign
