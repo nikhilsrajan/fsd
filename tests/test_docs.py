@@ -155,7 +155,12 @@ def _link_targets(text: str):
 
 def _docs_with_links() -> list[Path]:
     paths = [REPO_ROOT / n for n in _LINKED_DOCS if (REPO_ROOT / n).exists()]
-    paths += sorted((REPO_ROOT / "docs").rglob("*.md"))
+    # The exclusion above was declared but never applied to the docs/ sweep, so the
+    # progress archive was link-checked anyway. #94 exposed it: entries MOVED out of
+    # PROGRESS.md (ADR 0022 — verbatim, never rewritten) carry repo-root-relative
+    # links that resolve from the root but not from docs/, and the archive is
+    # point-in-time so they cannot be repointed. Honour the set here.
+    paths += sorted(p for p in (REPO_ROOT / "docs").rglob("*.md") if p not in _POINT_IN_TIME_EXCLUDE)
     return paths
 
 
