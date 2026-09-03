@@ -4,7 +4,37 @@
 [`docs/progress-archive.md`](docs/progress-archive.md) (spec 41 D12) — this file is the *current*
 state plus the most recent entry, not the log.
 
-_Last updated: 2026-09-03 (**STEP 4 IS DONE — #85's `src/` COMMENT SWEEP IS COMPLETE AND MERGED
+_Last updated: 2026-09-03 (**#85 IS CLOSED AND PUSHED; #95 + #96 FILED; #94 IS PREPPED AND HANDED
+OFF.** `main` @ `c68adba`, clean, **pushed — `origin/main` and `main` are identical**. Baton:
+**`/tmp/handoff-issue-94-progress-split-2026-09-03.md`**._
+
+_**#85 closed** with the full statistics in its closing comment: backward references in `src/fsd`
+**1,187 → 92 (−92%)**; the changelog scaffolding (`spec NN` / `Dn` / `ACn` / dates) **1,096 → 10**;
+**41 distinct issue references before, 41 after, none lost**. Prose density did not move
+(0.49 → 0.49) and that is the honest result — tag density was the signal, not sentence count. A
+before/after audit of the reference SETS caught `#67` dropped to zero in `verify_image.py`, restored
+in `5730af4`; no test checks that, which is why #85 named it a constraint._
+
+_**Two follow-ups filed:** **#95** — nothing prevents the changelog re-accreting, since the
+convention is a document rather than a gate (its own evidence: refs grew +24% in the 13 days after
+the convention landed, all of it in files written *after* it). **#96** — ~35 user-facing error and
+`--help` strings cite internal spec decisions ("spec 51 D6") at consumers who have no `specs/`;
+a behaviour change, so it was out of scope for a comments-only pass._
+
+_**→ NEXT: [#94](https://github.com/nikhilsrajan/fsd/issues/94)**, chosen by the user ahead of #93.
+Re-measured 2026-09-03: `PROGRESS.md` is **1,742 lines / 19,477 words**, ~10× D12's ~2k-word target,
+and **it grew ~132 lines in the single day** this session was writing #85 entries into it. The
+handoff carries what the issue does not: the file has **three interleaved formats**, not one, so
+there is no single boundary to cut at; and four defects found while measuring — a **live
+`## NEXT: implement spec 54` instruction ~8 days stale** (line 576), a `## Most recent entry` header
+1,196 lines below the actual most recent entry (line 1203), a `## Where things stand` block still
+saying "current work: the docs refactor (spec 41)" (line 1067), and an archive whose heading format
+is **two** variants (`## 2026-` and `## ✅ 2026-`, 18 of 66) so a naive grep mis-splits it._
+
+_**Deliberately kept short:** the next task is to shrink this file, so this entry does not
+elaborate. Detail lives in the handoff and in #85's closing comment._
+
+_Previously: 2026-09-03 (**STEP 4 IS DONE — #85's `src/` COMMENT SWEEP IS COMPLETE AND MERGED
 INTO `main` @ `816823c`** (`--no-ff`, 7 commits; worktree pruned, branch deleted). Backward
 references across `src/fsd` went **1,187 → 91 (−92 %)**. Every commit is gated on `pytest -q`, on
 `ruff check src tests demos examples`, and on a **docstring-stripped AST byte-identical to `6ed05bb`
@@ -271,8 +301,18 @@ forgotten at the boundary.** Do not reorder without saying so.
 |---|---|---|---|
 | ~~**1**~~ | ~~**[#92](https://github.com/nikhilsrajan/fsd/issues/92)** — AZ_ROOT cleanup~~ | **DONE 2026-08-28** — `3a968dc` / `ee7277b`, issue closed + pushed | → **2**, now current |
 | ~~**2**~~ | ~~**The consumer-repo run**~~ | **MEASUREMENT DONE 2026-09-02** — `[collect]` 26 s / `[stac]` 10 s vs the 616 s / 161 s baseline; spec 57 §9 step 5 discharged. Spec 56 §9 step 10 discharged by a live `environment_exists` probe | → **3**, now current; **#80 + #82 unblocked** |
-| **3** | **[#55](https://github.com/nikhilsrajan/fsd/issues/55)** — **CURRENT.** Now scoped: the C4 half is closed by spec 41 D0; what remains is **spec 43 → `docs/history.md`** | gate discharged by step 2; **needs its OWN spec and a discussion before starting** | → **4** |
-| **4** | **[#85](https://github.com/nikhilsrajan/fsd/issues/85)** — trim the changelog out of `src/` comments | 7 packages left, **one per session**; `storage/` is the done sample (`eb7f29f`) | → the next spec / ROADMAP |
+| ~~**3**~~ | ~~**[#55](https://github.com/nikhilsrajan/fsd/issues/55)** — spec 43 → `docs/history.md`~~ | **DONE + CLOSED 2026-09-02** — approved, merged, `ARCHITECTURE.md` refreshed alongside | → **4** |
+| ~~**4**~~ | ~~**[#85](https://github.com/nikhilsrajan/fsd/issues/85)** — trim the changelog out of `src/` comments~~ | **DONE + CLOSED + PUSHED 2026-09-03** — refs **1,187 → 92 (−92%)**, `816823c` + `c68adba`; swept in one pass, not one package per session, and **extended** to `image/`/`aml/`/`registry/`/`config.py`/`cli.py` | → #93 per this table; **the user chose #94 instead** |
+
+**⚠️ The order changed after step 4 (user, 2026-09-03).** This table said #93 next; the user picked
+**#94** (the `PROGRESS.md` split). #93 is not dropped — it keeps the notebook-front-door proposal
+and is still the front-door work. Recorded here rather than silently re-sequenced, per the standing
+instruction above.
+
+| # | task | done when | → then |
+|---|---|---|---|
+| **5** | **[#94](https://github.com/nikhilsrajan/fsd/issues/94)** — **CURRENT.** Re-run the `PROGRESS.md` split | this file back near D12's ~2k words, entries **moved** verbatim per ADR 0022 | → **6** |
+| **6** | **[#93](https://github.com/nikhilsrajan/fsd/issues/93)** — front door: README → tutorial → how-tos | **wants its own spec** (touches spec 41 D1's audience table + ADR 0026) | → the tag, which is still LAST |
 
 **Rider on step 2 — do not lose these.** #80 (snakemake → `[local]`, s3fs → `[s3]`; zero code
 change, −53 packages / −111 MB) and #82 (cut + push `v0.1.0`) both belong **inside** `v0.1.0`, and
