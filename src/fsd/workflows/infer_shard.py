@@ -1,6 +1,6 @@
 """In-job entrypoint for the AML inference dispatcher.
 
-A thin shim, mirroring `fsd.workflows.shard`'s role for spec 36: `fs.get` the shard CSV and
+A thin shim, mirroring `fsd.workflows.shard`'s role for the build fan-out: `fs.get` the shard CSV and
 the staged bundle to node-local scratch, then call the **existing** `runners.run_local_inference`
 over them. `fsd.workflows.infer_task` (the unit of work) and `runners.run_local_inference` are
 unchanged; this file adds no pipeline logic of its own -- it exists only so the same local
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import datetime as _dt
 
-# spec 40 D2: stamped before any heavy import (see workflows/shard.py for the same pattern).
+# Stamped before any heavy import, so it is process start (see workflows/shard.py).
 _PROCESS_START_AT = _dt.datetime.now(_dt.timezone.utc).isoformat()
 
 import argparse  # noqa: E402
@@ -40,14 +40,14 @@ EXPORT_FOLDERPATH_COL = "export_folderpath"
 
 def _status_url(shard_csv_url: str) -> str:
     """`<root>/runs/<run_id>/shards/<k>.csv` -> `<root>/runs/<run_id>/_status/<k>.json`
-    (mirrors `workflows.shard._status_url`, spec 36 D6/D9)."""
+    (mirrors `workflows.shard._status_url`)."""
     root, name = shard_csv_url.rsplit("/shards/", 1)
     stem = name[:-4] if name.endswith(".csv") else name
     return f"{root}/_status/{stem}.json"
 
 
 def fetch_bundle_to_scratch(bundle_url: str, local_dir: str) -> str:
-    """D3: fetch a staged bundle to node-local scratch, manifest-driven -- no directory
+    """Fetch a staged bundle to node-local scratch, manifest-driven -- no directory
     listing. Reads `bundle.json` (`fs.open`), then `fs.get`s each file its `artifacts` map
     and its `code` block name. Returns `local_dir`, ready for `bundle.load` --
     which is what puts the fetched `code/` on `sys.path`, so this node needs no
@@ -61,7 +61,7 @@ def fetch_bundle_to_scratch(bundle_url: str, local_dir: str) -> str:
     rels = list(manifest.get("artifacts", {}).values()) + _bundle.manifest_code_files(manifest)
     for rel in rels:
         dst = os.path.join(local_dir, rel)
-        os.makedirs(os.path.dirname(dst), exist_ok=True)   # spec 44: code/ has subdirectories
+        os.makedirs(os.path.dirname(dst), exist_ok=True)   # code/ has subdirectories
         fs.get(os.path.join(bundle_url, rel), dst)
     return local_dir
 
@@ -75,7 +75,7 @@ def _n_final_exists(export_folderpaths) -> int:
 def _resolve_cores_and_group(
     n_units: int, cores: int | None, cubes_per_task: int | None
 ) -> tuple[int, int]:
-    """D7: the NODE computes the load-per-core default from its OWN core count and
+    """The NODE computes the load-per-core default from its OWN core count and
     the shard size. `cores=None` => `os.cpu_count()` (run one group per core, so the bundle
     loads once per core and the node stays fully busy); `cubes_per_task=None` =>
     `ceil(n_units / cores)`, i.e. exactly `cores` groups. So the default (both None) is
@@ -100,9 +100,9 @@ def run_infer_shard(
     overwrite: bool = False,
 ) -> dict:
     """Materialize the shard CSV + the staged bundle locally, run them via
-    `runners.run_local_inference`, and publish a `_status/<k>.json` (spec 24/36 shape).
+    `runners.run_local_inference`, and publish a `_status/<k>.json`.
 
-    `cores`/`cubes_per_task` default to `None` = D7's load-per-core default, computed here
+    `cores`/`cubes_per_task` default to `None` = the load-per-core default, computed here
     on the node from `os.cpu_count()` and the shard size (`_resolve_cores_and_group`)."""
     with fs.open(shard_csv_url, "r") as f:
         shard_df = pd.read_csv(f)
@@ -144,7 +144,7 @@ def run_infer_shard(
         "n_units": n_units,
         "n_skipped": n_skipped,
         "n_failed": n_failed,
-        # D7 observability (Phase 3): the effective grouping this node ran, so bundle-loads
+        # Report the effective grouping this node ran, so bundle-loads
         # (== n_groups with a non-skipped cell) can be checked against the load-per-core intent.
         "cores": eff_cores,
         "cubes_per_task": eff_group,

@@ -1,4 +1,4 @@
-"""In-job entrypoint for the AML runner (spec 36 D2/D3 invariant 2).
+"""In-job entrypoint for the AML runner.
 
 A thin shim: resolve one shard CSV (any `fsd.storage` URL) to a local file, then call
 the **existing** local runner over it. `fsd.workflows.task` (the unit of work) and
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import datetime as _dt
 
-# spec 40 D2: stamped before any heavy import, so it reflects process start, not "after
+# Stamped before any heavy import, so it reflects process start, not "after
 # argparse/pandas/fsd loaded".
 _PROCESS_START_AT = _dt.datetime.now(_dt.timezone.utc).isoformat()
 
@@ -34,7 +34,7 @@ EXPORT_FOLDERPATH_COL = "export_folderpath"
 def _status_url(shard_csv_url: str) -> str:
     """`<root>/runs/<run_id>/shards/<k>.csv` -> `<root>/runs/<run_id>/_status/<k>.json`
  -- derived from the shard's own path so the CLI stays the two
-    arguments D3 invariant 2 requires (no extra "where do I report" argument)."""
+    arguments the shard url already implies -- no extra "where do I report" argument."""
     root, name = shard_csv_url.rsplit("/shards/", 1)
     stem = name[:-4] if name.endswith(".csv") else name
     return f"{root}/_status/{stem}.json"
