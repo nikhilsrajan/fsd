@@ -8,23 +8,22 @@ this — read [`docs/history.md`](docs/history.md).
 
 ## Resuming after a break — start here
 
-**One thing is in flight: spec 58 P1, implemented and awaiting review.** As of **2026-09-05**
-worktree `spec58-p1` (branch `worktree-spec58-p1`) holds a complete, green P1 implementation, not
-yet merged to `main` — the next step is an Opus review pass (standards + spec against
-`specs/58-collection-agnostic-verbs.md` §5's acceptance criteria), then `git merge --no-ff` +
-prune the worktree, per the standing worktree-merge-prune practice. `main` itself is otherwise
-clean and unmerged-branch-free except `spike/rslearn` (intentional). **`v0.1.0` is cut and pushed.**
+**Spec 58 P1 is implemented, reviewed and merged into `main` — the one open action is pushing it.**
+As of **2026-09-05** P1 landed on `main` via `--no-ff` (worktree + branch pruned); review found and
+fixed one real bug and two untested acceptance criteria, all recorded in "Most recent entry" below.
+**The merge is local and unpushed** — pushing is outward-facing and waits on the user. `main` is
+otherwise clean and unmerged-branch-free except `spike/rslearn` (intentional). **`v0.1.0` is cut and
+pushed.**
 
 1. Read this file top to bottom. It is ~2k words by design; it is the whole picture.
-2. If picking up spec 58 P1: review the worktree's diff against `main`, re-run
-   `.venv/bin/python -m pytest -q` and `.venv/bin/ruff check src tests demos examples` inside it,
-   then merge if clean.
+2. Push `main` if the user agrees, then start the **re-download run-book** (it could not begin before
+   P1 merged — P1 is what changes the catalog schema), then spec 58 **P2** (`sentinel-1-rtc`).
 3. `gh issue list` — the open work. Nothing here is blocked on a decision you have to remember.
 4. Otherwise pick from **THE ORDER** below, which is still sequenced.
 
 **Before trusting anything below, re-verify rather than assume.** Every dated claim was true when
-written. Cheap checks (on `main`, pre-merge; the P1 worktree's own numbers are in "Most recent
-entry" below): `.venv/bin/python -m pytest -q` (expect **1083 passed / 103 skipped**),
+written. Cheap checks (on `main`, spec 58 P1 merged):
+`.venv/bin/python -m pytest -q` (expect **1100 passed / 102 skipped**),
 `.venv/bin/ruff check src tests demos examples`, `git log --oneline -5`, `gh issue list`.
 A quiet stretch in the git log is a break, not a stall — do not read it as a problem to diagnose.
 
@@ -60,7 +59,7 @@ dependency rather than checked out. That run was the goal stated on day one, and
 | **Scale-out** | AML runner seam; download, build, flatten and inference all fan out. Reference run `20260729T132222Z`: 18.8 min, 8/8 steps, 97 jobs, 213 granules, 300 grid cells → 300 COGs + STAC + a merged map |
 | **Serving** | tier-1 (pre-styled XYZ) and tier-2 (pgSTAC + titiler-pgstac) both validated |
 | **Docs** | spec 41 P1–P7 done; `docs/history.md` written and approved 2026-09-02; `src/` changelog comments swept (#85, refs 1,187 → 92) |
-| **Current work** | the **notebook-usability sprint, phase 2** — see THE ORDER below |
+| **Current work** | **spec 58** — P1 merged 2026-09-05 (unpushed); next the re-download run-book, then P2 `sentinel-1-rtc`. See THE ORDER below |
 | **Release** | **`v0.1.0` cut 2026-09-04.** SemVer 0.y.z on purpose — the `Source` abstraction does not exist and S1 is coming, so the API will break |
 | **Deferred work** | **GitHub Issues**, number-aligned with the old `TODO.md` rows (`gh issue list`) |
 | **rslearn** | **decision CLOSED 2026-07-31** — no rslearn for download; rslearn-on-Azure is a separate, unstarted project. `spike/rslearn` stays unmerged |
@@ -109,7 +108,7 @@ instruction above.
 | ~~**5**~~ | ~~**[#94](https://github.com/nikhilsrajan/fsd/issues/94)** — re-run the `PROGRESS.md` split~~ | **DONE 2026-09-03** — 1,737 lines moved verbatim to the archive; this file **19,970 → 1,762 words**; four defects retired, one of them a test that never ran | → **6**, now current |
 | ~~**6**~~ | ~~**[#80](https://github.com/nikhilsrajan/fsd/issues/80)** — snakemake/s3fs → extras~~ | **DONE 2026-09-04** — core 689 → 578 MB; **AML node images need `local` and must be rebuilt** | → **7** |
 | ~~**7**~~ | ~~**[#82](https://github.com/nikhilsrajan/fsd/issues/82)** — cut + push `v0.1.0`~~ | **DONE 2026-09-04** — the tag is cut | → **8** |
-| **8** | **[spec 58](specs/58-collection-agnostic-verbs.md)** — **CURRENT.** Collection-agnostic verbs: P1 contract → P2 `sentinel-1-rtc` → P3 HLS | **P1 IMPLEMENTED 2026-09-05** (worktree `spec58-p1`, unmerged — awaiting Opus review); pytest+ruff clean; next: review → merge → re-download run-book → P2 | → **9** |
+| **8** | **[spec 58](specs/58-collection-agnostic-verbs.md)** — **CURRENT.** Collection-agnostic verbs: P1 contract → P2 `sentinel-1-rtc` → P3 HLS | **P1 IMPLEMENTED + REVIEWED + MERGED 2026-09-05** (`--no-ff` onto `main`, worktree pruned; **local, unpushed**). Review fixed one real bug + two untested ACs; pytest **1100 passed / 102 skipped**, ruff clean. Next: push → re-download run-book → P2 | → **9** |
 | **9** | **[#93](https://github.com/nikhilsrajan/fsd/issues/93)** — Front door: README → tutorial → how-tos | **wants its own spec** (touches spec 41 D1's audience table + ADR 0026) | → `v0.2.0` is cut after spec 58 P3 |
 
 **⚠️ The order changed again (user, 2026-09-04).** #93 was step 8 and CURRENT; the user promoted
@@ -133,54 +132,55 @@ notebook that has just been validated.
 
 ## Most recent entry
 
-_Last updated: 2026-09-05 (**SPEC 58 P1 IMPLEMENTED — the contract lands, S2 L2A only.**
-Built in worktree `spec58-p1` (branch `worktree-spec58-p1`), not yet merged — **awaiting Opus
-review** per the standing implementation-note order (P1 → review → merge `--no-ff` → prune,
-then the re-download run-book, then P2). `pytest -q` **1093 passed / 102 skipped / 0 failed**
-(excludes `test_tutorial_fixture.py`'s 4 real-fixture tests, run separately: also green, ~2.5
-min); `ruff check src tests demos examples` clean. All 18 D-decisions D1-D16 implemented except
-D9/D10/D17 (P2-scoped, correctly deferred) and D7's bitmask *implementation* (P3-scoped; the
-`bits` field + version bump landed now, per spec)._
+_Last updated: 2026-09-05 (**SPEC 58 P1 REVIEWED — one real bug found and fixed, two acceptance
+criteria were claimed but untested.** Reviewed in worktree `spec58-p1` against
+`specs/58-collection-agnostic-verbs.md` §4/§5. Independently re-ran `pytest -q`
+(**1100 passed / 102 skipped / 0 failed**, +3 tests added by this review; the tutorial fixture's
+4 real-data tests are included, not run separately) and `ruff check src tests demos examples`
+(clean). **Verdict: mergeable after the fixes below**, which are in the same branch. The P1
+implementation entry moved verbatim to [`docs/progress-archive.md`](docs/progress-archive.md).)_
 
-_**What changed, concretely:** `fsd/collections/` registry (`register`/`get`); `SourceDeclaration`
-→ `CollectionDeclaration` (D2); 7 new declaration fields + `FSD_DECLARATION_VERSION` 2 (D5-D10);
-catalog `satellite`→`collection`, `+scale`, `+properties`, no read-time shim (D12); `download`'s
-default `source` → `"mpc"`, `+collection` on all four verbs, `-scl_mask_classes` everywhere (D1/D3);
-`params_key`/`window_folder_segment` keyed on `collection` + a declaration digest, not mask classes
-(D4); `create_datacube.setup` writes `<run_folderpath>/declaration.json`, every node reads it, none
-consult the registry (D13); `source×collection` validity + `reference_band∉bands` + a missing-band
-raise, all naming what's wrong (D15/D11/D8); band-alias canonicalization so `bands=["B8A"]` and
-`bands=["nir08"]` hit the same cube path (D8, AC5); `apply_offset` clips to the loaded array's own
-dtype range, not a hardcoded uint16 one (D5.2)._
+_**The bug: the D13 control file was addressed per RUN, not per unit.** `setup` wrote the resolved
+declaration to `<run_folderpath>/declaration.json` — one file for a whole run folder. But a run
+folder holds rows from many `setup` calls (`_UNIT_IDENTITY_COLS` carries `collection` precisely so
+different collections coexist in one `input.csv`), and `_build_shortfall` dispatches **every**
+still-missing row in that file regardless of which call wrote it. So a second `setup` with a
+different collection silently overwrote the file the first call's nodes still point at → the wrong
+mask/radiometry, written to a cube path that names a different collection, with the build-skip then
+treating it as valid. Not reachable in P1 (one collection is registered) and certain to bite in P2.
+**Fixed:** the control file now lives at `<run_folderpath>/<window_segment>/declaration.json` — the
+window segment already digests `collection` + the declaration (D4), so it is exactly the right
+granularity. Same failure shape as [[fsd-addressing-granularity]]: address per unit path, never one
+file per run._
 
-_**One real bug found and fixed mid-implementation, not in the spec:** the first S2 declaration draft
-set `radiometry_bands=None` ("all bands get the offset") — which would have radiometrically offset
-SCL (a classification, not a DN) the moment any collection declared a non-zero offset. Caught by
-`tests/test_mpc.py::test_transfer_and_stamp_one_never_offsets_mask_band`, which is exactly the kind
-of existing-fixture regression AC3 exists to catch. Fixed: S2's `radiometry_bands` is now the
-explicit reflectance-band tuple (mirrors the old `_is_reflectance` regex exactly, as declared data
-instead of a global pattern)._
+_**Two ACs were claimed met but had no test.** **AC9**'s driver half ("the control file carries the
+declaration JSON") was untested — only the node's *read* was covered, by hand-written fixtures.
+**AC10**'s first half ("`from_json` on a v1 footer still parses") was untested — the nearest test
+deletes one optional field from a **v2** footer. Both now have tests: `test_backward_walk.py::
+test_setup_writes_a_window_scoped_declaration_control_file` (which is also the regression guard for
+the bug above) and two in `test_declaration.py` pinning a frozen v1 footer literal + the
+version-check-before-unknown-field-check ordering. AC1-AC8 verified as claimed; **AC3 (bit-identical
+S2) re-derived independently rather than trusted** — `radiometry_bands` equals the old
+`_is_reflectance` regex over every band in `S2L2A_ALL_BANDS`, and `apply_offset`'s new dtype-range
+clip is identical to the old literal `0..65535` for `uint16`._
 
-_**AC5 (band-alias → same path) was not free** — it required adding canonicalization at every entry
-point that touches `bands` before the digest sees it (`create_datacube.setup`/
-`build_shortfall_only`/`run_create_datacube`, and `api.py`'s three verbs' adapter-required-bands
-checks), not just at the source-module asset-selection layer the spec text focuses on. Recorded here
-because a narrower reading of D8 would have shipped AC5 broken._
+_**Two smaller fixes:** both new tests that register throwaway collections leaked them into the
+global in-process `fsd.collections.REGISTRY` (which `restamp_cli`'s `--declaration` choices are a
+view over) — now torn down in a `finally`. And `tests/data/tutorial/catalog.parquet`'s in-place
+migration left `scale`/`properties` appended after `geometry`, so the fixture did not match the
+`catalog.COLUMNS` order every real `TileCatalog.append` produces — reordered, values/geometry/CRS/
+stamp asserted unchanged._
 
-_**One real-data fixture required migration, not just a test-signature fix:**
-`tests/data/tutorial/catalog.parquet` (the tutorial's real, checked-in fixture) was stamped with a
-declaration whose `scale`/`radiometry_bands`/`band_aliases` were pre-spec-58 dataclass defaults, not
-real S2 facts — D14's new artifact-fact-mismatch guard correctly caught the disagreement.
-Migrated in place (column rename + 2 new columns + re-stamp with the real
-`S2_L2A_DECLARATION`, no re-download — same technique `restamp_cli` already used) rather than
-regenerating from the VM, since only metadata needed to change, not the granules._
+_**Three things flagged, deliberately NOT changed** (two need the user, one is P2 scope): (1) **D14's
+field table is not exhaustive** — `native_grid`, `mask_keep` and `supports_cloud_cover` are in
+neither the artifact-fact nor the build-policy group, so a variant may currently differ from the
+catalog's stamp on `native_grid` without raising. The code matches the spec's table exactly, so this
+is a **spec** gap, not an implementation one, and a spec change needs sign-off. (2) **The STAC export
+drops the catalog's new `properties` column** — `tile_catalog_to_items` builds items with
+`properties={}`, so a catalog round-tripped through STAC loses the `sat:orbit_state` D9 will need in
+P2. Outside P1's ACs. (3) `stac.tile_catalog_to_items`'s `row_scale` fallback uses `if not
+row_scale`, which lets a `NaN` through (`not nan` is `False`); only reachable from a hand-built
+catalog, since `append` defaults the column. **The P1-scoped-out AML download path was checked and
+is genuinely safe**, not a silent gap: both sources' `SERVED_COLLECTIONS` is `("sentinel-2-l2a",)`,
+so a non-default `collection` cannot reach it at all today._
 
-_**Scoped out of P1, documented, not silently dropped:** the AML `download` dispatch path
-(`workflows.download`'s CLI, `run_aml_download`'s shard commands) does not yet carry a non-default
-`collection=` to the node — it always resolves `sentinel-2-l2a` correctly by omission, but a
-user-facing override there is P2/P3 work, when a second collection actually needs cluster-scale
-download. P1 is network-free/cluster-free by the spec's own design, so this path has no AC coverage
-either way._
-
-_**Two out-of-repo obligations, unchanged, still open** (see below): `rise/`'s AML extras, and this
-workspace `CLAUDE.md`'s dev line._

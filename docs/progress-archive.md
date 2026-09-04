@@ -1,10 +1,64 @@
 ---
 status: historical
-summary: PROGRESS entries older than the current one, moved here verbatim — first on 2026-07-30 (spec 41 D12, 61 entries), again on 2026-09-03 (#94, covering 2026-09-03 back to 2026-08-20), again on 2026-09-05 (spec 58 draft entry, one block).
-ordering: NOT chronological end to end. The 2026-07-30 bulk is newest-first; a tail appended after it runs 08-20, 08-19, 07-31, 07-30 out of order; the 2026-09-03 block is newest-first again; the 2026-09-05 append is a single block at the top. Search this file, do not scroll it.
+summary: PROGRESS entries older than the current one, moved here verbatim — first on 2026-07-30 (spec 41 D12, 61 entries), again on 2026-09-03 (#94, covering 2026-09-03 back to 2026-08-20), again on 2026-09-05 (spec 58 draft entry, one block; and again the same day, the spec 58 P1 implementation entry).
+ordering: NOT chronological end to end. The 2026-07-30 bulk is newest-first; a tail appended after it runs 08-20, 08-19, 07-31, 07-30 out of order; the 2026-09-03 block is newest-first again; the two 2026-09-05 appends are single blocks at the top, P1-implementation first then the spec-58 draft. Search this file, do not scroll it.
 headings: two forms — `## 2026-...` and `## <emoji> 2026-...` (✅ 🟡 ⭐). A bare `grep '^## 2026'` finds only some of them and will mis-split the file.
 coverage: complete through 2026-09-05 — but it was NOT before then. Until the #94 append, specs 48-53 and the whole notebook-usability sprint (2026-08-20 to 09-03) appeared zero times here, so this file was not the complete archaeology source its first summary claimed. docs/history.md is the narrative view; this is the raw log.
 ---
+
+## 2026-09-05 — SPEC 58 P1 IMPLEMENTED: the contract lands, S2 L2A only
+
+_Last updated: 2026-09-05 (**SPEC 58 P1 IMPLEMENTED — the contract lands, S2 L2A only.**
+Built in worktree `spec58-p1` (branch `worktree-spec58-p1`), not yet merged — **awaiting Opus
+review** per the standing implementation-note order (P1 → review → merge `--no-ff` → prune,
+then the re-download run-book, then P2). `pytest -q` **1093 passed / 102 skipped / 0 failed**
+(excludes `test_tutorial_fixture.py`'s 4 real-fixture tests, run separately: also green, ~2.5
+min); `ruff check src tests demos examples` clean. All 18 D-decisions D1-D16 implemented except
+D9/D10/D17 (P2-scoped, correctly deferred) and D7's bitmask *implementation* (P3-scoped; the
+`bits` field + version bump landed now, per spec)._
+
+_**What changed, concretely:** `fsd/collections/` registry (`register`/`get`); `SourceDeclaration`
+→ `CollectionDeclaration` (D2); 7 new declaration fields + `FSD_DECLARATION_VERSION` 2 (D5-D10);
+catalog `satellite`→`collection`, `+scale`, `+properties`, no read-time shim (D12); `download`'s
+default `source` → `"mpc"`, `+collection` on all four verbs, `-scl_mask_classes` everywhere (D1/D3);
+`params_key`/`window_folder_segment` keyed on `collection` + a declaration digest, not mask classes
+(D4); `create_datacube.setup` writes `<run_folderpath>/declaration.json`, every node reads it, none
+consult the registry (D13); `source×collection` validity + `reference_band∉bands` + a missing-band
+raise, all naming what's wrong (D15/D11/D8); band-alias canonicalization so `bands=["B8A"]` and
+`bands=["nir08"]` hit the same cube path (D8, AC5); `apply_offset` clips to the loaded array's own
+dtype range, not a hardcoded uint16 one (D5.2)._
+
+_**One real bug found and fixed mid-implementation, not in the spec:** the first S2 declaration draft
+set `radiometry_bands=None` ("all bands get the offset") — which would have radiometrically offset
+SCL (a classification, not a DN) the moment any collection declared a non-zero offset. Caught by
+`tests/test_mpc.py::test_transfer_and_stamp_one_never_offsets_mask_band`, which is exactly the kind
+of existing-fixture regression AC3 exists to catch. Fixed: S2's `radiometry_bands` is now the
+explicit reflectance-band tuple (mirrors the old `_is_reflectance` regex exactly, as declared data
+instead of a global pattern)._
+
+_**AC5 (band-alias → same path) was not free** — it required adding canonicalization at every entry
+point that touches `bands` before the digest sees it (`create_datacube.setup`/
+`build_shortfall_only`/`run_create_datacube`, and `api.py`'s three verbs' adapter-required-bands
+checks), not just at the source-module asset-selection layer the spec text focuses on. Recorded here
+because a narrower reading of D8 would have shipped AC5 broken._
+
+_**One real-data fixture required migration, not just a test-signature fix:**
+`tests/data/tutorial/catalog.parquet` (the tutorial's real, checked-in fixture) was stamped with a
+declaration whose `scale`/`radiometry_bands`/`band_aliases` were pre-spec-58 dataclass defaults, not
+real S2 facts — D14's new artifact-fact-mismatch guard correctly caught the disagreement.
+Migrated in place (column rename + 2 new columns + re-stamp with the real
+`S2_L2A_DECLARATION`, no re-download — same technique `restamp_cli` already used) rather than
+regenerating from the VM, since only metadata needed to change, not the granules._
+
+_**Scoped out of P1, documented, not silently dropped:** the AML `download` dispatch path
+(`workflows.download`'s CLI, `run_aml_download`'s shard commands) does not yet carry a non-default
+`collection=` to the node — it always resolves `sentinel-2-l2a` correctly by omission, but a
+user-facing override there is P2/P3 work, when a second collection actually needs cluster-scale
+download. P1 is network-free/cluster-free by the spec's own design, so this path has no AC coverage
+either way._
+
+_**Two out-of-repo obligations, unchanged, still open** (see below): `rise/`'s AML extras, and this
+workspace `CLAUDE.md`'s dev line._
 
 ## 2026-09-04 — SPEC 58 DRAFTED: the verbs become collection-agnostic (signed off; no code yet)
 

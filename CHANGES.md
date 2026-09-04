@@ -52,8 +52,13 @@ ADRs 0028-0031.
 - **A collection registry** (`fsd.collections`) replaces the ad-hoc `restamp_cli`
   embryo -- `fsd.collections.register(id, declaration)` / `.get(id)`, in-process only.
   `create_datacube.setup` resolves `collection=` to a declaration on the driver and
-  writes it as JSON to `<run_folderpath>/declaration.json`, a control file every shard
-  reads (D13); nodes never import the registry.
+  writes it as JSON to `<run_folderpath>/<window_segment>/declaration.json`, a control
+  file every shard reads (D13); nodes never import the registry. The control file is
+  scoped to the **window segment**, not the run-folder root: one run folder holds rows
+  from many `setup` calls (`input.csv` carries `collection` per row precisely so
+  different collections coexist), and the build dispatches every still-missing row in
+  that file regardless of which call wrote it -- a single run-root file would be
+  overwritten by the next `setup` and read back by the earlier call's nodes.
 
 
 ## `snakemake` and `s3fs` leave the core install for `[local]` and `[s3]` (#80, 2026-09-04)

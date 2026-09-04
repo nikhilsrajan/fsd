@@ -10,7 +10,7 @@ This is what an Azure Batch task (Phase 2) dispatches unchanged. It:
 Run as:  python -m fsd.workflows.task <shapefilepath> <catalog_filepath>
              <startdate> <enddate> <export_folderpath>
              --bands B04,B08,B8A,SCL --mosaic-days 20
-             --declaration-filepath <run_folderpath>/declaration.json
+             --declaration-filepath <run_folderpath>/<window>/declaration.json
 """
 
 from __future__ import annotations
@@ -53,8 +53,8 @@ def run_task(
     (`TileCatalog.filter` output — already date+overlap filtered, carries
     `area_contribution`); we band-flatten it and hand it to the builder.
 
-    `declaration_filepath` is the control file `setup` wrote under the run folder
-    (spec 58 D13): the `collection=` string resolved to a `CollectionDeclaration` and
+    `declaration_filepath` is the control file `setup` wrote under the run folder's
+    WINDOW segment (spec 58 D13): the `collection=` string resolved to a `CollectionDeclaration` and
     serialized to JSON **on the driver**, before this task was ever dispatched. This
     node reads that file and nothing else — it never imports `fsd.collections` to
     resolve a collection string itself, because that registry is a plain in-process

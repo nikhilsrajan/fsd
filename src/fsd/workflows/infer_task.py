@@ -13,7 +13,7 @@ auto-saves a live adapter to one.
 Run as:  python -m fsd.workflows.infer_task <shapefilepath> <catalog_filepath>
              <startdate> <enddate> <export_folderpath>
              --bands B04,B08,B8A,SCL --mosaic-days 20
-             --declaration-filepath <run_folderpath>/declaration.json
+             --declaration-filepath <run_folderpath>/<window>/declaration.json
              --bundle <bundle_path> --output <output.tif>
 """
 

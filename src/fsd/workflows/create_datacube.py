@@ -153,7 +153,8 @@ def setup(
     signature.
 
     `collection` resolves to a `CollectionDeclaration` here, on the driver
-    (`fsd.collections.get`), and is written as JSON to `<run_folderpath>/declaration.json`
+    (`fsd.collections.get`), and is written as JSON to
+    `<run_folderpath>/<window_segment>/declaration.json`
     -- the control file every shard reads (spec 58 D13). This runs uniformly for every
     call, including the built-in `sentinel-2-l2a` default: nodes never consult the
     registry, so there is one code path rather than two where only a user's collection
@@ -192,14 +193,6 @@ def setup(
             f"(or pass an id column that is unique per shape) before calling setup()."
         )
 
-    # The declaration control file (spec 58 D13) -- written only once the guard above has
-    # passed, so a refused call (duplicate ids) leaves no trace, exactly as before this
-    # write was added.
-    declaration_filepath = os.path.join(run_folderpath, DECLARATION_FILENAME)
-    fs.makedirs(run_folderpath)
-    fs.write_text(declaration_filepath,
-                  json.dumps(declaration_module.to_json(declaration)))
-
     # Read the catalog ONCE for the whole run, then filter it in memory per shape
     # (`filter_gdf`). `TileCatalog.filter` re-reads the file on every call, which on a
     # remote catalog made setup cost one full download per shape: 900 shapes over
@@ -210,6 +203,25 @@ def setup(
     window_segment = window_folder_segment(startdate, enddate, mosaic_days,
                                             bands=bands, mosaic_scheme=mosaic_scheme,
                                             collection=collection, declaration=declaration)
+
+    # The declaration control file (spec 58 D13) -- written under the WINDOW segment, not
+    # the run-folder root. One run folder holds many windows and (once P2 ships a second
+    # collection) many collections: `_UNIT_IDENTITY_COLS` carries `collection` precisely so
+    # rows of different collections coexist in one `input.csv`, and `_build_shortfall`
+    # dispatches every still-missing row in that file regardless of which `setup` call wrote
+    # it. A single run-root `declaration.json` would therefore be overwritten by the next
+    # `setup` and read back by the earlier call's nodes -- a silently wrong mask/radiometry
+    # at a path that names a different collection. The window segment already digests
+    # `collection` + the declaration (D4), so it is exactly the right granularity (the
+    # addressing rule: address per unit path, never one file per run).
+    #
+    # Written only once the duplicate-id guard above has passed, so a refused call leaves no
+    # trace, exactly as before this write was added.
+    declaration_filepath = os.path.join(
+        run_folderpath, window_segment, DECLARATION_FILENAME)
+    fs.makedirs(os.path.join(run_folderpath, window_segment))
+    fs.write_text(declaration_filepath,
+                  json.dumps(declaration_module.to_json(declaration)))
 
     n_shapes = len(shapes_gdf)
     print(f"[setup] catalog read once: {len(catalog_gdf)} rows, for {n_shapes} shapes",

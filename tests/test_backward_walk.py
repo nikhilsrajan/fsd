@@ -83,24 +83,27 @@ def test_params_key_stable_for_same_params():
 
 def test_params_key_differs_when_collection_differs():
     """Spec 58 AC4: two builds differing only in `collection` resolve to different cube
-    paths. Registers a throwaway second collection sharing S2's declaration content in
-    every field but `mosaic_method`, so the two params_key digests can only differ
-    because `collection` itself is folded into the key, not because the declaration
-    digest also happens to differ."""
+    paths. The throwaway second collection is registered with a declaration IDENTICAL to
+    S2's, so the two `params_key` digests can only differ because `collection` itself is
+    folded into the key -- not because the declaration digest happened to differ too.
+
+    Registration is torn down in a `finally`: `fsd.collections.REGISTRY` is a global
+    in-process dict, and a leaked test-only id would leak into every later test in the
+    session (and into `restamp_cli`'s `--declaration` choices, which are a view over it)."""
     import dataclasses
 
-
     other_id = "ac4-test-collection"
-    if other_id not in _collections.REGISTRY:
-        s2 = _collections.get(config.SATELLITE_S2L2A)
-        _collections.register(other_id, dataclasses.replace(s2))
-
-    decl = _collections.get(config.SATELLITE_S2L2A)
-    a = create_datacube.params_key(["B04"], config.MOSAIC_SCHEME,
-                                    collection=config.SATELLITE_S2L2A, declaration=decl)
-    b = create_datacube.params_key(["B04"], config.MOSAIC_SCHEME,
-                                    collection=other_id, declaration=decl)
-    assert a != b
+    s2 = _collections.get(config.SATELLITE_S2L2A)
+    _collections.register(other_id, dataclasses.replace(s2), force=True)
+    try:
+        decl = s2
+        a = create_datacube.params_key(["B04"], config.MOSAIC_SCHEME,
+                                        collection=config.SATELLITE_S2L2A, declaration=decl)
+        b = create_datacube.params_key(["B04"], config.MOSAIC_SCHEME,
+                                        collection=other_id, declaration=decl)
+        assert a != b
+    finally:
+        _collections.REGISTRY.pop(other_id, None)
 
 
 def test_bands_canonicalize_to_the_same_path_as_native_names(tmp_path):
@@ -889,3 +892,72 @@ def test_presence_falls_back_to_per_path_checks_when_the_folder_is_unlistable(tm
     nothing to list) must still resolve, via the concurrent per-path fallback."""
     missing = os.path.join(str(tmp_path), "runs", "train", "win", "0", "datacube.npy")
     assert create_datacube._presence_for_paths([missing], label="plan") == {missing: False}
+
+
+# --- AC9a: the control file carries the resolved declaration, per WINDOW not per run ---
+
+def test_setup_writes_a_window_scoped_declaration_control_file(tmp_path):
+    """Spec 58 AC9 (driver half) + D13: `setup` resolves `collection=` on the driver and
+    writes the resolved `CollectionDeclaration` as JSON to a control file every shard
+    reads; `input.csv` carries that file's path per row.
+
+    The control file is scoped to the WINDOW segment, not the run-folder root. One run
+    folder holds rows from many `setup` calls (`_UNIT_IDENTITY_COLS` carries `collection`
+    precisely so different collections coexist in one `input.csv`, and `_build_shortfall`
+    dispatches every still-missing row in that file regardless of which call wrote it).
+    A single run-root `declaration.json` would be silently overwritten by the second
+    `setup` and then read back by the FIRST call's nodes -- the wrong mask/radiometry, at
+    a cube path that names a different collection. So: two collections, one run folder,
+    two distinct control files that each still hold their own declaration.
+    """
+    import dataclasses
+    import json
+
+    from fsd.catalog import declaration as declaration_module
+
+    cat = tmp_path / "catalog.parquet"
+    shapes = tmp_path / "shapes.geojson"
+    _make_catalog(cat, tmp_path)
+    _two_shapes(shapes)
+
+    # A variant registered ONLY here, on the "driver" -- a node must never need the
+    # registry to resolve it (ADR 0031); the JSON control file is the whole transport.
+    variant_id = "ac9-test-variant"
+    s2 = _collections.get(config.SATELLITE_S2L2A)
+    variant = dataclasses.replace(s2, mask_keep=True)  # build policy, not an artifact fact
+    _collections.register(variant_id, variant, force=True)
+    run_folder = tmp_path / "run"
+    try:
+        paths = {}
+        for name, collection in (("s2", config.SATELLITE_S2L2A), ("variant", variant_id)):
+            csv = tmp_path / f"{name}.csv"
+            create_datacube.setup(
+                catalog_filepath=str(cat), timestamp_col="timestamp",
+                shapefilepath=str(shapes), id_col="id", run_folderpath=str(run_folder),
+                startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
+                bands=["B04"], mosaic_days=20, csv_filepath=str(csv), label_col="label",
+                collection=collection,
+            )
+            df = pd.read_csv(csv)
+            assert df["collection"].unique().tolist() == [collection]
+            declaration_paths = set(df["declaration_filepath"])
+            assert len(declaration_paths) == 1
+            paths[name] = declaration_paths.pop()
+
+        # Each control file sits under its OWN window segment, beside the cubes it
+        # governs -- not at the run-folder root where the second call would clobber it.
+        assert paths["s2"] != paths["variant"]
+        for name, collection in (("s2", config.SATELLITE_S2L2A), ("variant", variant_id)):
+            df = pd.read_csv(tmp_path / f"{name}.csv")
+            window = os.path.basename(os.path.dirname(df["export_folderpath"].iloc[0]))
+            assert paths[name] == os.path.join(str(run_folder), window,
+                                               create_datacube.DECLARATION_FILENAME)
+
+        # And each still holds its own declaration after BOTH calls have run -- the node
+        # reads plain JSON, never `fsd.collections`.
+        with open(paths["s2"]) as f:
+            assert declaration_module.from_json(json.load(f)) == s2
+        with open(paths["variant"]) as f:
+            assert declaration_module.from_json(json.load(f)) == variant
+    finally:
+        _collections.REGISTRY.pop(variant_id, None)

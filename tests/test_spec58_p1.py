@@ -81,13 +81,18 @@ def test_max_cloudcover_against_a_no_cloudcover_collection_raises():
     from fsd import collections as _collections
 
     no_cc_id = "spec58-p1-test-no-cloudcover"
-    if no_cc_id not in _collections.REGISTRY:
-        base = _collections.get("sentinel-2-l2a")
-        _collections.register(no_cc_id, dataclasses.replace(base, supports_cloud_cover=False))
-
-    errs = api._check_cloudcover_capability(no_cc_id, 50.0)
-    assert errs and "supports_cloud_cover" in errs[0]
-    assert api._check_cloudcover_capability("sentinel-2-l2a", 50.0) == []
+    base = _collections.get("sentinel-2-l2a")
+    _collections.register(
+        no_cc_id, dataclasses.replace(base, supports_cloud_cover=False), force=True)
+    # `REGISTRY` is a global in-process dict -- tear the throwaway id down, or it leaks
+    # into every later test in the session (and into `restamp_cli`'s `--declaration`
+    # choices, a view over the same dict).
+    try:
+        errs = api._check_cloudcover_capability(no_cc_id, 50.0)
+        assert errs and "supports_cloud_cover" in errs[0]
+        assert api._check_cloudcover_capability("sentinel-2-l2a", 50.0) == []
+    finally:
+        _collections.REGISTRY.pop(no_cc_id, None)
 
 
 # --- D15: mpc/cdse each declare a fixed served-collections set -----------------------
