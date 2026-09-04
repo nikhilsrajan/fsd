@@ -6266,3 +6266,49 @@ phase 2 (`deploy`, unsigned). **Gated on a successful e2e run:** tracking
 EuroCrops-derived**, so its licensing is unresolved for a public MIT repo.
 
 ---
+
+## 2026-09-04 — README made MPC-first; three of its claims were wrong
+_Last updated: 2026-09-04 (**THE README IS MPC-FIRST AND THREE OF ITS CLAIMS WERE WRONG.**
+`main` @ `333a0d1`, clean, pushed. `pytest -q` **1083 passed / 103 skipped**, ruff clean.
+**Work stopped here deliberately, with no goal in flight** — see the resume block at the top.)_
+
+_**The quickstart now needs no account and no credentials.** `source="mpc"` is the default path;
+the creds guard only fires for `source="cdse"` with `runner="local"`. That removed the
+`CdseCredentials` import and the entire credentials prerequisite from the first thing a reader
+runs — and it matches the flagship run, which was **213 MPC granules**, not CDSE._
+
+_**Three factual corrections, each found by checking the code rather than reading the prose:**_
+
+- _**`fsd.deploy` was described as "the one verb still a stub."** It has not been since spec 51.
+  **`test_readme_verbs_exist` could not catch this** — it proves a verb *binds* to a live
+  signature, which `deploy` always did. Nothing tests whether the sentence around a call is true.
+  That is the residual gap, and it is the same shape as #95: the check exists, but not for this._
+- _**`demos/E2E_AUSTRIA.md` was labelled the 300-cell benchmark.** It is the *local* walkthrough;
+  the 300-cell run is `E2E_AUSTRIA_AML.md`. Both are now linked and labelled._
+- _**The install line under-specified the quickstart printed directly beneath it.** Step 3 passes
+  `roi=`, which routes through `roi_to_s2_grids` → `[grid]`; MPC needs `[mpc]`. Now
+  `fsd[local,mpc,grid]`, pinned at `v0.1.0`, over **https** rather than ssh._
+
+_**`[mpc]` now names itself** (`sources/mpc._import_pc`, the single guarded entry that
+`_import_pc_sign` also routes through). `planetary_computer` was imported lazily at two bare sites,
+so a user without the extra got a `ModuleNotFoundError` naming a package they never typed, from a
+call they made as `source="mpc"`._
+
+_**⚠️ A claim I wrote and then disproved, worth keeping.** The `CHANGES.md` draft said "nothing else
+is imported lazily behind an extra." Checking it found **15 bare `azure.ai.ml` / `azure.identity`
+imports** across `workflows/runners.py` and `secrets.py` — so **`[azure]` and `[aml]` still do not
+name themselves**, filed as **[#97](https://github.com/nikhilsrajan/fsd/issues/97)**. It is the
+expensive one: the others fail on a laptop in a second, while `runner="aml"` fails only after
+someone has stood up a workspace, a cluster and images, where a bare import error reads as a broken
+install. `storage.fs` already maps `abfss://` → `[azure]`, so the storage half is covered; the
+**dispatch** half is not._
+
+_**Also added to the README:** `fsd init` / `fsd config` (spec 54/55, previously absent entirely),
+the `deploy` → `"name:version"` → `run_inference(ref, registry=...)` loop, `verify_adapter`, the
+AML-image `[local]` warning, and a **Known limits** section — S2 L2A only, warm-up dominates cluster
+cost, `0.y.z` deliberate. A README that lists only wins is a brochure._
+
+_**Worth not re-deriving:** `tests/test_docs.py` parses the README's Python and binds it against
+live signatures. It rejected a literal `...` placed after a keyword argument in the `deploy`
+example — that is a **SyntaxError**, not a stylistic choice, so README snippets must be valid
+Python even where they are illustrative._
