@@ -104,7 +104,7 @@ instruction above.
 | ~~**5**~~ | ~~**[#94](https://github.com/nikhilsrajan/fsd/issues/94)** — re-run the `PROGRESS.md` split~~ | **DONE 2026-09-03** — 1,737 lines moved verbatim to the archive; this file **19,970 → 1,762 words**; four defects retired, one of them a test that never ran | → **6**, now current |
 | ~~**6**~~ | ~~**[#80](https://github.com/nikhilsrajan/fsd/issues/80)** — snakemake/s3fs → extras~~ | **DONE 2026-09-04** — core 689 → 578 MB; **AML node images need `local` and must be rebuilt** | → **7** |
 | ~~**7**~~ | ~~**[#82](https://github.com/nikhilsrajan/fsd/issues/82)** — cut + push `v0.1.0`~~ | **DONE 2026-09-04** — the tag is cut | → **8** |
-| **8** | **[spec 58](specs/58-collection-agnostic-verbs.md)** — **CURRENT.** Collection-agnostic verbs: P1 contract → P2 `sentinel-1-rtc` → P3 HLS | spec **drafted 2026-09-04, awaiting sign-off**; then P1 green on S2 alone | → **9** |
+| **8** | **[spec 58](specs/58-collection-agnostic-verbs.md)** — **CURRENT.** Collection-agnostic verbs: P1 contract → P2 `sentinel-1-rtc` → P3 HLS | spec **SIGNED OFF 2026-09-04**; next: P1 green on S2 alone (network-free) | → **9** |
 | **9** | **[#93](https://github.com/nikhilsrajan/fsd/issues/93)** — Front door: README → tutorial → how-tos | **wants its own spec** (touches spec 41 D1's audience table + ADR 0026) | → `v0.2.0` is cut after spec 58 P3 |
 
 **⚠️ The order changed again (user, 2026-09-04).** #93 was step 8 and CURRENT; the user promoted
@@ -129,9 +129,9 @@ notebook that has just been validated.
 ## Most recent entry
 
 _Last updated: 2026-09-04 (**SPEC 58 DRAFTED — the verbs become collection-agnostic.** Branch
-`worktree-grill-collection-agnostic`, **uncommitted**. A full grilling session with the user
+merged to `main` as `6926982` and pushed. A full grilling session with the user
 produced 18 decisions, 4 ADRs (0028-0031), 3 new issues (#98/#99/#100), 4 new `CONTEXT.md` terms and
-`specs/58-collection-agnostic-verbs.md`. **Awaiting sign-off; no code written.**)_
+`specs/58-collection-agnostic-verbs.md`. **SIGNED OFF; no code written — P1 is next.**)_
 
 _**The axis is Collection, not satellite.** `source` conflated provider with product; the catalog
 column named `satellite` has always held a STAC collection id. Source (`cdse`/`mpc`) and Collection

@@ -5,7 +5,8 @@ summary: fsd's verbs are Sentinel-2-shaped — `scl_mask_classes` sits on three 
 
 # Spec 58 — collection-agnostic verbs
 
-**Status:** **DRAFT — awaiting sign-off.** · **Opened:** 2026-09-04
+**Status:** **SIGNED OFF (user, 2026-09-04)** — all 18 decisions confirmed individually during
+the grilling session. Not implemented. · **Opened:** 2026-09-04
 **Advances:** [#11](https://github.com/nikhilsrajan/fsd/issues/11) (additional sources + the `Source`
 contract), [#21](https://github.com/nikhilsrajan/fsd/issues/21) (source-capability model).
 **Reserves:** [#98](https://github.com/nikhilsrajan/fsd/issues/98) (computed masks — shape only).
@@ -435,7 +436,7 @@ Window B.
 - **Node-side collection resolution via `module:attr`** — works, but forces a user's variant to be a
   packaged, installed module plus an image rebuild, for what is data. ADR 0031.
 
-## 8. Questions at sign-off
+## 8. Questions at sign-off — ALL RESOLVED (user, 2026-09-04)
 
 All eighteen decisions above were put to the user individually during the grilling session of
 2026-09-04 and confirmed. **Two of the author's own claims were checked and found wrong during that
