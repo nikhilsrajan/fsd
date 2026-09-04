@@ -4,6 +4,42 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## `snakemake` and `s3fs` leave the core install for `[local]` and `[s3]` (#80, 2026-09-04)
+
+Neither was ever imported by `src/fsd/` — snakemake is invoked as a subprocess
+(`sys.executable -m snakemake`) and s3fs is an fsspec backend resolved by URL scheme — so both
+are configuration rather than code. Moving them takes the core closure from **104 packages /
+689 MB to 51 / 578** (−53 packages, −111 MB, measured 2026-08-21 on the installed venv).
+
+**This is a required install change, not a transparent one:**
+
+| you run | you now need |
+|---|---|
+| the default `runner="local"` pipeline (incl. `docs/tutorial.md`) | `fsd[local]` |
+| `s3://` transport, including CDSE EODATA download | `fsd[s3]` |
+| **an AML node image** | **`extras=("local", "azure", "mpc")`** |
+
+**The AML row is the trap.** `workflows/shard.py` and `workflows/infer_shard.py` are the in-job
+entrypoints and both call back into `runners.run_local`/`run_local_inference`, so **a node runs
+the same Snakemake orchestration a laptop does.** An image built with the old `("azure","mpc")`
+builds fine and then fails ~30 min into a dispatch. Adding `local` also changes the image digest
+(spec 56), so existing images must be rebuilt — which is the intended consequence, not a side
+effect.
+
+- **Named errors replace upstream tracebacks.** `runners._require_snakemake()` guards all three
+  local entry points and names `[local]` *and* the node-image case; `storage.fs._fs_and_path`
+  maps a failed backend import to the extra that provides it (`s3://` → `[s3]`,
+  `abfss://` → `[azure]`) instead of fsspec's "Install s3fs to access S3", which names a package
+  rather than an extra. An unmapped protocol re-raises untouched.
+- **The split is a gate, not a convention.** Two tests assert neither package is back in
+  `[project] dependencies` and that neither is imported anywhere under `src/fsd/` — nothing at
+  import time would otherwise notice the drift, which is the failure mode #95 names.
+- **`[s3]`, not `[cdse]`.** The issue floated naming it after its main consumer. Rejected: s3fs is
+  generic transport (AWS, MinIO, any `endpoint_url`), `[mpc]` already means *a source*, and naming
+  a transport after one consumer would misfile it.
+- **`numba` stays in core.** It is a real top-level import in `bands/modify.py` and
+  `datacube/ops.py`; #81 tracks it and needs a benchmark first.
+
 ## `run_inference`'s collect + STAC-write window shrinks and threads (spec 57, 2026-08-27)
 
 `_finalize_outputs`'s post-run window (`cog_outputs_to_items` + `write_stac_catalog`) was two

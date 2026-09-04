@@ -14,11 +14,18 @@ runs it at scale. That line is deliberate and permanent.
 ## Install
 
 ```bash
-pip install "git+ssh://git@github.com/nikhilsrajan/fsd.git"
-# extras: [notebooks] matplotlib/sklearn/joblib · [azure] adlfs · [dev] ruff/pytest
+pip install "fsd[local] @ git+ssh://git@github.com/nikhilsrajan/fsd.git"
+# extras: [local] snakemake, for the default runner="local" pipeline · [s3] s3fs, for
+# s3:// transport incl. CDSE EODATA · [azure] adlfs · [aml] the Azure ML scale runner ·
+# [mpc] Planetary Computer · [grid] ROI→S2 tiling · [notebooks] · [dev] ruff/pytest
 ```
 
-Python ≥ 3.11. For development: clone, then `pip install -e ".[dev]"`.
+The core install deliberately carries neither `snakemake` nor `s3fs` — one is only ever a
+subprocess, the other an fsspec backend resolved by URL scheme, and together they cost 53
+packages / 111 MB that an AML-only or MPC-only user never touches. Ask for what you use;
+fsd names the missing extra if you don't.
+
+Python ≥ 3.11. For development: clone, then `pip install -e ".[dev,local]"`.
 
 ## 60 seconds
 

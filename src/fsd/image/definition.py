@@ -6,6 +6,12 @@ A frozen dataclass, no methods that touch the network. It renders a Dockerfile
 (`render_dockerfile`) and a build context (`write_context`); it does not build one --
 that is `fsd.aml.ensure_environment`'s job.
 
+**`local` is REQUIRED on a node image (#80).** `snakemake` moved to the `[local]` extra, and
+the in-job entrypoints (`workflows/shard.py`, `workflows/infer_shard.py`) call straight back
+into `runners.run_local` -- a node runs the same Snakemake orchestration a laptop does.
+An image built without it fails ~30 min into a dispatch, not at build time. So the node
+extras are `[local,azure,mpc]`.
+
 **Why `[azure,mpc]` and not `[aml]` or `[grid]`:** `azure` brings `adlfs` +
 `azure-identity` + `azure-keyvault-secrets` -- blob I/O
 through the storage seam, managed-identity auth, Key Vault creds on the node. `mpc` brings

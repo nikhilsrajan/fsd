@@ -49,10 +49,16 @@ from fsd.image import ImageDefinition
 BASE = ImageDefinition(
     name="fsd-aml-env",
     fsd="path:/path/to/your/fsd/checkout",
-    extras=("azure", "mpc"),
+    extras=("local", "azure", "mpc"),
 )
 INFER = BASE.derive(name="fsd-infer-sklearn", extra_pip=("scikit-learn", "joblib"))
 ```
+
+> **`local` is not optional here (#80).** `snakemake` lives in the `[local]` extra, and the
+> in-job entrypoints (`fsd.workflows.shard`, `fsd.workflows.infer_shard`) call back into
+> `runners.run_local` — a node runs the same Snakemake orchestration a laptop does. Leave it
+> out and the build succeeds, then the dispatch fails ~30 min in. If you built images before
+> 2026-09-04, rebuild them with `local` added.
 
 `ImageDefinition` is a frozen dataclass -- it renders a Dockerfile (`render_dockerfile()`) and a
 build context (`write_context(dir)`); it never builds one and never touches the network by

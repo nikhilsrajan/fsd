@@ -349,3 +349,74 @@ def test_rename_replaces_an_existing_file_atomically(tmp_path):
 
     assert dst.read_text() == "new"
     assert not src.exists()
+
+
+# --- #80: fsspec backends ship in extras, so a missing one must name the extra ------
+# fsspec resolves a backend from the URL scheme and never gets imported by fsd, so
+# upstream raises "Install s3fs to access S3" -- a package name, not the extra that
+# provides it. `_fs_and_path` is the single resolution point, so the mapping lives there.
+
+
+def _raise_import_error(*args, **kwargs):
+    raise ImportError("Install s3fs to access S3")
+
+
+def test_missing_backend_names_the_extra_not_the_package(monkeypatch):
+    import pytest
+
+    monkeypatch.setattr(fs.fsspec.core, "url_to_fs", _raise_import_error)
+    with pytest.raises(ImportError, match=r"fsd\[s3\]"):
+        fs._fs_and_path("s3://bucket/key.tif")
+
+
+def test_missing_backend_maps_abfss_to_the_azure_extra(monkeypatch):
+    import pytest
+
+    monkeypatch.setattr(fs.fsspec.core, "url_to_fs", _raise_import_error)
+    with pytest.raises(ImportError, match=r"fsd\[azure\]"):
+        fs._fs_and_path("abfss://c@a.dfs.core.windows.net/x.tif")
+
+
+def test_an_unmapped_protocol_import_error_is_re_raised_untouched(monkeypatch):
+    import pytest
+
+    monkeypatch.setattr(fs.fsspec.core, "url_to_fs", _raise_import_error)
+    with pytest.raises(ImportError, match="Install s3fs to access S3"):
+        fs._fs_and_path("gs://bucket/key.tif")
+
+
+# --- #80: the extras split is a gate, not a convention -----------------------------
+# snakemake and s3fs are declared nowhere in src/fsd/ -- one is a subprocess, one is an
+# fsspec backend -- so nothing at import time would notice them drifting back into core.
+# The measured cost of that drift is +53 packages / +111 MB on every core install.
+
+
+def _pyproject() -> dict:
+    import pathlib
+    import tomllib
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    return tomllib.loads((root / "pyproject.toml").read_text())
+
+
+def test_snakemake_and_s3fs_are_extras_not_core():
+    project = _pyproject()["project"]
+    core = " ".join(project["dependencies"])
+    extras = project["optional-dependencies"]
+
+    assert "snakemake" not in core, "snakemake is the local runner only (#80)"
+    assert "s3fs" not in core, "s3fs is an fsspec backend, resolved by URL scheme (#80)"
+    assert any("snakemake" in d for d in extras["local"])
+    assert any("s3fs" in d for d in extras["s3"])
+
+
+def test_neither_extra_is_imported_anywhere_in_src():
+    """The premise of #80: both are config, not code. If either gains an `import`, the
+    move stops being free and this test is the place that says so."""
+    import pathlib
+    import re
+
+    src = pathlib.Path(__file__).resolve().parent.parent / "src" / "fsd"
+    pattern = re.compile(r"^\s*(?:import|from)\s+(?:snakemake|s3fs)\b", re.MULTILINE)
+    offenders = [str(p) for p in src.rglob("*.py") if pattern.search(p.read_text())]
+    assert not offenders, f"snakemake/s3fs imported in core code: {offenders}"

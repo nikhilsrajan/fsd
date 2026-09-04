@@ -28,10 +28,12 @@ advance so it doesn't look like a hang.
 git clone https://github.com/nikhilsrajan/fsd.git
 cd fsd
 python3.11 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev,model-example]"
+pip install -e ".[dev,local,model-example]"
 ```
 
-`model-example` brings in `scikit-learn`/`joblib` for the classifier this tutorial trains — fsd
+`local` brings in `snakemake`, which runs the default `runner="local"` pipeline — steps 3 and 6
+below both need it. `model-example` brings in `scikit-learn`/`joblib` for the classifier this
+tutorial trains — fsd
 itself never trains a model (permanent design choice, see [`ARCHITECTURE.md`](../ARCHITECTURE.md)).
 
 ## 1. The data you already have

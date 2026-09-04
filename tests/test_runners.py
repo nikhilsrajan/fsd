@@ -303,3 +303,19 @@ def test_t_first_submit_defaults_to_t_last_submit_for_an_old_caller():
     )["wall"]
     assert wall["driver_prep_seconds"] == pytest.approx(2.0)
     assert wall["submission_span_seconds"] == pytest.approx(0.0)
+
+
+# --- #80: snakemake is an optional extra, so its absence must name the extra --------
+# It is only ever a subprocess (`sys.executable -m snakemake`), so without this guard a
+# missing install surfaces as a child-process returncode far from the user's call.
+
+
+def test_require_snakemake_names_the_local_extra_when_absent(monkeypatch):
+    monkeypatch.setattr(runners.importlib.util, "find_spec", lambda name: None)
+    with pytest.raises(RuntimeError, match=r"\[local\]"):
+        runners._require_snakemake()
+
+
+def test_require_snakemake_is_a_no_op_when_installed(monkeypatch):
+    monkeypatch.setattr(runners.importlib.util, "find_spec", lambda name: object())
+    runners._require_snakemake()
