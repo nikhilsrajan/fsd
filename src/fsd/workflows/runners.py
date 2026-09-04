@@ -9,6 +9,7 @@ dispatches each shard onto an AML cluster, where it calls back into this same mo
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import signal
@@ -45,6 +46,27 @@ _UNIT_IDENTITY_COLS = (
 def _snakefile_path(rel: str = _SNAKEFILE) -> str:
     """Locate a bundled Snakefile (package-data) at runtime."""
     return str(files("fsd").joinpath(rel))
+
+
+def _require_snakemake() -> None:
+    """Fail with the install line rather than a subprocess `No module named snakemake`.
+
+    Snakemake is only ever a subprocess, so a missing install surfaces as a returncode
+    from a child process -- far from the call the user actually made.
+
+    **This fires on AML nodes too, and that is not a contradiction.** `workflows/shard.py`
+    and `workflows/infer_shard.py` are the in-job entrypoints, and both call straight back
+    into `run_local`/`run_local_inference` -- an AML node runs the same Snakemake
+    orchestration a laptop does. So a node image built without `[local]` fails HERE,
+    ~30 min into a dispatch, which is exactly why the message names the image.
+    """
+    if importlib.util.find_spec("snakemake") is None:
+        raise RuntimeError(
+            "the Snakemake runner needs the optional '[local]' extra: "
+            "pip install 'fsd[local]' (#80). "
+            "On an AML node this means the node IMAGE was built without it -- add 'local' "
+            "to ImageDefinition(extras=...); the in-job entrypoint runs the same runner."
+        )
 
 
 def _run(cmd: list[str]) -> int:
@@ -84,6 +106,7 @@ def run_local(
         "njobs_load_images": njobs_load_images,
         "jitter_span": jitter_span,
     }
+    _require_snakemake()
     # Invoke via the running interpreter so it resolves regardless of PATH /
     # venv activation (and the task shells out with the same sys.executable).
     cmd = [
@@ -189,6 +212,7 @@ def run_local_infer_only(
 
 def _run_snakemake(snakefile_rel, cores, conf, *, overwrite=False, dry_run=False, unlock=False):
     """Build + run a snakemake command over `conf` (shared by the inference runners)."""
+    _require_snakemake()
     cmd = [
         sys.executable, "-m", "snakemake",
         "--snakefile", _snakefile_path(snakefile_rel),

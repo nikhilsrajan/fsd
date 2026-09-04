@@ -28,6 +28,7 @@ import shutil
 from typing import Any
 
 import fsspec
+import fsspec.utils
 import numpy as np
 
 from fsd.storage.azure import to_vsi
@@ -71,9 +72,31 @@ SOURCE_PATH_ATTRS_KEY = "fsd:source_path"
 # --- internal helpers --------------------------------------------------------
 
 
+# Which extra ships each fsspec backend. A backend is never imported by fsd -- fsspec
+# resolves it from the URL scheme -- so a missing one surfaces deep inside fsspec as
+# "Install s3fs to access S3", naming a package rather than the extra that provides it.
+_PROTOCOL_EXTRA = {
+    "s3": "s3",
+    "s3a": "s3",
+    "az": "azure",
+    "abfs": "azure",
+    "abfss": "azure",
+    "adl": "azure",
+}
+
+
 def _fs_and_path(url: str, storage_options: dict | None = None):
     """Resolve a URL/path to (filesystem, path-on-that-filesystem)."""
-    return fsspec.core.url_to_fs(url, **(storage_options or {}))
+    try:
+        return fsspec.core.url_to_fs(url, **(storage_options or {}))
+    except ImportError as exc:
+        extra = _PROTOCOL_EXTRA.get(fsspec.utils.get_protocol(url))
+        if extra is None:
+            raise
+        raise ImportError(
+            f"reading {url!r} needs the optional '[{extra}]' extra: "
+            f"pip install 'fsd[{extra}]'."
+        ) from exc
 
 
 def is_local(path: str) -> bool:

@@ -16,11 +16,9 @@ dependencies = [
     "rasterio",
     "pyarrow",        # GeoParquet catalog
     "fsspec",         # storage seam (specs/10)
-    "s3fs",           # S3-compatible transport (any endpoint: AWS, CDSE EODATA, MinIO)
     "pystac",         # STAC export view of the tile catalog (specs/17)
     "pystac-client",  # CDSE STAC catalog discovery (anonymous; replaces sentinelhub)
     "numba",          # median-mosaic kernel
-    "snakemake",      # local runner only (specs/08)
     "tqdm",
     "packaging",     # PEP 508 parsing for bundle requirement checks (specs/44 D5)
 ]
@@ -29,6 +27,16 @@ dependencies = [
 fsd = "fsd.cli:main"
 
 [project.optional-dependencies]
+# Neither of these is ever imported by src/fsd/, so both are config, not code (#80).
+# snakemake is invoked as a subprocess (`sys.executable -m snakemake`) and s3fs is an
+# fsspec backend resolved by URL scheme -- so moving them out costs zero import-time
+# risk and takes the core closure from 104 packages / 689 MB to 51 / 578.
+local = [          # the local runner only (workflows/runners.py, specs/08)
+    "snakemake",
+]
+s3 = [             # S3-compatible transport, any endpoint: CDSE EODATA, AWS, MinIO
+    "s3fs",        # an fsspec backend -- resolved by URL scheme, never imported
+]
 notebooks = [
     "matplotlib",
     "seaborn",
