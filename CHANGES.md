@@ -30,7 +30,13 @@ effect.
   local entry points and names `[local]` *and* the node-image case; `storage.fs._fs_and_path`
   maps a failed backend import to the extra that provides it (`s3://` → `[s3]`,
   `abfss://` → `[azure]`) instead of fsspec's "Install s3fs to access S3", which names a package
-  rather than an extra. An unmapped protocol re-raises untouched.
+  rather than an extra. An unmapped protocol re-raises untouched. **`[mpc]` joined the same
+  pattern on 2026-09-04** (`sources/mpc._import_pc`): `planetary_computer` is imported lazily at
+  two points, so a user without the extra used to get a bare `ModuleNotFoundError` naming a package
+  they never typed, from a call they made as `source="mpc"`. `[grid]`, `[local]`, `[s3]` and
+  `[mpc]` now all name themselves. **`[azure]` and `[aml]` still do not** — `azure.ai.ml` and
+  `azure.identity` are imported lazily at ~10 sites in `workflows/runners.py` and `secrets.py`
+  with no guard, so they remain the inconsistent case. Filed as #97, not fixed here.
 - **The split is a gate, not a convention.** Two tests assert neither package is back in
   `[project] dependencies` and that neither is imported anywhere under `src/fsd/` — nothing at
   import time would otherwise notice the drift, which is the failure mode #95 names.
