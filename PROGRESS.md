@@ -23,7 +23,9 @@ pushed.**
 
 **Before trusting anything below, re-verify rather than assume.** Every dated claim was true when
 written. Cheap checks (on `main`, spec 58 P1 merged):
-`.venv/bin/python -m pytest -q` (expect **1100 passed / 102 skipped**),
+`.venv/bin/python -m pytest -q` (expect **1102 passed / 104 skipped**; a worktree run with
+`PYTHONPATH=src` collects 4 fewer `test_docs.py` params and reports 1100/102 -- same passes,
+no failures either way),
 `.venv/bin/ruff check src tests demos examples`, `git log --oneline -5`, `gh issue list`.
 A quiet stretch in the git log is a break, not a stall — do not read it as a problem to diagnose.
 
