@@ -4366,6 +4366,77 @@ Neither is P5's doing; both belong to whoever touches `test_docs.py` next:
 - **The two register indexes disagree on link style** — `specs/README.md` uses markdown links,
   `runbooks/README.md` bare backticks, so assertion 2 never sees the run-book index.
 
+
+---
+
+# Moved 2026-09-04 — #94's own entry, under the rule #94 introduced
+
+_The first entry archived by the convention the block below installed: **when you add an entry,
+move the one below it.** Moved verbatim (ADR 0022) when the #80 entry replaced it._
+
+_Last updated: 2026-09-03 (**#94 IS DONE — THE `PROGRESS.md` SPLIT IS RE-RUN.** This file went
+**1,782 lines / 19,970 words → 148 lines / 1,762 words**, against spec 41 D12's ~2k-word target.
+**1,737 lines were moved verbatim** into [`docs/progress-archive.md`](docs/progress-archive.md),
+which goes 4,364 → 6,138 lines. Entries were **moved, never rewritten** (ADR 0022); only the two
+continuously-true sections above — the current-state block and THE ORDER — were rewritten.)_
+
+_**The file's own growth was the argument.** It grew ~132 lines in the single day the previous
+session spent writing #85 entries into it: it grows fastest exactly when work is going well, which
+is why "trim it when it gets long" has now failed twice. The guard against a third time is the
+callout at the top of this file — **when you add an entry, move the one below it** — and that is a
+convention, not a gate, so it is the same weakness [#95](https://github.com/nikhilsrajan/fsd/issues/95)
+names for the `src/` changelog comments._
+
+_**The issue's plan did not survive contact with the file.** #94 said "move everything below the
+current-state block and the most recent entry", which assumes one entry format and one
+current-state block. There were **three formats and four structural sections, interleaved**, so the
+file had to be walked rather than cut. Four defects turned up in the walk, none of them in the
+issue, and all four are now retired:_
+
+- _a **`## NEXT: implement spec 54 — Sonnet /effort medium`** block that was a **live instruction ~8
+  days dead** (spec 54 shipped 2026-08-26). This is the second instance of that class in two days —
+  the `ARCHITECTURE.md` refresh on 2026-09-02 caught a live instruction to fill `env.example.sh`
+  that spec 54 had retired — so it is a **pattern**: a stale instruction in a
+  read-on-resume document is worse than a stale fact, because a session **acts** on it. Moved to
+  the archive as a record._
+- _**`## Most recent entry` headed a 2026-08-22 entry**, 1,196 lines below the actual most recent
+  one. It was structural scaffolding of this file, not content, so it was not archived — it now
+  sits where it is true._
+- _**`## Where things stand` was a stale current-state block** opening "Current work: the docs
+  refactor (spec 41)" while the current work was the notebook-usability sprint. Continuously-true
+  by type, so ADR 0022 permits rewriting it; it was **moved verbatim anyway** (its body was mostly
+  point-in-time session narrative) and a fresh one written above, sourced from `docs/history.md`._
+- _**The archive's own frontmatter was wrong.** It claimed to be "the primary archaeology source",
+  but specs 48–53 and the entire notebook-usability sprint appeared in it **zero times** — found
+  the hard way while writing `docs/history.md`. This append closes that gap through 2026-09-03, and
+  the frontmatter now states the coverage, the **two heading forms** (`## 2026-` and `## ✅ 2026-`,
+  18 of 66 — a bare `grep '^## 2026'` mis-splits the file) and the fact that the archive is **not
+  chronological end to end**._
+
+_**Ordering call:** the archive was left **append-only and jumbled** and the convention stated in
+the frontmatter, rather than sorted — sorting touches 4,364 existing lines and makes the diff
+unreviewable, which is a bad trade for a file nobody scrolls. **Cut call:** D12 was taken
+**literally** — this file keeps the current-state block, THE ORDER and **one** entry. The softer
+reading, keeping "the last few" `_Previously:_` blocks, is exactly what produced 19,970 words._
+
+_**One test changed, and it is the interesting part.** The move broke
+`test_relative_links_resolve[docs/progress-archive.md]`: moved entries carry links written relative
+to the **repo root** (`ARCHITECTURE.md`, `docs/adr/`, `specs/53-…`), which resolve from
+`PROGRESS.md` and not from `docs/`. Repointing them is forbidden — they are moved entries. The test
+already declared `_POINT_IN_TIME_EXCLUDE` and said in its own comment that point-in-time corpora are
+excluded "deliberately", but `_docs_with_links()` **never applied the set** to its `docs/` sweep. So
+the exclusion was a comment, not behaviour, and it only looked correct because the archive happened
+to contain no root-relative links until now. The set is now honoured. This is the same shape as #95:
+**a convention that was written down but never enforced.**_
+
+_**Gates:** `pytest -q` **1072 passed / 101 skipped** and `ruff check src tests demos examples`
+clean. That is the worktree baseline (1073/101, itself a known worktree artifact vs `main`'s
+1075/103) **minus exactly one** — the archive's link-check parametrization, now not collected.
+`tests/test_docs.py` alone: **179 passed / 99 skipped**; `git diff --stat`
+reports **1,741 deletions / 1,885 insertions** across the three files, and a byte-level check
+confirms every one of the 1,737 moved lines is present in the archive **unchanged** and no longer
+duplicated here. The insertion surplus is the provenance notes and the two rewritten sections,
+nothing else._
 ---
 
 # Moved 2026-09-03 — the second `PROGRESS.md` split ([#94](https://github.com/nikhilsrajan/fsd/issues/94))

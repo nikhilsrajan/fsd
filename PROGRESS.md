@@ -25,6 +25,7 @@ dependency rather than checked out. That run was the goal stated on day one, and
 | **Serving** | tier-1 (pre-styled XYZ) and tier-2 (pgSTAC + titiler-pgstac) both validated |
 | **Docs** | spec 41 P1–P7 done; `docs/history.md` written and approved 2026-09-02; `src/` changelog comments swept (#85, refs 1,187 → 92) |
 | **Current work** | the **notebook-usability sprint, phase 2** — see THE ORDER below |
+| **Release** | **`v0.1.0` cut 2026-09-04.** SemVer 0.y.z on purpose — the `Source` abstraction does not exist and S1 is coming, so the API will break |
 | **Deferred work** | **GitHub Issues**, number-aligned with the old `TODO.md` rows (`gh issue list`) |
 | **rslearn** | **decision CLOSED 2026-07-31** — no rslearn for download; rslearn-on-Azure is a separate, unstarted project. `spike/rslearn` stays unmerged |
 
@@ -32,7 +33,9 @@ dependency rather than checked out. That run was the goal stated on day one, and
 implied but does not exist); the **radiometry debt** is fixed in code but still live in the Austria
 test archive (cubes ~1000 DN high — fine for infrastructure, not for science); the cluster's
 dominant cost is **warm-up, not work** (36 % of the demo run) and nothing has been done about it;
-and **no tag has been cut** — deliberately, until the asset layout stops moving.
+and the pipeline still **dispatches on a hardcoded pair of source names**. The tag is no longer
+outstanding: `v0.1.0` was cut 2026-09-04 once both things a tag pins — the dependency set and
+the asset layout — had stopped moving.
 
 **Where to look:**
 
@@ -68,14 +71,19 @@ instruction above.
 | # | task | done when | → then |
 |---|---|---|---|
 | ~~**5**~~ | ~~**[#94](https://github.com/nikhilsrajan/fsd/issues/94)** — re-run the `PROGRESS.md` split~~ | **DONE 2026-09-03** — 1,737 lines moved verbatim to the archive; this file **19,970 → 1,762 words**; four defects retired, one of them a test that never ran | → **6**, now current |
-| **6** | **[#93](https://github.com/nikhilsrajan/fsd/issues/93)** — **CURRENT.** Front door: README → tutorial → how-tos | **wants its own spec** (touches spec 41 D1's audience table + ADR 0026) | → the tag, which is still LAST |
+| ~~**6**~~ | ~~**[#80](https://github.com/nikhilsrajan/fsd/issues/80)** — snakemake/s3fs → extras~~ | **DONE 2026-09-04** — core 689 → 578 MB; **AML node images need `local` and must be rebuilt** | → **7** |
+| ~~**7**~~ | ~~**[#82](https://github.com/nikhilsrajan/fsd/issues/82)** — cut + push `v0.1.0`~~ | **DONE 2026-09-04** — the tag is cut | → **8** |
+| **8** | **[#93](https://github.com/nikhilsrajan/fsd/issues/93)** — **CURRENT.** Front door: README → tutorial → how-tos | **wants its own spec** (touches spec 41 D1's audience table + ADR 0026) | → next era: Sentinel-1 as the generalization probe |
 
-**Rider on step 2 — do not lose these.** #80 (snakemake → `[local]`, s3fs → `[s3]`; zero code
-change, −53 packages / −111 MB) and #82 (cut + push `v0.1.0`) both belong **inside** `v0.1.0`, and
-the **tag is LAST** — cut only once the consumer notebook actually runs (user, 2026-08-26: a tag
-pins the dependency set *and* the asset layout, and both were still moving). #80 may land any time
-before the tag; it cannot alter runtime behaviour, so it does not require re-running step 2.
-**#79** is wanted-not-blocking; **#81 must not block** (numba is a real top-level import).
+**Rider on step 2 — DISCHARGED 2026-09-04.** #80 and #82 both landed **inside** `v0.1.0`, as
+the rule required. The rule itself (user, 2026-08-26): a tag pins the dependency set *and* the
+asset layout, so it waits until both stop moving. **Layout** stopped on 2026-09-02 (the
+consumer-repo run); **dependencies** stopped with #80. **#93 was dropped from the tag's
+prerequisites** — it is documentation, and docs pin nothing.
+**One correction to the rider's own text:** it said #80 *"cannot alter runtime behaviour"*. It
+does — an AML node image without `[local]` now fails mid-dispatch. The rider was written from
+the issue's "never imported by `src/fsd/`", which is true and still misleads, because the in-job
+entrypoints call the local runner. **#79** is wanted-not-blocking; **#81 must not block**.
 
 **Why #92 goes first, not after the run:** it edits `notebooks/e2e_austria_aml.ipynb`'s prose and
 `docs/howto/run-at-scale.md`'s config example — cheaper to fix before the run than to re-touch a
@@ -83,66 +91,52 @@ notebook that has just been validated.
 
 ## Most recent entry
 
-_Last updated: 2026-09-03 (**#94 IS DONE — THE `PROGRESS.md` SPLIT IS RE-RUN.** This file went
-**1,782 lines / 19,970 words → 148 lines / 1,762 words**, against spec 41 D12's ~2k-word target.
-**1,737 lines were moved verbatim** into [`docs/progress-archive.md`](docs/progress-archive.md),
-which goes 4,364 → 6,138 lines. Entries were **moved, never rewritten** (ADR 0022); only the two
-continuously-true sections above — the current-state block and THE ORDER — were rewritten.)_
+_Last updated: 2026-09-04 (**#80 IS DONE AND `v0.1.0` IS CUT.** `snakemake` → `[local]` and
+`s3fs` → `[s3]`; the core install goes **104 packages / 689 MB → 51 / 578** (−53 / −111 MB).
+`main` @ the merge of `worktree-issue-80-extras`; `pytest -q` **1081 passed / 103 skipped** — the
+1074 baseline plus exactly the 7 tests added — and `ruff check src tests demos examples` clean.)_
 
-_**The file's own growth was the argument.** It grew ~132 lines in the single day the previous
-session spent writing #85 entries into it: it grows fastest exactly when work is going well, which
-is why "trim it when it gets long" has now failed twice. The guard against a third time is the
-callout at the top of this file — **when you add an entry, move the one below it** — and that is a
-convention, not a gate, so it is the same weakness [#95](https://github.com/nikhilsrajan/fsd/issues/95)
-names for the `src/` changelog comments._
+_**The tag was cut with #93 still open, deliberately.** Your rule (2026-08-26) was that the tag is
+LAST because *"a tag pins the dependency set **and** the asset layout, and both were still
+moving."* The asset layout stopped moving on 2026-09-02 when the consumer-repo run went end to end
+from `rise/`, and the dependency set stopped moving with #80. **#93 is documentation, and docs pin
+nothing** — so it was dropped from the tag's prerequisites while THE ORDER's sequence otherwise
+stands. That is a change to a standing instruction and is recorded here rather than absorbed._
 
-_**The issue's plan did not survive contact with the file.** #94 said "move everything below the
-current-state block and the most recent entry", which assumes one entry format and one
-current-state block. There were **three formats and four structural sections, interleaved**, so the
-file had to be walked rather than cut. Four defects turned up in the walk, none of them in the
-issue, and all four are now retired:_
+_**The find that mattered, and it was nearly missed.** Both packages are "never imported by
+`src/fsd/`", which is what makes the move free — but `workflows/shard.py` and
+`workflows/infer_shard.py` are the **AML in-job entrypoints** and both call straight back into
+`runners.run_local` / `run_local_inference`. **An AML node runs the same Snakemake orchestration a
+laptop does.** Shipping the extras split without touching the image would have built fine and then
+failed **~30 minutes into a dispatch**, on the cluster, with a bare `No module named snakemake`
+from a child process. Node extras are now `("local", "azure", "mpc")`, which **changes the image
+digest** (spec 56) — so **existing AML images must be rebuilt**, and that is the intended
+consequence, not a side effect. This is [[real-run-beats-review]]'s shape exactly: the defect was
+not in the changed lines, it was in what the changed lines were assumed not to reach._
 
-- _a **`## NEXT: implement spec 54 — Sonnet /effort medium`** block that was a **live instruction ~8
-  days dead** (spec 54 shipped 2026-08-26). This is the second instance of that class in two days —
-  the `ARCHITECTURE.md` refresh on 2026-09-02 caught a live instruction to fill `env.example.sh`
-  that spec 54 had retired — so it is a **pattern**: a stale instruction in a
-  read-on-resume document is worse than a stale fact, because a session **acts** on it. Moved to
-  the archive as a record._
-- _**`## Most recent entry` headed a 2026-08-22 entry**, 1,196 lines below the actual most recent
-  one. It was structural scaffolding of this file, not content, so it was not archived — it now
-  sits where it is true._
-- _**`## Where things stand` was a stale current-state block** opening "Current work: the docs
-  refactor (spec 41)" while the current work was the notebook-usability sprint. Continuously-true
-  by type, so ADR 0022 permits rewriting it; it was **moved verbatim anyway** (its body was mostly
-  point-in-time session narrative) and a fresh one written above, sourced from `docs/history.md`._
-- _**The archive's own frontmatter was wrong.** It claimed to be "the primary archaeology source",
-  but specs 48–53 and the entire notebook-usability sprint appeared in it **zero times** — found
-  the hard way while writing `docs/history.md`. This append closes that gap through 2026-09-03, and
-  the frontmatter now states the coverage, the **two heading forms** (`## 2026-` and `## ✅ 2026-`,
-  18 of 66 — a bare `grep '^## 2026'` mis-splits the file) and the fact that the archive is **not
-  chronological end to end**._
+_**The first draft of the error message said "Snakemake is not needed to run on AML."** It was
+written before that call graph was traced, it was wrong, and it would have sent whoever hit the
+node failure looking in the wrong place. The shipped message names the image case explicitly. A
+guard's message is part of the guard._
 
-_**Ordering call:** the archive was left **append-only and jumbled** and the convention stated in
-the frontmatter, rather than sorted — sorting touches 4,364 existing lines and makes the diff
-unreviewable, which is a bad trade for a file nobody scrolls. **Cut call:** D12 was taken
-**literally** — this file keeps the current-state block, THE ORDER and **one** entry. The softer
-reading, keeping "the last few" `_Previously:_` blocks, is exactly what produced 19,970 words._
+- _**Named errors, at the two seams.** `runners._require_snakemake()` covers all three local entry
+  points; `storage.fs._fs_and_path` maps a failed backend import to the extra that provides it
+  (`s3://` → `[s3]`, `abfss://` → `[azure]`) instead of fsspec's "Install s3fs to access S3",
+  which names a **package** rather than an **extra**. An unmapped protocol re-raises untouched._
+- _**The split is a gate, not a convention** — two tests assert neither package is back in
+  `[project] dependencies` and neither is imported under `src/fsd/`. Nothing at import time would
+  otherwise notice the drift; that is precisely #95's failure mode, so #80 was not allowed to
+  reproduce it._
+- _**`[s3]`, not `[cdse]`.** The issue floated naming it after its main consumer. Rejected: s3fs is
+  generic transport (AWS, MinIO, any `endpoint_url`), and `[mpc]` already means *a source* — naming
+  a transport after one consumer would misfile it._
+- _**One bug of my own, caught by the suite:** `import fsspec.utils` inside an `except` made
+  `fsspec` local to the whole function and broke 28 storage tests. Moved to a module-level import._
+- _**`numba` stays in core** (#81) — a real top-level import in `bands/modify.py` and
+  `datacube/ops.py`, and it wants a benchmark first. The floor is ~420 MB regardless._
 
-_**One test changed, and it is the interesting part.** The move broke
-`test_relative_links_resolve[docs/progress-archive.md]`: moved entries carry links written relative
-to the **repo root** (`ARCHITECTURE.md`, `docs/adr/`, `specs/53-…`), which resolve from
-`PROGRESS.md` and not from `docs/`. Repointing them is forbidden — they are moved entries. The test
-already declared `_POINT_IN_TIME_EXCLUDE` and said in its own comment that point-in-time corpora are
-excluded "deliberately", but `_docs_with_links()` **never applied the set** to its `docs/` sweep. So
-the exclusion was a comment, not behaviour, and it only looked correct because the archive happened
-to contain no root-relative links until now. The set is now honoured. This is the same shape as #95:
-**a convention that was written down but never enforced.**_
-
-_**Gates:** `pytest -q` **1072 passed / 101 skipped** and `ruff check src tests demos examples`
-clean. That is the worktree baseline (1073/101, itself a known worktree artifact vs `main`'s
-1075/103) **minus exactly one** — the archive's link-check parametrization, now not collected.
-`tests/test_docs.py` alone: **179 passed / 99 skipped**; `git diff --stat`
-reports **1,741 deletions / 1,885 insertions** across the three files, and a byte-level check
-confirms every one of the 1,737 moved lines is present in the archive **unchanged** and no longer
-duplicated here. The insertion surplus is the provenance notes and the two rewritten sections,
-nothing else._
+_**⚠️ Two things `v0.1.0` does NOT cover, both outside this repo.** The consumer repo `rise/`
+installs `fsd[azure,aml,mpc,grid]` and its image builds with `("azure","mpc")` — **both need
+`local` added** before its next run, or the next dispatch fails on the node. And the workspace
+`CLAUDE.md`'s dev line still reads `pip install -e ".[dev]"`; `pytest` passes on that, but the
+tutorial and any local-runner work need `.[dev,local]`._
