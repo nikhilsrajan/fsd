@@ -31,6 +31,39 @@ runtime deps. Built once per adapter version, referenced by name. Distinct from 
 build Environment.
 _Avoid_: container (too generic), bundle (that's weights+reference, not the image).
 
+## Sources & collections
+
+**Source**:
+The *provider* fsd fetches bytes from — `"cdse"`, `"mpc"`. Decides authentication, transport, and
+whether the native bytes need converting. One source hosts many collections.
+_Avoid_: satellite, provider (say Source), data source (redundant).
+
+**Collection**:
+The *product* being fetched, named by its STAC collection id — `"sentinel-2-l2a"`,
+`"sentinel-1-rtc"`, `"hls2-s30"`. Decides bands, mask, radiometry and grid; it is what a
+`SourceDeclaration` describes. Orthogonal to Source: one collection may be served by several
+sources.
+_Avoid_: satellite (S1 GRD and S1 RTC are the same satellite; HLS is two), product, dataset.
+
+**Collection declaration** (`CollectionDeclaration`):
+The collection-level facts the datacube builder needs — reference band, mask spec, nodata, mosaic
+method — registered per collection id and stamped into the catalog so an artifact self-describes.
+Provider-independent: `sentinel-2-l2a` declares the same thing whether it came from CDSE or MPC.
+_Avoid_: source declaration (it describes a Collection, not a Source), config, schema.
+
+**Canonical band name**:
+The band vocabulary fsd addresses bands by — STAC EO `common_name` values (`red`, `nir`, `nir08`,
+`swir16`, …). Each Collection declares its own mapping from these to its native asset keys, so one
+adapter's `required_bands` works across collections. fsd declares the mapping itself; a provider's
+published `common_name` is not trusted.
+_Avoid_: band alias (that's the mapping, not the name), common band, band code.
+
+**Mosaic partition**:
+The catalog properties a Collection declares must hold a single value within one datacube build —
+`sentinel-1-rtc` declares `sat:orbit_state`, optical collections declare nothing. It exists because
+some products are harmonized for compositing and others are not.
+_Avoid_: orbit filter (that's the user-facing knob), grouping key.
+
 ## Grids & work units
 
 **Grid cell** (a.k.a. S2 grid cell):

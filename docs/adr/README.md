@@ -37,3 +37,7 @@ home. The cited spec/date is the source of record.
 | [0025](0025-one-fact-one-home.md) | One fact, one home — each topic has exactly one owning document; everything else links | spec 41 D9 |
 | [0026](0026-demo-benchmark-example-tutorial-are-four-things.md) | demo ≠ benchmark ≠ example ≠ tutorial — the "demo" gap is three artifacts, not one document | spec 41 D10 |
 | [0027](0027-history-is-append-only.md) | `docs/history.md` is append-only — a maintained container of point-in-time era sections; closes the class ADR 0022 left it out of | spec 43 D3 |
+| [0028](0028-sentinel-1-source-is-rtc-not-grd.md) | The Sentinel-1 collection is `sentinel-1-rtc`, not `sentinel-1-grd` — GRD needs a per-pixel calibration LUT and self-describes nothing | grilling 2026-09-04 |
+| [0029](0029-collections-declare-what-must-not-be-mosaicked.md) | A collection declares what must not be mosaicked together (`mosaic_partition`); S1 enforces `sat:orbit_state`, optical declares nothing | grilling 2026-09-04 |
+| [0030](0030-source-and-collection-are-orthogonal-axes.md) | Source (provider) and Collection (product) are two orthogonal axes; `SourceDeclaration` becomes `CollectionDeclaration` | grilling 2026-09-04 |
+| [0031](0031-collection-strings-resolve-on-the-driver.md) | A `collection=` string resolves on the driver; the resolved declaration travels to nodes as JSON | grilling 2026-09-04 |

@@ -104,7 +104,13 @@ instruction above.
 | ~~**5**~~ | ~~**[#94](https://github.com/nikhilsrajan/fsd/issues/94)** — re-run the `PROGRESS.md` split~~ | **DONE 2026-09-03** — 1,737 lines moved verbatim to the archive; this file **19,970 → 1,762 words**; four defects retired, one of them a test that never ran | → **6**, now current |
 | ~~**6**~~ | ~~**[#80](https://github.com/nikhilsrajan/fsd/issues/80)** — snakemake/s3fs → extras~~ | **DONE 2026-09-04** — core 689 → 578 MB; **AML node images need `local` and must be rebuilt** | → **7** |
 | ~~**7**~~ | ~~**[#82](https://github.com/nikhilsrajan/fsd/issues/82)** — cut + push `v0.1.0`~~ | **DONE 2026-09-04** — the tag is cut | → **8** |
-| **8** | **[#93](https://github.com/nikhilsrajan/fsd/issues/93)** — **CURRENT.** Front door: README → tutorial → how-tos | **wants its own spec** (touches spec 41 D1's audience table + ADR 0026) | → next era: Sentinel-1 as the generalization probe |
+| **8** | **[spec 58](specs/58-collection-agnostic-verbs.md)** — **CURRENT.** Collection-agnostic verbs: P1 contract → P2 `sentinel-1-rtc` → P3 HLS | spec **drafted 2026-09-04, awaiting sign-off**; then P1 green on S2 alone | → **9** |
+| **9** | **[#93](https://github.com/nikhilsrajan/fsd/issues/93)** — Front door: README → tutorial → how-tos | **wants its own spec** (touches spec 41 D1's audience table + ADR 0026) | → `v0.2.0` is cut after spec 58 P3 |
+
+**⚠️ The order changed again (user, 2026-09-04).** #93 was step 8 and CURRENT; the user promoted
+**spec 58** ahead of it after the grilling session. Reason: spec 58 rewrites four verb signatures,
+the README and the tutorial, so writing the front door first would document an API about to break
+twice. Recorded rather than silently re-sequenced, per the standing instruction.
 
 **Rider on step 2 — DISCHARGED 2026-09-04.** #80 and #82 both landed **inside** `v0.1.0`, as
 the rule required. The rule itself (user, 2026-08-26): a tag pins the dependency set *and* the
@@ -122,47 +128,53 @@ notebook that has just been validated.
 
 ## Most recent entry
 
-_Last updated: 2026-09-04 (**THE README IS MPC-FIRST AND THREE OF ITS CLAIMS WERE WRONG.**
-`main` @ `333a0d1`, clean, pushed. `pytest -q` **1083 passed / 103 skipped**, ruff clean.
-**Work stopped here deliberately, with no goal in flight** — see the resume block at the top.)_
+_Last updated: 2026-09-04 (**SPEC 58 DRAFTED — the verbs become collection-agnostic.** Branch
+`worktree-grill-collection-agnostic`, **uncommitted**. A full grilling session with the user
+produced 18 decisions, 4 ADRs (0028-0031), 3 new issues (#98/#99/#100), 4 new `CONTEXT.md` terms and
+`specs/58-collection-agnostic-verbs.md`. **Awaiting sign-off; no code written.**)_
 
-_**The quickstart now needs no account and no credentials.** `source="mpc"` is the default path;
-the creds guard only fires for `source="cdse"` with `runner="local"`. That removed the
-`CdseCredentials` import and the entire credentials prerequisite from the first thing a reader
-runs — and it matches the flagship run, which was **213 MPC granules**, not CDSE._
+_**The axis is Collection, not satellite.** `source` conflated provider with product; the catalog
+column named `satellite` has always held a STAC collection id. Source (`cdse`/`mpc`) and Collection
+(`sentinel-2-l2a`/`sentinel-1-rtc`/`hls2-s30`/`hls2-l30`) become two orthogonal parameters, and
+`SourceDeclaration` is renamed `CollectionDeclaration` (ADR 0030)._
 
-_**Three factual corrections, each found by checking the code rather than reading the prose:**_
+_**Scope: S1 RTC + HLS. MODIS deferred** (needs `native_grid`, unimplemented). **S1 = RTC, not GRD**
+(ADR 0028) — GRD needs a per-pixel range-dependent calibration LUT and declares no `raster:bands` at
+all. My "GRD isn't map-projected" objection was **checked and false**; the decision rests on
+calibration, self-description and grid instead._
 
-- _**`fsd.deploy` was described as "the one verb still a stub."** It has not been since spec 51.
-  **`test_readme_verbs_exist` could not catch this** — it proves a verb *binds* to a live
-  signature, which `deploy` always did. Nothing tests whether the sentence around a call is true.
-  That is the residual gap, and it is the same shape as #95: the check exists, but not for this._
-- _**`demos/E2E_AUSTRIA.md` was labelled the 300-cell benchmark.** It is the *local* walkthrough;
-  the 300-cell run is `E2E_AUSTRIA_AML.md`. Both are now linked and labelled._
-- _**The install line under-specified the quickstart printed directly beneath it.** Step 3 passes
-  `roi=`, which routes through `roi_to_s2_grids` → `[grid]`; MPC needs `[mpc]`. Now
-  `fsd[local,mpc,grid]`, pinned at `v0.1.0`, over **https** rather than ssh._
+_**Two silent bugs found by reading the code, both landing the moment HLS does:** the cube path
+digest has **no collection in it** (`params_key`), and HLS bands are named `B04`/`B08`/`B8A`
+identically to S2 — so an HLS cube and an S2 cube over the same cell/window resolve to the **same
+path**. And `_select_item_files` **silently drops** a requested band an item lacks._
 
-_**`[mpc]` now names itself** (`sources/mpc._import_pc`, the single guarded entry that
-`_import_pc_sign` also routes through). `planetary_computer` was imported lazily at two bare sites,
-so a user without the extra got a `ModuleNotFoundError` naming a package they never typed, from a
-call they made as `source="mpc"`._
+_**Two of my own prep-brief claims were wrong and are recorded in the spec §8:** the pipeline is
+**not** integer-only (`_stack_datacube` takes dtype from the loaded image; `apply_offset`
+early-returns at offset 0), which shrank the radiometry work from a rewrite to four small moves. The
+user corrected a third: the EuroCrops labels **are** 2018 (`GEOM_DATE_`), deliberately matched to the
+imagery — `MFA-2021` is the publication version. That reversed a plan to move everything to 2021._
 
-_**⚠️ A claim I wrote and then disproved, worth keeping.** The `CHANGES.md` draft said "nothing else
-is imported lazily behind an extra." Checking it found **15 bare `azure.ai.ml` / `azure.identity`
-imports** across `workflows/runners.py` and `secrets.py` — so **`[azure]` and `[aml]` still do not
-name themselves**, filed as **[#97](https://github.com/nikhilsrajan/fsd/issues/97)**. It is the
-expensive one: the others fail on a laptop in a second, while `runner="aml"` fails only after
-someone has stood up a workspace, a cluster and images, where a bare import error reads as a broken
-install. `storage.fs` already maps `abfss://` → `[azure]`, so the storage half is covered; the
-**dispatch** half is not._
+_**Don't-reinvent-the-wheel research paid off twice.** NASA's `hls-vi` and GEE both use
+`fmask & bitmask` with bits 1/2/3 — so the proposed design was already the standard idiom. And STAC's
+`eo:bands.common_name` is the right vocabulary, but **MPC's values are wrong for HLS**: it names
+`nir` on both L30 `B05` and S30 `B08`, pairing the two bands NASA's correspondence table explicitly
+declines to pair, and contradicting its own `landsat-c2-l2` which names OLI band 5 `nir08`. fsd
+declares its own alias map._
 
-_**Also added to the README:** `fsd init` / `fsd config` (spec 54/55, previously absent entirely),
-the `deploy` → `"name:version"` → `run_inference(ref, registry=...)` loop, `verify_adapter`, the
-AML-image `[local]` warning, and a **Known limits** section — S2 L2A only, warm-up dominates cluster
-cost, `0.y.z` deliberate. A README that lists only wins is a brochure._
+_**Sentinel-1 orbit mixing is enforced, not warned** (ADR 0029). `mosaic_partition` is a per-collection
+declaration; S1 declares `sat:orbit_state`, optical declares nothing (optical products are harmonized
+for compositing; radar is not). `sat:relative_orbit` is offered and reported but not enforced —
+WorldCereal deliberately does not fix it, and a 250 km swath caps the ROI if you do._
 
-_**Worth not re-deriving:** `tests/test_docs.py` parses the README's Python and binds it against
-live signatures. It rejected a literal `...` placed after a keyword argument in the `deploy`
-example — that is a **SyntaxError**, not a stylistic choice, so README snippets must be valid
-Python even where they are illustrative._
+_**The registry cannot live on the nodes** (ADR 0031). An in-process `register()` dict would raise
+`KeyError` ~30 min into an AML dispatch — the #80 failure shape. The driver resolves `collection=`
+and the declaration travels as JSON in a control file; nodes never consult a registry._
+
+_**Validation needs two windows** because MPC's HLS archive starts 2020-01-01 while the labels are
+2018: Window A (2018, labelled, S2+S1) and Window B (2021, unlabelled, HLS+S2). One grid cell, not
+the 74 GB four-tile ROI. **The user chose to re-download and rebuild on AML** rather than ship a
+migration CLI — which also retires the Austria archive's ~1000 DN radiometry debt._
+
+_**Known gap, not fixed here:** `specs/README.md`'s index table stops at spec 47 — specs 48-57 are
+missing entirely. Its own convention says regenerate rather than hand-patch, so 58 was not added to
+it either. That regeneration is a separate job._
