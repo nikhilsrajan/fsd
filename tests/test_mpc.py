@@ -546,3 +546,31 @@ def test_stac_roundtrip_preserves_dn_offset_for_builder(tmp_path):
     )
     back = stac.items_to_rows(items)
     assert back.iloc[0]["offset"] == pytest.approx(-1000)   # DN-unit recovered, not -0.1
+
+
+# --- the [mpc] extra names itself, like [grid]/[local]/[s3] ------------------------
+# `planetary_computer` is imported lazily at two points, so without this a user who
+# installed fsd without `[mpc]` sees a bare ModuleNotFoundError naming a package they
+# never typed -- from a call they made as source="mpc".
+
+
+def test_missing_planetary_computer_names_the_mpc_extra(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _no_pc(name, *args, **kwargs):
+        if name == "planetary_computer":
+            raise ImportError("No module named 'planetary_computer'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.delitem(__import__("sys").modules, "planetary_computer", raising=False)
+    monkeypatch.setattr(builtins, "__import__", _no_pc)
+    with pytest.raises(ImportError, match=r"fsd\[mpc\]"):
+        mpc._import_pc()
+
+
+def test_import_pc_sign_goes_through_the_same_guard(monkeypatch):
+    """`_import_pc_sign` is the download-path entry; it must not bypass the message."""
+    monkeypatch.setattr(mpc, "_import_pc", lambda: types.SimpleNamespace(sign="SIGN"))
+    assert mpc._import_pc_sign() == "SIGN"

@@ -109,11 +109,31 @@ def _dedupe_reprocessed_items(items: list) -> list:
     ]
 
 
+def _import_pc():
+    """Import `planetary_computer`, naming the extra rather than the package.
+
+    Both MPC entry points reach the package lazily, so without this a user who installed
+    fsd without `[mpc]` gets a bare `ModuleNotFoundError: planetary_computer` -- a package
+    name they never typed, from a call they made as `source="mpc"`. Same shape as
+    `grid.roi_to_s2_grids` -> `[grid]` and `runners._require_snakemake` -> `[local]` (#80).
+    """
+    try:
+        import planetary_computer as pc
+    except ImportError as exc:  # pragma: no cover - env-dependent
+        raise ImportError(
+            "source='mpc' needs the optional '[mpc]' extra: pip install 'fsd[mpc]' "
+            "(brings planetary-computer, which signs MPC asset hrefs). "
+            "On an AML node this means the node IMAGE was built without it."
+        ) from exc
+    return pc
+
+
 def _search_items(roi_gdf: gpd.GeoDataFrame, startdate, enddate, max_cloudcover=None):
     """Query the MPC STAC API for S2 L2A items intersecting the ROI, signed via
     the official `planetary-computer` package."""
-    import planetary_computer as pc
     import pystac_client
+
+    pc = _import_pc()
 
     geom = shapely.unary_union(roi_gdf.to_crs("EPSG:4326")["geometry"])
     client = pystac_client.Client.open(config.MPC_STAC_URL, modifier=pc.sign_inplace)
@@ -459,9 +479,7 @@ def _import_pc_sign():
     """Lazy handle to `planetary_computer.sign` -- same injection-boundary pattern as
     `workflows.runners._import_aml_command`, so `download_shard` stays substitutable in tests
     without requiring the `[mpc]` extra."""
-    import planetary_computer as pc
-
-    return pc.sign
+    return _import_pc().sign
 
 
 def download_shard(
