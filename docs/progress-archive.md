@@ -4367,6 +4367,65 @@ Neither is P5's doing; both belong to whoever touches `test_docs.py` next:
   `runbooks/README.md` bare backticks, so assertion 2 never sees the run-book index.
 
 
+
+---
+
+# Moved 2026-09-04 (later) — the #80 / `v0.1.0` entry
+
+_Moved verbatim (ADR 0022) when the README entry replaced it. **Its closing paragraph names two
+obligations OUTSIDE this repo** (the `rise/` consumer install + image extras, and the workspace
+`CLAUDE.md` dev line). Those were hoisted into `PROGRESS.md`'s continuously-true current-state
+block before this move, precisely so that archiving the entry would not bury them._
+
+_Last updated: 2026-09-04 (**#80 IS DONE AND `v0.1.0` IS CUT.** `snakemake` → `[local]` and
+`s3fs` → `[s3]`; the core install goes **104 packages / 689 MB → 51 / 578** (−53 / −111 MB).
+`main` @ the merge of `worktree-issue-80-extras`; `pytest -q` **1081 passed / 103 skipped** — the
+1074 baseline plus exactly the 7 tests added — and `ruff check src tests demos examples` clean.)_
+
+_**The tag was cut with #93 still open, deliberately.** Your rule (2026-08-26) was that the tag is
+LAST because *"a tag pins the dependency set **and** the asset layout, and both were still
+moving."* The asset layout stopped moving on 2026-09-02 when the consumer-repo run went end to end
+from `rise/`, and the dependency set stopped moving with #80. **#93 is documentation, and docs pin
+nothing** — so it was dropped from the tag's prerequisites while THE ORDER's sequence otherwise
+stands. That is a change to a standing instruction and is recorded here rather than absorbed._
+
+_**The find that mattered, and it was nearly missed.** Both packages are "never imported by
+`src/fsd/`", which is what makes the move free — but `workflows/shard.py` and
+`workflows/infer_shard.py` are the **AML in-job entrypoints** and both call straight back into
+`runners.run_local` / `run_local_inference`. **An AML node runs the same Snakemake orchestration a
+laptop does.** Shipping the extras split without touching the image would have built fine and then
+failed **~30 minutes into a dispatch**, on the cluster, with a bare `No module named snakemake`
+from a child process. Node extras are now `("local", "azure", "mpc")`, which **changes the image
+digest** (spec 56) — so **existing AML images must be rebuilt**, and that is the intended
+consequence, not a side effect. This is [[real-run-beats-review]]'s shape exactly: the defect was
+not in the changed lines, it was in what the changed lines were assumed not to reach._
+
+_**The first draft of the error message said "Snakemake is not needed to run on AML."** It was
+written before that call graph was traced, it was wrong, and it would have sent whoever hit the
+node failure looking in the wrong place. The shipped message names the image case explicitly. A
+guard's message is part of the guard._
+
+- _**Named errors, at the two seams.** `runners._require_snakemake()` covers all three local entry
+  points; `storage.fs._fs_and_path` maps a failed backend import to the extra that provides it
+  (`s3://` → `[s3]`, `abfss://` → `[azure]`) instead of fsspec's "Install s3fs to access S3",
+  which names a **package** rather than an **extra**. An unmapped protocol re-raises untouched._
+- _**The split is a gate, not a convention** — two tests assert neither package is back in
+  `[project] dependencies` and neither is imported under `src/fsd/`. Nothing at import time would
+  otherwise notice the drift; that is precisely #95's failure mode, so #80 was not allowed to
+  reproduce it._
+- _**`[s3]`, not `[cdse]`.** The issue floated naming it after its main consumer. Rejected: s3fs is
+  generic transport (AWS, MinIO, any `endpoint_url`), and `[mpc]` already means *a source* — naming
+  a transport after one consumer would misfile it._
+- _**One bug of my own, caught by the suite:** `import fsspec.utils` inside an `except` made
+  `fsspec` local to the whole function and broke 28 storage tests. Moved to a module-level import._
+- _**`numba` stays in core** (#81) — a real top-level import in `bands/modify.py` and
+  `datacube/ops.py`, and it wants a benchmark first. The floor is ~420 MB regardless._
+
+_**⚠️ Two things `v0.1.0` does NOT cover, both outside this repo.** The consumer repo `rise/`
+installs `fsd[azure,aml,mpc,grid]` and its image builds with `("azure","mpc")` — **both need
+`local` added** before its next run, or the next dispatch fails on the node. And the workspace
+`CLAUDE.md`'s dev line still reads `pip install -e ".[dev]"`; `pytest` passes on that, but the
+tutorial and any local-runner work need `.[dev,local]`._
 ---
 
 # Moved 2026-09-04 — #94's own entry, under the rule #94 introduced
