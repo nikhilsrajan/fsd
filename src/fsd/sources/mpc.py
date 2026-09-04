@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import json
 import os
 from typing import Callable
 
@@ -32,10 +33,10 @@ import geopandas as gpd
 import pandas as pd
 import shapely
 
+from fsd import collections as _collections
 from fsd import config
-from fsd.catalog.declaration import S2_L2A_DECLARATION
+from fsd.catalog.declaration import CollectionDeclaration
 from fsd.raster.cog import stamp_or_reencode
-from fsd.raster.images import _is_reflectance
 from fsd.sources._s2_radiometry import offset_for_item
 from fsd.sources.cdse import _finalize_catalog_gdf, _is_local_path, _roi_gdf
 from fsd.storage import fs
@@ -47,6 +48,12 @@ __all__ = [
     "discover_shard_rows",
     "download_shard",
 ]
+
+# The collections this source serves (spec 58 D15). MPC also hosts sentinel-1-rtc and
+# hls2-s30/hls2-l30 (see specs/58 D17/P3), but P1 registers no declaration for them, so
+# this source-x-collection guard names only what fsd can actually build against today --
+# extended in P2/P3 as each collection's declaration ships.
+SERVED_COLLECTIONS = (config.SATELLITE_S2L2A,)
 
 
 @dataclasses.dataclass
@@ -128,8 +135,11 @@ def _import_pc():
     return pc
 
 
-def _search_items(roi_gdf: gpd.GeoDataFrame, startdate, enddate, max_cloudcover=None):
-    """Query the MPC STAC API for S2 L2A items intersecting the ROI, signed via
+def _search_items(
+    roi_gdf: gpd.GeoDataFrame, startdate, enddate, max_cloudcover=None,
+    collection: str = config.SATELLITE_S2L2A,
+):
+    """Query the MPC STAC API for `collection` items intersecting the ROI, signed via
     the official `planetary-computer` package."""
     import pystac_client
 
@@ -141,7 +151,7 @@ def _search_items(roi_gdf: gpd.GeoDataFrame, startdate, enddate, max_cloudcover=
     if max_cloudcover is not None:
         query = {"eo:cloud_cover": {"lt": max_cloudcover}}
     search = client.search(
-        collections=[config.SATELLITE_S2L2A],
+        collections=[collection],
         datetime=[startdate, enddate],
         intersects=geom,
         query=query,
@@ -150,7 +160,10 @@ def _search_items(roi_gdf: gpd.GeoDataFrame, startdate, enddate, max_cloudcover=
     return list(search.items())
 
 
-def _search_items_unsigned(roi_gdf: gpd.GeoDataFrame, startdate, enddate, max_cloudcover=None):
+def _search_items_unsigned(
+    roi_gdf: gpd.GeoDataFrame, startdate, enddate, max_cloudcover=None,
+    collection: str = config.SATELLITE_S2L2A,
+):
     """Same query as `_search_items`, but **without** the `pc.sign_inplace` modifier
 : the AML fan-out's driver-side discovery must not stamp asset
     hrefs with a SAS token that can expire before a job actually runs on its node --
@@ -163,7 +176,7 @@ def _search_items_unsigned(roi_gdf: gpd.GeoDataFrame, startdate, enddate, max_cl
     if max_cloudcover is not None:
         query = {"eo:cloud_cover": {"lt": max_cloudcover}}
     search = client.search(
-        collections=[config.SATELLITE_S2L2A],
+        collections=[collection],
         datetime=[startdate, enddate],
         intersects=geom,
         query=query,
@@ -172,27 +185,31 @@ def _search_items_unsigned(roi_gdf: gpd.GeoDataFrame, startdate, enddate, max_cl
     return list(search.items())
 
 
-def _items_to_gdf(items) -> gpd.GeoDataFrame:
+def _items_to_gdf(
+    items, *, collection: str, declaration: CollectionDeclaration,
+) -> gpd.GeoDataFrame:
     """Parse MPC STAC items into a catalog GeoDataFrame. Pure — no network — so
     it is unit-testable with duck-typed fake items (`.id`, `.datetime`,
     `.geometry`, `.properties`, `.assets[*].href`)."""
     rows = [
         {
             "id": it.id,
-            "satellite": config.SATELLITE_S2L2A,
+            "collection": collection,
             "timestamp": it.datetime,
             "s3url": _item_self_href(it),
             "cloud_cover": it.properties.get("eo:cloud_cover"),
             "offset": offset_for_item(it),
+            "scale": declaration.scale,
             "nodata": config.NODATA,
+            "properties": json.dumps(dict(it.properties)),
             "geometry": shapely.geometry.shape(it.geometry),
         }
         for it in items
     ]
     gdf = gpd.GeoDataFrame(
-        rows, columns=["id", "satellite", "timestamp", "s3url", "cloud_cover",
-                       "offset", "nodata", "geometry"], geometry="geometry",
-        crs="EPSG:4326",
+        rows, columns=["id", "collection", "timestamp", "s3url", "cloud_cover",
+                       "offset", "scale", "nodata", "properties", "geometry"],
+        geometry="geometry", crs="EPSG:4326",
     )
     gdf["timestamp"] = pd.to_datetime(gdf["timestamp"], utc=True)
     return gdf
@@ -204,17 +221,20 @@ def query_catalog(
     enddate: datetime.datetime,
     *,
     max_cloudcover: float | None = None,
+    collection: str = config.SATELLITE_S2L2A,
 ) -> gpd.GeoDataFrame:
-    """Discover S2 L2A tiles intersecting `roi` within the date range, via the
+    """Discover `collection` tiles intersecting `roi` within the date range, via the
     MPC STAC API (anonymous by default).
 
-    Returns a GeoDataFrame: id, satellite, timestamp, s3url, cloud_cover,
-    offset, nodata, geometry (EPSG:4326). Asserts tile id uniqueness.
+    Returns a GeoDataFrame: id, collection, timestamp, s3url, cloud_cover,
+    offset, scale, nodata, properties, geometry (EPSG:4326). Asserts tile id uniqueness.
     """
+    declaration = _collections.get(collection)
     roi_gdf = _roi_gdf(roi)
-    items = _search_items(roi_gdf, startdate, enddate, max_cloudcover=max_cloudcover)
+    items = _search_items(roi_gdf, startdate, enddate, max_cloudcover=max_cloudcover,
+                           collection=collection)
     items = _dedupe_reprocessed_items(items)
-    gdf = _items_to_gdf(items)
+    gdf = _items_to_gdf(items, collection=collection, declaration=declaration)
     return _finalize_catalog_gdf(gdf, roi_gdf, max_cloudcover)
 
 
@@ -222,23 +242,43 @@ def query_catalog(
 
 
 def _select_item_files(
-    item, bands: list[str], root_folderpath: str
+    item, bands: list[str], root_folderpath: str, *,
+    collection: str = config.SATELLITE_S2L2A,
+    declaration: CollectionDeclaration | None = None,
 ) -> list[tuple[str, str, str]]:
     """Select download files from an MPC item's `assets` — MPC keys bands
     directly (`"B04"`, `"SCL"`, …), simpler than CDSE's `Bxx_YYm`. Returns
-    `[(signed_href, local_dst_path, band), ...]`."""
+    `[(signed_href, local_dst_path, native_band), ...]`.
+
+    `bands` may be canonical STAC EO `common_name`s (spec 58 D8, e.g. `"nir08"`) or
+    already-native asset keys (e.g. `"B8A"`) — `declaration.canonical_to_native`
+    normalizes either spelling to the same native key, so `bands=["B8A"]` and
+    `bands=["nir08"]` select the identical asset (and, upstream, resolve to the same
+    cube path).
+
+    **Raises**, naming the band and collection, when a requested band genuinely does
+    not exist on this item (spec 58 D8) — this used to silently `continue`, which let a
+    cube quietly build with a missing band."""
+    if declaration is None:
+        declaration = _collections.get(collection)
     dst_folder = os.path.join(root_folderpath, item.id)
     selected = []
     for band in bands:
-        asset = item.assets.get(band)
+        native = declaration.canonical_to_native(band)
+        asset = item.assets.get(native)
         if asset is None:
-            continue  # band not available for this item
-        selected.append((asset.href, os.path.join(dst_folder, f"{band}.tif"), band))
+            raise ValueError(
+                f"sources.mpc: requested band {band!r} (native key {native!r}) is not "
+                f"available on item {item.id!r} of collection {collection!r}; available "
+                f"assets: {sorted(item.assets)}."
+            )
+        selected.append((asset.href, os.path.join(dst_folder, f"{native}.tif"), native))
     return selected
 
 
 def _transfer_and_stamp_one(
     src_url: str, dst_path: str, *, band: str, offset: int,
+    declaration: CollectionDeclaration,
     tries: int = 3, base_delay: float = 0.5,
 ) -> tuple[bool, str]:
     """Byte-copy one already-COG asset, then stamp the declared GDAL scale/offset
@@ -266,7 +306,7 @@ def _transfer_and_stamp_one(
         scratch_dir = tempfile.mkdtemp(prefix="fsd_mpc_")
         scratch = os.path.join(scratch_dir, os.path.basename(dst_path))
 
-    is_reflectance = _is_reflectance(band)
+    is_reflectance = declaration.is_radiometry_band(band)
     last: Exception | None = None
     try:
         for attempt in range(tries):
@@ -274,12 +314,12 @@ def _transfer_and_stamp_one(
                 fs.transfer(src_url, scratch)
                 stamp_or_reencode(
                     scratch,
-                    # reflectance-unit offset to match scale=1/10000: a
+                    # reflectance-unit offset to match the declared scale: a
                     # viewer's unscale=true computes DN*scale + offset, so the DN-space
                     # offset (-1000) must be scaled to reflectance too (-> -0.1), else
                     # unscale yields DN/10000 - 1000 ~= -1000 for every pixel (black tile).
-                    offset=offset * config.S2_REFLECTANCE_SCALE if is_reflectance else 0.0,
-                    scale=config.S2_REFLECTANCE_SCALE if is_reflectance else 1.0,
+                    offset=offset * declaration.scale if is_reflectance else 0.0,
+                    scale=declaration.scale if is_reflectance else 1.0,
                     set_nodata_if_missing=config.NODATA,
                 )
                 if not local:
@@ -296,9 +336,11 @@ def _transfer_and_stamp_one(
             shutil.rmtree(scratch_dir, ignore_errors=True)
 
 
-def _append_downloaded(catalog, tile_meta: dict, results: list[tuple]) -> int:
+def _append_downloaded(
+    catalog, tile_meta: dict, results: list[tuple], declaration: CollectionDeclaration,
+) -> int:
     """Group successful (tile_id, dst, ok) downloads by tile and upsert catalog
-    rows. Mirrors `cdse._append_downloaded`, plus `offset`/`nodata`."""
+    rows. Mirrors `cdse._append_downloaded`, plus `offset`/`scale`/`nodata`/`properties`."""
     import collections
 
     files_by_tile = collections.defaultdict(list)
@@ -314,20 +356,22 @@ def _append_downloaded(catalog, tile_meta: dict, results: list[tuple]) -> int:
         r = tile_meta[tile_id]
         rows.append({
             "id": tile_id,
-            "satellite": r["satellite"],
+            "collection": r["collection"],
             "timestamp": r["timestamp"],
             "s3url": r["s3url"],
             "local_folderpath": folder_by_tile[tile_id],
             "files": ",".join(sorted(files)),
             "cloud_cover": r["cloud_cover"],
             "offset": r["offset"],
+            "scale": r.get("scale", declaration.scale),
             "nodata": r["nodata"],
+            "properties": r.get("properties", "{}"),
             "geometry": r["geometry"],
         })
     if rows:
-        # MPC is also S2 L2A -- stamp the collection-level declaration at the one place
-        # this source appends to the catalog.
-        catalog.append(rows, declaration=S2_L2A_DECLARATION)
+        # Stamp the collection-level declaration at the one place this source appends
+        # to the catalog (spec 58 D2: resolved once, driver-side, not re-derived per row).
+        catalog.append(rows, declaration=declaration)
     return sum(len(f) for f in files_by_tile.values())
 
 
@@ -344,8 +388,9 @@ def download(
     progress: bool = False,
     max_concurrent: int | None = None,
     should_stop: Callable[[], bool] | None = None,
+    collection: str = config.SATELLITE_S2L2A,
 ) -> DownloadResult:
-    """Discover matching MPC S2 L2A tiles and download the requested band files
+    """Discover matching MPC `collection` tiles and download the requested band files
     to `root_folderpath`, local or remote/blob. No credentials required: MPC is anonymous.
 
     Unlike `cdse.download`, source assets are already COG — no jp2->COG conversion — so this
@@ -358,13 +403,19 @@ def download(
     import concurrent.futures
     import time
 
+    declaration = _collections.get(collection)
+
     if _is_local_path(root_folderpath):
         fs.makedirs(root_folderpath, exist_ok=True)
 
     roi_gdf = _roi_gdf(roi)
-    items = _search_items(roi_gdf, startdate, enddate, max_cloudcover=max_cloudcover)
+    items = _search_items(roi_gdf, startdate, enddate, max_cloudcover=max_cloudcover,
+                           collection=collection)
     items = _dedupe_reprocessed_items(items)
-    tiles = _finalize_catalog_gdf(_items_to_gdf(items), roi_gdf, max_cloudcover)
+    tiles = _finalize_catalog_gdf(
+        _items_to_gdf(items, collection=collection, declaration=declaration),
+        roi_gdf, max_cloudcover,
+    )
 
     if len(tiles) > max_tiles:
         raise ValueError(
@@ -378,7 +429,9 @@ def download(
     work: list[tuple[str, str, str, str, int]] = []
     for it in kept_items:
         offset = tile_meta[it.id]["offset"]
-        for src, dst, band in _select_item_files(it, bands, root_folderpath):
+        for src, dst, band in _select_item_files(
+            it, bands, root_folderpath, collection=collection, declaration=declaration,
+        ):
             work.append((src, dst, it.id, band, offset))
 
     workers = max_concurrent if max_concurrent is not None else config.MPC_MAX_CONCURRENT
@@ -392,7 +445,8 @@ def download(
         for src, dst, tid, band, offset in work:
             if should_stop is not None and should_stop():
                 break
-            futs[pool.submit(_transfer_and_stamp_one, src, dst, band=band, offset=offset)] = (src, dst, tid)
+            futs[pool.submit(_transfer_and_stamp_one, src, dst, band=band, offset=offset,
+                              declaration=declaration)] = (src, dst, tid)
         for fut in concurrent.futures.as_completed(futs):
             src, dst, tid = futs[fut]
             ok, reason = fut.result()
@@ -408,7 +462,7 @@ def download(
                     flush=True,
                 )
 
-    successful = _append_downloaded(catalog, tile_meta, results)
+    successful = _append_downloaded(catalog, tile_meta, results, declaration)
 
     return DownloadResult(
         successful_count=successful,
@@ -427,7 +481,8 @@ def download(
 # upsert a row once the asset lands. `geometry` rides as WKT (CSV-safe).
 _SHARD_ROW_COLUMNS = [
     "tile_id", "band", "href", "dst", "offset",
-    "satellite", "timestamp", "s3url", "cloud_cover", "nodata", "geometry",
+    "collection", "timestamp", "s3url", "cloud_cover", "scale", "nodata",
+    "properties", "geometry",
 ]
 
 
@@ -439,6 +494,7 @@ def discover_shard_rows(
     root_folderpath: str,
     *,
     max_cloudcover: float | None = None,
+    collection: str = config.SATELLITE_S2L2A,
 ) -> list[dict]:
     """Driver-side discovery for the AML fan-out: query MPC STAC
     (cheap, no bytes -- `_search_items_unsigned`, so no href carries a token yet)
@@ -447,29 +503,44 @@ def discover_shard_rows(
     question #1) and hands each partition to `download_shard`, which signs on
     the node. The ROI-based `download()` above is untouched -- this is a
     parallel, additive discovery path feeding the shard CLI instead.
+
+    Every row of one call shares `collection`, so `download_shard` (node-side) resolves
+    the declaration once, from the first row's `collection` -- via the registry, which is
+    fine here because discovery itself is driver-side (spec 58 D13's node-never-consults-
+    a-registry rule targets the *build* path's collection-variant resolution; this is
+    ingest, where the declaration is only artifact facts, not a user-choosable variant).
     """
+    declaration = _collections.get(collection)
     roi_gdf = _roi_gdf(roi)
-    items = _search_items_unsigned(roi_gdf, startdate, enddate, max_cloudcover=max_cloudcover)
+    items = _search_items_unsigned(roi_gdf, startdate, enddate, max_cloudcover=max_cloudcover,
+                                    collection=collection)
     items = _dedupe_reprocessed_items(items)
-    tiles = _finalize_catalog_gdf(_items_to_gdf(items), roi_gdf, max_cloudcover)
+    tiles = _finalize_catalog_gdf(
+        _items_to_gdf(items, collection=collection, declaration=declaration),
+        roi_gdf, max_cloudcover,
+    )
     tile_meta = {row["id"]: row for _, row in tiles.iterrows()}
     kept_items = [it for it in items if it.id in tile_meta]
 
     rows: list[dict] = []
     for it in kept_items:
         meta = tile_meta[it.id]
-        for href, dst, band in _select_item_files(it, bands, root_folderpath):
+        for href, dst, band in _select_item_files(
+            it, bands, root_folderpath, collection=collection, declaration=declaration,
+        ):
             rows.append({
                 "tile_id": it.id,
                 "band": band,
                 "href": href,
                 "dst": dst,
                 "offset": meta["offset"],
-                "satellite": meta["satellite"],
+                "collection": meta["collection"],
                 "timestamp": meta["timestamp"].isoformat(),
                 "s3url": meta["s3url"],
                 "cloud_cover": meta["cloud_cover"],
+                "scale": meta["scale"],
                 "nodata": meta["nodata"],
+                "properties": meta["properties"],
                 "geometry": meta["geometry"].wkt,
             })
     return rows
@@ -505,6 +576,12 @@ def download_shard(
     if _is_local_path(root_folderpath):
         fs.makedirs(root_folderpath, exist_ok=True)
 
+    # Every row of one shard shares `collection` (`discover_shard_rows` writes it
+    # uniformly), so the declaration is resolved once from the first row -- via the
+    # registry, same judgment call as `discover_shard_rows` (this is ingest, not the
+    # build-variant path D13 guards).
+    declaration = _collections.get(rows[0]["collection"]) if rows else None
+
     workers = max_concurrent if max_concurrent is not None else config.MPC_MAX_CONCURRENT
     start = time.time()
     results: list[tuple[str, str, bool]] = []
@@ -517,19 +594,21 @@ def download_shard(
         for row in rows:
             tid = row["tile_id"]
             tile_meta.setdefault(tid, {
-                "satellite": row["satellite"],
+                "collection": row["collection"],
                 "timestamp": row["timestamp"],
                 "s3url": row["s3url"],
                 "cloud_cover": row["cloud_cover"],
                 "offset": row["offset"],
+                "scale": row.get("scale", declaration.scale if declaration else 1.0),
                 "nodata": row["nodata"],
+                "properties": row.get("properties", "{}"),
                 "geometry": shapely.from_wkt(row["geometry"])
                 if isinstance(row["geometry"], str) else row["geometry"],
             })
             signed_href = sign(row["href"])
             fut = pool.submit(
                 _transfer_and_stamp_one, signed_href, row["dst"],
-                band=row["band"], offset=row["offset"],
+                band=row["band"], offset=row["offset"], declaration=declaration,
             )
             futs[fut] = (row["href"], row["dst"], tid)
         for fut in concurrent.futures.as_completed(futs):
@@ -547,7 +626,7 @@ def download_shard(
                     flush=True,
                 )
 
-    successful = _append_downloaded(catalog, tile_meta, results)
+    successful = _append_downloaded(catalog, tile_meta, results, declaration)
 
     return DownloadResult(
         successful_count=successful,

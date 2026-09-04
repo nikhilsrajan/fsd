@@ -39,7 +39,6 @@ import pytest
 import rasterio
 
 import fsd
-from fsd import config
 from fsd.catalog import declaration as declaration_module
 from fsd.model.adapter import BaseModelAdapter
 from fsd.storage import fs
@@ -207,7 +206,6 @@ def test_pipeline_create_training_data_train_and_infer(tmp_path):
         catalog_filepath=CATALOG_PATH, timestamp_col="timestamp",
         shapefilepath=ROI_PATH, id_col="id", run_folderpath=infer_run_folder,
         startdate=startdate, enddate=enddate, bands=BANDS,
-        scl_mask_classes=config.SCL_MASK_CLASSES,
         mosaic_days=MOSAIC_DAYS, csv_filepath=csv_filepath, label_col=None, cores=1,
     )
     manifest = pd.read_csv(csv_filepath)

@@ -15,6 +15,8 @@ import types
 import geopandas as gpd
 import shapely.geometry as sg
 
+from fsd import collections as _collections
+from fsd import config
 from fsd.sources import cdse
 from fsd.sources.cdse import CdseCredentials
 
@@ -151,15 +153,17 @@ def test_items_to_gdf_parses_stac():
         _fake_item("t1", "2018-06-30T09:57:22Z", 16.0, 48.0, 12.5),
         _fake_item("t2", "2018-07-05T09:57:22Z", 17.0, 48.0, 80.0),
     ]
-    gdf = cdse._items_to_gdf(items)
+    gdf = cdse._items_to_gdf(items, collection=config.SATELLITE_S2L2A,
+                             declaration=_collections.get(config.SATELLITE_S2L2A))
     assert list(gdf["id"]) == ["t1", "t2"]
-    assert list(gdf.columns) == ["id", "satellite", "timestamp", "s3url",
-                                 "cloud_cover", "offset", "nodata", "geometry"]
+    assert list(gdf.columns) == ["id", "collection", "timestamp", "s3url",
+                                 "cloud_cover", "offset", "scale", "nodata",
+                                 "properties", "geometry"]
     assert gdf.crs.to_epsg() == 4326
     assert str(gdf["timestamp"].dt.tz) == "UTC"
     assert gdf["s3url"].iloc[0].startswith("s3://eodata/")
     assert gdf["s3url"].iloc[0].endswith(".SAFE")  # derived from an asset href
-    assert gdf["satellite"].iloc[0] == "sentinel-2-l2a"
+    assert gdf["collection"].iloc[0] == "sentinel-2-l2a"
 
 
 def test_items_to_gdf_derives_offset_from_baseline_closes_30_10():
@@ -169,7 +173,8 @@ def test_items_to_gdf_derives_offset_from_baseline_closes_30_10():
         _fake_item("pre", "2021-06-01T00:00:00Z", 0.0, 0.0, 5.0, baseline="02.14"),
         _fake_item("post", "2022-06-01T00:00:00Z", 0.0, 0.0, 5.0, baseline="04.00"),
     ]
-    gdf = cdse._items_to_gdf(items)
+    gdf = cdse._items_to_gdf(items, collection=config.SATELLITE_S2L2A,
+                             declaration=_collections.get(config.SATELLITE_S2L2A))
     assert list(gdf["offset"]) == [0, -1000]
     assert list(gdf["nodata"]) == [0, 0]
 
@@ -190,7 +195,8 @@ def test_finalize_filters_cloud_and_roi():
         _fake_item("cloudy", "2018-06-30T00:00:00Z", 0.0, 0.0, 90.0),  # overlaps, cloudy
         _fake_item("far", "2018-06-30T00:00:00Z", 50.0, 50.0, 5.0),  # no overlap
     ]
-    gdf = cdse._items_to_gdf(items)
+    gdf = cdse._items_to_gdf(items, collection=config.SATELLITE_S2L2A,
+                             declaration=_collections.get(config.SATELLITE_S2L2A))
     roi = gpd.GeoDataFrame(geometry=[sg.box(0.2, 0.2, 0.5, 0.5)], crs="EPSG:4326")
     out = cdse._finalize_catalog_gdf(gdf, roi, max_cloudcover=50.0)
     assert list(out["id"]) == ["hit"]
@@ -201,7 +207,8 @@ def test_finalize_raises_on_duplicate_ids():
         _fake_item("dup", "2018-06-30T00:00:00Z", 0.0, 0.0, 10.0),
         _fake_item("dup", "2018-07-01T00:00:00Z", 0.0, 0.0, 10.0),
     ]
-    gdf = cdse._items_to_gdf(items)
+    gdf = cdse._items_to_gdf(items, collection=config.SATELLITE_S2L2A,
+                             declaration=_collections.get(config.SATELLITE_S2L2A))
     roi = gpd.GeoDataFrame(geometry=[sg.box(0.2, 0.2, 0.5, 0.5)], crs="EPSG:4326")
     import pytest
 
@@ -361,7 +368,7 @@ def test_download_end_to_end_mocked(monkeypatch, tmp_path):
     monkeypatch.setattr(cdse, "_search_items", lambda *a, **k: [item])
     monkeypatch.setattr(
         cdse, "_select_item_files",
-        lambda it, bands, root, cog=True: [
+        lambda it, bands, root, cog=True, **kw: [
             (f"{cdse._safe_root_from_item(it)}/B02.jp2", str(tmp_path / "tile/B02.jp2")),
             (f"{cdse._safe_root_from_item(it)}/SCL.jp2", str(tmp_path / "tile/SCL.jp2")),
         ],
@@ -402,7 +409,7 @@ def test_download_creates_missing_local_root(monkeypatch, tmp_path):
     monkeypatch.setattr(cdse, "_search_items", lambda *a, **k: [item])
     monkeypatch.setattr(
         cdse, "_select_item_files",
-        lambda it, bands, root, cog=True: [
+        lambda it, bands, root, cog=True, **kw: [
             (f"{cdse._safe_root_from_item(it)}/B02.jp2", os.path.join(root, "tile/B02.jp2")),
         ],
     )
@@ -435,7 +442,7 @@ def test_download_accumulates_timing_bytes_and_by_band(monkeypatch, tmp_path):
     monkeypatch.setattr(cdse, "_search_items", lambda *a, **k: [item])
     monkeypatch.setattr(
         cdse, "_select_item_files",
-        lambda it, bands, root, cog=True: [
+        lambda it, bands, root, cog=True, **kw: [
             (f"{cdse._safe_root_from_item(it)}/B04.jp2", str(tmp_path / "tile/B04.jp2")),
             (f"{cdse._safe_root_from_item(it)}/B08.jp2", str(tmp_path / "tile/B08.jp2")),
         ],
@@ -485,7 +492,7 @@ def test_plan_download_diffs_needed_vs_present(monkeypatch, tmp_path):
                               geometry=[sg.box(0, 0, 1, 1)] * 3, crs="EPSG:4326")
     monkeypatch.setattr(cdse, "query_catalog", lambda *a, **k: needed)
     cat = TileCatalog(str(tmp_path / "c.parquet"))
-    cat.append([{"id": "t1", "satellite": "s2", "timestamp": "2018-01-01T00:00:00Z",
+    cat.append([{"id": "t1", "collection": "s2", "timestamp": "2018-01-01T00:00:00Z",
                  "s3url": "s3://x", "local_folderpath": "x", "files": "B04.tif",
                  "cloud_cover": 1.0, "geometry": sg.box(0, 0, 1, 1)}])
     plan = cdse.plan_download(
@@ -612,7 +619,7 @@ def test_download_cog_accepts_remote_root_via_local_scratch(monkeypatch, tmp_pat
     monkeypatch.setattr(cdse, "_search_items", lambda *a, **k: [item])
     monkeypatch.setattr(
         cdse, "_select_item_files",
-        lambda it, bands, root, cog=True: [
+        lambda it, bands, root, cog=True, **kw: [
             (f"{cdse._safe_root_from_item(it)}/B04.jp2", os.path.join(root, "tile", "B04.tif")),
         ],
     )
@@ -829,7 +836,7 @@ def test_download_cog_pipeline_converts_via_injected_sync_executor(monkeypatch, 
     monkeypatch.setattr(cdse, "_search_items", lambda *a, **k: [item])
     monkeypatch.setattr(
         cdse, "_select_item_files",
-        lambda it, bands, root, cog=True: [
+        lambda it, bands, root, cog=True, **kw: [
             (f"{cdse._safe_root_from_item(it)}/B04.jp2", str(tmp_path / "tile" / "B04.tif")),
         ],
     )
@@ -1005,7 +1012,7 @@ def test_download_all_skip_pass_never_spawns_convert_pool(monkeypatch, tmp_path)
     monkeypatch.setattr(cdse, "_search_items", lambda *a, **k: [item])
     monkeypatch.setattr(
         cdse, "_select_item_files",
-        lambda it, bands, root, cog=True: [
+        lambda it, bands, root, cog=True, **kw: [
             (f"{cdse._safe_root_from_item(it)}/B04.jp2", str(tmp_path / "tile" / "B04.tif")),
         ],
     )
@@ -1107,7 +1114,7 @@ def _setup_multi_tile_download(monkeypatch, tmp_path, n_tiles=4):
     monkeypatch.setattr(cdse, "_search_items", lambda *a, **k: items)
     monkeypatch.setattr(
         cdse, "_select_item_files",
-        lambda it, bands, root, cog=True: [
+        lambda it, bands, root, cog=True, **kw: [
             (f"{cdse._safe_root_from_item(it)}/B04.jp2",
              str(tmp_path / it.id / "B04.tif")),
         ],
@@ -1182,11 +1189,11 @@ def test_catalog_flush_failure_does_not_hang_and_recovers_on_resume(monkeypatch,
     calls = {"n": 0}
     real_append = cdse._append_downloaded
 
-    def flaky_append(catalog, tile_meta, results):
+    def flaky_append(catalog, tile_meta, results, declaration):
         calls["n"] += 1
         if calls["n"] == 1:
             raise OSError("disk full (simulated)")
-        return real_append(catalog, tile_meta, results)
+        return real_append(catalog, tile_meta, results, declaration)
 
     monkeypatch.setattr(cdse, "_append_downloaded", flaky_append)
 

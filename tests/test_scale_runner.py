@@ -237,7 +237,8 @@ def test_run_task_skips_rebuild_if_final_artifact_exists(tmp_path, monkeypatch):
 
     task.run_task(
         str(tmp_path / "geometry.geojson"), str(tmp_path / "catalog.parquet"),
-        TS[0], TS[1], str(out), bands=["B04"], mosaic_days=20, scl_mask_classes=[8],
+        TS[0], TS[1], str(out), bands=["B04"], mosaic_days=20,
+        declaration_filepath="unused",  # never read: the early-return fires first
     )
     assert "called" not in built  # returned early, builder never invoked
 
@@ -285,10 +286,17 @@ def test_geometry_io_round_trips_through_remote_storage(tmp_path):
     with fs.open(shape_url, "w") as f:
         f.write(shape_gdf.to_json())
 
+    from fsd.catalog import declaration as declaration_module
+
+    declaration_url = "memory://d6a/declaration.json"
+    with fs.open(declaration_url, "w") as f:
+        f.write(json.dumps(declaration_module.to_json(declaration_module.S2_L2A_DECLARATION)))
+
     out_url = "memory://d6a/cube"
     task.run_task(
         shape_url, cat_url, TS[0], TS[1], out_url,
-        bands=["B04", "B08", "SCL"], mosaic_days=20, scl_mask_classes=[8],
+        bands=["B04", "B08", "SCL"], mosaic_days=20,
+        declaration_filepath=declaration_url,
         if_missing_files="warn",
     )
 
@@ -314,7 +322,7 @@ def test_setup_reads_caller_geometry_from_remote_storage(tmp_path):
         catalog_filepath=str(cat), timestamp_col="timestamp",
         shapefilepath=shapes_url, id_col="id", run_folderpath=str(tmp_path / "run"),
         startdate=datetime_start(), enddate=datetime_end(),
-        bands=["B04", "B08", "SCL"], scl_mask_classes=[8, 9], mosaic_days=20,
+        bands=["B04", "B08", "SCL"], mosaic_days=20,
         csv_filepath=str(csv), label_col="label",
     )
     df = pd.read_csv(csv)

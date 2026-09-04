@@ -8,7 +8,7 @@ module or wiring a new declaration into `build_datacube`. It has two halves: **i
 
 There is **no `Source` ABC yet** (that formalization is TODO #11) — a source today is
 just a Python module with a `query_catalog(...)` / `download(...)` pair matching the
-documented CDSE/MPC contracts (`fsd/specs/01-sources.md`) plus a `SourceDeclaration`
+documented CDSE/MPC contracts (`fsd/specs/01-sources.md`) plus a `CollectionDeclaration`
 (below). This doc seeds what #11 will eventually codify as an interface.
 
 ## The two halves of the source contract
@@ -32,7 +32,7 @@ Every source's `download(...)` does three things, in order, for each unit of wor
      edit breaks COG validity (a GDAL/source-dependent edge case, not the common path).
 3. **put** — write the normalized artifact to `root_folderpath` (local or blob,
    `fsd.storage.fs.transfer`/`fs.put`) and append a row to the `TileCatalog` (below),
-   **stamping the source's `SourceDeclaration` at that `catalog.append(...)` call**
+   **stamping the source's `CollectionDeclaration` at that `catalog.append(...)` call**
    (spec 35 §4) — this is a **required** step, not optional: `TileCatalog.append(rows,
    declaration=YOUR_DECLARATION)`. Without it, the collection-level declaration is never
    persisted (spec 35 §1/§2), and every downstream build against that catalog raises
@@ -52,7 +52,7 @@ Every source's `download(...)` appends rows shaped like `fsd.catalog.catalog.COL
 | Column | Meaning | Who sets it |
 |---|---|---|
 | `id` | unique tile/granule id | source |
-| `satellite` | collection id | source |
+| `collection` | STAC collection id | source |
 | `timestamp` | acquisition time (UTC) | source |
 | `s3url` | informational source href | source |
 | `local_folderpath` | where the artifact(s) landed | source (`put` step) |
@@ -67,10 +67,10 @@ back-compat shim** (spec 34 `[G4]`): `TileCatalog.read()` does not backfill a le
 catalog missing these columns. A source that predates this schema is disposable —
 re-ingest, don't migrate.
 
-### 3. The builder contract: `SourceDeclaration` (`fsd.catalog.declaration`)
+### 3. The builder contract: `CollectionDeclaration` (`fsd.catalog.declaration`)
 
 `build_datacube` (`fsd.datacube.builder`) has **no `if source == ...`** anywhere. It
-reads a `SourceDeclaration` — the collection-level facts it needs — resolved as
+reads a `CollectionDeclaration` — the collection-level facts it needs — resolved as
 (spec 35 §5): the explicit `declaration=` kwarg to `build_datacube`, else
 `catalog_subset`'s own stamp (`attrs["fsd:declaration"]`, restored by `fs.read_parquet`
 from the catalog Parquet's footer and set on the flattened output by
@@ -85,14 +85,14 @@ This is the field-by-field table (spec 34 §2a) — what the builder reads, and 
 
 | Field | Meaning | S2 L2A default | Where it's read from |
 |---|---|---|---|
-| `reference_band` | the band whose grid every other band resamples onto | `"B08"` | `SourceDeclaration.reference_band` |
-| `native_grid` | `True` = one native global/regional grid; skip the multi-tile CRS-collapse | `False` | `SourceDeclaration.native_grid` — **`True` raises `NotImplementedError`** today (spec 34 `[G2]`: the non-tiled build path ships with the ERA5/CHIRPS spec, not this one) |
-| `mask_spec` | which band is the mask/QA band, how to interpret it, which values mean "masked" | `MaskSpec(band="SCL", mask_type="categorical_classes", classes=SCL_MASK_CLASSES)` | `SourceDeclaration.mask_spec` (`None` = no mask) |
+| `reference_band` | the band whose grid every other band resamples onto | `"B08"` | `CollectionDeclaration.reference_band` |
+| `native_grid` | `True` = one native global/regional grid; skip the multi-tile CRS-collapse | `False` | `CollectionDeclaration.native_grid` — **`True` raises `NotImplementedError`** today (spec 34 `[G2]`: the non-tiled build path ships with the ERA5/CHIRPS spec, not this one) |
+| `mask_spec` | which band is the mask/QA band, how to interpret it, which values mean "masked" | `MaskSpec(band="SCL", mask_type="categorical_classes", classes=SCL_MASK_CLASSES)` | `CollectionDeclaration.mask_spec` (`None` = no mask) |
 | `mask_spec.mask_type` | how to interpret the mask band | `"categorical_classes"` | **only `"categorical_classes"` is implemented** — anything else raises `NotImplementedError` (spec 34 `[G3]`) |
-| `mask_keep` | keep the mask band in the output cube instead of dropping it | `False` | `SourceDeclaration.mask_keep` |
+| `mask_keep` | keep the mask band in the output cube instead of dropping it | `False` | `CollectionDeclaration.mask_keep` |
 | per-row `offset` | additive radiometric offset, applied read-time before the mosaic | S2 baseline-derived | catalog column, carried by `flatten_catalog` |
-| per-row `nodata` | the missing-data sentinel | `0` | catalog column (falls back to `SourceDeclaration.nodata` if the column is absent) |
-| `mosaic_method` | how images in a window are combined | `"median"` | `SourceDeclaration.mosaic_method` (only `"median"` is implemented; a declared-but-unimplemented value is a seam for a future op, not silently ignored — see `ops.py` if you add one) |
+| per-row `nodata` | the missing-data sentinel | `0` | catalog column (falls back to `CollectionDeclaration.nodata` if the column is absent) |
+| `mosaic_method` | how images in a window are combined | `"median"` | `CollectionDeclaration.mosaic_method` (only `"median"` is implemented; a declared-but-unimplemented value is a seam for a future op, not silently ignored — see `ops.py` if you add one) |
 
 **The mask is opt-out per build, not per source**: if `mask_spec.band` is not in the
 `bands` list you pass to `build_datacube`, the mask/drop ops are skipped entirely —
@@ -104,7 +104,7 @@ that *has* a mask (spec 34 #35).
 Every declaration field is documented at its definition in
 `fsd/catalog/declaration.py`; the op-assembly logic in `build_datacube`'s docstring
 says, for each resolved value, "reads X from Y, falls back to Z." A reviewer/newcomer
-should be able to populate a new source's `SourceDeclaration` and ingest path from
+should be able to populate a new source's `CollectionDeclaration` and ingest path from
 those docstrings + this doc, without reading spec 34 itself.
 
 ## Worked example: a CHIRPS-like source (single-band, no mask, native grid)
@@ -117,9 +117,9 @@ look like, to make the contract concrete:
 ```python
 # fsd/sources/chirps.py  (illustrative — not implemented)
 
-from fsd.catalog.declaration import SourceDeclaration
+from fsd.catalog.declaration import CollectionDeclaration
 
-CHIRPS_DECLARATION = SourceDeclaration(
+CHIRPS_DECLARATION = CollectionDeclaration(
     reference_band=None,   # no resample reference: one native grid
     native_grid=True,       # -> build_datacube raises NotImplementedError today
     mask_spec=None,         # no mask/QA band at all
@@ -151,6 +151,6 @@ mask-opt-out has real test coverage (`tests/test_datacube_builder.py`).
 ## Pointer to the future `Source` ABC (#11)
 
 TODO #11 tracks formalizing this contract as a real `fsd.sources.base.Source` ABC
-(`query_catalog`, `download`, a declared `SourceDeclaration` property) instead of the
+(`query_catalog`, `download`, a declared `CollectionDeclaration` property) instead of the
 current "a module that happens to match the documented signature." That work should
 start from this doc's field tables — they are the interface #11 will type-check.

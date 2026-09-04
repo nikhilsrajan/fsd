@@ -61,8 +61,10 @@ ID_COL = "fid"
 LABEL_COL = "crop"
 
 # --- the model-specific part (adapter DemoRF needs B04/B08; SCL masks; B8A is dropped) ---
+# The SCL mask classes are no longer a verb parameter (spec 58 D3) -- they are declared
+# on the `sentinel-2-l2a` CollectionDeclaration (`fsd.collections.get("sentinel-2-l2a")`),
+# and happen to be exactly this list already, so this demo's behavior is unchanged.
 BANDS = ["B04", "B08", "B8A", "SCL"]
-SCL_MASK = [0, 1, 3, 7, 8, 9, 10]
 MOSAIC_DAYS = 20
 
 # --- download guardrails (spec 23 D6) ---
@@ -314,7 +316,7 @@ def step_inference(bundle_dir, catalog_fp, roi_run_fp, grids):
         model=bundle_dir, output_folderpath=os.path.join(OUTDIR, "model_outputs"),
         roi=roi_run_fp, catalog_filepath=catalog_fp,
         startdate=START, enddate=END, mosaic_days=MOSAIC_DAYS, bands=BANDS,
-        scl_mask_classes=SCL_MASK, merge="reproject",
+        merge="reproject",
         cores=INFER_CORES, cubes_per_task=20, overwrite=False, progress=True,
     )
     n = len(result.output_filepaths)

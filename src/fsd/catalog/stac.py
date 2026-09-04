@@ -17,6 +17,7 @@ is implemented here.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 
@@ -28,11 +29,9 @@ from pystac.extensions.projection import ProjectionExtension
 from pystac.extensions.raster import RasterBand, RasterExtension
 from pystac.stac_io import DefaultStacIO
 
-from fsd import config
 from fsd import progress as _progress
 from fsd.catalog import declaration as declaration_module
-from fsd.catalog.declaration import SourceDeclaration
-from fsd.raster.images import _is_reflectance
+from fsd.catalog.declaration import CollectionDeclaration
 from fsd.storage import fs
 
 # A fixed default, deliberately NOT `cores`: `cores` means the node's inference parallelism
@@ -41,13 +40,6 @@ from fsd.storage import fs
 # count. No public knob until a real run asks for one, because an unused knob is a knob that
 # gets set wrong; the [collect]/[stac] segment lines are what a future retune reads.
 _COLLECT_THREADS = 16
-
-# Bands with a categorical mask/QA role rather than a continuous
-# reflectance value — never radiometrically offset, and the default S2 declaration's
-# mask band. Not exhaustive for future non-S2 sources (a source with its own QA band
-# naming supplies its own declaration; this module only needs to render the S2 ingest
-# path's roles).
-_MASK_BANDS = {"SCL"}
 
 # STAC extension URIs we populate beyond eo/proj (added via their helper classes).
 _GRID_EXT = "https://stac-extensions.github.io/grid/v1.1.0/schema.json"
@@ -129,24 +121,27 @@ def _parse_mgrs(item_id: str) -> tuple[str, int] | None:
     return f"{zone}{band}{square}", epsg
 
 
-def _band_role(band: str, reference_band: str = "B08") -> str:
-    """Spec 34 §2a role classification for a band name: `"mask"` (SCL/QA),
-    `"reference"` (the resample-reference band), else `"reflectance"` for an S2
-    optical band, else the generic `"data"` (e.g. AOT/WVP/visual — present in a
-    tile's `files` but not consumed by the builder's radiometry/mask/reference
+def _band_role(band: str, declaration: CollectionDeclaration) -> str:
+    """Spec 34 §2a / spec 58 D5 role classification for a band name: `"mask"` (the
+    declared mask band, e.g. SCL/QA), `"reference"` (the declared resample-reference
+    band), else `"reflectance"` for a band the declaration says carries radiometry
+    (`is_radiometry_band`), else the generic `"data"` (e.g. AOT/WVP/visual — present
+    in a tile's `files` but not consumed by the builder's radiometry/mask/reference
     logic)."""
-    if band in _MASK_BANDS:
+    if declaration.mask_spec is not None and band == declaration.mask_spec.band:
         return "mask"
-    if band == reference_band:
+    if band == declaration.reference_band:
         return "reference"
-    if _is_reflectance(band):
+    if declaration.is_radiometry_band(band):
         return "reflectance"
     return "data"
 
 
-def _media_type_and_roles(filename: str, band: str | None = None) -> tuple[str | None, list[str]]:
+def _media_type_and_roles(
+    filename: str, band: str | None, declaration: CollectionDeclaration,
+) -> tuple[str | None, list[str]]:
     lower = filename.lower()
-    role = [_band_role(band)] if band else []
+    role = [_band_role(band, declaration)] if band else []
     # The role classification rides ALONGSIDE "data" -- never replaces it, and never
     # duplicates it when `_band_role` already returned "data".
     data_roles = ["data", *role] if role and role[0] != "data" else ["data"]
@@ -175,28 +170,39 @@ def _read_proj_fields(href: str) -> dict:
 # --- tile catalog -> STAC items ----------------------------------------------
 
 def tile_catalog_to_items(
-    gdf, *, collection_id=None, read_proj=False, reference_band: str = "B08",
+    gdf, *, collection_id=None, read_proj=False, declaration: CollectionDeclaration | None = None,
 ) -> list[pystac.Item]:
     """Map `TileCatalog` rows (a GeoDataFrame from `.read()`) to STAC Items.
 
     One Item per row (a tile-product acquisition); one asset per band file in `files`.
     Pure-metadata unless `read_proj=True` (which opens each raster for proj:shape/transform).
 
+    `declaration` resolves the mask/reference/radiometry-band facts used for asset role
+    classification and `raster:bands` (spec 58 D5/D14) -- the explicit kwarg, else `gdf`'s
+    own stamp (`fsd.catalog.declaration.from_attrs`), else the S2 L2A default for a
+    hand-built `gdf` (mirrors `builder._resolve_declaration`, without the file-source raise:
+    this is metadata export, not a build).
+
     Spec 34 §1a/§2a: every raster asset (a `.tif`/`.jp2` band file) gets a `raster:bands`
-    entry with the row's declared `offset`/`nodata` (`.get(...)`, defaulting to 0 for a
-    catalog row without them) and the constant reflectance `scale`
-    (`config.S2_REFLECTANCE_SCALE`) for reflectance bands (`scale=1` for mask/other
-    bands — a no-op). This is the *interchange* declaration the builder/other tools
-    read; the load-bearing one for a viewer is the COG's own GDAL tag (stamped at
-    ingest, `fsd.raster.cog.stamp_gdal_tags`) — the two are written with identical
-    values so there is no drift (§1a "no double-application").
+    entry with the row's declared `offset`/`nodata`/`scale` (`.get(...)`, defaulting to the
+    resolved declaration's values for a catalog row without them) for a band the declaration
+    says carries radiometry (`scale=1`/`offset=0` for mask/other bands — a no-op). This is
+    the *interchange* declaration the builder/other tools read; the load-bearing one for a
+    viewer is the COG's own GDAL tag (stamped at ingest,
+    `fsd.raster.cog.stamp_gdal_tags`) — the two are written with identical values so there
+    is no drift (§1a "no double-application").
     """
+    if declaration is None:
+        declaration = declaration_module.from_attrs(gdf) or declaration_module.S2_L2A_DECLARATION
+
     items: list[pystac.Item] = []
     for _, row in gdf.iterrows():
         geom = row["geometry"]
         dt = row["timestamp"].to_pydatetime()
-        coll = collection_id if collection_id is not None else row["satellite"]
+        coll = collection_id if collection_id is not None else row["collection"]
         row_offset = row.get("offset", 0) or 0
+        row_scale = row.get("scale", declaration.scale)
+        row_scale = declaration.scale if not row_scale else row_scale
         row_nodata = row.get("nodata", 0)
         row_nodata = 0 if row_nodata is None else row_nodata
 
@@ -223,7 +229,7 @@ def tile_catalog_to_items(
         for filename in files:
             band = filename.rsplit(".", 1)[0]
             href = _asset_href(row["local_folderpath"], filename)
-            media_type, roles = _media_type_and_roles(filename, band)
+            media_type, roles = _media_type_and_roles(filename, band, declaration)
             asset = pystac.Asset(href=href, media_type=media_type, roles=roles, title=band)
             item.add_asset(band, asset)  # sets asset.owner=item, required before ext(add_if_missing=True)
             if "data" in roles:
@@ -233,16 +239,16 @@ def tile_catalog_to_items(
                         {f"proj:{k}": v for k, v in _read_proj_fields(href).items()}
                     )
                 if media_type in (pystac.MediaType.COG, pystac.MediaType.JPEG2000):
-                    is_reflectance = _band_role(band, reference_band) in ("reflectance", "reference")
+                    is_reflectance = _band_role(band, declaration) in ("reflectance", "reference")
                     RasterExtension.ext(asset, add_if_missing=True).bands = [
                         RasterBand.create(
                             nodata=row_nodata,
-                            # raster:bands offset is reflectance-unit to match scale=1/10000
-                            # — the catalog `row_offset` is DN-unit, so scale
+                            # raster:bands offset is reflectance-unit to match the declared
+                            # scale — the catalog `row_offset` is DN-unit, so scale
                             # it; `items_to_rows` divides it back out. Keeps unscale=true
                             # unit-consistent (DN*scale + offset == (DN+offset_dn)/10000).
-                            offset=row_offset * config.S2_REFLECTANCE_SCALE if is_reflectance else 0,
-                            scale=config.S2_REFLECTANCE_SCALE if is_reflectance else 1,
+                            offset=row_offset * row_scale if is_reflectance else 0,
+                            scale=row_scale if is_reflectance else 1,
                         )
                     ]
 
@@ -463,29 +469,32 @@ def items_to_rows(items: list[pystac.Item]):
         # Spec 34: recover the declared offset/nodata from any asset's raster:bands
         # (all assets on one item share the same tile-level values, §1) — 0 if the
         # item predates the extension (no raster:bands asset at all).
-        offset, nodata = 0, 0
+        offset, nodata, scale = 0, 0, 1.0
         if RasterExtension.has_extension(item):  # item-level: hoisted out of the loop
             for asset in item.assets.values():
                 bands = RasterExtension.ext(asset).bands
                 if bands:
                     nodata = bands[0].nodata or 0
+                    scale = bands[0].scale or 1.0
                     if bands[0].offset:
                         # raster:bands offset is reflectance-unit; the catalog
                         # `offset` column is DN-unit (the builder applies it in DN space), so
                         # divide the scale back out — else a datacube built from a re-imported
                         # catalog would be ~1000 DN high (regression of #10/#30).
-                        scale = bands[0].scale or 1
                         offset = bands[0].offset / scale
         rows.append({
             "id": item.id,
-            "satellite": item.collection_id,
+            "collection": item.collection_id,
             "timestamp": pd.to_datetime(item.datetime, utc=True),
             "s3url": source,
             "local_folderpath": folders.pop() if len(folders) == 1 else ",".join(sorted(folders)),
             "files": ",".join(filenames),
             "cloud_cover": item.properties.get("eo:cloud_cover"),
             "offset": offset,
+            "scale": scale,
             "nodata": nodata,
+            "properties": json.dumps({k: v for k, v in item.properties.items()
+                                       if k not in ("eo:cloud_cover", "grid:code")}),
             "geometry": shapely.geometry.shape(item.geometry),
         })
     return gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
@@ -495,11 +504,11 @@ def items_to_rows(items: list[pystac.Item]):
 #
 # Additive, not authoritative: if the Collection and the catalog Parquet footer
 # ever disagree, the footer wins. Both are written from the same
-# `SourceDeclaration` object (here), so they cannot drift in the write path.
+# `CollectionDeclaration` object (here), so they cannot drift in the write path.
 
 
 def _stamp_collection_declaration(
-    collection: pystac.Collection, decl: SourceDeclaration,
+    collection: pystac.Collection, decl: CollectionDeclaration,
 ) -> None:
     """Mirror `decl` onto `collection`: the mask band's classes as
     the STAC Classification extension's `classification:classes` on an
@@ -526,7 +535,7 @@ def _stamp_collection_declaration(
         ]
 
 
-def collection_to_declaration(collection: pystac.Collection) -> SourceDeclaration | None:
+def collection_to_declaration(collection: pystac.Collection) -> CollectionDeclaration | None:
     """Inverse of `_stamp_collection_declaration`: read the `fsd:declaration`
     mirror back off a Collection, or `None` if it carries no stamp.
     Reads the `fsd:declaration` JSON (the footer's authoritative representation,
@@ -548,7 +557,7 @@ def write_stac_catalog(
     catalog_id: str = "fsd",
     collection_id: str | None = None,
     description: str = "fsd tile catalog (STAC export).",
-    declaration: SourceDeclaration | None = None,
+    declaration: CollectionDeclaration | None = None,
 ) -> str:
     """Write a static, self-contained STAC catalog (catalog.json + collection + item JSONs).
 

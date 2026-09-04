@@ -187,7 +187,7 @@ def _build_archive(tmp_path, *, granules=3, sidecar=True, offset=-1000, nodata=N
 
     from fsd import config
     from fsd.catalog.catalog import TileCatalog
-    from fsd.catalog.declaration import SourceDeclaration
+    from fsd.catalog.declaration import CollectionDeclaration
 
     imagery = tmp_path / "imagery"
     eff_nodata = config.NODATA if nodata is None else nodata
@@ -215,7 +215,7 @@ def _build_archive(tmp_path, *, granules=3, sidecar=True, offset=-1000, nodata=N
             else:
                 (folder / name).write_bytes(b"x" * 128)
         rows.append(dict(
-            id=gid, satellite=config.SATELLITE_S2L2A,
+            id=gid, collection=config.SATELLITE_S2L2A,
             timestamp=f"2018-09-2{i}T10:00:19Z", s3url=f"s3://eodata/{gid}.SAFE",
             local_folderpath=str(folder), files=",".join(names), cloud_cover=1.0,
             offset=offset, nodata=eff_nodata,
@@ -228,7 +228,7 @@ def _build_archive(tmp_path, *, granules=3, sidecar=True, offset=-1000, nodata=N
                    offset=offset * config.S2_REFLECTANCE_SCALE, nodata=eff_nodata)
 
     catalog_fp = str(imagery / "catalog.parquet")
-    TileCatalog(catalog_fp, declaration=SourceDeclaration(reference_band="B08")).append(rows)
+    TileCatalog(catalog_fp, declaration=CollectionDeclaration(reference_band="B08")).append(rows)
     return catalog_fp, str(imagery)
 
 
@@ -315,7 +315,7 @@ def test_archive_trust_requires_a_stamped_source_declaration(tmp_path):
     rows = TileCatalog(catalog_fp).read()
     unstamped = str(tmp_path / "imagery" / "unstamped.parquet")
     TileCatalog(unstamped).append(rows.to_dict("records"))
-    with pytest.raises(demo.PreflightFailure, match="no stamped SourceDeclaration"):
+    with pytest.raises(demo.PreflightFailure, match="no stamped CollectionDeclaration"):
         demo._assert_archive_trustworthy(unstamped, imagery)
 
 

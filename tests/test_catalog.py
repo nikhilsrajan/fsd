@@ -21,7 +21,7 @@ def _box(x0, y0, x1, y1):
 def _row(id, ts, files, geom, **kw):
     base = dict(
         id=id,
-        satellite=config.SATELLITE_S2L2A,
+        collection=config.SATELLITE_S2L2A,
         timestamp=ts,
         s3url=f"s3://eodata/{id}.SAFE",
         local_folderpath=f"/data/{id}",
@@ -149,10 +149,10 @@ def test_constructor_declaration_is_appends_default(tmp_path):
 
 
 def test_append_conflicting_declaration_raises(tmp_path):
-    from fsd.catalog.declaration import MaskSpec, SourceDeclaration
+    from fsd.catalog.declaration import CollectionDeclaration, MaskSpec
 
-    a = SourceDeclaration(reference_band="B04")
-    b = SourceDeclaration(reference_band="B08", mask_spec=MaskSpec(band="SCL", classes=(1,)))
+    a = CollectionDeclaration(reference_band="B04")
+    b = CollectionDeclaration(reference_band="B08", mask_spec=MaskSpec(band="SCL", classes=(1,)))
 
     cat = TileCatalog(str(tmp_path / "catalog.parquet"))
     cat.append([_row("t1", "2024-08-01T10:00:00Z", "B02.jp2", _box(0, 0, 1, 1))], declaration=a)
@@ -163,9 +163,9 @@ def test_append_conflicting_declaration_raises(tmp_path):
 
 
 def test_append_declaration_none_preserves_existing_stamp(tmp_path):
-    from fsd.catalog.declaration import SourceDeclaration
+    from fsd.catalog.declaration import CollectionDeclaration
 
-    a = SourceDeclaration(reference_band="B04")
+    a = CollectionDeclaration(reference_band="B04")
     cat = TileCatalog(str(tmp_path / "catalog.parquet"))
     cat.append([_row("t1", "2024-08-01T10:00:00Z", "B02.jp2", _box(0, 0, 1, 1))], declaration=a)
     # an fsd-agnostic top-up (no declaration= given) must not erase the stamp.
@@ -206,26 +206,28 @@ def test_offset_and_nodata_round_trip(tmp_path):
 
 
 def test_read_does_not_backfill_a_legacy_catalog_missing_offset_nodata(tmp_path):
-    # spec 34 [G4]: no back-compat shim — a catalog written before offset/nodata
-    # existed is disposable (re-ingest, don't migrate), so `.read()` must NOT
-    # silently patch the columns back in.
+    # spec 34 [G4] / spec 58 D12: no back-compat shim — a catalog written before
+    # offset/nodata/scale/properties existed is disposable (re-ingest, don't migrate),
+    # so `.read()` must NOT silently patch the columns back in.
     import geopandas as gpd
     import pandas as pd
 
-    from fsd.catalog.catalog import COLUMNS
     from fsd.storage import fs
 
-    old_cols = [c for c in COLUMNS if c not in ("offset", "nodata")]
+    # `_row()` itself produces none of offset/nodata/scale/properties (they are only
+    # added by `TileCatalog.append`'s backfill or an explicit kwarg), so this gdf is
+    # already exactly what a pre-spec-34/pre-spec-58 catalog would have looked like.
     row = _row("t1", "2024-08-01T10:00:00Z", "B02.jp2", _box(0, 0, 1, 1))
     gdf = gpd.GeoDataFrame([row], geometry="geometry", crs="EPSG:4326")
     gdf["timestamp"] = pd.to_datetime(gdf["timestamp"], utc=True)
-    gdf = gdf[old_cols]
     fp = str(tmp_path / "old_catalog.parquet")
     fs.write_parquet(fp, gdf)
 
     read_back = TileCatalog(fp).read()
     assert "offset" not in read_back.columns
     assert "nodata" not in read_back.columns
+    assert "scale" not in read_back.columns
+    assert "properties" not in read_back.columns
 
 
 def test_declaration_survives_catalog_roundtrip(tmp_path):
@@ -234,9 +236,9 @@ def test_declaration_survives_catalog_roundtrip(tmp_path):
     tuples (replaces the deleted TODO-#42 pin, which this closes)."""
     import geopandas as gpd
 
-    from fsd.catalog.declaration import MaskSpec, SourceDeclaration
+    from fsd.catalog.declaration import CollectionDeclaration, MaskSpec
 
-    custom = SourceDeclaration(
+    custom = CollectionDeclaration(
         reference_band="B04",
         mask_spec=MaskSpec(band="QA", classes=(1, 2, 3)),
         mask_keep=True,

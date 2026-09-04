@@ -80,7 +80,8 @@ TRAIN_FP = os.path.join(ROOT, "shapefiles/AT_2018_TRAIN.geojson")
 ID_COL = "fid"
 LABEL_COL = "crop"
 BANDS = ["B04", "B08", "B8A", "SCL"]
-SCL_MASK = [0, 1, 3, 7, 8, 9, 10]
+# SCL mask classes are declared on the sentinel-2-l2a CollectionDeclaration now (spec 58
+# D3), not a verb parameter -- they happen to already be this list, so no behavior change.
 MOSAIC_DAYS = 20
 START = datetime.datetime(2018, 4, 1)
 END = datetime.datetime(2018, 9, 30)
@@ -586,12 +587,13 @@ def _assert_cog_tags_match_catalog(row) -> None:
 
     A header read (no pixels decoded), one band per sampled granule.
     """
+    from fsd.catalog.declaration import S2_L2A_DECLARATION
     from fsd.raster import rio_open
-    from fsd.raster.images import _is_reflectance
 
     band_file = next(
         (f.strip() for f in str(row["files"]).split(",")
-         if f.strip().endswith(".tif") and _is_reflectance(os.path.splitext(f.strip())[0])),
+         if f.strip().endswith(".tif")
+         and S2_L2A_DECLARATION.is_radiometry_band(os.path.splitext(f.strip())[0])),
         None,
     )
     if band_file is None:
@@ -628,7 +630,7 @@ def _assert_archive_trustworthy(catalog_fp: str, dst_folderpath: str) -> dict:
     catalog = TileCatalog(catalog_fp)
     rows = catalog.read()
     if catalog.declaration is None:
-        fail("D14: catalog carries no stamped SourceDeclaration.")
+        fail("D14: catalog carries no stamped CollectionDeclaration.")
 
     # Every declared asset, keyed `<granule_id>/<filename>`; the extensions come from
     # the catalog itself (not a hardcoded `*.tif`) so a declared sidecar -- CDSE
@@ -735,7 +737,7 @@ def step_training_data(ml_client, root: str, catalog_fp: str, adapter, local_exp
     td = fsd.create_training_data(
         label_polygons=train_url, catalog_filepath=catalog_fp,
         startdate=START, enddate=END, mosaic_days=MOSAIC_DAYS, bands=BANDS,
-        id_col=ID_COL, label_col=LABEL_COL, scl_mask_classes=SCL_MASK,
+        id_col=ID_COL, label_col=LABEL_COL,
         export_folderpath=local_export_fp, adapter=adapter,
         # `median_per_id` is the MODELLING UNIT, not a size trick (run-book 40): one
         # `np.nanmedian` row per labelled field instead of every pixel inside it. The
@@ -803,7 +805,7 @@ def step_inference(ml_client, root: str, bundle_dir: str, catalog_fp: str, outdi
         model=bundle_dir, output_folderpath=f"{root.rstrip('/')}/model_outputs",
         roi=roi_url, catalog_filepath=catalog_fp,
         startdate=START, enddate=END, mosaic_days=MOSAIC_DAYS, bands=BANDS,
-        scl_mask_classes=SCL_MASK, merge="reproject",
+        merge="reproject",
         storage="azure", runner="aml", runner_kwargs=runner_kwargs, overwrite=False,
     )
     dispatch_timings = _new_dispatch_timings(root, before)

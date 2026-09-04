@@ -28,6 +28,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 
+from fsd import collections as _collections
 from fsd import config
 from fsd import progress as _progress
 from fsd.bands import modify as _modify
@@ -42,8 +43,10 @@ from fsd.model.features import apply_features as _apply_features
 from fsd.model.features import resolve_aggregate as _resolve_aggregate
 from fsd.model.verify_image import verify_image as _verify_image
 from fsd.raster.cog import to_cog as _to_cog
+from fsd.sources.cdse import SERVED_COLLECTIONS as _CDSE_SERVED_COLLECTIONS
 from fsd.sources.cdse import CdseCredentials
 from fsd.sources.cdse import download as _cdse_download
+from fsd.sources.mpc import SERVED_COLLECTIONS as _MPC_SERVED_COLLECTIONS
 from fsd.sources.mpc import download as _mpc_download
 from fsd.storage import fs
 from fsd.storage.azure import configure_storage as _configure_storage
@@ -158,6 +161,36 @@ def _check_window(startdate, enddate, mosaic_days, bands) -> list[str]:
 def _raise_preflight(errs: list[str]) -> None:
     if errs:
         raise PreflightError("preflight failed:\n  - " + "\n  - ".join(errs))
+
+
+_SOURCE_SERVED_COLLECTIONS = {"cdse": _CDSE_SERVED_COLLECTIONS, "mpc": _MPC_SERVED_COLLECTIONS}
+
+
+def _check_source_collection(source: str, collection: str) -> list[str]:
+    """Not every (source, collection) pair is valid (spec 58 D15) -- each source module
+    declares what it serves; an unserved pair raises at preflight, naming what the source
+    DOES serve, rather than failing deep inside discovery."""
+    served = _SOURCE_SERVED_COLLECTIONS.get(source)
+    if served is not None and collection not in served:
+        return [
+            f"source={source!r} does not serve collection={collection!r}; "
+            f"source={source!r} serves: {sorted(served)}."
+        ]
+    return []
+
+
+def _check_cloudcover_capability(collection: str, max_cloudcover: float) -> list[str]:
+    """`max_cloudcover` requires the collection to declare `supports_cloud_cover=True`
+    (spec 58 D6) -- passing it against a collection with no cloud-cover concept (e.g.
+    Sentinel-1) would otherwise silently be a no-op filter."""
+    declaration = _collections.get(collection)
+    if not declaration.supports_cloud_cover:
+        return [
+            f"max_cloudcover={max_cloudcover!r} was given but collection={collection!r} "
+            "declares supports_cloud_cover=False (spec 58 D6) -- this collection has no "
+            "cloud-cover concept, so the filter would silently do nothing."
+        ]
+    return []
 
 
 def _check_resume_identity(csv_filepath: str, grids: gpd.GeoDataFrame, output_folderpath: str) -> None:
@@ -298,7 +331,8 @@ def download(
     dst_folderpath: str,
     creds: CdseCredentials | None = None,
     *,
-    source: str = "cdse",
+    source: str = "mpc",
+    collection: str = config.SATELLITE_S2L2A,
     max_tiles: int,
     max_cloudcover: float | None = None,
     cog: bool = True,
@@ -307,13 +341,24 @@ def download(
     runner: str = "local",
     runner_kwargs: dict | None = None,
 ) -> str:
-    """Fetch S2 L2A tiles for the ROI/date range into `dst_folderpath`, build/append its
-    TileCatalog, and return the catalog filepath (feed it to `create_training_data`).
+    """Fetch `collection` tiles for the ROI/date range into `dst_folderpath`, build/append
+    its TileCatalog, and return the catalog filepath (feed it to `create_training_data`).
 
-    `source`: `"cdse"` (default) wraps `sources.cdse.download` and requires
-    `creds`; `"mpc"` wraps `sources.mpc.download` (Microsoft Planetary Computer,
-    anonymous by default — `creds` is not required and `cog` is ignored, MPC assets
-    are already COG). Preflighted. `storage` is a seam; only local is wired here.
+    `source` (provider) and `collection` (product) are orthogonal (spec 58 D1/ADR 0030):
+    `source="mpc"` (default) wraps `sources.mpc.download` (Microsoft Planetary Computer,
+    anonymous by default — `creds` is not required and `cog` is ignored, MPC assets are
+    already COG); `source="cdse"` wraps `sources.cdse.download` and requires `creds`. Not
+    every `(source, collection)` pair is valid -- each source serves a fixed set of
+    collections (`sources.mpc.SERVED_COLLECTIONS`/`sources.cdse.SERVED_COLLECTIONS`); an
+    unserved pair raises at preflight, naming what the source DOES serve (spec 58 D15).
+    The default `source` changed `"cdse"` -> `"mpc"` (spec 58 D1): the documented,
+    credential-free happy path should not require credentials by default. Preflighted.
+    `storage` is a seam; only local is wired here.
+
+    `max_cloudcover` requires the collection to declare `supports_cloud_cover=True` (spec
+    58 D6, a discovery-only capability, e.g. every optical collection but not Sentinel-1) --
+    passing it against a collection with no cloud-cover concept raises rather than
+    silently being a no-op filter.
 
     `runner="local"` (default) downloads in-process, as above. `runner="aml"` dispatches
     onto an Azure ML cluster instead, colocated with blob: CDSE runs as **one** job; MPC
@@ -322,7 +367,11 @@ def download(
     one of `vault_url=`+`secret_name=` (Key Vault) or `creds_url=` (blob JSON) — see
     `workflows.runners.run_aml_download`. `creds` is ignored for `runner="aml"`: the
     dispatched job reads them on the node instead, so `roi` must be a url the node can
-    also read, never an in-memory GeoDataFrame.
+    also read, never an in-memory GeoDataFrame. **P1 note:** the AML download path
+    (`runner="aml"`) is not yet collection-aware end-to-end -- it always dispatches
+    against `collection`'s discovery query correctly, but its command-line plumbing
+    doesn't yet carry a non-default `collection` to the node; P2/P3 extend it alongside
+    the first non-S2 collection that actually needs cluster-scale download.
 
     `dst_folderpath` is the identity of this download: its `TileCatalog` is what a
     re-run diffs against to skip what is already there, so re-running with a different `roi`/
@@ -335,10 +384,14 @@ def download(
         errs += _check_window(startdate, enddate, 20, bands)
     if source not in ("cdse", "mpc"):
         errs.append(f"source={source!r} must be one of 'cdse', 'mpc'.")
+    else:
+        errs += _check_source_collection(source, collection)
     if max_tiles < 1:
         errs.append(f"max_tiles ({max_tiles}) must be >= 1.")
     if runner == "local" and source == "cdse" and creds is None:
         errs.append("creds (CdseCredentials) required for source='cdse' with runner='local'.")
+    if max_cloudcover is not None and not errs:
+        errs += _check_cloudcover_capability(collection, max_cloudcover)
     _raise_preflight(errs)
 
     _configure_storage(storage)
@@ -362,12 +415,14 @@ def download(
             roi=roi, startdate=startdate, enddate=enddate, bands=bands,
             root_folderpath=dst_folderpath, catalog=catalog,
             max_tiles=max_tiles, max_cloudcover=max_cloudcover, progress=progress,
+            collection=collection,
         )
     else:
         _cdse_download(
             roi=roi, startdate=startdate, enddate=enddate, bands=bands,
             root_folderpath=dst_folderpath, catalog=catalog, creds=creds,
             max_tiles=max_tiles, max_cloudcover=max_cloudcover, cog=cog, progress=progress,
+            collection=collection,
         )
     return catalog_filepath
 
@@ -387,12 +442,12 @@ def create_training_data(
     export_folderpath: str,
     *,
     label_col: str | None = None,
-    scl_mask_classes: list[int] = config.SCL_MASK_CLASSES,
     adapter=None,
     feature_sequence=None,
     aggregate=None,
     cores: int = 1,
     source: str = "mpc",
+    collection: str = config.SATELLITE_S2L2A,
     download: bool = False,
     max_tiles: int | None = None,
     max_cloudcover: float | None = None,
@@ -465,12 +520,20 @@ def create_training_data(
             f"overwrite={overwrite!r} must be one of {list(_VALID_OVERWRITE)} (spec 49 D4)."
         )
 
+    # Canonicalize bands to native asset keys (spec 58 D8) as early as possible: every
+    # downstream use -- the adapter check, the flatten identity, the cube digest -- must
+    # see one spelling, or `bands=["B8A"]` and `bands=["nir08"]` would behave differently
+    # despite naming the identical band.
+    _declaration = _collections.get(collection)
+    bands = [_declaration.canonical_to_native(b) for b in bands]
+
     startdate, enddate, date_errs = _normalize_window(startdate, enddate)
     errs = _check_local_seams(runner, storage) + date_errs
     if not date_errs:
         errs += _check_window(startdate, enddate, mosaic_days, bands)
     if adapter is not None:
-        req = list(getattr(adapter, "required_bands", []) or [])
+        req = [_declaration.canonical_to_native(b)
+               for b in (getattr(adapter, "required_bands", []) or [])]
         missing = [b for b in req if b not in bands]
         if missing:
             errs.append(f"adapter.required_bands not in requested bands: {missing}")
@@ -533,7 +596,7 @@ def create_training_data(
         identity = _flatten_identity_from_request(
             gdf, id_col=id_col, run_folderpath=run_folderpath,
             startdate=startdate, enddate=enddate, mosaic_days=mosaic_days,
-            bands=bands, scl_mask_classes=scl_mask_classes,
+            bands=bands, collection=collection,
             mosaic_scheme=config.MOSAIC_SCHEME,
             adapter=adapter, feature_sequence=feature_sequence, aggregate=aggregate,
         )
@@ -582,6 +645,8 @@ def create_training_data(
     if download:
         if source not in ("cdse", "mpc"):
             catalog_errs.append(f"source={source!r} must be one of 'cdse', 'mpc'.")
+        else:
+            catalog_errs += _check_source_collection(source, collection)
         if max_tiles is None or max_tiles < 1:
             catalog_errs.append(
                 f"max_tiles (>= 1) is required when download=True (got {max_tiles!r})."
@@ -590,6 +655,8 @@ def create_training_data(
             catalog_errs.append(
                 "creds (CdseCredentials) required for source='cdse' with runner='local'."
             )
+        if max_cloudcover is not None and not catalog_errs:
+            catalog_errs += _check_cloudcover_capability(collection, max_cloudcover)
     else:
         catalog_present = fs.exists(catalog_filepath)
         if not catalog_present:
@@ -618,7 +685,7 @@ def create_training_data(
         dst_folderpath = os.path.dirname(catalog_filepath.rstrip("/")) or "."
         _download_verb(
             roi=shapefilepath, startdate=startdate, enddate=enddate, bands=bands,
-            dst_folderpath=dst_folderpath, creds=creds, source=source,
+            dst_folderpath=dst_folderpath, creds=creds, source=source, collection=collection,
             max_tiles=max_tiles, max_cloudcover=max_cloudcover, cog=cog,
             storage=storage, runner=runner, runner_kwargs=runner_kwargs,
         )
@@ -635,7 +702,7 @@ def create_training_data(
         catalog_filepath=catalog_filepath, timestamp_col="timestamp",
         shapefilepath=shapefilepath, id_col=id_col, run_folderpath=run_folderpath,
         startdate=startdate, enddate=enddate, bands=bands,
-        scl_mask_classes=scl_mask_classes, mosaic_days=mosaic_days,
+        mosaic_days=mosaic_days,
         csv_filepath=csv_filepath, label_col=label_col, cores=cores,
         # Setup is scoped to the shortfall unless the caller forces a cube rebuild, in
         # which case setup re-reads the catalog too -- otherwise a rebuild would be fed by
@@ -643,6 +710,7 @@ def create_training_data(
         # re-runs and `overwrite="flatten"` both take the scoped path.
         overwrite_setup_csv=build_overwrite,
         overwrite=build_overwrite, runner=runner, runner_kwargs=runner_kwargs,
+        collection=collection,
     )
 
     # Flatten phase delegates to `flatten_training_data` -- no duplicated reduce/
@@ -687,12 +755,12 @@ def _flatten_identity(input_df: pd.DataFrame, *, id_col, filepath_col, adapter, 
         [str(row[id_col]), str(row[filepath_col])] for _, row in input_df.iterrows()
     )
     params: dict = {}
-    for col in ("bands", "mosaic_days", "startdate", "enddate", "scl_mask_classes",
+    for col in ("bands", "mosaic_days", "startdate", "enddate", "collection",
                "mosaic_scheme"):
         if col in input_df.columns:
-            # An empty `scl_mask_classes=[]` writes `",".join([])` == "" to the CSV, which
-            # reads back as NaN, not "" -- normalize, or this never matches
-            # `_flatten_identity_from_request`'s freshly-computed "" for the same request.
+            # An empty/NaN field round-trips through CSV as NaN, not "" -- normalize,
+            # or this never matches `_flatten_identity_from_request`'s freshly-computed
+            # "" for the same request.
             params[col] = sorted(set(input_df[col].fillna("").astype(str)))
     params["aggregate"] = _fingerprint_aggregate(aggregate)
     params["features"] = _fingerprint_features(adapter, feature_sequence)
@@ -706,7 +774,7 @@ def _flatten_identity(input_df: pd.DataFrame, *, id_col, filepath_col, adapter, 
 def _flatten_identity_from_request(
     gdf: gpd.GeoDataFrame, *, id_col: str, run_folderpath: str,
     startdate, enddate, mosaic_days: int, bands: list[str],
-    scl_mask_classes: list[int], mosaic_scheme: str,
+    collection: str, mosaic_scheme: str,
     adapter, feature_sequence, aggregate,
 ) -> dict:
     """The same identity `_flatten_identity` computes, but from the REQUEST rather than
@@ -729,7 +797,7 @@ def _flatten_identity_from_request(
     """
     window_segment = _create_datacube.window_folder_segment(
         startdate, enddate, mosaic_days, bands=bands, mosaic_scheme=mosaic_scheme,
-        scl_mask_classes=scl_mask_classes,
+        collection=collection, declaration=_collections.get(collection),
     )
     # `input.csv` never gets a row for a shape `setup` found no imagery for, so
     # `_flatten_identity` -- computed FROM `input.csv` -- never names them either. Without
@@ -749,7 +817,7 @@ def _flatten_identity_from_request(
         "mosaic_days": [str(mosaic_days)],
         "startdate": [str(pd.to_datetime(startdate, utc=True))],
         "enddate": [str(pd.to_datetime(enddate, utc=True))],
-        "scl_mask_classes": [",".join(str(v) for v in scl_mask_classes)],
+        "collection": [collection],
         "mosaic_scheme": [mosaic_scheme],
         "aggregate": _fingerprint_aggregate(aggregate),
         "features": _fingerprint_features(adapter, feature_sequence),
@@ -1364,7 +1432,7 @@ def run_inference(
     bands: list[str] | None = None,
     grid_size_km: float = 5,
     scale_fact: float = 1.1,
-    scl_mask_classes: list[int] | None = None,
+    collection: str = config.SATELLITE_S2L2A,
     # --- shared ---
     predict_batch_size: int | None = None,
     skip_nan: bool = True,
@@ -1462,7 +1530,7 @@ def run_inference(
             model, spec, roi, output_folderpath, errs,
             catalog_filepath=catalog_filepath, startdate=startdate, enddate=enddate,
             mosaic_days=mosaic_days, bands=bands, grid_size_km=grid_size_km,
-            scale_fact=scale_fact, scl_mask_classes=scl_mask_classes,
+            scale_fact=scale_fact, collection=collection,
             predict_batch_size=predict_batch_size, skip_nan=skip_nan, merge=merge,
             merge_crs=merge_crs, cores=cores, cubes_per_task=cubes_per_task, overwrite=overwrite,
             collection_id=collection_id, dt=dt, runner=runner, runner_kwargs=runner_kwargs,
@@ -1663,7 +1731,7 @@ def _imagery_missing_message(roi, startdate, enddate, bands, *, catalog_filepath
 def _run_inference_roi(
     model, spec, roi, output_folderpath, errs, *,
     catalog_filepath, startdate, enddate, mosaic_days, bands,
-    grid_size_km, scale_fact, scl_mask_classes,
+    grid_size_km, scale_fact, collection,
     predict_batch_size, skip_nan, merge, merge_crs, cores, cubes_per_task, overwrite,
     collection_id, dt, runner="local", runner_kwargs=None, registry=None,
 ) -> InferenceResult:
@@ -1681,7 +1749,14 @@ def _run_inference_roi(
     if startdate is not None and enddate is not None:
         startdate, enddate, date_errs = _normalize_window(startdate, enddate)
         errs += date_errs
-    required = set(spec.get("required_bands") or [])
+    # Canonicalize bands and the adapter's required_bands to native asset keys (spec 58
+    # D8) before comparing -- one may be spelled canonically ("nir08"), the other
+    # natively ("B8A"), and both must resolve to the same set for this check to mean
+    # anything.
+    _declaration = _collections.get(collection)
+    if bands is not None:
+        bands = [_declaration.canonical_to_native(b) for b in bands]
+    required = {_declaration.canonical_to_native(b) for b in (spec.get("required_bands") or [])}
     want_t = int(spec.get("n_timestamps") or 0)
     if bands is not None:
         missing = required - set(bands)
@@ -1781,16 +1856,14 @@ def _run_inference_roi(
     # so a re-run resumes -- but ONLY if that cached work list still corresponds to THIS
     # request: resume-by-existence alone lets a stale input.csv from a different roi silently
     # win (#66). That identity check ran above, before this function wrote anything.
-    if scl_mask_classes is None:
-        scl_mask_classes = list(config.SCL_MASK_CLASSES)
     if not fs.exists(csv_filepath):
         try:
             _create_datacube.setup(
                 catalog_filepath=catalog_filepath, timestamp_col="timestamp",
                 shapefilepath=grids_filepath, id_col="id", run_folderpath=run_folderpath,
                 startdate=startdate, enddate=enddate, bands=bands,
-                scl_mask_classes=scl_mask_classes, mosaic_days=mosaic_days,
-                csv_filepath=csv_filepath, label_col=None,
+                mosaic_days=mosaic_days,
+                csv_filepath=csv_filepath, label_col=None, collection=collection,
             )
         except ValueError as exc:
             raise PreflightError(_imagery_missing_message(
@@ -1892,7 +1965,7 @@ def verify_adapter(
     cell: str | None = None,
     grid_size_km: float = 5,
     scale_fact: float = 1.1,
-    scl_mask_classes: list[int] | None = None,
+    collection: str = config.SATELLITE_S2L2A,
     predict_batch_size: int | None = None,
     skip_nan: bool = True,
     runner: str = "local",
@@ -1994,7 +2067,11 @@ def verify_adapter(
     # as in `run_inference`: resolve before `_model_spec` reads `bundle.json` off it.
     model = _resolve_model_ref(model, registry, why="verify_adapter")
     spec = _model_spec(model)
-    required = set(spec.get("required_bands") or [])
+    # Canonicalize (spec 58 D8) before comparing -- see the identical comment in
+    # `_run_inference_roi`.
+    _declaration = _collections.get(collection)
+    bands = [_declaration.canonical_to_native(b) for b in bands]
+    required = {_declaration.canonical_to_native(b) for b in (spec.get("required_bands") or [])}
     missing = required - set(bands)
     if missing:
         errs.append(f"bands is missing model-required {sorted(missing)}.")
@@ -2028,9 +2105,6 @@ def verify_adapter(
             f"smaller than one cell, or its geometry is degenerate."
         )
     _raise_preflight(errs)
-
-    if scl_mask_classes is None:
-        scl_mask_classes = list(config.SCL_MASK_CLASSES)
 
     fs.makedirs(export_folderpath)
     grids_filepath = os.path.join(export_folderpath, "grids.geojson")
@@ -2070,7 +2144,7 @@ def verify_adapter(
     identity = {
         "roi": roi if isinstance(roi, str) else roi_gdf.to_json(default=str),
         "startdate": str(startdate), "enddate": str(enddate), "mosaic_days": int(mosaic_days),
-        "bands": sorted(bands), "scl_mask_classes": sorted(scl_mask_classes),
+        "bands": sorted(bands), "collection": collection,
         "grid_size_km": grid_size_km, "scale_fact": scale_fact, "cell": chosen_cell,
     }
     cube_filepath = os.path.join(export_folderpath, "datacube.npy")
@@ -2126,9 +2200,9 @@ def verify_adapter(
                 catalog_filepath=catalog_filepath, timestamp_col="timestamp",
                 shapefilepath=cell_filepath, id_col="id", run_folderpath=build_folderpath,
                 startdate=startdate, enddate=enddate, bands=bands,
-                scl_mask_classes=scl_mask_classes, mosaic_days=mosaic_days,
+                mosaic_days=mosaic_days,
                 csv_filepath=build_csv_filepath, label_col=None, cores=1,
-                runner=runner, runner_kwargs=runner_kwargs,
+                runner=runner, runner_kwargs=runner_kwargs, collection=collection,
             )
         except ValueError as exc:
             raise PreflightError(_imagery_missing_message(

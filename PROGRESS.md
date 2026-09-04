@@ -8,18 +8,22 @@ this — read [`docs/history.md`](docs/history.md).
 
 ## Resuming after a break — start here
 
-**Nothing is in flight.** As of **2026-09-04** the tree is clean, `main` == `origin/main`, there are
-no worktrees and no unmerged branches except `spike/rslearn` (intentional, pushed, and closed as a
-decision). **`v0.1.0` is cut and pushed.** There is no handoff document, because there was no goal
-in progress when work stopped — that is the normal state, not a gap.
+**Spec 58 P1 is implemented, reviewed and merged into `main` — the one open action is pushing it.**
+As of **2026-09-05** P1 landed on `main` via `--no-ff` (worktree + branch pruned); review found and
+fixed one real bug and two untested acceptance criteria, all recorded in "Most recent entry" below.
+**The merge is local and unpushed** — pushing is outward-facing and waits on the user. `main` is
+otherwise clean and unmerged-branch-free except `spike/rslearn` (intentional). **`v0.1.0` is cut and
+pushed.**
 
-1. Read this file top to bottom. It is ~1.8k words by design; it is the whole picture.
-2. `gh issue list` — the open work. Nothing here is blocked on a decision you have to remember.
-3. Pick from **THE ORDER** below, which is still sequenced. **#93 (the front door) is next**, and it
-   wants its own spec before implementation.
+1. Read this file top to bottom. It is ~2k words by design; it is the whole picture.
+2. Push `main` if the user agrees, then start the **re-download run-book** (it could not begin before
+   P1 merged — P1 is what changes the catalog schema), then spec 58 **P2** (`sentinel-1-rtc`).
+3. `gh issue list` — the open work. Nothing here is blocked on a decision you have to remember.
+4. Otherwise pick from **THE ORDER** below, which is still sequenced.
 
 **Before trusting anything below, re-verify rather than assume.** Every dated claim was true when
-written. Cheap checks: `.venv/bin/python -m pytest -q` (expect **1083 passed / 103 skipped**),
+written. Cheap checks (on `main`, spec 58 P1 merged):
+`.venv/bin/python -m pytest -q` (expect **1100 passed / 102 skipped**),
 `.venv/bin/ruff check src tests demos examples`, `git log --oneline -5`, `gh issue list`.
 A quiet stretch in the git log is a break, not a stall — do not read it as a problem to diagnose.
 
@@ -55,7 +59,7 @@ dependency rather than checked out. That run was the goal stated on day one, and
 | **Scale-out** | AML runner seam; download, build, flatten and inference all fan out. Reference run `20260729T132222Z`: 18.8 min, 8/8 steps, 97 jobs, 213 granules, 300 grid cells → 300 COGs + STAC + a merged map |
 | **Serving** | tier-1 (pre-styled XYZ) and tier-2 (pgSTAC + titiler-pgstac) both validated |
 | **Docs** | spec 41 P1–P7 done; `docs/history.md` written and approved 2026-09-02; `src/` changelog comments swept (#85, refs 1,187 → 92) |
-| **Current work** | the **notebook-usability sprint, phase 2** — see THE ORDER below |
+| **Current work** | **spec 58** — P1 merged 2026-09-05 (unpushed); next the re-download run-book, then P2 `sentinel-1-rtc`. See THE ORDER below |
 | **Release** | **`v0.1.0` cut 2026-09-04.** SemVer 0.y.z on purpose — the `Source` abstraction does not exist and S1 is coming, so the API will break |
 | **Deferred work** | **GitHub Issues**, number-aligned with the old `TODO.md` rows (`gh issue list`) |
 | **rslearn** | **decision CLOSED 2026-07-31** — no rslearn for download; rslearn-on-Azure is a separate, unstarted project. `spike/rslearn` stays unmerged |
@@ -104,7 +108,7 @@ instruction above.
 | ~~**5**~~ | ~~**[#94](https://github.com/nikhilsrajan/fsd/issues/94)** — re-run the `PROGRESS.md` split~~ | **DONE 2026-09-03** — 1,737 lines moved verbatim to the archive; this file **19,970 → 1,762 words**; four defects retired, one of them a test that never ran | → **6**, now current |
 | ~~**6**~~ | ~~**[#80](https://github.com/nikhilsrajan/fsd/issues/80)** — snakemake/s3fs → extras~~ | **DONE 2026-09-04** — core 689 → 578 MB; **AML node images need `local` and must be rebuilt** | → **7** |
 | ~~**7**~~ | ~~**[#82](https://github.com/nikhilsrajan/fsd/issues/82)** — cut + push `v0.1.0`~~ | **DONE 2026-09-04** — the tag is cut | → **8** |
-| **8** | **[spec 58](specs/58-collection-agnostic-verbs.md)** — **CURRENT.** Collection-agnostic verbs: P1 contract → P2 `sentinel-1-rtc` → P3 HLS | spec **SIGNED OFF 2026-09-04**; next: P1 green on S2 alone (network-free) | → **9** |
+| **8** | **[spec 58](specs/58-collection-agnostic-verbs.md)** — **CURRENT.** Collection-agnostic verbs: P1 contract → P2 `sentinel-1-rtc` → P3 HLS | **P1 IMPLEMENTED + REVIEWED + MERGED 2026-09-05** (`--no-ff` onto `main`, worktree pruned; **local, unpushed**). Review fixed one real bug + two untested ACs; pytest **1100 passed / 102 skipped**, ruff clean. Next: push → re-download run-book → P2 | → **9** |
 | **9** | **[#93](https://github.com/nikhilsrajan/fsd/issues/93)** — Front door: README → tutorial → how-tos | **wants its own spec** (touches spec 41 D1's audience table + ADR 0026) | → `v0.2.0` is cut after spec 58 P3 |
 
 **⚠️ The order changed again (user, 2026-09-04).** #93 was step 8 and CURRENT; the user promoted
@@ -128,53 +132,55 @@ notebook that has just been validated.
 
 ## Most recent entry
 
-_Last updated: 2026-09-04 (**SPEC 58 DRAFTED — the verbs become collection-agnostic.** Branch
-merged to `main` as `6926982` and pushed. A full grilling session with the user
-produced 18 decisions, 4 ADRs (0028-0031), 3 new issues (#98/#99/#100), 4 new `CONTEXT.md` terms and
-`specs/58-collection-agnostic-verbs.md`. **SIGNED OFF; no code written — P1 is next.**)_
+_Last updated: 2026-09-05 (**SPEC 58 P1 REVIEWED — one real bug found and fixed, two acceptance
+criteria were claimed but untested.** Reviewed in worktree `spec58-p1` against
+`specs/58-collection-agnostic-verbs.md` §4/§5. Independently re-ran `pytest -q`
+(**1100 passed / 102 skipped / 0 failed**, +3 tests added by this review; the tutorial fixture's
+4 real-data tests are included, not run separately) and `ruff check src tests demos examples`
+(clean). **Verdict: mergeable after the fixes below**, which are in the same branch. The P1
+implementation entry moved verbatim to [`docs/progress-archive.md`](docs/progress-archive.md).)_
 
-_**The axis is Collection, not satellite.** `source` conflated provider with product; the catalog
-column named `satellite` has always held a STAC collection id. Source (`cdse`/`mpc`) and Collection
-(`sentinel-2-l2a`/`sentinel-1-rtc`/`hls2-s30`/`hls2-l30`) become two orthogonal parameters, and
-`SourceDeclaration` is renamed `CollectionDeclaration` (ADR 0030)._
+_**The bug: the D13 control file was addressed per RUN, not per unit.** `setup` wrote the resolved
+declaration to `<run_folderpath>/declaration.json` — one file for a whole run folder. But a run
+folder holds rows from many `setup` calls (`_UNIT_IDENTITY_COLS` carries `collection` precisely so
+different collections coexist in one `input.csv`), and `_build_shortfall` dispatches **every**
+still-missing row in that file regardless of which call wrote it. So a second `setup` with a
+different collection silently overwrote the file the first call's nodes still point at → the wrong
+mask/radiometry, written to a cube path that names a different collection, with the build-skip then
+treating it as valid. Not reachable in P1 (one collection is registered) and certain to bite in P2.
+**Fixed:** the control file now lives at `<run_folderpath>/<window_segment>/declaration.json` — the
+window segment already digests `collection` + the declaration (D4), so it is exactly the right
+granularity. Same failure shape as [[fsd-addressing-granularity]]: address per unit path, never one
+file per run._
 
-_**Scope: S1 RTC + HLS. MODIS deferred** (needs `native_grid`, unimplemented). **S1 = RTC, not GRD**
-(ADR 0028) — GRD needs a per-pixel range-dependent calibration LUT and declares no `raster:bands` at
-all. My "GRD isn't map-projected" objection was **checked and false**; the decision rests on
-calibration, self-description and grid instead._
+_**Two ACs were claimed met but had no test.** **AC9**'s driver half ("the control file carries the
+declaration JSON") was untested — only the node's *read* was covered, by hand-written fixtures.
+**AC10**'s first half ("`from_json` on a v1 footer still parses") was untested — the nearest test
+deletes one optional field from a **v2** footer. Both now have tests: `test_backward_walk.py::
+test_setup_writes_a_window_scoped_declaration_control_file` (which is also the regression guard for
+the bug above) and two in `test_declaration.py` pinning a frozen v1 footer literal + the
+version-check-before-unknown-field-check ordering. AC1-AC8 verified as claimed; **AC3 (bit-identical
+S2) re-derived independently rather than trusted** — `radiometry_bands` equals the old
+`_is_reflectance` regex over every band in `S2L2A_ALL_BANDS`, and `apply_offset`'s new dtype-range
+clip is identical to the old literal `0..65535` for `uint16`._
 
-_**Two silent bugs found by reading the code, both landing the moment HLS does:** the cube path
-digest has **no collection in it** (`params_key`), and HLS bands are named `B04`/`B08`/`B8A`
-identically to S2 — so an HLS cube and an S2 cube over the same cell/window resolve to the **same
-path**. And `_select_item_files` **silently drops** a requested band an item lacks._
+_**Two smaller fixes:** both new tests that register throwaway collections leaked them into the
+global in-process `fsd.collections.REGISTRY` (which `restamp_cli`'s `--declaration` choices are a
+view over) — now torn down in a `finally`. And `tests/data/tutorial/catalog.parquet`'s in-place
+migration left `scale`/`properties` appended after `geometry`, so the fixture did not match the
+`catalog.COLUMNS` order every real `TileCatalog.append` produces — reordered, values/geometry/CRS/
+stamp asserted unchanged._
 
-_**Two of my own prep-brief claims were wrong and are recorded in the spec §8:** the pipeline is
-**not** integer-only (`_stack_datacube` takes dtype from the loaded image; `apply_offset`
-early-returns at offset 0), which shrank the radiometry work from a rewrite to four small moves. The
-user corrected a third: the EuroCrops labels **are** 2018 (`GEOM_DATE_`), deliberately matched to the
-imagery — `MFA-2021` is the publication version. That reversed a plan to move everything to 2021._
+_**Three things flagged, deliberately NOT changed** (two need the user, one is P2 scope): (1) **D14's
+field table is not exhaustive** — `native_grid`, `mask_keep` and `supports_cloud_cover` are in
+neither the artifact-fact nor the build-policy group, so a variant may currently differ from the
+catalog's stamp on `native_grid` without raising. The code matches the spec's table exactly, so this
+is a **spec** gap, not an implementation one, and a spec change needs sign-off. (2) **The STAC export
+drops the catalog's new `properties` column** — `tile_catalog_to_items` builds items with
+`properties={}`, so a catalog round-tripped through STAC loses the `sat:orbit_state` D9 will need in
+P2. Outside P1's ACs. (3) `stac.tile_catalog_to_items`'s `row_scale` fallback uses `if not
+row_scale`, which lets a `NaN` through (`not nan` is `False`); only reachable from a hand-built
+catalog, since `append` defaults the column. **The P1-scoped-out AML download path was checked and
+is genuinely safe**, not a silent gap: both sources' `SERVED_COLLECTIONS` is `("sentinel-2-l2a",)`,
+so a non-default `collection` cannot reach it at all today._
 
-_**Don't-reinvent-the-wheel research paid off twice.** NASA's `hls-vi` and GEE both use
-`fmask & bitmask` with bits 1/2/3 — so the proposed design was already the standard idiom. And STAC's
-`eo:bands.common_name` is the right vocabulary, but **MPC's values are wrong for HLS**: it names
-`nir` on both L30 `B05` and S30 `B08`, pairing the two bands NASA's correspondence table explicitly
-declines to pair, and contradicting its own `landsat-c2-l2` which names OLI band 5 `nir08`. fsd
-declares its own alias map._
-
-_**Sentinel-1 orbit mixing is enforced, not warned** (ADR 0029). `mosaic_partition` is a per-collection
-declaration; S1 declares `sat:orbit_state`, optical declares nothing (optical products are harmonized
-for compositing; radar is not). `sat:relative_orbit` is offered and reported but not enforced —
-WorldCereal deliberately does not fix it, and a 250 km swath caps the ROI if you do._
-
-_**The registry cannot live on the nodes** (ADR 0031). An in-process `register()` dict would raise
-`KeyError` ~30 min into an AML dispatch — the #80 failure shape. The driver resolves `collection=`
-and the declaration travels as JSON in a control file; nodes never consult a registry._
-
-_**Validation needs two windows** because MPC's HLS archive starts 2020-01-01 while the labels are
-2018: Window A (2018, labelled, S2+S1) and Window B (2021, unlabelled, HLS+S2). One grid cell, not
-the 74 GB four-tile ROI. **The user chose to re-download and rebuild on AML** rather than ship a
-migration CLI — which also retires the Austria archive's ~1000 DN radiometry debt._
-
-_**Known gap, not fixed here:** `specs/README.md`'s index table stops at spec 47 — specs 48-57 are
-missing entirely. Its own convention says regenerate rather than hand-patch, so 58 was not added to
-it either. That regeneration is a separate job._

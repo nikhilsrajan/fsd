@@ -72,8 +72,9 @@ create_datacube.run_create_datacube(
     catalog_filepath=CATALOG, timestamp_col="timestamp",
     shapefilepath=SHAPES_SUB, id_col="fid", run_folderpath=RUN,
     startdate=datetime.datetime(2018, 6, 1), enddate=datetime.datetime(2018, 7, 10),
-    bands=["B04", "B08", "B8A", "SCL"], scl_mask_classes=[0, 1, 3, 7, 8, 9, 10],
+    bands=["B04", "B08", "B8A", "SCL"],
     mosaic_days=20, csv_filepath=CSV, label_col="EC_hcat_n", cores=8,
+    # SCL mask classes are declared on the collection (spec 58 D3), not passed here.
 )
 df = pd.read_csv(CSV)
 print("cubes:", len(df), "| anchor:", df["startdate"].iloc[0], "->", df["enddate"].iloc[0])

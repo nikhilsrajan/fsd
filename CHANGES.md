@@ -4,6 +4,63 @@ Living record of how `fsd` differs from the legacy repos for behavior that **is*
 carried over (renames, restructures, behavioral tweaks). Pure removals go in
 `DROPPED.md`.
 
+## Spec 58 P1 — the verbs become collection-agnostic (2026-09-05)
+
+The public verbs (`download`, `create_training_data`, `run_inference`, `verify_adapter`)
+were Sentinel-2-shaped; P1 makes them collection-agnostic in contract, with S2 L2A as the
+only collection actually shipped. Full rationale: `specs/58-collection-agnostic-verbs.md`,
+ADRs 0028-0031.
+
+- **`source` (provider) and `collection` (product) are now separate verb parameters**
+  (ADR 0030). `download`'s default `source` changed `"cdse"` → `"mpc"` (the documented,
+  credential-free happy path). Not every `(source, collection)` pair is valid --
+  `sources.mpc.SERVED_COLLECTIONS`/`sources.cdse.SERVED_COLLECTIONS` name what each
+  source serves; an unserved pair raises `PreflightError` at the top of the call.
+- **`scl_mask_classes` is gone** from `create_training_data`, `run_inference`,
+  `verify_adapter` and `build_datacube` (D3). The mask is declared on the collection
+  (`fsd.collections.get("sentinel-2-l2a").mask_spec`) and is never overridden by a verb
+  argument any more -- a different mask means registering a differently-named collection
+  variant (`fsd.collections.register`), which is stampable, addressable and reusable.
+- **The catalog schema changed** (D12, no read-time shim): `satellite` → `collection`
+  (the column always held a STAC collection id); `+scale` (declared multiplicative
+  radiometric scale, alongside the existing per-row `offset`); `+properties` (JSON, the
+  source item's STAC properties verbatim). **Every catalog written before this lands is
+  invalidated** -- re-download, or re-stamp+migrate the two renamed/added columns by hand
+  for a local fixture (see `tests/data/tutorial/catalog.parquet`'s migration, same
+  commit).
+- **The cube-path digest keys on `collection` + a hash of the resolved
+  `CollectionDeclaration`** (D4), not `scl_mask_classes`. This is the fix for a real (not
+  yet triggered) bug: HLS bands are named identically to S2's (`B04`/`B08`/`B8A`), so
+  without this an HLS cube and an S2 cube over the same cell/window would have resolved
+  to the same path.
+- **Bands may be requested by canonical STAC EO `common_name`** (`"nir08"`) or by native
+  asset key (`"B8A"`) -- `CollectionDeclaration.band_aliases` maps one to the other, and
+  every verb canonicalizes to the native form before it reaches the digest, `input.csv`,
+  or the builder, so both spellings produce the byte-identical cube at the byte-identical
+  path (D8, AC5).
+- **A requested band absent from a granule now raises**, naming the band and the
+  collection (`sources/mpc.py::_select_item_files`, `sources/cdse.py::_select_item_files`)
+  -- it used to silently skip the band, which could ship a cube quietly missing one.
+- **`apply_offset` clips to the loaded array's own dtype range**, not a hardcoded
+  `0..65535` -- the old range silently mis-clipped any non-uint16 collection (e.g. a
+  future float32 Sentinel-1 RTC) the moment it declared a non-zero offset (D5.2).
+- **`SourceDeclaration` is renamed `CollectionDeclaration`** (D2) -- the persisted JSON
+  key/field names are unchanged, so the rename alone invalidates nothing. New fields:
+  `scale`, `radiometry_bands`, `band_aliases`, `requires_subscription_key`,
+  `supports_cloud_cover`, `mosaic_partition`, `partition_policy`; `MaskSpec` gained
+  `bits` (unused until P3). `FSD_DECLARATION_VERSION` 1 → 2.
+- **A collection registry** (`fsd.collections`) replaces the ad-hoc `restamp_cli`
+  embryo -- `fsd.collections.register(id, declaration)` / `.get(id)`, in-process only.
+  `create_datacube.setup` resolves `collection=` to a declaration on the driver and
+  writes it as JSON to `<run_folderpath>/<window_segment>/declaration.json`, a control
+  file every shard reads (D13); nodes never import the registry. The control file is
+  scoped to the **window segment**, not the run-folder root: one run folder holds rows
+  from many `setup` calls (`input.csv` carries `collection` per row precisely so
+  different collections coexist), and the build dispatches every still-missing row in
+  that file regardless of which call wrote it -- a single run-root file would be
+  overwritten by the next `setup` and read back by the earlier call's nodes.
+
+
 ## `snakemake` and `s3fs` leave the core install for `[local]` and `[s3]` (#80, 2026-09-04)
 
 Neither was ever imported by `src/fsd/` — snakemake is invoked as a subprocess

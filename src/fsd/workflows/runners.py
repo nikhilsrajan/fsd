@@ -39,7 +39,7 @@ _INFER_ONLY_SNAKEFILE = "workflows/_snakefiles/infer_only/Snakefile"
 # hand, not imported from there: `create_datacube` already imports this module, so the
 # import back would be circular (TODO #53).
 _UNIT_IDENTITY_COLS = (
-    "id", "startdate", "enddate", "bands", "mosaic_days", "mosaic_scheme", "scl_mask_classes",
+    "id", "startdate", "enddate", "bands", "mosaic_days", "mosaic_scheme", "collection",
 )
 
 

@@ -11,6 +11,7 @@ import pytest
 import shapely.geometry as sg
 from pystac.extensions.raster import RasterExtension
 
+from fsd import collections as _collections
 from fsd import config
 from fsd.sources import _s2_radiometry, mpc
 
@@ -119,7 +120,8 @@ def test_items_to_gdf_carries_offset_and_nodata():
         _fake_item("pre", "2021-06-01T00:00:00Z", 16.0, 48.0, 5.0, baseline="02.14"),
         _fake_item("post", "2022-06-01T00:00:00Z", 16.0, 48.0, 5.0, baseline="04.00"),
     ]
-    gdf = mpc._items_to_gdf(items)
+    gdf = mpc._items_to_gdf(items, collection=config.SATELLITE_S2L2A,
+                         declaration=_collections.get(config.SATELLITE_S2L2A))
     assert list(gdf["id"]) == ["pre", "post"]
     assert list(gdf["offset"]) == [0, -1000]
     assert list(gdf["nodata"]) == [0, 0]
@@ -212,11 +214,22 @@ def test_select_item_files_maps_requested_bands_to_asset_hrefs(tmp_path):
         assets={"B04": "https://example/t1/B04.tif?sig=1",
                 "SCL": "https://example/t1/SCL.tif?sig=2"},
     )
-    selected = mpc._select_item_files(it, ["B04", "SCL", "B02"], str(tmp_path))
+    selected = mpc._select_item_files(it, ["B04", "SCL"], str(tmp_path))
     assert selected == [
         ("https://example/t1/B04.tif?sig=1", str(tmp_path / "t1" / "B04.tif"), "B04"),
         ("https://example/t1/SCL.tif?sig=2", str(tmp_path / "t1" / "SCL.tif"), "SCL"),
-    ]  # B02 not in assets -> skipped, no KeyError
+    ]
+
+
+def test_select_item_files_raises_on_a_band_the_item_lacks(tmp_path):
+    """spec 58 D8: a missing band raises, naming the band and collection -- it used to
+    silently skip, which let a cube quietly build with a band missing."""
+    it = _fake_item(
+        "t1", "2021-06-01T00:00:00Z", 0, 0, 1.0,
+        assets={"B04": "https://example/t1/B04.tif?sig=1"},
+    )
+    with pytest.raises(ValueError, match="B02.*not available"):
+        mpc._select_item_files(it, ["B04", "B02"], str(tmp_path))
 
 
 def test_finalize_filters_cloud_and_roi_reused_from_cdse():
@@ -224,7 +237,8 @@ def test_finalize_filters_cloud_and_roi_reused_from_cdse():
         _fake_item("hit", "2021-06-01T00:00:00Z", 0.0, 0.0, 10.0),
         _fake_item("cloudy", "2021-06-01T00:00:00Z", 0.0, 0.0, 90.0),
     ]
-    gdf = mpc._items_to_gdf(items)
+    gdf = mpc._items_to_gdf(items, collection=config.SATELLITE_S2L2A,
+                         declaration=_collections.get(config.SATELLITE_S2L2A))
     roi = gpd.GeoDataFrame(geometry=[sg.box(0.2, 0.2, 0.5, 0.5)], crs="EPSG:4326")
     out = mpc._finalize_catalog_gdf(gdf, roi, max_cloudcover=50.0)
     assert list(out["id"]) == ["hit"]
@@ -253,6 +267,7 @@ def test_transfer_one_skips_existing_final(tmp_path):
     dst.write_bytes(b"already-here")
     ok, reason = mpc._transfer_and_stamp_one(
         "https://example/B04.tif", str(dst), band="B04", offset=0,
+        declaration=_collections.get(config.SATELLITE_S2L2A),
     )
     assert ok is True
     assert reason == "skipped"
@@ -267,6 +282,7 @@ def test_transfer_and_stamp_one_stamps_reflectance_offset_and_nodata(tmp_path, m
     monkeypatch.setattr(mpc.fs, "transfer", _fake_transfer)
     ok, reason = mpc._transfer_and_stamp_one(
         "https://example/B04.tif", str(dst), band="B04", offset=-1000,
+        declaration=_collections.get(config.SATELLITE_S2L2A),
     )
     assert ok is True and reason == "ok"
     import rasterio
@@ -289,6 +305,7 @@ def test_transfer_and_stamp_one_never_offsets_mask_band(tmp_path, monkeypatch):
     monkeypatch.setattr(mpc.fs, "transfer", _fake_transfer)
     ok, _ = mpc._transfer_and_stamp_one(
         "https://example/SCL.tif", str(dst), band="SCL", offset=-1000,
+        declaration=_collections.get(config.SATELLITE_S2L2A),
     )
     assert ok is True
     import rasterio
@@ -471,12 +488,13 @@ def test_gdal_tag_and_stac_raster_bands_agree(tmp_path, monkeypatch):
     monkeypatch.setattr(mpc.fs, "transfer", _fake_transfer)
     ok, _ = mpc._transfer_and_stamp_one(
         "https://example/B04.tif", str(dst), band="B04", offset=offset,
+        declaration=_collections.get(config.SATELLITE_S2L2A),
     )
     assert ok is True
 
     row = {
         "id": "S2A_MSIL2A_20220601T075611_N0500_R035_T33UWP_20220601T120000",
-        "satellite": "sentinel-2-l2a",
+        "collection": "sentinel-2-l2a",
         "timestamp": pd.Timestamp("2022-06-01T07:56:11", tz="UTC"),
         "s3url": "", "local_folderpath": str(tmp_path), "files": "B04.tif",
         "cloud_cover": 0.0, "offset": offset, "nodata": 0,
@@ -513,6 +531,7 @@ def test_stamped_tag_unscales_to_physical_reflectance_not_black(tmp_path, monkey
     monkeypatch.setattr(mpc.fs, "transfer", lambda s, d, **k: _write_fake_cog(d, value=1500))
     ok, _ = mpc._transfer_and_stamp_one(
         "https://example/B04.tif", str(dst), band="B04", offset=-1000,
+        declaration=_collections.get(config.SATELLITE_S2L2A),
     )
     assert ok is True
     with rasterio.open(str(dst)) as d:
@@ -535,7 +554,7 @@ def test_stac_roundtrip_preserves_dn_offset_for_builder(tmp_path):
 
     row = {
         "id": "S2A_MSIL2A_20220601T075611_N0500_R035_T33UWP_20220601T120000",
-        "satellite": "sentinel-2-l2a",
+        "collection": "sentinel-2-l2a",
         "timestamp": pd.Timestamp("2022-06-01T07:56:11", tz="UTC"),
         "s3url": "", "local_folderpath": str(tmp_path), "files": "B04.tif",
         "cloud_cover": 0.0, "offset": -1000, "nodata": 0,

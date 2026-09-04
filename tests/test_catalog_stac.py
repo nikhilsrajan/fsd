@@ -27,7 +27,7 @@ def _catalog_gdf():
     rows = [
         {
             "id": "S2B_MSIL2A_20181231T080329_N0500_R035_T37PBP_20230726T205809",
-            "satellite": "sentinel-2-l2a",
+            "collection": "sentinel-2-l2a",
             "timestamp": pd.Timestamp("2018-12-31T08:03:29", tz="UTC"),
             "s3url": "s3://eodata/Sentinel-2/MSI/L2A/.../S2B_...T37PBP.SAFE",
             "local_folderpath": "/data/s2/T37PBP_20181231",
@@ -39,7 +39,7 @@ def _catalog_gdf():
         },
         {
             "id": "S2A_MSIL2A_20180601T075611_N0500_R035_T36PZU_20230101T000000",
-            "satellite": "sentinel-2-l2a",
+            "collection": "sentinel-2-l2a",
             "timestamp": pd.Timestamp("2018-06-01T07:56:11", tz="UTC"),
             "s3url": "s3://eodata/.../T36PZU.SAFE",
             "local_folderpath": "/data/s2/T36PZU_20180601",
@@ -124,7 +124,7 @@ def test_items_are_structurally_valid():
 def test_round_trip_reconstructs_catalog_columns():
     gdf = _catalog_gdf()
     back = stac.items_to_rows(stac.tile_catalog_to_items(gdf))
-    for col in ["id", "satellite", "s3url", "files", "cloud_cover", "offset", "nodata"]:
+    for col in ["id", "collection", "s3url", "files", "cloud_cover", "offset", "nodata"]:
         assert list(back[col]) == list(gdf[col]), col
     assert list(back["timestamp"]) == list(gdf["timestamp"])
     # local_folderpath reconstructed from the (single) asset folder.
@@ -168,9 +168,9 @@ def test_tilecatalog_to_stac(tmp_path):
 
 
 def test_write_stac_catalog_mirrors_declaration_on_collection(tmp_path):
-    from fsd.catalog.declaration import MaskSpec, SourceDeclaration
+    from fsd.catalog.declaration import CollectionDeclaration, MaskSpec
 
-    decl = SourceDeclaration(
+    decl = CollectionDeclaration(
         reference_band="B08", mask_spec=MaskSpec(band="SCL", classes=(3, 8, 9)),
     )
     items = stac.tile_catalog_to_items(_catalog_gdf())
@@ -193,10 +193,10 @@ def test_write_stac_catalog_mirrors_declaration_on_collection(tmp_path):
 
 
 def test_collection_to_declaration_round_trips():
-    from fsd.catalog.declaration import MaskSpec, SourceDeclaration
+    from fsd.catalog.declaration import CollectionDeclaration, MaskSpec
     from fsd.catalog.stac import collection_to_declaration
 
-    decl = SourceDeclaration(
+    decl = CollectionDeclaration(
         reference_band="B04", mask_spec=MaskSpec(band="QA", classes=(1, 2)),
         mosaic_method="median",
     )
@@ -226,10 +226,10 @@ def test_collection_to_declaration_no_stamp_returns_none():
 
 def test_tilecatalog_to_stac_mirrors_the_catalogs_stamp(tmp_path):
     from fsd.catalog import declaration as declaration_module
-    from fsd.catalog.declaration import SourceDeclaration
+    from fsd.catalog.declaration import CollectionDeclaration
     from fsd.catalog.stac import collection_to_declaration
 
-    decl = SourceDeclaration(reference_band="B04")
+    decl = CollectionDeclaration(reference_band="B04")
     cat_path = str(tmp_path / "catalog.parquet")
     gdf = _catalog_gdf()
     declaration_module.to_attrs(gdf, decl)

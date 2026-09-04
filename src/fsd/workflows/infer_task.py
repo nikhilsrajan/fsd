@@ -13,7 +13,7 @@ auto-saves a live adapter to one.
 Run as:  python -m fsd.workflows.infer_task <shapefilepath> <catalog_filepath>
              <startdate> <enddate> <export_folderpath>
              --bands B04,B08,B8A,SCL --mosaic-days 20
-             --scl-mask-classes 0,1,3,7,8,9,10
+             --declaration-filepath <run_folderpath>/<window>/declaration.json
              --bundle <bundle_path> --output <output.tif>
 """
 
@@ -41,7 +41,7 @@ def run_infer_task(
     *,
     bands: list[str],
     mosaic_days: int,
-    scl_mask_classes: list[int],
+    declaration_filepath: str,
     bundle_path: str,
     output_filepath: str,
     mosaic_scheme: str = config.MOSAIC_SCHEME,
@@ -76,7 +76,7 @@ def run_infer_task(
         export_folderpath=export_folderpath,
         bands=bands,
         mosaic_days=mosaic_days,
-        scl_mask_classes=scl_mask_classes,
+        declaration_filepath=declaration_filepath,
         mosaic_scheme=mosaic_scheme,
         if_missing_files=if_missing_files,
         njobs=njobs,
@@ -123,7 +123,7 @@ def run_infer_group(
             export_folderpath,
             bands=str(r["bands"]).split(","),
             mosaic_days=int(r["mosaic_days"]),
-            scl_mask_classes=[int(v) for v in str(r["scl_mask_classes"]).split(",")],
+            declaration_filepath=str(r["declaration_filepath"]),
             bundle_path=bundle_path,
             output_filepath=output_filepath,
             mosaic_scheme=str(r["mosaic_scheme"]) if "mosaic_scheme" in r else config.MOSAIC_SCHEME,
@@ -156,9 +156,9 @@ def _parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--mosaic-days", type=int, default=config.MOSAIC_DAYS)
     p.add_argument("--mosaic-scheme", default=config.MOSAIC_SCHEME,
                    choices=list(ops.MOSAIC_SCHEMES))
-    p.add_argument("--scl-mask-classes",
-                   default=",".join(map(str, config.SCL_MASK_CLASSES)),
-                   help="comma-separated SCL classes to mask (single-cell mode)")
+    p.add_argument("--declaration-filepath",
+                   help="control file written by setup(): the resolved "
+                        "CollectionDeclaration as JSON (single-cell mode; spec 58 D13)")
     p.add_argument("--if-missing-files", default="warn",
                    choices=["raise_error", "warn", "none"])
     p.add_argument("--njobs", type=int, default=1)
@@ -196,8 +196,10 @@ def main(argv=None) -> None:
             overwrite=args.overwrite,
         )
         return
-    if not (args.bands and args.output):
-        raise SystemExit("single-cell mode requires --bands and --output")
+    if not (args.bands and args.output and args.declaration_filepath):
+        raise SystemExit(
+            "single-cell mode requires --bands, --output and --declaration-filepath"
+        )
     run_infer_task(
         shapefilepath=args.shapefilepath,
         catalog_filepath=args.catalog_filepath,
@@ -206,7 +208,7 @@ def main(argv=None) -> None:
         export_folderpath=args.export_folderpath,
         bands=args.bands.split(","),
         mosaic_days=args.mosaic_days,
-        scl_mask_classes=[int(v) for v in args.scl_mask_classes.split(",")],
+        declaration_filepath=args.declaration_filepath,
         bundle_path=args.bundle,
         output_filepath=args.output,
         mosaic_scheme=args.mosaic_scheme,
