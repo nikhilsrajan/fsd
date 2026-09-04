@@ -22,9 +22,12 @@ import tempfile
 import geopandas as gpd
 import pandas as pd
 
+from fsd import collections as _collections
 from fsd import config
 from fsd import progress as _progress
+from fsd.catalog import declaration as declaration_module
 from fsd.catalog.catalog import TileCatalog, filter_gdf
+from fsd.catalog.declaration import CollectionDeclaration
 from fsd.storage import fs
 from fsd.workflows import runners
 
@@ -36,8 +39,10 @@ COL_LABEL = "label"
 # -- so two rows can differ here and still collide on folder. Catching that is the guard in
 # `workflows.runners`, not this dedupe (TODO #53).
 _UNIT_IDENTITY_COLS = (
-    COL_ID, "startdate", "enddate", "bands", "mosaic_days", "mosaic_scheme", "scl_mask_classes",
+    COL_ID, "startdate", "enddate", "bands", "mosaic_days", "mosaic_scheme", "collection",
 )
+
+DECLARATION_FILENAME = "declaration.json"
 
 
 class NoWorkUnitsError(ValueError):
@@ -52,7 +57,9 @@ class NoWorkUnitsError(ValueError):
     """
 
 
-def params_key(bands: list[str], mosaic_scheme: str, scl_mask_classes: list[int]) -> str:
+def params_key(
+    bands: list[str], mosaic_scheme: str, *, collection: str, declaration: CollectionDeclaration,
+) -> str:
     """A short digest of the params EVERY cell in a run shares -- never the set of ids.
 
     Folded into the `<window>` path segment so path granularity matches
@@ -60,18 +67,25 @@ def params_key(bands: list[str], mosaic_scheme: str, scl_mask_classes: list[int]
     paths, or the second silently overwrites the first and the build skip reads the
     wrong-band cube as "present".
 
+    Keys on `collection` + a digest of the resolved `CollectionDeclaration` (spec 58 D4),
+    replacing the old mask-classes-only digest. This fixes the collision that field
+    could never catch: HLS bands are named identically to S2's (`B04`/`B08`/`B8A`), so an
+    HLS cube and an S2 cube over the same cell/window/`mosaic_days` used to resolve to the
+    SAME path. Any collection-level change now correctly invalidates cached cube paths --
+    mask classes, nodata, reference band, radiometry, whatever the declaration holds.
+
     Uses the same string form `setup` writes to `input.csv` (`",".join(...)`), so a digest
     computed here and one computed from a read-back `input.csv` row agree byte-for-byte.
     """
     raw = "|".join([
-        ",".join(bands), mosaic_scheme, ",".join(str(v) for v in scl_mask_classes),
+        ",".join(bands), mosaic_scheme, collection, declaration_module.digest(declaration),
     ])
     return hashlib.sha1(raw.encode()).hexdigest()[:8]
 
 
 def window_folder_segment(
     startdate: datetime.datetime, enddate: datetime.datetime, mosaic_days: int, *,
-    bands: list[str], mosaic_scheme: str, scl_mask_classes: list[int],
+    bands: list[str], mosaic_scheme: str, collection: str, declaration: CollectionDeclaration,
 ) -> str:
     """The one run-folder segment shared by every cell of a request:
     `<startdate>_<enddate>_m<mosaic_days>_<params_key>`.
@@ -81,7 +95,7 @@ def window_folder_segment(
     """
     startdate = pd.to_datetime(startdate, utc=True)
     enddate = pd.to_datetime(enddate, utc=True)
-    key = params_key(bands, mosaic_scheme, scl_mask_classes)
+    key = params_key(bands, mosaic_scheme, collection=collection, declaration=declaration)
     return f"{startdate.strftime('%Y%m%d')}_{enddate.strftime('%Y%m%d')}_m{mosaic_days}_{key}"
 
 
@@ -107,12 +121,12 @@ def setup(
     startdate: datetime.datetime,
     enddate: datetime.datetime,
     bands: list[str],
-    scl_mask_classes: list[int],
     mosaic_days: int,
     csv_filepath: str,
     label_col: str | None,
     mosaic_scheme: str = config.MOSAIC_SCHEME,
     max_concurrent: int = config.SETUP_MAX_CONCURRENT,
+    collection: str = config.SATELLITE_S2L2A,
 ) -> None:
     """Per geometry: write geometry.geojson + catalog.parquet slice + input.csv row.
 
@@ -137,9 +151,22 @@ def setup(
     `timestamp_col` does not feed the folder name and is unused today -- `filter_gdf`'s
     catalog rows already fix "timestamp" as the column -- but stays in the caller-facing
     signature.
+
+    `collection` resolves to a `CollectionDeclaration` here, on the driver
+    (`fsd.collections.get`), and is written as JSON to `<run_folderpath>/declaration.json`
+    -- the control file every shard reads (spec 58 D13). This runs uniformly for every
+    call, including the built-in `sentinel-2-l2a` default: nodes never consult the
+    registry, so there is one code path rather than two where only a user's collection
+    variant breaks, and only remotely.
     """
     startdate = pd.to_datetime(startdate, utc=True)
     enddate = pd.to_datetime(enddate, utc=True)
+    declaration = _collections.get(collection)
+    # Canonicalize bands to native asset keys (spec 58 D8) as early as possible: every
+    # downstream use of `bands` -- the digest, `input.csv`, the builder's catalog-band
+    # match -- must see one spelling, or `bands=["B8A"]` and `bands=["nir08"]` would
+    # resolve to different cube paths despite naming the identical band.
+    bands = [declaration.canonical_to_native(b) for b in bands]
     # Read via fsd.storage + BytesIO, never a raw path: a cluster node has no `shapefiles/`
     # checkout, so a raw-path geometry read cannot work there. A local path is unaffected --
     # fsd.storage routes file:// transparently (TODO #40).
@@ -165,6 +192,14 @@ def setup(
             f"(or pass an id column that is unique per shape) before calling setup()."
         )
 
+    # The declaration control file (spec 58 D13) -- written only once the guard above has
+    # passed, so a refused call (duplicate ids) leaves no trace, exactly as before this
+    # write was added.
+    declaration_filepath = os.path.join(run_folderpath, DECLARATION_FILENAME)
+    fs.makedirs(run_folderpath)
+    fs.write_text(declaration_filepath,
+                  json.dumps(declaration_module.to_json(declaration)))
+
     # Read the catalog ONCE for the whole run, then filter it in memory per shape
     # (`filter_gdf`). `TileCatalog.filter` re-reads the file on every call, which on a
     # remote catalog made setup cost one full download per shape: 900 shapes over
@@ -174,7 +209,7 @@ def setup(
 
     window_segment = window_folder_segment(startdate, enddate, mosaic_days,
                                             bands=bands, mosaic_scheme=mosaic_scheme,
-                                            scl_mask_classes=scl_mask_classes)
+                                            collection=collection, declaration=declaration)
 
     n_shapes = len(shapes_gdf)
     print(f"[setup] catalog read once: {len(catalog_gdf)} rows, for {n_shapes} shapes",
@@ -223,6 +258,7 @@ def setup(
             "export_folderpath": export_folderpath,
             "datacube_filepath": os.path.join(export_folderpath, "datacube.npy"),
             "images_count": int(subset.shape[0]),
+            "declaration_filepath": declaration_filepath,
             COL_ID: srow[id_col],
         }
         if label_col is not None:
@@ -264,7 +300,7 @@ def setup(
     input_df["added_on"] = pd.Timestamp.now(tz="UTC")
     input_df["mosaic_days"] = mosaic_days
     input_df["mosaic_scheme"] = mosaic_scheme
-    input_df["scl_mask_classes"] = ",".join(str(v) for v in scl_mask_classes)
+    input_df["collection"] = collection
     input_df["bands"] = ",".join(bands)
 
     if fs.exists(csv_filepath):
@@ -411,7 +447,7 @@ def _load_shapes_gdf(shapefilepath: str) -> gpd.GeoDataFrame:
 
 def _row_matches_window(
     row, *, bands: list[str], mosaic_days: int, startdate, enddate,
-    mosaic_scheme: str, scl_mask_classes: list[int],
+    mosaic_scheme: str, collection: str,
 ) -> bool:
     """Does an existing `input.csv` row belong to THIS request's window/params? Same
     canonicalization `_dedupe_on_unit_identity` uses (dates -> comparable ISO strings)
@@ -423,7 +459,7 @@ def _row_matches_window(
         "startdate": str(pd.to_datetime(startdate, utc=True)),
         "enddate": str(pd.to_datetime(enddate, utc=True)),
         "mosaic_scheme": mosaic_scheme,
-        "scl_mask_classes": ",".join(str(v) for v in scl_mask_classes),
+        "collection": collection,
     }
     for col, want_val in want.items():
         if col not in row.index:
@@ -433,9 +469,10 @@ def _row_matches_window(
             got = str(pd.to_datetime(got, utc=True))
         else:
             # `",".join([])` -> `""` -> an empty CSV field -> read back as NaN,
-            # not `""`. Without this, `scl_mask_classes=[]` ("mask nothing", a
-            # legitimate request) round-trips to "nan" and never matches its own
-            # freshly-written request value, purging every row on every call.
+            # not `""`. Without this, an empty-string field ("mask nothing", a
+            # legitimate request under a since-removed override) round-trips to "nan"
+            # and never matches its own freshly-written request value, purging every
+            # row on every call.
             got = "" if pd.isna(got) else str(got)
         if got != want_val:
             return False
@@ -553,9 +590,10 @@ def _clear_known_empty(run_folderpath: str, window_segment: str) -> None:
 def build_shortfall_only(
     *, catalog_filepath: str, timestamp_col: str, shapefilepath: str, id_col: str,
     run_folderpath: str, startdate, enddate, bands: list[str],
-    scl_mask_classes: list[int], mosaic_days: int, csv_filepath: str,
+    mosaic_days: int, csv_filepath: str,
     label_col: str | None, mosaic_scheme: str = config.MOSAIC_SCHEME,
     max_concurrent: int = config.SETUP_MAX_CONCURRENT,
+    collection: str = config.SATELLITE_S2L2A,
 ) -> tuple[int, int, int]:
     """The build leg of the backward walk: call `setup` only for the shapes that need it.
 
@@ -571,10 +609,12 @@ def build_shortfall_only(
     Prints the `[plan]` build line before any `setup` call. Returns
     `(n_present, n_missing, n_known_empty)`.
     """
+    declaration = _collections.get(collection)
+    bands = [declaration.canonical_to_native(b) for b in bands]  # spec 58 D8
     shapes_gdf = _load_shapes_gdf(shapefilepath)
     window_segment = window_folder_segment(
         startdate, enddate, mosaic_days, bands=bands, mosaic_scheme=mosaic_scheme,
-        scl_mask_classes=scl_mask_classes,
+        collection=collection, declaration=declaration,
     )
     known_empty = _read_known_empty(run_folderpath, window_segment)
 
@@ -588,7 +628,7 @@ def build_shortfall_only(
                 lambda row: _row_matches_window(
                     row, bands=bands, mosaic_days=mosaic_days, startdate=startdate,
                     enddate=enddate, mosaic_scheme=mosaic_scheme,
-                    scl_mask_classes=scl_mask_classes,
+                    collection=collection,
                 ) and _row_matches_path(
                     row, run_folderpath=run_folderpath, window_segment=window_segment,
                 ),
@@ -669,9 +709,9 @@ def build_shortfall_only(
                 catalog_filepath=catalog_filepath, timestamp_col=timestamp_col,
                 shapefilepath=shortfall_shapefilepath, id_col=id_col,
                 run_folderpath=run_folderpath, startdate=startdate, enddate=enddate,
-                bands=bands, scl_mask_classes=scl_mask_classes, mosaic_days=mosaic_days,
+                bands=bands, mosaic_days=mosaic_days,
                 csv_filepath=csv_filepath, label_col=label_col, mosaic_scheme=mosaic_scheme,
-                max_concurrent=max_concurrent,
+                max_concurrent=max_concurrent, collection=collection,
             )
         except NoWorkUnitsError:
             # `setup` raises when NONE of the shapes it was handed have tiles in range.
@@ -756,7 +796,6 @@ def run_create_datacube(
     startdate: datetime.datetime,
     enddate: datetime.datetime,
     bands: list[str],
-    scl_mask_classes: list[int],
     mosaic_days: int,
     csv_filepath: str,
     label_col: str | None,
@@ -769,6 +808,7 @@ def run_create_datacube(
     overwrite: bool = False,
     runner: str = "local",
     runner_kwargs: dict | None = None,
+    collection: str = config.SATELLITE_S2L2A,
 ):
     """Run setup (unless csv exists), then dispatch only the cubes that are still missing.
 
@@ -789,6 +829,7 @@ def run_create_datacube(
     catalog access) is missing and not already known-empty. Removing the flag entirely is
     blocked on #84.
     """
+    bands = [_collections.get(collection).canonical_to_native(b) for b in bands]  # spec 58 D8
     if overwrite_setup_csv:
         if fs.exists(csv_filepath):
             fs.rm(csv_filepath)
@@ -797,8 +838,9 @@ def run_create_datacube(
                 catalog_filepath=catalog_filepath, timestamp_col=timestamp_col,
                 shapefilepath=shapefilepath, id_col=id_col, run_folderpath=run_folderpath,
                 startdate=startdate, enddate=enddate, bands=bands,
-                scl_mask_classes=scl_mask_classes, mosaic_days=mosaic_days,
+                mosaic_days=mosaic_days,
                 csv_filepath=csv_filepath, label_col=label_col, mosaic_scheme=mosaic_scheme,
+                collection=collection,
             )
             # This pass just re-derived every shape straight from the catalog, so any
             # known-empty record for this window is superseded by what `input.csv` now
@@ -809,15 +851,17 @@ def run_create_datacube(
                 run_folderpath,
                 window_folder_segment(startdate, enddate, mosaic_days, bands=bands,
                                       mosaic_scheme=mosaic_scheme,
-                                      scl_mask_classes=scl_mask_classes),
+                                      collection=collection,
+                                      declaration=_collections.get(collection)),
             )
     else:
         build_shortfall_only(
             catalog_filepath=catalog_filepath, timestamp_col=timestamp_col,
             shapefilepath=shapefilepath, id_col=id_col, run_folderpath=run_folderpath,
             startdate=startdate, enddate=enddate, bands=bands,
-            scl_mask_classes=scl_mask_classes, mosaic_days=mosaic_days,
+            mosaic_days=mosaic_days,
             csv_filepath=csv_filepath, label_col=label_col, mosaic_scheme=mosaic_scheme,
+            collection=collection,
         )
 
     if overwrite:

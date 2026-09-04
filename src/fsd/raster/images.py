@@ -22,7 +22,6 @@ import functools
 import multiprocessing as mp
 import os
 import random
-import re
 import string
 
 import numpy as np
@@ -230,22 +229,19 @@ def resample_by_ref(
     )
 
 
-_REFLECTANCE_BAND_RE = re.compile(r"^B\d")
-
-
-def _is_reflectance(band: str) -> bool:
-    """Whether `band` is an S2 reflectance band (`B01`…`B12`, `B8A`) vs a
-    non-reflectance product like `SCL`/`AOT`/`WVP`/`visual` —
-    the processing-baseline offset only applies to reflectance bands."""
-    return bool(_REFLECTANCE_BAND_RE.match(band)) or band == "B8A"
-
-
 def apply_offset(
     data: np.ndarray, profile: dict, *, offset: int
 ) -> tuple[np.ndarray, dict]:
-    """Shift DN by a declared additive radiometric offset: `clip(DN + offset, 0, 65535)`, dtype
-    preserved. `offset=0` is a no-op passthrough. Nodata (0) with a negative offset
-    clips to 0 (stays nodata, order-independent of when this runs relative to masking).
+    """Shift DN by a declared additive radiometric offset:
+    `clip(DN + offset, dtype_min, dtype_max)`, dtype preserved. `offset=0` is a no-op
+    passthrough. Nodata (0) with a negative offset clips to 0 (stays nodata,
+    order-independent of when this runs relative to masking).
+
+    Clips to `data.dtype`'s own range (spec 58 D5.2) rather than a literal `0..65535` --
+    the old hardcoded uint16 range silently mis-clipped any signed or float collection
+    (e.g. Sentinel-1 RTC `float32`, whose valid range is nowhere near `0..65535`) the
+    moment it declared a non-zero offset. `offset==0` still short-circuits, so this
+    never touches a collection with no radiometric-offset concept.
 
     This is the READ-TIME apply the datacube builder uses (science needs physical
     reflectance before the median mosaic) — it never touches the on-disk
@@ -253,7 +249,11 @@ def apply_offset(
     `raster:bands`), applied here and, independently, by an `unscale`-aware viewer."""
     if offset == 0:
         return data, profile
-    out = np.clip(data.astype(np.int32) + offset, 0, 65535).astype(data.dtype)
+    dtype_info = np.iinfo(data.dtype) if np.issubdtype(data.dtype, np.integer) \
+        else np.finfo(data.dtype)
+    work_dtype = np.float64 if np.issubdtype(data.dtype, np.floating) else np.int64
+    out = np.clip(data.astype(work_dtype) + offset, dtype_info.min, dtype_info.max) \
+        .astype(data.dtype)
     return out, profile
 
 

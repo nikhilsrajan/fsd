@@ -1,4 +1,4 @@
-"""Stamp/re-stamp a catalog Parquet file's collection-level `SourceDeclaration`
+"""Stamp/re-stamp a catalog Parquet file's collection-level `CollectionDeclaration`
 footer (`fsd-restamp-catalog`).
 
 A catalog written before declarations were persisted carries no stamp and will raise at build
@@ -8,24 +8,26 @@ backend: `abfss://`, `s3://`, ...); the imagery it points at is untouched.
 Catalogs are KB-MB (one row per granule), so this is a sub-second operation.
 `inspect_cli` is the genuinely footer-only counterpart -- it reads no row group.
 
-Run as:  python -m fsd.catalog.restamp_cli <catalog.parquet> [--declaration s2_l2a] [--force]
+Run as:  python -m fsd.catalog.restamp_cli <catalog.parquet> [--declaration sentinel-2-l2a] [--force]
 """
 
 from __future__ import annotations
 
 import argparse
 
+from fsd import collections as _collections
 from fsd.catalog import declaration as declaration_module
-from fsd.catalog.declaration import S2_L2A_DECLARATION, SourceDeclaration
 from fsd.storage import fs
 
-# Convenience-only: NOT the persistence
-# mechanism, just named declarations this CLI can stamp without the caller
-# constructing a `SourceDeclaration` by hand.
-DECLARATIONS: dict[str, SourceDeclaration] = {"s2_l2a": S2_L2A_DECLARATION}
+# A VIEW over the public registry (spec 58 D2) -- NOT the persistence mechanism, just a
+# convenience so this CLI can stamp a named collection without the caller constructing a
+# `CollectionDeclaration` by hand. Keyed by STAC collection id, same as the registry.
+DECLARATIONS = _collections.REGISTRY
 
 
-def restamp_catalog(path: str, declaration_name: str = "s2_l2a", *, force: bool = False) -> None:
+def restamp_catalog(
+    path: str, declaration_name: str = "sentinel-2-l2a", *, force: bool = False
+) -> None:
     """Stamp `path` with the named declaration. Idempotent (re-stamping with the
     same declaration is a no-op change in content); refuses to overwrite a
     *different* existing stamp unless `force=True`."""
@@ -50,11 +52,11 @@ def restamp_catalog(path: str, declaration_name: str = "s2_l2a", *, force: bool 
 def _parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="python -m fsd.catalog.restamp_cli",
-        description="Stamp/re-stamp a catalog's collection-level SourceDeclaration (spec 35 §6).",
+        description="Stamp/re-stamp a catalog's collection-level CollectionDeclaration (spec 35 §6).",
     )
     p.add_argument("catalog", help="catalog.parquet path (any fsd.storage URL)")
-    p.add_argument("--declaration", default="s2_l2a", choices=sorted(DECLARATIONS),
-                   help="the named declaration to stamp (default: s2_l2a)")
+    p.add_argument("--declaration", default="sentinel-2-l2a", choices=sorted(DECLARATIONS),
+                   help="the named declaration to stamp (default: sentinel-2-l2a)")
     p.add_argument("--force", action="store_true",
                    help="overwrite a differing existing stamp")
     return p.parse_args(argv)

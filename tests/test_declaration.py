@@ -13,13 +13,13 @@ import shapely
 from fsd.catalog import declaration as declaration_module
 from fsd.catalog.declaration import (
     S2_L2A_DECLARATION,
+    CollectionDeclaration,
     MaskSpec,
-    SourceDeclaration,
 )
 
 
 def test_to_json_from_json_round_trip_exact():
-    decl = SourceDeclaration(
+    decl = CollectionDeclaration(
         reference_band="B04",
         mask_spec=MaskSpec(band="QA", classes=(1, 2, 3)),
         mask_keep=True,
@@ -37,7 +37,7 @@ def test_to_json_from_json_round_trip_s2_default():
 
 
 def test_mask_spec_classes_rehydrate_as_tuple_not_list():
-    decl = SourceDeclaration(mask_spec=MaskSpec(band="SCL", classes=(0, 1, 3)))
+    decl = CollectionDeclaration(mask_spec=MaskSpec(band="SCL", classes=(0, 1, 3)))
     raw = declaration_module.to_json(decl)
     assert raw["mask_spec"]["classes"] == [0, 1, 3]  # JSON array on the wire
     back = declaration_module.from_json(raw)
@@ -48,7 +48,7 @@ def test_mask_spec_classes_rehydrate_as_tuple_not_list():
 
 
 def test_no_mask_source_mask_spec_null_round_trips_as_none():
-    decl = SourceDeclaration(reference_band=None, mask_spec=None)
+    decl = CollectionDeclaration(reference_band=None, mask_spec=None)
     raw = declaration_module.to_json(decl)
     assert raw["mask_spec"] is None
     back = declaration_module.from_json(raw)
@@ -100,12 +100,12 @@ def test_from_json_missing_optional_field_takes_dataclass_default():
     raw = declaration_module.to_json(S2_L2A_DECLARATION)
     del raw["mask_keep"]
     back = declaration_module.from_json(raw)
-    assert back.mask_keep == SourceDeclaration.__dataclass_fields__["mask_keep"].default
+    assert back.mask_keep == CollectionDeclaration.__dataclass_fields__["mask_keep"].default
 
 
 def test_to_attrs_from_attrs_round_trip():
     gdf = gpd.GeoDataFrame({"id": ["a"]}, geometry=[shapely.box(0, 0, 1, 1)], crs="EPSG:4326")
-    decl = SourceDeclaration(reference_band="B04")
+    decl = CollectionDeclaration(reference_band="B04")
     declaration_module.to_attrs(gdf, decl)
     assert declaration_module.from_attrs(gdf) == decl
 
@@ -120,6 +120,6 @@ def test_to_attrs_never_puts_the_dataclass_in_attrs():
     it (and everything fsd puts in .attrs) must be JSON-able."""
     gdf = gpd.GeoDataFrame({"id": ["a"]}, geometry=[shapely.box(0, 0, 1, 1)], crs="EPSG:4326")
     declaration_module.to_attrs(gdf, S2_L2A_DECLARATION)
-    assert not isinstance(gdf.attrs[declaration_module.ATTRS_KEY], SourceDeclaration)
+    assert not isinstance(gdf.attrs[declaration_module.ATTRS_KEY], CollectionDeclaration)
     for value in gdf.attrs.values():
         json.dumps(value)  # must not raise

@@ -128,7 +128,8 @@ def test_infer_shard_status_carries_all_four_stamps(tmp_path, monkeypatch):
              "catalog_filepath": "memory://cells/u0/catalog.parquet",
              "startdate": "2018-06-01", "enddate": "2018-06-11",
              "export_folderpath": "memory://cells/u0", "mosaic_days": 20,
-             "mosaic_scheme": "calendar", "scl_mask_classes": "8,9", "bands": "B04,B08"}]
+             "mosaic_scheme": "calendar", "declaration_filepath": "memory://unused",
+             "bands": "B04,B08"}]
     with fs.open(shard_url, "w") as f:
         pd.DataFrame(rows).to_csv(f, index=False)
 

@@ -23,12 +23,16 @@ import geopandas as gpd
 import pandas as pd
 import shapely
 
+from fsd import collections as _collections
 from fsd import config
-from fsd.catalog.declaration import S2_L2A_DECLARATION
+from fsd.catalog.declaration import CollectionDeclaration
 from fsd.raster.cog import stamp_or_reencode
-from fsd.raster.images import _is_reflectance
 from fsd.sources._s2_radiometry import offset_for_item
 from fsd.storage import fs
+
+# The collections this source serves (spec 58 D15). CDSE only serves S2 L2A -- unlike
+# MPC, it has no S1/HLS product at all.
+SERVED_COLLECTIONS = (config.SATELLITE_S2L2A,)
 
 # Environment-variable names for the cloud/Batch path (CdseCredentials.from_env).
 ENV_SH_CLIENT_ID = "CDSE_SH_CLIENT_ID"
@@ -235,14 +239,16 @@ def _safe_root_from_item(item) -> str:
     raise ValueError(f"STAC item {item.id} has no s3 .SAFE asset href")
 
 
-def _search_items(roi_gdf: gpd.GeoDataFrame, startdate, enddate):
-    """Query the CDSE STAC API (anonymous) for S2 L2A items intersecting the ROI."""
+def _search_items(
+    roi_gdf: gpd.GeoDataFrame, startdate, enddate, collection: str = config.SATELLITE_S2L2A,
+):
+    """Query the CDSE STAC API (anonymous) for `collection` items intersecting the ROI."""
     import pystac_client
 
     geom = shapely.unary_union(roi_gdf.to_crs("EPSG:4326")["geometry"])
     client = pystac_client.Client.open(config.CDSE_STAC_URL)
     search = client.search(
-        collections=[config.SATELLITE_S2L2A],
+        collections=[collection],
         datetime=[startdate, enddate],
         intersects=geom,
         limit=200,   # page size; pystac-client auto-paginates
@@ -250,7 +256,9 @@ def _search_items(roi_gdf: gpd.GeoDataFrame, startdate, enddate):
     return list(search.items())
 
 
-def _items_to_gdf(items) -> gpd.GeoDataFrame:
+def _items_to_gdf(
+    items, *, collection: str, declaration: CollectionDeclaration,
+) -> gpd.GeoDataFrame:
     """Parse STAC items (pystac `Item`s) into a catalog GeoDataFrame.
 
     Pure — no network — so it is unit-testable with duck-typed fake items
@@ -265,19 +273,22 @@ def _items_to_gdf(items) -> gpd.GeoDataFrame:
     rows = [
         {
             "id": it.id,
-            "satellite": config.SATELLITE_S2L2A,
+            "collection": collection,
             "timestamp": it.datetime,
             "s3url": _safe_root_from_item(it),
             "cloud_cover": it.properties.get("eo:cloud_cover"),
             "offset": offset_for_item(it),
+            "scale": declaration.scale,
             "nodata": config.NODATA,
+            "properties": json.dumps(dict(it.properties)),
             "geometry": shapely.geometry.shape(it.geometry),
         }
         for it in items
     ]
     gdf = gpd.GeoDataFrame(
-        rows, columns=["id", "satellite", "timestamp", "s3url", "cloud_cover",
-                       "offset", "nodata", "geometry"], geometry="geometry", crs="EPSG:4326",
+        rows, columns=["id", "collection", "timestamp", "s3url", "cloud_cover",
+                       "offset", "scale", "nodata", "properties", "geometry"],
+        geometry="geometry", crs="EPSG:4326",
     )
     gdf["timestamp"] = pd.to_datetime(gdf["timestamp"], utc=True)
     return gdf
@@ -308,16 +319,19 @@ def query_catalog(
     enddate: datetime.datetime,
     *,
     max_cloudcover: float | None = None,
+    collection: str = config.SATELLITE_S2L2A,
 ) -> gpd.GeoDataFrame:
-    """Discover S2 L2A tiles intersecting `roi` within the date range, via the CDSE
+    """Discover `collection` tiles intersecting `roi` within the date range, via the CDSE
     STAC API (anonymous — no credentials).
 
-    Returns a GeoDataFrame: id, satellite, timestamp, s3url, cloud_cover, geometry
-    (EPSG:4326). Asserts tile id uniqueness. No disk cache (decision).
+    Returns a GeoDataFrame: id, collection, timestamp, s3url, cloud_cover, offset, scale,
+    nodata, properties, geometry (EPSG:4326). Asserts tile id uniqueness. No disk cache
+    (decision).
     """
+    declaration = _collections.get(collection)
     roi_gdf = _roi_gdf(roi)
-    items = _search_items(roi_gdf, startdate, enddate)
-    gdf = _items_to_gdf(items)
+    items = _search_items(roi_gdf, startdate, enddate, collection=collection)
+    gdf = _items_to_gdf(items, collection=collection, declaration=declaration)
     return _finalize_catalog_gdf(gdf, roi_gdf, max_cloudcover)
 
 
@@ -346,7 +360,9 @@ def _download_folderpath(safe_s3url: str, root_folderpath: str) -> str:
 
 
 def _select_item_files(
-    item, bands: list[str], root_folderpath: str, *, cog: bool = True
+    item, bands: list[str], root_folderpath: str, *, cog: bool = True,
+    collection: str = config.SATELLITE_S2L2A,
+    declaration: CollectionDeclaration | None = None,
 ) -> list[tuple[str, str]]:
     """Select download files from a STAC item's `assets` (no S3 listing).
 
@@ -356,18 +372,30 @@ def _select_item_files(
     short band filenames, matching the on-disk layout. The band source href is always
     the `.jp2` asset; when `cog` the local destination is `Bxx.tif`, converted on arrival,
     else `Bxx.jp2`.
+
+    `bands` may be canonical STAC EO `common_name`s (spec 58 D8) or already-native asset
+    keys -- `declaration.canonical_to_native` normalizes either spelling to the same
+    native key. **Raises**, naming the band and collection, when a requested band
+    genuinely does not exist on this item (spec 58 D8) -- this used to silently `continue`.
     """
+    if declaration is None:
+        declaration = _collections.get(collection)
     dst_folder = _download_folderpath(_safe_root_from_item(item), root_folderpath)
     band_ext = "tif" if cog else "jp2"
 
     selected = []
     for band in bands:
+        native = declaration.canonical_to_native(band)
         # asset keys are "{BAND}_{res}"; sorted lexically 10m < 20m < 60m.
-        keys = sorted(k for k in item.assets if k.split("_")[0] == band)
+        keys = sorted(k for k in item.assets if k.split("_")[0] == native)
         if not keys:
-            continue  # band not available for this item
+            raise ValueError(
+                f"sources.cdse: requested band {band!r} (native key {native!r}) is not "
+                f"available on item {item.id!r} of collection {collection!r}; available "
+                f"assets: {sorted(item.assets)}."
+            )
         selected.append(
-            (item.assets[keys[0]].href, os.path.join(dst_folder, f"{band}.{band_ext}"))
+            (item.assets[keys[0]].href, os.path.join(dst_folder, f"{native}.{band_ext}"))
         )
 
     granule = item.assets.get("granule_metadata")
@@ -465,9 +493,12 @@ def _transfer_one(
     return False, _error_reason(last) if last else "unknown", 0.0, 0
 
 
-def _convert_one(staging: str, dst_path: str, *, offset: int = 0) -> tuple[bool, str, float]:
+def _convert_one(
+    staging: str, dst_path: str, *, offset: int = 0,
+    declaration: CollectionDeclaration | None = None,
+) -> tuple[bool, str, float]:
     """PROCESS stage: `to_cog(staging, dst_path)` -- a lossless COG with overviews -- then
-    stamp the declared GDAL scale/offset (reflectance bands only; `offset=0` is a no-op) and
+    stamp the declared GDAL scale/offset (radiometry bands only; `offset=0` is a no-op) and
     nodata-if-missing tags (#10, #30), then remove `staging`.
 
     The removal is in a `finally`, and `to_cog` is atomic, so a crash leaves at most the
@@ -475,7 +506,9 @@ def _convert_one(staging: str, dst_path: str, *, offset: int = 0) -> tuple[bool,
     re-converts.
 
     Top-level and picklable, for `ProcessPoolExecutor` under spawn -- it operates only on
-    real local files, so it never needs a parent-process monkeypatch.
+    real local files (and a frozen, picklable `CollectionDeclaration`), so it never needs a
+    parent-process monkeypatch. `declaration=None` (a worker started before spec 58, or a
+    direct call in a test) falls back to the S2 L2A default.
 
     ⚠️ A failure here is a local/data fault (`"ConvertError"`), never a bad CDSE window, so
     the caller must NOT fold it into the transfer-failure circuit breaker.
@@ -484,21 +517,25 @@ def _convert_one(staging: str, dst_path: str, *, offset: int = 0) -> tuple[bool,
     """
     import time
 
+    from fsd.catalog.declaration import S2_L2A_DECLARATION
     from fsd.raster.cog import to_cog
+
+    if declaration is None:
+        declaration = S2_L2A_DECLARATION
 
     try:
         t0 = time.time()
         to_cog(staging, dst_path)
         band = os.path.splitext(os.path.basename(dst_path))[0]
-        is_reflectance = _is_reflectance(band)
+        is_reflectance = declaration.is_radiometry_band(band)
         stamp_or_reencode(
             dst_path,
-            # reflectance-unit offset to match scale=1/10000: a viewer's
+            # reflectance-unit offset to match the declared scale: a viewer's
             # unscale=true computes DN*scale + offset, so the DN-space offset (-1000)
             # must be scaled to reflectance too (-> -0.1), else unscale yields
             # DN/10000 - 1000 ~= -1000 for every pixel (the black-tile bug).
-            offset=offset * config.S2_REFLECTANCE_SCALE if is_reflectance else 0.0,
-            scale=config.S2_REFLECTANCE_SCALE if is_reflectance else 1.0,
+            offset=offset * declaration.scale if is_reflectance else 0.0,
+            scale=declaration.scale if is_reflectance else 1.0,
             set_nodata_if_missing=config.NODATA,
         )
         return True, "ok", time.time() - t0
@@ -541,7 +578,9 @@ def _download_one(
     return c_ok, c_reason, (t_s, c_s, nbytes)
 
 
-def _append_downloaded(catalog, tile_meta: dict, results: list[tuple]) -> int:
+def _append_downloaded(
+    catalog, tile_meta: dict, results: list[tuple], declaration: CollectionDeclaration,
+) -> int:
     """Group successful (tile_id, dst, ok) downloads by tile and upsert catalog rows
     (`catalog.append` unions `files`, so partially-downloaded tiles complete on a
     later append). Returns the number of successful files."""
@@ -560,20 +599,22 @@ def _append_downloaded(catalog, tile_meta: dict, results: list[tuple]) -> int:
         r = tile_meta[tile_id]
         rows.append({
             "id": tile_id,
-            "satellite": r["satellite"],
+            "collection": r["collection"],
             "timestamp": r["timestamp"],
             "s3url": r["s3url"],
             "local_folderpath": folder_by_tile[tile_id],
             "files": ",".join(sorted(files)),
             "cloud_cover": r["cloud_cover"],
             "offset": r.get("offset", 0),
+            "scale": r.get("scale", declaration.scale),
             "nodata": r.get("nodata", config.NODATA),
+            "properties": r.get("properties", "{}"),
             "geometry": r["geometry"],
         })
     if rows:
-        # CDSE is S2 L2A -- stamp the collection-level declaration at the one place this
-        # source appends to the catalog.
-        catalog.append(rows, declaration=S2_L2A_DECLARATION)
+        # Stamp the collection-level declaration at the one place this source appends
+        # to the catalog (spec 58 D2: resolved once, driver-side, not re-derived per row).
+        catalog.append(rows, declaration=declaration)
     return sum(len(f) for f in files_by_tile.values())
 
 
@@ -683,6 +724,7 @@ def download(
     max_concurrent_s3: int | None = None,
     convert_executor=None,
     should_stop: Callable[[], bool] | None = None,
+    collection: str = config.SATELLITE_S2L2A,
 ) -> DownloadResult:
     """THE SOURCE CONTRACT (documented signature; see specs/01-sources.md).
 
@@ -733,6 +775,7 @@ def download(
     from functools import partial
 
     creds.require_s3()  # discovery (STAC) is anonymous; only download needs S3 keys
+    declaration = _collections.get(collection)
 
     # A remote (blob) root_folderpath runs the whole existing local pipeline
     # (transfer/convert/stamp) against LOCAL scratch -- every path below stays local, so
@@ -756,8 +799,11 @@ def download(
     fs.makedirs(root_folderpath, exist_ok=True)
 
     roi_gdf = _roi_gdf(roi)
-    items = _search_items(roi_gdf, startdate, enddate)
-    tiles = _finalize_catalog_gdf(_items_to_gdf(items), roi_gdf, max_cloudcover)
+    items = _search_items(roi_gdf, startdate, enddate, collection=collection)
+    tiles = _finalize_catalog_gdf(
+        _items_to_gdf(items, collection=collection, declaration=declaration),
+        roi_gdf, max_cloudcover,
+    )
 
     if len(tiles) > max_tiles:
         est_gb = len(tiles) * config.APPROX_GB_PER_TILE
@@ -773,7 +819,8 @@ def download(
     # Flat work list (src, dst, tile_id) built from STAC assets — no S3 listing.
     work: list[tuple[str, str, str]] = []
     for it in kept_items:
-        for src, dst in _select_item_files(it, bands, root_folderpath, cog=cog):
+        for src, dst in _select_item_files(it, bands, root_folderpath, cog=cog,
+                                           collection=collection, declaration=declaration):
             work.append((src, dst, it.id))
 
     total = len(work)
@@ -879,7 +926,7 @@ def download(
         if snapshot is not None:
             try:
                 with flush_lock:
-                    n = _append_downloaded(catalog, tile_meta, snapshot)
+                    n = _append_downloaded(catalog, tile_meta, snapshot, declaration)
                 with lock:
                     state["successful"] += n
             except Exception as e:
@@ -932,7 +979,8 @@ def download(
             try:
                 pool = _get_convert_pool()
                 offset = int(tile_meta[tid].get("offset", 0) or 0)
-                cfut = pool.submit(_convert_one, dst + ".src.jp2", dst, offset=offset)
+                cfut = pool.submit(_convert_one, dst + ".src.jp2", dst, offset=offset,
+                                   declaration=declaration)
             except Exception:
                 with lock:
                     state["pool_broken"] = True
@@ -974,7 +1022,7 @@ def download(
 
     if pending_results:
         try:
-            state["successful"] += _append_downloaded(catalog, tile_meta, pending_results)
+            state["successful"] += _append_downloaded(catalog, tile_meta, pending_results, declaration)
             pending_results.clear()
         except Exception as e:
             print(f"[fsd.download] warning: end-of-run catalog flush failed: {e!r}", flush=True)
@@ -1029,6 +1077,7 @@ def download_resume(
     max_concurrent_s3: int | None = None,
     convert_executor=None,
     should_stop: Callable[[], bool] | None = None,
+    collection: str = config.SATELLITE_S2L2A,
 ) -> list[DownloadResult]:
     """Resume-loop: run `download` repeatedly until every file is present (a full pass
     with no failures) or `max_passes` is reached.
@@ -1062,6 +1111,7 @@ def download_resume(
             cog=cog, max_convert_procs=max_convert_procs, max_staged=max_staged,
             max_concurrent_s3=max_concurrent_s3,
             convert_executor=convert_executor, should_stop=should_stop,
+            collection=collection,
         )
         results.append(r)
         if on_pass is not None:
@@ -1129,7 +1179,11 @@ def probe_throughput(
     creds.require_s3()
     roi_gdf = _roi_gdf(roi)
     items = _search_items(roi_gdf, startdate, enddate)
-    tiles = _finalize_catalog_gdf(_items_to_gdf(items), roi_gdf, max_cloudcover)
+    tiles = _finalize_catalog_gdf(
+        _items_to_gdf(items, collection=config.SATELLITE_S2L2A,
+                      declaration=_collections.get(config.SATELLITE_S2L2A)),
+        roi_gdf, max_cloudcover,
+    )
     if not len(tiles):
         return (0.0, 0, 0.0)
     tile_ids = set(tiles["id"])

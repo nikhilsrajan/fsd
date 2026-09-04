@@ -109,7 +109,7 @@ def test_setup_refuses_duplicate_ids(tmp_path):
             catalog_filepath=str(cat), timestamp_col="timestamp",
             shapefilepath=str(shapes), id_col="id", run_folderpath=str(tmp_path / "run"),
             startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
-            bands=["B04", "B08", "SCL"], scl_mask_classes=[8, 9], mosaic_days=20,
+            bands=["B04", "B08", "SCL"], mosaic_days=20,
             csv_filepath=str(tmp_path / "input.csv"), label_col="label",
         )
     # refused BEFORE any work-unit folder was written
@@ -145,7 +145,7 @@ def test_setup_reads_catalog_once_regardless_of_shape_count(tmp_path, monkeypatc
         catalog_filepath=str(cat), timestamp_col="timestamp",
         shapefilepath=str(shapes), id_col="id", run_folderpath=str(tmp_path / "run"),
         startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
-        bands=["B04", "B08", "SCL"], scl_mask_classes=[8, 9], mosaic_days=20,
+        bands=["B04", "B08", "SCL"], mosaic_days=20,
         csv_filepath=str(tmp_path / "run" / "input.csv"), label_col="label",
     )
 
@@ -167,7 +167,7 @@ def test_setup_progress_line_format_is_byte_identical_to_before(tmp_path, capsys
         catalog_filepath=str(cat), timestamp_col="timestamp",
         shapefilepath=str(shapes), id_col="id", run_folderpath=str(tmp_path / "run"),
         startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
-        bands=["B04", "B08", "SCL"], scl_mask_classes=[8, 9], mosaic_days=20,
+        bands=["B04", "B08", "SCL"], mosaic_days=20,
         csv_filepath=str(tmp_path / "run" / "input.csv"), label_col="label",
     )
     out = capsys.readouterr().out
@@ -223,7 +223,7 @@ def test_setup_manifest_order_is_shapefile_order_not_completion_order(tmp_path):
             catalog_filepath=str(cat), timestamp_col="timestamp",
             shapefilepath=str(shapes), id_col="id", run_folderpath=str(tmp_path / "run"),
             startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
-            bands=["B04"], scl_mask_classes=[8], mosaic_days=20,
+            bands=["B04"], mosaic_days=20,
             csv_filepath=str(tmp_path / "run" / "input.csv"), label_col=None,
             max_concurrent=6,
         )
@@ -244,7 +244,7 @@ def test_setup_writes_workunits(tmp_path):
         catalog_filepath=str(cat), timestamp_col="timestamp",
         shapefilepath=str(shapes), id_col="id", run_folderpath=str(tmp_path / "run"),
         startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
-        bands=["B04", "B08", "SCL"], scl_mask_classes=[8, 9], mosaic_days=20,
+        bands=["B04", "B08", "SCL"], mosaic_days=20,
         csv_filepath=str(csv), label_col="label",
     )
 
@@ -252,10 +252,10 @@ def test_setup_writes_workunits(tmp_path):
     assert len(df) == 2                                   # one work-unit per shape
     for col in ["shapefilepath", "startdate", "enddate", "catalog_filepath",
                 "export_folderpath", "datacube_filepath", "images_count", "id",
-                "label", "mosaic_days", "scl_mask_classes", "bands", "added_on"]:
+                "label", "mosaic_days", "collection", "bands", "added_on"]:
         assert col in df.columns
     assert (df["images_count"] == 2).all()                # both tiles intersect
-    assert df["scl_mask_classes"].iloc[0] == "8,9"
+    assert df["collection"].iloc[0] == "sentinel-2-l2a"
     assert df["bands"].iloc[0] == "B04,B08,SCL"
     # per-shape control files exist
     for _, r in df.iterrows():
@@ -282,12 +282,18 @@ def test_setup_export_folderpath_is_named_from_the_requested_window(tmp_path):
         catalog_filepath=str(cat), timestamp_col="timestamp",
         shapefilepath=str(shapes), id_col="id", run_folderpath=str(tmp_path / "run"),
         startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
-        bands=["B04", "B08", "SCL"], scl_mask_classes=[8, 9], mosaic_days=20,
+        bands=["B04", "B08", "SCL"], mosaic_days=20,
         csv_filepath=str(csv), label_col="label",
     )
 
+    from fsd import collections as _collections
+
     df = pd.read_csv(csv)
-    key = create_datacube.params_key(["B04", "B08", "SCL"], config.MOSAIC_SCHEME, [8, 9])
+    key = create_datacube.params_key(
+        ["B04", "B08", "SCL"], config.MOSAIC_SCHEME,
+        collection=config.SATELLITE_S2L2A,
+        declaration=_collections.get(config.SATELLITE_S2L2A),
+    )
     expected_window = f"20180101_20190101_m20_{key}"
     for p in df["export_folderpath"]:
         parts = os.path.normpath(p).split(os.sep)
@@ -309,20 +315,28 @@ def test_setup_does_not_corrupt_a_remote_run_folderpath(tmp_path, monkeypatch):
 
     remote_root = "abfss://data@acct.dfs.core.windows.net/p1-demo/run"
     written = {}
+    write_text_paths = []
 
     # TODO #57: the per-shape geometry now writes via `fs.write_text` (retry-wrapped),
     # not `fs.open(path, "w")` + `to_json()` directly -- mock only that write; the
-    # caller's (local) input geojson still reads for real.
+    # caller's (local) input geojson still reads for real. `setup` also writes the
+    # spec 58 D13 control file (`declaration.json`) via `fs.write_text` once, up front --
+    # collect every call rather than the first, so that write doesn't shadow the
+    # per-shape geometry one.
     monkeypatch.setattr(fs, "makedirs", lambda *a, **kw: None)
     monkeypatch.setattr(fs, "write_parquet", lambda path, df, **kw: written.setdefault("parquet", path))
-    monkeypatch.setattr(fs, "write_text", lambda path, text, **kw: written.setdefault("geojson", path))
+
+    def _fake_write_text(path, text, **kw):
+        write_text_paths.append(path)
+
+    monkeypatch.setattr(fs, "write_text", _fake_write_text)
 
     csv_local = tmp_path / "input.csv"  # the work-unit ledger itself can stay local
     create_datacube.setup(
         catalog_filepath=str(cat), timestamp_col="timestamp",
         shapefilepath=str(shapes), id_col="id", run_folderpath=remote_root,
         startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
-        bands=["B04", "B08", "SCL"], scl_mask_classes=[8, 9], mosaic_days=20,
+        bands=["B04", "B08", "SCL"], mosaic_days=20,
         csv_filepath=str(csv_local), label_col="label",
     )
 
@@ -336,8 +350,9 @@ def test_setup_does_not_corrupt_a_remote_run_folderpath(tmp_path, monkeypatch):
     # retry-wrapped `fs.write_text`. Without this assert a regression to a raw
     # `fs.open(path, "w")` still fails the test, but only by escaping the mock and
     # attempting a REAL abfss:// write (~97 s of credential + network round-trips).
-    assert written["geojson"].startswith(remote_root + "/")
-    assert written["geojson"].endswith("/geometry.geojson")
+    geojson_writes = [p for p in write_text_paths if p.endswith("/geometry.geojson")]
+    assert geojson_writes, f"no geometry.geojson write seen among {write_text_paths}"
+    assert all(p.startswith(remote_root + "/") for p in geojson_writes)
     assert written["parquet"].startswith(remote_root + "/")
 
 
@@ -354,7 +369,8 @@ def test_snakefile_plans_a_remote_export_folderpath(tmp_path):
         "catalog_filepath": str(tmp_path / "catalog.parquet"),
         "startdate": "2018-01-01", "enddate": "2019-01-01",
         "export_folderpath": "abfss://data@acct.dfs.core.windows.net/p1-demo/run/x/s1",
-        "mosaic_days": 20, "mosaic_scheme": "calendar", "scl_mask_classes": "8,9",
+        "mosaic_days": 20, "mosaic_scheme": "calendar",
+        "declaration_filepath": str(tmp_path / "declaration.json"),
         "bands": "B04,B08,SCL",
     }]).to_csv(csv, index=False)
 
@@ -373,7 +389,7 @@ def test_setup_raises_when_no_workunits(tmp_path):
             run_folderpath=str(tmp_path / "run"),
             startdate=datetime.datetime(2020, 1, 1),   # window with no tiles
             enddate=datetime.datetime(2020, 2, 1),
-            bands=["B04"], scl_mask_classes=[8], mosaic_days=20,
+            bands=["B04"], mosaic_days=20,
             csv_filepath=str(tmp_path / "run" / "input.csv"), label_col=None,
         )
 
@@ -391,10 +407,18 @@ def test_run_task_builds_one_datacube(tmp_path):
     gpd.GeoDataFrame({"id": ["s1"], "geometry": [TILE_4326]},
                      crs="EPSG:4326").to_file(str(shape), driver="GeoJSON")
     out = tmp_path / "cube"
+    from fsd.catalog import declaration as declaration_module
+
+    declaration_filepath = str(tmp_path / "declaration.json")
+    with open(declaration_filepath, "w") as f:
+        import json
+
+        json.dump(declaration_module.to_json(declaration_module.S2_L2A_DECLARATION), f)
 
     task.run_task(
         str(shape), str(cat), TS[0], TS[1], str(out),
-        bands=["B04", "B08", "SCL"], mosaic_days=20, scl_mask_classes=[8],
+        bands=["B04", "B08", "SCL"], mosaic_days=20,
+        declaration_filepath=declaration_filepath,
         if_missing_files="warn",
     )
     dc = fs.load_npy(str(out / "datacube.npy"))
@@ -405,8 +429,9 @@ def test_run_task_builds_one_datacube(tmp_path):
 
 def test_task_parse_args_splits_lists():
     ns = task._parse_args(["g.geojson", "c.parquet", "2018-01-01", "2018-02-01", "o",
-                           "--bands", "B04,B08,SCL", "--scl-mask-classes", "3,8,9"])
-    assert ns.bands == "B04,B08,SCL" and ns.scl_mask_classes == "3,8,9"
+                           "--bands", "B04,B08,SCL",
+                           "--declaration-filepath", "run/declaration.json"])
+    assert ns.bands == "B04,B08,SCL" and ns.declaration_filepath == "run/declaration.json"
 
 
 def test_infer_task_builds_and_infers_to_cog(tmp_path):
@@ -425,9 +450,18 @@ def test_infer_task_builds_and_infers_to_cog(tmp_path):
     export = tmp_path / "cell"
     out_tif = export / "output.tif"
 
+    import json
+
+    from fsd.catalog import declaration as declaration_module
+
+    declaration_filepath = str(tmp_path / "declaration.json")
+    with open(declaration_filepath, "w") as f:
+        json.dump(declaration_module.to_json(declaration_module.S2_L2A_DECLARATION), f)
+
     infer_task.run_infer_task(
         str(shape), str(cat), TS[0], TS[1], str(export),
-        bands=["B04", "B08", "SCL"], mosaic_days=20, scl_mask_classes=[8],
+        bands=["B04", "B08", "SCL"], mosaic_days=20,
+        declaration_filepath=declaration_filepath,
         bundle_path=bundle_dir, output_filepath=str(out_tif), if_missing_files="warn",
     )
 
@@ -511,7 +545,7 @@ def test_run_local_inference_dry_run_plans_jobs(tmp_path):
         shapefilepath=str(tmp_path / "shapes.geojson"), id_col="id",
         run_folderpath=str(tmp_path / "run"),
         startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
-        bands=["B04", "B08", "SCL"], scl_mask_classes=[8], mosaic_days=20,
+        bands=["B04", "B08", "SCL"], mosaic_days=20,
         csv_filepath=str(csv), label_col=None,
     )
     result = runners.run_local_inference(
@@ -531,7 +565,7 @@ def test_run_local_dry_run_plans_jobs(tmp_path):
         shapefilepath=str(tmp_path / "shapes.geojson"), id_col="id",
         run_folderpath=str(tmp_path / "run"),
         startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
-        bands=["B04", "B08", "SCL"], scl_mask_classes=[8], mosaic_days=20,
+        bands=["B04", "B08", "SCL"], mosaic_days=20,
         csv_filepath=str(csv), label_col=None,
     )
     result = runners.run_local(str(csv), cores=1, dry_run=True)

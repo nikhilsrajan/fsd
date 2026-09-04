@@ -2,10 +2,20 @@
 
 Spec: specs/02-catalog.md
 
-Columns: id (unique), satellite, timestamp (UTC), s3url, local_folderpath, files
-(comma-joined band filenames), cloud_cover, offset (the additive declared radiometric
-offset for reflectance bands; 0 when a source has no such concept), nodata (the declared
-nodata value; defaults 0), geometry (EPSG:4326).
+Columns: id (unique), collection (STAC collection id, e.g. "sentinel-2-l2a" -- spec 58 D12;
+renamed from "satellite", which always held this), timestamp (UTC), s3url,
+local_folderpath, files (comma-joined band filenames), cloud_cover, offset (the additive
+declared radiometric offset for radiometry bands; 0 when a collection has no such concept),
+scale (the declared multiplicative radiometric scale; 1.0 when a collection has no such
+concept -- spec 58 D5.1, declared metadata only, never applied to pixels), nodata (the
+declared nodata value; defaults 0), properties (JSON, the source item's STAC properties
+verbatim -- spec 58 D12; carries facts like `sat:orbit_state` the D9 partition guard
+needs, and nothing fsd interprets directly belongs here instead of a first-class column),
+geometry (EPSG:4326).
+
+⚠️ **No read-time back-compat shim (spec 58 D12, standing policy).** A catalog written
+before this schema change is not patched up here -- re-download and re-ingest, never
+silently default a missing column (see `read()`).
 """
 
 from __future__ import annotations
@@ -17,20 +27,22 @@ import pandas as pd
 import shapely
 
 from fsd.catalog import declaration as declaration_module
-from fsd.catalog.declaration import SourceDeclaration
+from fsd.catalog.declaration import CollectionDeclaration
 from fsd.storage import fs
 
 # On-disk column order. geometry is always last for GeoParquet.
 COLUMNS = [
     "id",
-    "satellite",
+    "collection",
     "timestamp",
     "s3url",
     "local_folderpath",
     "files",
     "cloud_cover",
     "offset",
+    "scale",
     "nodata",
+    "properties",
     "geometry",
 ]
 
@@ -85,12 +97,12 @@ def filter_gdf(
 
 
 class TileCatalog:
-    def __init__(self, filepath: str, declaration: SourceDeclaration | None = None):
+    def __init__(self, filepath: str, declaration: CollectionDeclaration | None = None):
         self.filepath = filepath
         # `append`'s default when its own `declaration=` kwarg is None.
         self._declaration_default = declaration
 
-    def _existing_stamp(self) -> SourceDeclaration | None:
+    def _existing_stamp(self) -> CollectionDeclaration | None:
         """The declaration actually stamped on the on-disk file, or `None` if the
         file doesn't exist or carries no stamp (footer-only, cheap)."""
         if not fs.exists(self.filepath):
@@ -99,7 +111,7 @@ class TileCatalog:
         return declaration_module.from_json(raw) if raw is not None else None
 
     @property
-    def declaration(self) -> SourceDeclaration | None:
+    def declaration(self) -> CollectionDeclaration | None:
         """The declaration a build against this catalog would resolve to right
         now: the on-disk stamp if the file exists, else the constructor default
 ."""
@@ -107,13 +119,13 @@ class TileCatalog:
             return self._existing_stamp()
         return self._declaration_default
 
-    def append(self, rows: list[dict], declaration: SourceDeclaration | None = None) -> None:
+    def append(self, rows: list[dict], declaration: CollectionDeclaration | None = None) -> None:
         """Upsert by id; union `files` for an existing tile (don't overwrite).
 
         A re-download of more bands extends the recorded `files` list rather than
         replacing it; all other columns take the newest value.
 
-        `declaration` stamps the collection-level `SourceDeclaration`
+        `declaration` stamps the collection-level `CollectionDeclaration`
         on this catalog file (constructor's `declaration=` is the default when this
         kwarg is `None`). One catalog file = one collection = one declaration:
         appending a declaration that differs from the one already stamped on an
@@ -129,15 +141,19 @@ class TileCatalog:
         new = gpd.GeoDataFrame(rows, crs=CRS)
         # Normalize timestamp to tz-aware UTC for a stable on-disk dtype.
         new["timestamp"] = pd.to_datetime(new["timestamp"], utc=True)
-        # offset/nodata are per-row declared values; a source that
+        # offset/scale/nodata/properties are per-row declared values; a source that
         # doesn't set one (no radiometric-offset concept, or nodata already
-        # implicit) defaults to 0 rather than fail column selection below. This is
+        # implicit) defaults rather than fail column selection below. This is
         # an ergonomic default for a *fresh* append, not a legacy-catalog shim
         # (see `read()`, which does not backfill these).
         if "offset" not in new.columns:
             new["offset"] = 0
+        if "scale" not in new.columns:
+            new["scale"] = 1.0
         if "nodata" not in new.columns:
             new["nodata"] = 0
+        if "properties" not in new.columns:
+            new["properties"] = "{}"
 
         if fs.exists(self.filepath):
             existing_stamp = self._existing_stamp()
@@ -192,6 +208,7 @@ class TileCatalog:
         """
         from fsd.catalog import stac
 
+        kwargs.setdefault("declaration", self.declaration)
         items = stac.tile_catalog_to_items(self.read(), **kwargs)
         return stac.write_stac_catalog(items, dst_folderpath, declaration=self.declaration)
 

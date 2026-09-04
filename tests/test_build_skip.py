@@ -29,7 +29,7 @@ def _write_cube(folder, *, empty_metadata=False):
 
 
 _WINDOW = dict(startdate="2018-01-01", enddate="2018-02-01", bands=["B04"],
-               scl_mask_classes=[0], mosaic_days=20)
+               collection="sentinel-2-l2a", mosaic_days=20)
 
 
 def _cube_dir(run_folder, id_value):
@@ -37,11 +37,13 @@ def _cube_dir(run_folder, id_value):
     fix that makes a row current only if it names that path). These tests used to
     hand-build `run_folder/<id>/`, which a real `setup` has never written -- such a row
     is now purged as stale, so the fixtures use the derived path like everything else."""
+    from fsd import collections as _collections
     from fsd import config
     segment = cd.window_folder_segment(
         _WINDOW["startdate"], _WINDOW["enddate"], _WINDOW["mosaic_days"],
         bands=_WINDOW["bands"], mosaic_scheme=config.MOSAIC_SCHEME,
-        scl_mask_classes=_WINDOW["scl_mask_classes"],
+        collection=_WINDOW["collection"],
+        declaration=_collections.get(_WINDOW["collection"]),
     )
     return cd.cube_export_folderpath(str(run_folder), segment, id_value)
 
@@ -80,7 +82,7 @@ def _call(csv_fp, run_folder, *, ids=(), **kw):
         catalog_filepath="unused", timestamp_col="timestamp",
         shapefilepath=_shapefile_with_ids(run_folder.parent, ids) if ids else "unused",
         id_col="id", run_folderpath=str(run_folder), startdate="2018-01-01",
-        enddate="2018-02-01", bands=["B04"], scl_mask_classes=[0], mosaic_days=20,
+        enddate="2018-02-01", bands=["B04"], mosaic_days=20,
         csv_filepath=csv_fp, label_col=None, cores=1, overwrite_setup_csv=False,
     )
     defaults.update(kw)

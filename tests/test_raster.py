@@ -81,11 +81,15 @@ def test_apply_offset_shifts_and_clamps_uint16_no_underflow():
     assert out_profile is profile  # profile untouched
 
 
-def test_is_reflectance_exempts_non_reflectance_bands():
+def test_is_radiometry_band_exempts_non_reflectance_bands():
+    """spec 58 D5.3: `_is_reflectance` moved to `CollectionDeclaration.is_radiometry_band`
+    -- declared per collection rather than a global regex."""
+    from fsd.catalog.declaration import S2_L2A_DECLARATION
+
     for band in ("B01", "B04", "B08", "B8A", "B12"):
-        assert images._is_reflectance(band) is True
+        assert S2_L2A_DECLARATION.is_radiometry_band(band) is True
     for band in ("SCL", "AOT", "WVP", "visual"):
-        assert images._is_reflectance(band) is False
+        assert S2_L2A_DECLARATION.is_radiometry_band(band) is False
 
 
 def test_resample_by_ref_meta_matches_ref_grid():

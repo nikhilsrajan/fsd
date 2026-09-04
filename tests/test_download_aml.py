@@ -79,7 +79,7 @@ def test_download_cli_shard_mode_calls_mpc_download_shard(monkeypatch):
     shard_url = "memory://dl_shard/shards/0.csv"
     rows = [{"tile_id": "T1", "band": "B04", "href": "https://x/B04.tif",
               "dst": "memory://dl_shard/data/T1/B04.tif", "offset": 0,
-              "satellite": "sentinel-2-l2a", "timestamp": "2018-06-01T00:00:00Z",
+              "collection": "sentinel-2-l2a", "timestamp": "2018-06-01T00:00:00Z",
               "s3url": "", "cloud_cover": 0.0, "nodata": 0,
               "geometry": "POINT (0 0)"}]
     with fs.open(shard_url, "w") as f:
@@ -154,7 +154,7 @@ def test_mpc_download_shard_signs_on_node_and_transfers(monkeypatch, tmp_path):
     rows = [{
         "tile_id": "T1", "band": "B04", "href": "https://mpc/B04.tif",
         "dst": str(tmp_path / "T1" / "B04.tif"), "offset": 0,
-        "satellite": "sentinel-2-l2a", "timestamp": "2018-06-01T00:00:00+00:00",
+        "collection": "sentinel-2-l2a", "timestamp": "2018-06-01T00:00:00+00:00",
         "s3url": "", "cloud_cover": 0.0, "nodata": 0, "geometry": "POINT (0 0)",
     }]
 
@@ -176,7 +176,7 @@ def test_mpc_download_shard_appends_to_a_real_tile_catalog(monkeypatch, tmp_path
     rows = [{
         "tile_id": "T1", "band": "B04", "href": "https://mpc/B04.tif",
         "dst": str(tmp_path / "T1" / "B04.tif"), "offset": -1000,
-        "satellite": "sentinel-2-l2a", "timestamp": "2018-06-01T00:00:00+00:00",
+        "collection": "sentinel-2-l2a", "timestamp": "2018-06-01T00:00:00+00:00",
         "s3url": "", "cloud_cover": 0.0, "nodata": 0, "geometry": "POINT (1 2)",
     }]
 
@@ -287,7 +287,7 @@ def test_run_aml_download_cdse_one_job_is_non_vacuous(fake_aml_command, monkeypa
 def _mpc_rows(n):
     return [{
         "tile_id": f"T{i}", "band": "B04", "href": f"https://mpc/{i}/B04.tif",
-        "dst": f"memory://x/{i}/B04.tif", "offset": 0, "satellite": "sentinel-2-l2a",
+        "dst": f"memory://x/{i}/B04.tif", "offset": 0, "collection": "sentinel-2-l2a",
         "timestamp": "2018-06-01T00:00:00+00:00", "s3url": "", "cloud_cover": 0.0,
         "nodata": 0, "geometry": "POINT (0 0)",
     } for i in range(n)]
@@ -339,11 +339,11 @@ def _write_mpc_catalog(path, tile_bands: dict[str, list[str]]):
     the exact shape `mpc._append_downloaded` writes."""
     from shapely.geometry import Point
 
-    from fsd.sources.mpc import S2_L2A_DECLARATION
+    from fsd.catalog.declaration import S2_L2A_DECLARATION
 
     catalog = TileCatalog(str(path))
     rows = [{
-        "id": tile_id, "satellite": "sentinel-2-l2a",
+        "id": tile_id, "collection": "sentinel-2-l2a",
         "timestamp": "2018-06-01T00:00:00+00:00", "s3url": "",
         "local_folderpath": f"/data/{tile_id}",
         "files": ",".join(f"{b}.tif" for b in bands),
@@ -762,7 +762,7 @@ def test_run_aml_download_mpc_rejects_creds_url_end_to_end(fake_aml_command, mon
     monkeypatch.setattr(
         runners._mpc, "discover_shard_rows",
         lambda *a, **kw: [{"href": "h", "dst": "d", "band": "B04", "tile_id": "T33UWP",
-                            "satellite": "S2A", "timestamp": "2018-06-01", "s3url": "",
+                            "collection": "S2A", "timestamp": "2018-06-01", "s3url": "",
                             "cloud_cover": 0.0, "offset": 0, "nodata": 0,
                             "geometry": "POINT (0 0)"}],
     )
@@ -786,7 +786,7 @@ def test_run_aml_download_mpc_rejects_creds_url_end_to_end(fake_aml_command, mon
 
 def _rows_over_n_tiles(n: int) -> list[dict]:
     return [{"href": f"h{i}", "dst": f"d{i}", "band": "B04", "tile_id": f"T{i:05d}",
-             "satellite": "S2A", "timestamp": "2018-06-01", "s3url": "",
+             "collection": "S2A", "timestamp": "2018-06-01", "s3url": "",
              "cloud_cover": 0.0, "offset": 0, "nodata": 0,
              "geometry": "POINT (0 0)"} for i in range(n)]
 

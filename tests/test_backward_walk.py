@@ -17,6 +17,7 @@ import pytest
 from shapely.geometry import box
 
 from fsd import api, config
+from fsd import collections as _collections
 from fsd.storage import fs
 from fsd.workflows import create_datacube
 
@@ -63,15 +64,76 @@ def _shapes(path, ids, *, outside_ids=()):
 # --- AC7b: two requests differing only in `bands` resolve to different cube paths -----
 
 def test_params_key_differs_when_bands_differ():
-    a = create_datacube.params_key(["B04"], config.MOSAIC_SCHEME, [8, 9])
-    b = create_datacube.params_key(["B04", "B08"], config.MOSAIC_SCHEME, [8, 9])
+    decl = _collections.get(config.SATELLITE_S2L2A)
+    a = create_datacube.params_key(["B04"], config.MOSAIC_SCHEME,
+                                    collection=config.SATELLITE_S2L2A, declaration=decl)
+    b = create_datacube.params_key(["B04", "B08"], config.MOSAIC_SCHEME,
+                                    collection=config.SATELLITE_S2L2A, declaration=decl)
     assert a != b
 
 
 def test_params_key_stable_for_same_params():
-    a = create_datacube.params_key(["B04", "B08"], config.MOSAIC_SCHEME, [8, 9])
-    b = create_datacube.params_key(["B04", "B08"], config.MOSAIC_SCHEME, [8, 9])
+    decl = _collections.get(config.SATELLITE_S2L2A)
+    a = create_datacube.params_key(["B04", "B08"], config.MOSAIC_SCHEME,
+                                    collection=config.SATELLITE_S2L2A, declaration=decl)
+    b = create_datacube.params_key(["B04", "B08"], config.MOSAIC_SCHEME,
+                                    collection=config.SATELLITE_S2L2A, declaration=decl)
     assert a == b
+
+
+def test_params_key_differs_when_collection_differs():
+    """Spec 58 AC4: two builds differing only in `collection` resolve to different cube
+    paths. Registers a throwaway second collection sharing S2's declaration content in
+    every field but `mosaic_method`, so the two params_key digests can only differ
+    because `collection` itself is folded into the key, not because the declaration
+    digest also happens to differ."""
+    import dataclasses
+
+
+    other_id = "ac4-test-collection"
+    if other_id not in _collections.REGISTRY:
+        s2 = _collections.get(config.SATELLITE_S2L2A)
+        _collections.register(other_id, dataclasses.replace(s2))
+
+    decl = _collections.get(config.SATELLITE_S2L2A)
+    a = create_datacube.params_key(["B04"], config.MOSAIC_SCHEME,
+                                    collection=config.SATELLITE_S2L2A, declaration=decl)
+    b = create_datacube.params_key(["B04"], config.MOSAIC_SCHEME,
+                                    collection=other_id, declaration=decl)
+    assert a != b
+
+
+def test_bands_canonicalize_to_the_same_path_as_native_names(tmp_path):
+    """Spec 58 AC5: `bands=["B8A"]` and `bands=["nir08"]` against a collection declaring
+    that alias resolve to the SAME cube path -- `setup` canonicalizes bands to native
+    asset keys before either the digest or `input.csv` ever see them."""
+    cat = tmp_path / "catalog.parquet"
+    shapes = tmp_path / "shapes.geojson"
+    _make_catalog(cat, tmp_path)
+    _two_shapes(shapes)
+
+    csv_native = tmp_path / "native.csv"
+    create_datacube.setup(
+        catalog_filepath=str(cat), timestamp_col="timestamp",
+        shapefilepath=str(shapes), id_col="id", run_folderpath=str(tmp_path / "run_native"),
+        startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
+        bands=["B8A"], mosaic_days=20, csv_filepath=str(csv_native), label_col="label",
+    )
+    csv_alias = tmp_path / "alias.csv"
+    create_datacube.setup(
+        catalog_filepath=str(cat), timestamp_col="timestamp",
+        shapefilepath=str(shapes), id_col="id", run_folderpath=str(tmp_path / "run_alias"),
+        startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
+        bands=["nir08"], mosaic_days=20, csv_filepath=str(csv_alias), label_col="label",
+    )
+
+    native_segment = os.path.basename(os.path.dirname(
+        pd.read_csv(csv_native)["export_folderpath"].iloc[0]))
+    alias_segment = os.path.basename(os.path.dirname(
+        pd.read_csv(csv_alias)["export_folderpath"].iloc[0]))
+    assert native_segment == alias_segment
+    assert pd.read_csv(csv_native)["bands"].iloc[0] == "B8A"
+    assert pd.read_csv(csv_alias)["bands"].iloc[0] == "B8A"  # canonicalized, not "nir08"
 
 
 def test_setup_with_different_bands_writes_to_different_window_folders(tmp_path):
@@ -86,7 +148,7 @@ def test_setup_with_different_bands_writes_to_different_window_folders(tmp_path)
         catalog_filepath=str(cat), timestamp_col="timestamp",
         shapefilepath=str(shapes), id_col="id", run_folderpath=str(run_folder),
         startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
-        bands=["B04"], scl_mask_classes=[8, 9], mosaic_days=20,
+        bands=["B04"], mosaic_days=20,
         csv_filepath=str(csv_a), label_col="label",
     )
     csv_b = tmp_path / "b.csv"
@@ -94,7 +156,7 @@ def test_setup_with_different_bands_writes_to_different_window_folders(tmp_path)
         catalog_filepath=str(cat), timestamp_col="timestamp",
         shapefilepath=str(shapes), id_col="id", run_folderpath=str(run_folder),
         startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
-        bands=["B04", "B08"], scl_mask_classes=[8, 9], mosaic_days=20,
+        bands=["B04", "B08"], mosaic_days=20,
         csv_filepath=str(csv_b), label_col="label",
     )
 
@@ -121,7 +183,7 @@ def test_request_identity_matches_the_input_csv_identity(tmp_path):
 
     kwargs = dict(
         startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
-        mosaic_days=20, bands=["B04", "B08"], scl_mask_classes=[8, 9],
+        mosaic_days=20, bands=["B04", "B08"], collection=config.SATELLITE_S2L2A,
     )
     create_datacube.setup(
         catalog_filepath=str(cat), timestamp_col="timestamp",
@@ -155,7 +217,7 @@ def test_request_identity_reads_no_input_csv(tmp_path):
     identity = api._flatten_identity_from_request(
         gdf, id_col="id", run_folderpath=str(tmp_path / "run"),
         startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
-        mosaic_days=20, bands=["B04"], scl_mask_classes=[8, 9],
+        mosaic_days=20, bands=["B04"], collection=config.SATELLITE_S2L2A,
         mosaic_scheme=config.MOSAIC_SCHEME,
         adapter=None, feature_sequence=None, aggregate=None,
     )
@@ -167,7 +229,7 @@ def test_request_identity_reads_no_input_csv(tmp_path):
 
 def _fake_run_create_datacube(
     *, csv_filepath, run_folderpath, startdate, enddate, mosaic_days, bands,
-    scl_mask_classes, mosaic_scheme=config.MOSAIC_SCHEME, **kw,
+    collection=config.SATELLITE_S2L2A, mosaic_scheme=config.MOSAIC_SCHEME, **kw,
 ):
     """A `run_create_datacube` stand-in that writes an `input.csv` row whose
     `datacube_filepath` is the SAME path `create_datacube.cube_export_folderpath` (and
@@ -176,7 +238,7 @@ def _fake_run_create_datacube(
     fire. Real `setup` is not exercised here; only its output shape is."""
     window_segment = create_datacube.window_folder_segment(
         startdate, enddate, mosaic_days, bands=bands, mosaic_scheme=mosaic_scheme,
-        scl_mask_classes=scl_mask_classes,
+        collection=collection, declaration=_collections.get(collection),
     )
     cube_folder = create_datacube.cube_export_folderpath(run_folderpath, window_segment, 0)
     fs.makedirs(os.path.dirname(csv_filepath))
@@ -185,7 +247,7 @@ def _fake_run_create_datacube(
         "id": [0], "label": ["a"], "bands": [",".join(bands)], "mosaic_days": [mosaic_days],
         "startdate": [str(pd.to_datetime(startdate, utc=True))],
         "enddate": [str(pd.to_datetime(enddate, utc=True))],
-        "scl_mask_classes": [",".join(str(v) for v in scl_mask_classes)],
+        "collection": [collection],
         "mosaic_scheme": [mosaic_scheme],
     }).to_csv(csv_filepath, index=False)
 
@@ -335,7 +397,7 @@ def _walk_kwargs(cat, run_folder, csv_fp, **extra):
         catalog_filepath=str(cat), timestamp_col="timestamp", id_col="id",
         run_folderpath=str(run_folder),
         startdate=datetime.datetime(2018, 1, 1), enddate=datetime.datetime(2019, 1, 1),
-        bands=["B04"], scl_mask_classes=[8, 9], mosaic_days=20,
+        bands=["B04"], mosaic_days=20,
         csv_filepath=csv_fp, label_col="label",
     )
     kwargs.update(extra)
@@ -588,24 +650,22 @@ def test_F4_known_empty_cell_is_excluded_from_request_identity(tmp_path):
         aggregate=None,
         startdate=kwargs["startdate"], enddate=kwargs["enddate"],
         mosaic_days=kwargs["mosaic_days"], bands=kwargs["bands"],
-        scl_mask_classes=kwargs["scl_mask_classes"],
+        collection=kwargs.get("collection", config.SATELLITE_S2L2A),
     )
     assert from_request == from_csv
     assert [c[0] for c in from_request["cubes"]] == ["0"]
 
 
-def test_F5_empty_scl_mask_classes_round_trips_without_purging(tmp_path):
-    """F5: `",".join([])` -> `""` -> an empty CSV field -> read back as NaN, not `""`.
-    `[]` ("mask nothing") is a legitimate request, and a second identical call must not
-    purge the rows the first call just wrote."""
+def test_F5_repeated_identical_call_round_trips_without_purging(tmp_path):
+    """F5 (spec 58-adapted): a second call with IDENTICAL params must not purge the
+    rows the first call just wrote."""
     cat = tmp_path / "catalog.parquet"
     shapes = tmp_path / "shapes.geojson"
     _make_catalog(cat, tmp_path)
     _shapes(shapes, [0, 1])
     run_folder = tmp_path / "run"
     csv_fp = str(run_folder / "input.csv")
-    kwargs = _walk_kwargs(cat, run_folder, csv_fp, shapefilepath=str(shapes),
-                          scl_mask_classes=[])
+    kwargs = _walk_kwargs(cat, run_folder, csv_fp, shapefilepath=str(shapes))
 
     create_datacube.build_shortfall_only(**kwargs)
     n_present, n_missing, n_known_empty = create_datacube.build_shortfall_only(**kwargs)
@@ -659,7 +719,9 @@ def test_duplicate_ids_still_raise_and_are_not_recorded_as_known_empty(tmp_path)
         str(run_folder),
         create_datacube.window_folder_segment(
             datetime.datetime(2018, 1, 1), datetime.datetime(2019, 1, 1), 20,
-            bands=["B04"], mosaic_scheme=config.MOSAIC_SCHEME, scl_mask_classes=[8, 9]),
+            bands=["B04"], mosaic_scheme=config.MOSAIC_SCHEME,
+            collection=config.SATELLITE_S2L2A,
+            declaration=_collections.get(config.SATELLITE_S2L2A)),
     )
 
 
@@ -694,7 +756,7 @@ def test_known_empty_is_forgotten_once_the_cell_has_a_row_again(tmp_path):
         mosaic_scheme=config.MOSAIC_SCHEME, adapter=None, feature_sequence=None,
         aggregate=None, startdate=kwargs["startdate"], enddate=kwargs["enddate"],
         mosaic_days=kwargs["mosaic_days"], bands=kwargs["bands"],
-        scl_mask_classes=kwargs["scl_mask_classes"],
+        collection=kwargs.get("collection", config.SATELLITE_S2L2A),
     )
     with fs.open(csv_fp, "r") as f:
         from_csv = api._flatten_identity(
@@ -719,7 +781,9 @@ def test_forced_rebuild_clears_a_stale_known_empty_entry(tmp_path):
     csv_fp = str(run_folder / "input.csv")
     window_segment = create_datacube.window_folder_segment(
         datetime.datetime(2018, 1, 1), datetime.datetime(2019, 1, 1), 20,
-        bands=["B04"], mosaic_scheme=config.MOSAIC_SCHEME, scl_mask_classes=[8, 9])
+        bands=["B04"], mosaic_scheme=config.MOSAIC_SCHEME,
+        collection=config.SATELLITE_S2L2A,
+        declaration=_collections.get(config.SATELLITE_S2L2A))
 
     create_datacube.build_shortfall_only(
         **_walk_kwargs(cat, run_folder, csv_fp, shapefilepath=str(shapes)))
@@ -767,7 +831,7 @@ def test_a_row_naming_the_old_path_shape_is_purged_and_regenerated(tmp_path, cap
             "startdate": pd.Timestamp("2018-01-01", tz="UTC"),
             "enddate": pd.Timestamp("2019-01-01", tz="UTC"),
             "mosaic_days": 20, "mosaic_scheme": config.MOSAIC_SCHEME,
-            "scl_mask_classes": "8,9", "bands": "B04",
+            "collection": "sentinel-2-l2a", "bands": "B04",
             "added_on": pd.Timestamp.now(tz="UTC"), "images_count": 1,
         })
     fs.makedirs(str(run_folder))
@@ -780,7 +844,8 @@ def test_a_row_naming_the_old_path_shape_is_purged_and_regenerated(tmp_path, cap
     window_segment = create_datacube.window_folder_segment(
         kwargs["startdate"], kwargs["enddate"], kwargs["mosaic_days"],
         bands=kwargs["bands"], mosaic_scheme=config.MOSAIC_SCHEME,
-        scl_mask_classes=kwargs["scl_mask_classes"])
+        collection=kwargs.get("collection", config.SATELLITE_S2L2A),
+        declaration=_collections.get(kwargs.get("collection", config.SATELLITE_S2L2A)))
     with fs.open(csv_fp, "r") as f:
         after = pd.read_csv(f)
     assert len(after) == 2

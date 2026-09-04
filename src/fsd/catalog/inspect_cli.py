@@ -1,4 +1,4 @@
-"""Print a catalog Parquet file's stamped `SourceDeclaration`, footer-only --
+"""Print a catalog Parquet file's stamped `CollectionDeclaration`, footer-only --
 no row group is read (`fsd-catalog-inspect`).
 
 Recovers the sidecar-JSON option's one real advantage (human legibility)

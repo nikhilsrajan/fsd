@@ -137,8 +137,9 @@ INFER_CSV = os.path.join(INFER_RUN, "input.csv")
 create_datacube.run_create_datacube(
     catalog_filepath=CATALOG, timestamp_col="timestamp",
     shapefilepath=GRID, id_col="grid_id", run_folderpath=INFER_RUN,
-    startdate=START, enddate=END, bands=BANDS, scl_mask_classes=[0,1,3,7,8,9,10],
+    startdate=START, enddate=END, bands=BANDS,
     mosaic_days=MOSAIC, csv_filepath=INFER_CSV, cores=8,   # no label_col — inference set
+    # SCL mask classes are declared on the collection (spec 58 D3), not passed here.
 )
 print("inference cubes:", len(pd.read_csv(INFER_CSV)))
 ```

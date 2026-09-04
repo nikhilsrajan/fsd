@@ -34,11 +34,11 @@ from fsd.catalog import declaration as declaration_module
 from fsd.catalog.declaration import (
     MASK_TYPE_CATEGORICAL_CLASSES,
     S2_L2A_DECLARATION,
-    SourceDeclaration,
+    CollectionDeclaration,
 )
 from fsd.datacube import ops
 from fsd.raster import images
-from fsd.raster.images import _is_reflectance, apply_offset
+from fsd.raster.images import apply_offset
 from fsd.storage import fs
 
 _RASTER_EXTS = (".jp2", ".tif", ".tiff")
@@ -58,8 +58,8 @@ def _timed(store: dict, name: str):
 # --- declaration resolution ---------------------------------------------------
 
 def _resolve_declaration(
-    gdf: gpd.GeoDataFrame, declaration: SourceDeclaration | None,
-) -> SourceDeclaration:
+    gdf: gpd.GeoDataFrame, declaration: CollectionDeclaration | None,
+) -> CollectionDeclaration:
     """Resolution order: the explicit `declaration=` kwarg, else the
     stamp already on `gdf.attrs` (restored by `fs.read_parquet` from the Parquet
     footer, or attached by a prior call to this function), else the S2 L2A
@@ -81,21 +81,59 @@ def _resolve_declaration(
     source_path = gdf.attrs.get(fs_module.SOURCE_PATH_ATTRS_KEY)
     if source_path is not None:
         raise ValueError(
-            f"no SourceDeclaration stamp found on the catalog read from "
+            f"no CollectionDeclaration stamp found on the catalog read from "
             f"{source_path!r}. A catalog written before spec 35 (or by code that "
             "doesn't stamp one) is not silently assumed to be Sentinel-2 L2A -- "
             "re-stamp it first: `python -m fsd.catalog.restamp_cli "
-            f"{source_path} --declaration s2_l2a` (spec 35 §6), or pass "
+            f"{source_path} --declaration sentinel-2-l2a` (spec 35 §6), or pass "
             "declaration= explicitly."
         )
     return S2_L2A_DECLARATION
+
+
+def _resolve_build_declaration(
+    catalog_gdf: gpd.GeoDataFrame, declaration: CollectionDeclaration | None,
+) -> CollectionDeclaration:
+    """`_resolve_declaration`, plus the spec 58 D14 guard: a build may request a
+    **different named collection** from the one the catalog is stamped with only if
+    its ARTIFACT facts are identical to the stamp's -- its BUILD POLICY fields
+    (`mask_spec`, `mosaic_method`, `mosaic_partition`, `partition_policy`,
+    `reference_band`) may freely differ, that is the whole point of a variant.
+
+    A requested declaration disagreeing with the stamp on an artifact fact
+    (`nodata`, `scale`, `radiometry_bands`, `band_aliases`,
+    `requires_subscription_key`) is a lie about what the bytes ARE, so this raises
+    instead of silently building against the wrong radiometry -- this is what closes
+    the "lying stamp" spec 58 D3 describes for the old mask-classes override, generalized to any
+    artifact fact.
+    """
+    if declaration is None:
+        return _resolve_declaration(catalog_gdf, None)
+    stamped = declaration_module.from_attrs(catalog_gdf)
+    if stamped is None:
+        return declaration
+    mismatched = [
+        field for field in declaration_module.ARTIFACT_FACT_FIELDS
+        if getattr(declaration, field) != getattr(stamped, field)
+    ]
+    if mismatched:
+        raise ValueError(
+            "build_datacube: the requested declaration disagrees with the catalog's "
+            f"stamped declaration on artifact fact(s) {mismatched} -- "
+            f"stamped={ {f: getattr(stamped, f) for f in mismatched} }, "
+            f"requested={ {f: getattr(declaration, f) for f in mismatched} }. A build "
+            "variant may change build policy (mask, reference band, mosaic "
+            "method/partition) but never what the bytes ARE (spec 58 D14). Register a "
+            "collection variant that keeps the same artifact facts as the stamp."
+        )
+    return declaration
 
 
 # --- caller helper: TileCatalog rows -> band-flattened rows -------------------
 
 def flatten_catalog(
     catalog_gdf: gpd.GeoDataFrame,
-    declaration: SourceDeclaration | None = None,
+    declaration: CollectionDeclaration | None = None,
 ) -> gpd.GeoDataFrame:
     """Explode a filtered `TileCatalog` (one row per tile, with
     `area_contribution` from `TileCatalog.filter`) into one row per raster band
@@ -103,8 +141,10 @@ def flatten_catalog(
 
     Output cols: `id, filepath, band, timestamp, geometry, area_contribution,
     offset, nodata`. Non-raster files (e.g. `MTD_TL.xml`) are skipped; `band` =
-    filename minus ext. `offset` is the tile-row's declared additive radiometric offset for
-    reflectance bands (`_is_reflectance`), else 0 — mask/QA bands are never harmonized.
+    filename minus ext. `offset` is the tile-row's declared additive radiometric offset
+    for a band the resolved declaration says carries radiometry
+    (`CollectionDeclaration.is_radiometry_band`), else 0 — mask/QA bands are never
+    harmonized.
     `nodata` is the tile-row's declared nodata,
     defaulting to 0 when the row doesn't carry one. Missing `offset`/`nodata`
     columns on `catalog_gdf` (a source with no radiometric-offset concept)
@@ -137,7 +177,7 @@ def flatten_catalog(
             data["timestamp"].append(row["timestamp"])
             data["geometry"].append(row["geometry"])
             data["area_contribution"].append(row["area_contribution"])
-            data["offset"].append(tile_offset if _is_reflectance(band) else 0)
+            data["offset"].append(tile_offset if declaration.is_radiometry_band(band) else 0)
             data["nodata"].append(tile_nodata)
     flat = gpd.GeoDataFrame(data=data, crs=catalog_gdf.crs)
     declaration_module.to_attrs(flat, declaration)
@@ -154,9 +194,8 @@ def build_datacube(
     bands: list[str],
     *,
     mosaic_days: int = config.MOSAIC_DAYS,
-    scl_mask_classes: list[int] | None = None,
     reference_band: str | None = None,
-    declaration: SourceDeclaration | None = None,
+    declaration: CollectionDeclaration | None = None,
     export_folderpath: str,
     mosaic_scheme: str = config.MOSAIC_SCHEME,
     njobs: int = 1,
@@ -176,16 +215,25 @@ def build_datacube(
 
     **Declaration-driven, never hardcoded (#35).** What band is the mask, how to interpret
     it, which band is the resample reference, and the mosaic method are all read from a
-    `SourceDeclaration` (`fsd.catalog.declaration`) — resolved by `_resolve_declaration`: the
-    explicit `declaration=` kwarg, else `catalog_subset`'s own stamp
+    `CollectionDeclaration` (`fsd.catalog.declaration`) — resolved by
+    `_resolve_build_declaration`: the explicit `declaration=` kwarg (validated against the
+    catalog's own stamp on ARTIFACT facts, spec 58 D14 -- a differing build-policy field is
+    fine, a differing artifact fact raises), else `catalog_subset`'s own stamp
     (`attrs["fsd:declaration"]`, set by `flatten_catalog`), else the S2 L2A default for a
     hand-built `catalog_subset`. An unstamped catalog that came from a FILE raises instead.
 
-    `scl_mask_classes`/`reference_band`, if given, override the resolved declaration's
-    fields, for existing S2 callers. The declared mask is skipped entirely — no
-    `apply_cloud_mask_scl`, no drop — when `mask_spec` is `None` **or** its `band` is not in
-    the requested `bands`, which is what lets `bands=["B04"]` build without an SCL band
-    existing (#35).
+    **The declared `mask_spec` is never overridden (spec 58 D3)** — there is no
+    mask-classes override parameter here any more; a different mask means a different named
+    collection variant (`fsd.collections.register`), not an inline list, which closed the
+    "lying stamp" (the catalog was stamped with one mask but built with another). The
+    declared mask is skipped entirely — no `apply_cloud_mask_scl`, no drop — when
+    `mask_spec` is `None` **or** its `band` is not in the requested `bands`, which is what
+    lets `bands=["B04"]` build without an SCL band existing (#35).
+
+    `reference_band`, if given, overrides the resolved declaration's field (build policy,
+    spec 58 D14) — and **must be among `bands`, or this raises** (spec 58 D11): a declared
+    non-`None` reference band absent from the request used to fail deep inside the merge
+    (`ref_indices` silently empty) instead of at the top of the build.
 
     An unimplemented `mask_spec.mask_type` raises `NotImplementedError` rather than masking
     approximately: a growable seam must fail loudly, never produce a silently wrong mask.
@@ -218,7 +266,7 @@ def build_datacube(
     wall-clock `time.time()` so intervals are comparable across grid processes. The
     workflow path enables it via the `FSD_WRITE_READ_LOG` env var (see workflows.task).
     """
-    declared = _resolve_declaration(catalog_subset, declaration)
+    declared = _resolve_build_declaration(catalog_subset, declaration)
     if declared.native_grid:
         raise NotImplementedError(
             "build_datacube: a native single-grid source (declaration.native_grid="
@@ -228,6 +276,12 @@ def build_datacube(
         )
     if reference_band is None:
         reference_band = declared.reference_band
+    if reference_band is not None and reference_band not in bands:
+        raise ValueError(
+            f"build_datacube: reference_band={reference_band!r} is not among the "
+            f"requested bands={bands!r} (spec 58 D11). Add it to `bands`, or declare/pass "
+            "a reference_band that is."
+        )
 
     mask_spec = declared.mask_spec
     mask_active = mask_spec is not None and mask_spec.band in bands
@@ -237,8 +291,7 @@ def build_datacube(
             f"only {MASK_TYPE_CATEGORICAL_CLASSES!r} is (spec 34 [G3]); "
             "bitmask/threshold masks land with a later source spec."
         )
-    if scl_mask_classes is None and mask_active:
-        scl_mask_classes = list(mask_spec.classes)
+    mask_classes = list(mask_spec.classes) if mask_active else None
 
     if "nodata" in catalog_subset.columns and len(catalog_subset):
         nodata = int(catalog_subset["nodata"].iloc[0])
@@ -310,7 +363,7 @@ def build_datacube(
         sequence = []
         if mask_active:
             sequence.append((ops.apply_cloud_mask_scl,
-                             dict(mask_classes=scl_mask_classes, mask_band=mask_spec.band,
+                             dict(mask_classes=mask_classes, mask_band=mask_spec.band,
                                   mask_value=nodata)))
             if not declared.mask_keep:
                 sequence.append((ops.drop_bands, dict(bands_to_drop=[mask_spec.band])))

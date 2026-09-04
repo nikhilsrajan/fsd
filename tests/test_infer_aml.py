@@ -113,7 +113,7 @@ def _write_input_csv(url, n_units=2, export_prefix="memory://cells"):
         "catalog_filepath": f"{export_prefix}/u{i}/catalog.parquet",
         "startdate": "2018-06-01", "enddate": "2018-06-11",
         "export_folderpath": f"{export_prefix}/u{i}", "mosaic_days": 20,
-        "mosaic_scheme": "calendar", "scl_mask_classes": "8,9", "bands": "B04,B08",
+        "mosaic_scheme": "calendar", "declaration_filepath": "unused", "bands": "B04,B08",
     } for i in range(n_units)]
     with fs.open(url, "w") as f:
         pd.DataFrame(rows).to_csv(f, index=False)
@@ -391,7 +391,7 @@ def test_run_inference_roi_mode_threads_runner_kwargs_to_run_aml_inference(tmp_p
     from fsd.catalog import declaration as declaration_module
     from fsd.catalog.declaration import S2_L2A_DECLARATION
     gdf = gpd.GeoDataFrame(
-        [{"id": "T_0", "satellite": "sentinel-2-l2a", "timestamp": TS[0], "s3url": "s3://x",
+        [{"id": "T_0", "collection": "sentinel-2-l2a", "timestamp": TS[0], "s3url": "s3://x",
           "local_folderpath": str(tmp_path), "files": "B04.tif,B08.tif", "cloud_cover": 0.0,
           "geometry": TILE_4326, "area_contribution": 100.0}],
         crs="EPSG:4326",
@@ -441,7 +441,7 @@ def test_run_inference_roi_stages_grids_geojson_via_seam_on_non_gdal_dst(tmp_pat
     from fsd.catalog import declaration as declaration_module
     from fsd.catalog.declaration import S2_L2A_DECLARATION
     gdf = gpd.GeoDataFrame(
-        [{"id": "T_0", "satellite": "sentinel-2-l2a", "timestamp": TS[0], "s3url": "s3://x",
+        [{"id": "T_0", "collection": "sentinel-2-l2a", "timestamp": TS[0], "s3url": "s3://x",
           "local_folderpath": str(tmp_path), "files": "B04.tif,B08.tif", "cloud_cover": 0.0,
           "geometry": TILE_4326, "area_contribution": 100.0}],
         crs="EPSG:4326",
@@ -541,7 +541,7 @@ def test_run_infer_task_returns_early_when_output_exists_and_not_overwrite(tmp_p
 
     result = infer_task.run_infer_task(
         "g.geojson", "c.parquet", TS[0], TS[1], str(tmp_path),
-        bands=["B04", "B08"], mosaic_days=20, scl_mask_classes=[8],
+        bands=["B04", "B08"], mosaic_days=20, declaration_filepath="unused",
         bundle_path="unused", output_filepath=output_fp,
     )
     assert result == output_fp
@@ -560,7 +560,7 @@ def test_run_infer_task_rebuilds_when_overwrite_true(tmp_path, monkeypatch):
 
     infer_task.run_infer_task(
         "g.geojson", "c.parquet", TS[0], TS[1], str(tmp_path),
-        bands=["B04", "B08"], mosaic_days=20, scl_mask_classes=[8],
+        bands=["B04", "B08"], mosaic_days=20, declaration_filepath="unused",
         bundle_path="unused", output_filepath=output_fp, overwrite=True,
     )
     assert called.get("built") is True
@@ -580,7 +580,7 @@ def test_create_inference_snakefile_plans_a_remote_export_folderpath(tmp_path):
         "catalog_filepath": str(tmp_path / "catalog.parquet"),
         "startdate": "2018-01-01", "enddate": "2019-01-01",
         "export_folderpath": "abfss://data@acct.dfs.core.windows.net/p1-demo/run/x/s1",
-        "mosaic_days": 20, "mosaic_scheme": "calendar", "scl_mask_classes": "8,9",
+        "mosaic_days": 20, "mosaic_scheme": "calendar", "declaration_filepath": "unused",
         "bands": "B04,B08",
     }]).to_csv(csv, index=False)
 
@@ -602,7 +602,7 @@ def test_run_infer_group_loads_bundle_once_for_the_whole_group(tmp_path, monkeyp
         rows.append({
             "shapefilepath": "g.geojson", "catalog_filepath": "c.parquet",
             "startdate": "2018-06-01", "enddate": "2018-06-11", "export_folderpath": str(exp),
-            "mosaic_days": 20, "mosaic_scheme": "calendar", "scl_mask_classes": "8,9",
+            "mosaic_days": 20, "mosaic_scheme": "calendar", "declaration_filepath": "unused",
             "bands": "B04,B08",
         })
     pd.DataFrame(rows).to_csv(csv, index=False)
@@ -640,7 +640,7 @@ def test_run_infer_group_shares_one_cached_adapter_across_a_group(tmp_path, monk
             "shapefilepath": "g.geojson", "catalog_filepath": "c.parquet",
             "startdate": "2018-06-01", "enddate": "2018-06-11",
             "export_folderpath": str(tmp_path / f"u{i}"),
-            "mosaic_days": 20, "mosaic_scheme": "calendar", "scl_mask_classes": "8,9",
+            "mosaic_days": 20, "mosaic_scheme": "calendar", "declaration_filepath": "unused",
             "bands": "B04,B08",
         })
     pd.DataFrame(rows).to_csv(csv, index=False)
@@ -672,7 +672,7 @@ def test_run_local_inference_forwards_cubes_per_task(tmp_path):
         "shapefilepath": "g.geojson", "catalog_filepath": "c.parquet",
         "startdate": "2018-01-01", "enddate": "2018-02-01",
         "export_folderpath": str(tmp_path / "u0"), "mosaic_days": 20,
-        "mosaic_scheme": "calendar", "scl_mask_classes": "8,9", "bands": "B04,B08",
+        "mosaic_scheme": "calendar", "declaration_filepath": "unused", "bands": "B04,B08",
     }]).to_csv(csv, index=False)
 
     result = runners.run_local_inference(
@@ -733,7 +733,7 @@ def test_download_coerces_string_and_timestamp_startdate_to_the_same_timestamp(m
     calls = []
 
     def _fake_mpc_download(*, roi, startdate, enddate, bands, root_folderpath, catalog,
-                           max_tiles, max_cloudcover=None, progress=True):
+                           max_tiles, max_cloudcover=None, progress=True, collection=None):
         calls.append((startdate, enddate))
 
     monkeypatch.setattr(api, "_mpc_download", _fake_mpc_download)
@@ -779,10 +779,10 @@ def test_run_aml_download_mpc_merges_per_shard_catalogs_into_the_canonical(
 
     rows = [
         {"tile_id": "T0", "band": "B04", "href": "h0", "dst": "d0", "offset": 0,
-         "satellite": "sentinel-2-l2a", "timestamp": TS[0].isoformat(), "s3url": "s3://x0",
+         "collection": "sentinel-2-l2a", "timestamp": TS[0].isoformat(), "s3url": "s3://x0",
          "cloud_cover": 0.0, "nodata": 0, "geometry": TILE_4326.wkt},
         {"tile_id": "T1", "band": "B04", "href": "h1", "dst": "d1", "offset": 0,
-         "satellite": "sentinel-2-l2a", "timestamp": TS[1].isoformat(), "s3url": "s3://x1",
+         "collection": "sentinel-2-l2a", "timestamp": TS[1].isoformat(), "s3url": "s3://x1",
          "cloud_cover": 0.0, "nodata": 0, "geometry": TILE_4326.wkt},
     ]
     monkeypatch.setattr(runners._mpc, "discover_shard_rows", lambda *a, **kw: rows)
@@ -796,7 +796,7 @@ def test_run_aml_download_mpc_merges_per_shard_catalogs_into_the_canonical(
     # does when the dispatcher hands it a per-shard --catalog url, D8).
     def _shard_catalog(k, tile_id, ts):
         gdf = gpd.GeoDataFrame([{
-            "id": tile_id, "satellite": "sentinel-2-l2a", "timestamp": ts, "s3url": f"s3://{tile_id}",
+            "id": tile_id, "collection": "sentinel-2-l2a", "timestamp": ts, "s3url": f"s3://{tile_id}",
             "local_folderpath": "/x", "files": "B04.tif", "cloud_cover": 0.0, "offset": 0,
             "nodata": 0, "geometry": TILE_4326,
         }], crs="EPSG:4326")
@@ -833,7 +833,7 @@ def test_merge_shard_catalogs_is_non_vacuous(tmp_path):
 
     def _make(url, tile_id):
         gdf = gpd.GeoDataFrame([{
-            "id": tile_id, "satellite": "sentinel-2-l2a", "timestamp": TS[0], "s3url": "s3://x",
+            "id": tile_id, "collection": "sentinel-2-l2a", "timestamp": TS[0], "s3url": "s3://x",
             "local_folderpath": "/x", "files": "B04.tif", "cloud_cover": 0.0, "offset": 0,
             "nodata": 0, "geometry": TILE_4326,
         }], crs="EPSG:4326")
@@ -871,7 +871,7 @@ def _make_catalog(path, tmp):
 
     rows = []
     for i, ts in enumerate(TS):
-        rows.append({"id": f"T_{i}", "satellite": "sentinel-2-l2a", "timestamp": ts,
+        rows.append({"id": f"T_{i}", "collection": "sentinel-2-l2a", "timestamp": ts,
                      "s3url": f"s3://eodata/x{i}", "local_folderpath": str(tmp / f"prod{i}"),
                      "files": "B04.tif,B08.tif,SCL.tif", "cloud_cover": 0.0, "geometry": TILE_4326,
                      "area_contribution": 100.0})
@@ -891,7 +891,7 @@ def test_setup_called_twice_dedupes_to_one_row_per_unit_order_preserved(tmp_path
         catalog_filepath=str(cat), timestamp_col="timestamp", shapefilepath=str(shapes),
         id_col="id", run_folderpath=str(tmp_path / "run"),
         startdate=pd.Timestamp("2018-01-01"), enddate=pd.Timestamp("2019-01-01"),
-        bands=["B04", "B08", "SCL"], scl_mask_classes=[8, 9], mosaic_days=20,
+        bands=["B04", "B08", "SCL"], mosaic_days=20,
         csv_filepath=str(csv), label_col=None,
     )
     create_datacube.setup(**kwargs)
@@ -909,11 +909,11 @@ def test_run_aml_inference_raises_on_duplicate_export_folderpaths(tmp_path, fake
         {"id": "s1", "shapefilepath": "g1.geojson", "catalog_filepath": "c1.parquet",
          "startdate": "2018-01-01", "enddate": "2018-02-01",
          "export_folderpath": "memory://run13/cells/shared", "mosaic_days": 20,
-         "mosaic_scheme": "calendar", "scl_mask_classes": "8,9", "bands": "B04,B08"},
+         "mosaic_scheme": "calendar", "declaration_filepath": "unused", "bands": "B04,B08"},
         {"id": "s1", "shapefilepath": "g2.geojson", "catalog_filepath": "c2.parquet",
          "startdate": "2018-03-01", "enddate": "2018-04-01",   # DIFFERENT content, SAME folder
          "export_folderpath": "memory://run13/cells/shared", "mosaic_days": 20,
-         "mosaic_scheme": "calendar", "scl_mask_classes": "8,9", "bands": "B04,B08"},
+         "mosaic_scheme": "calendar", "declaration_filepath": "unused", "bands": "B04,B08"},
     ]
     with fs.open(input_csv, "w") as f:
         pd.DataFrame(rows).to_csv(f, index=False)
@@ -934,10 +934,10 @@ def test_run_local_inference_raises_on_duplicate_export_folderpaths(tmp_path):
     rows = [
         {"id": "s1", "shapefilepath": "g1.geojson", "catalog_filepath": "c1.parquet",
          "startdate": "2018-01-01", "enddate": "2018-02-01", "export_folderpath": shared,
-         "mosaic_days": 20, "mosaic_scheme": "calendar", "scl_mask_classes": "8,9", "bands": "B04,B08"},
+         "mosaic_days": 20, "mosaic_scheme": "calendar", "declaration_filepath": "unused", "bands": "B04,B08"},
         {"id": "s1", "shapefilepath": "g2.geojson", "catalog_filepath": "c2.parquet",
          "startdate": "2018-03-01", "enddate": "2018-04-01", "export_folderpath": shared,
-         "mosaic_days": 20, "mosaic_scheme": "calendar", "scl_mask_classes": "8,9", "bands": "B04,B08"},
+         "mosaic_days": 20, "mosaic_scheme": "calendar", "declaration_filepath": "unused", "bands": "B04,B08"},
     ]
     pd.DataFrame(rows).to_csv(csv, index=False)
 
@@ -953,10 +953,10 @@ def test_dedupe_on_unit_identity_is_non_vacuous(tmp_path):
 
     rows = pd.DataFrame([
         {"id": "s1", "startdate": "2018-01-01", "enddate": "2019-01-01", "bands": "B04",
-         "mosaic_days": 20, "mosaic_scheme": "calendar", "scl_mask_classes": "8",
+         "mosaic_days": 20, "mosaic_scheme": "calendar", "declaration_filepath": "unused",
          "added_on": "2026-01-01T00:00:00+00:00"},
         {"id": "s1", "startdate": "2018-01-01", "enddate": "2019-01-01", "bands": "B04",
-         "mosaic_days": 20, "mosaic_scheme": "calendar", "scl_mask_classes": "8",
+         "mosaic_days": 20, "mosaic_scheme": "calendar", "declaration_filepath": "unused",
          "added_on": "2026-01-02T00:00:00+00:00"},
     ])
     deduped = _dedupe_on_unit_identity(rows)

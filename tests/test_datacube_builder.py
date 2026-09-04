@@ -13,7 +13,7 @@ from rasterio.crs import CRS as RioCRS
 from rasterio.transform import from_origin
 from shapely.geometry import box
 
-from fsd.catalog.declaration import MaskSpec, SourceDeclaration
+from fsd.catalog.declaration import CollectionDeclaration, MaskSpec
 from fsd.datacube import builder
 from fsd.storage import fs
 
@@ -61,7 +61,7 @@ def test_build_datacube_end_to_end(tmp_path):
     builder.build_datacube(
         catalog_subset=catalog, shape_gdf=shape,
         startdate=datetime.datetime(2018, 5, 31), enddate=datetime.datetime(2018, 7, 2),
-        bands=["B04", "B08", "SCL"], mosaic_days=20, scl_mask_classes=[8, 9],
+        bands=["B04", "B08", "SCL"], mosaic_days=20,
         export_folderpath=str(out), if_missing_files=None,
     )
 
@@ -114,7 +114,7 @@ def test_build_datacube_native_grid_declaration_raises_not_implemented(tmp_path)
     _write_tile(p, np.full((4, 4), 1, dtype=np.uint16))
     catalog = gpd.GeoDataFrame([_band_row("tile_t1", p, "B04", ts)], crs=CRS)
     shape = gpd.GeoDataFrame({"geometry": [TILE_BOX]}, crs=CRS)
-    native_grid_declaration = SourceDeclaration(reference_band=None, native_grid=True)
+    native_grid_declaration = CollectionDeclaration(reference_band=None, native_grid=True)
 
     with pytest.raises(NotImplementedError, match="native single-grid"):
         builder.build_datacube(
@@ -136,7 +136,7 @@ def test_build_datacube_unimplemented_mask_type_raises_not_implemented(tmp_path)
         rows.append(_band_row("tile_t1", p, band, ts))
     catalog = gpd.GeoDataFrame(rows, crs=CRS)
     shape = gpd.GeoDataFrame({"geometry": [TILE_BOX]}, crs=CRS)
-    bitmask_declaration = SourceDeclaration(
+    bitmask_declaration = CollectionDeclaration(
         reference_band="B04", mask_spec=MaskSpec(band="QA", mask_type="bitmask"),
     )
 
@@ -161,7 +161,7 @@ def test_build_datacube_mask_keep_retains_mask_band(tmp_path):
         rows.append(_band_row("tile_t1", p, band, ts))
     catalog = gpd.GeoDataFrame(rows, crs=CRS)
     shape = gpd.GeoDataFrame({"geometry": [TILE_BOX]}, crs=CRS)
-    keep_declaration = SourceDeclaration(
+    keep_declaration = CollectionDeclaration(
         reference_band="B04",
         mask_spec=MaskSpec(band="SCL", mask_type="categorical_classes", classes=(8,)),
         mask_keep=True,
@@ -231,7 +231,7 @@ def test_build_datacube_harmonizes_offset_before_median_mosaic(tmp_path):
     builder.build_datacube(
         catalog_subset=catalog, shape_gdf=shape,
         startdate=datetime.datetime(2021, 1, 1), enddate=datetime.datetime(2023, 1, 1),
-        bands=["B04", "SCL"], mosaic_days=1000, scl_mask_classes=[8, 9],
+        bands=["B04", "SCL"], mosaic_days=1000,
         export_folderpath=str(out), if_missing_files=None, reference_band="B04",
     )
     dc = fs.load_npy(str(out / "datacube.npy"))
@@ -245,7 +245,7 @@ def test_build_datacube_writes_timings_only_when_flagged(tmp_path):
     kw = dict(
         catalog_subset=catalog, shape_gdf=shape,
         startdate=datetime.datetime(2018, 5, 31), enddate=datetime.datetime(2018, 7, 2),
-        bands=["B04", "B08", "SCL"], mosaic_days=20, scl_mask_classes=[8, 9],
+        bands=["B04", "B08", "SCL"], mosaic_days=20,
         if_missing_files=None,
     )
     off = tmp_path / "off"
@@ -269,7 +269,7 @@ def test_build_datacube_writes_read_log_only_when_flagged(tmp_path):
     kw = dict(
         catalog_subset=catalog, shape_gdf=shape,
         startdate=datetime.datetime(2018, 5, 31), enddate=datetime.datetime(2018, 7, 2),
-        bands=["B04", "B08", "SCL"], mosaic_days=20, scl_mask_classes=[8, 9],
+        bands=["B04", "B08", "SCL"], mosaic_days=20,
         if_missing_files=None,
     )
     off = tmp_path / "off"
@@ -301,7 +301,7 @@ def test_load_images_read_log_noop_when_parallel(tmp_path):
             catalog_subset=catalog, shape_gdf=shape,
             startdate=datetime.datetime(2018, 5, 31),
             enddate=datetime.datetime(2018, 7, 2),
-            bands=["B04", "B08", "SCL"], mosaic_days=20, scl_mask_classes=[8, 9],
+            bands=["B04", "B08", "SCL"], mosaic_days=20,
             export_folderpath=str(out), if_missing_files=None,
             njobs_load_images=2, write_read_log=True,
         )
@@ -382,7 +382,7 @@ def test_declaration_survives_ingest_filter_slice_reread_flatten():
     from fsd.storage import fs as fs_module
 
     ts = pd.Timestamp("2018-06-01", tz="UTC")
-    custom = SourceDeclaration(reference_band="B04", mask_spec=None, mosaic_method="median")
+    custom = CollectionDeclaration(reference_band="B04", mask_spec=None, mosaic_method="median")
 
     with tempfile.TemporaryDirectory() as tmp:
         import os
@@ -394,7 +394,7 @@ def test_declaration_survives_ingest_filter_slice_reread_flatten():
         cat_path = os.path.join(tmp, "catalog.parquet")
         cat = TileCatalog(cat_path, declaration=custom)
         cat.append([{
-            "id": "tile_t1", "satellite": "s2-like-but-not", "timestamp": ts,
+            "id": "tile_t1", "collection": "s2-like-but-not", "timestamp": ts,
             "s3url": "s3://x", "local_folderpath": tmp, "files": "B04.tif",
             "cloud_cover": 0.0, "geometry": geom_4326,
         }])
@@ -547,7 +547,7 @@ def test_build_datacube_clips_low_dn_to_zero_pinned_not_a_bug(tmp_path):
     builder.build_datacube(
         catalog_subset=catalog, shape_gdf=shape,
         startdate=datetime.datetime(2022, 1, 1), enddate=datetime.datetime(2022, 12, 1),
-        bands=["B04", "SCL"], mosaic_days=1000, scl_mask_classes=[8, 9],
+        bands=["B04", "SCL"], mosaic_days=1000,
         export_folderpath=str(out), if_missing_files=None, reference_band="B04",
     )
     dc = fs.load_npy(str(out / "datacube.npy"))
@@ -557,7 +557,7 @@ def test_build_datacube_clips_low_dn_to_zero_pinned_not_a_bug(tmp_path):
 
 def test_build_datacube_uses_declared_reference_band_without_kwarg(tmp_path):
     """spec 34 §4 "reads the declaration, not `config`": with NO `reference_band=`
-    kwarg, the build must take the reference band from the passed `SourceDeclaration`.
+    kwarg, the build must take the reference band from the passed `CollectionDeclaration`.
 
     Proven by grid, not by introspection: B04 is written at 10 m and B08 at 20 m over
     the same extent, so whichever band is the resample reference decides the cube's
@@ -593,7 +593,7 @@ def test_build_datacube_uses_declared_reference_band_without_kwarg(tmp_path):
         )
         return fs.load_npy(str(out / "datacube.npy"))
 
-    no_mask = SourceDeclaration(mask_spec=None, nodata=0)
+    no_mask = CollectionDeclaration(mask_spec=None, nodata=0)
     dc_20m = _build(dataclasses.replace(no_mask, reference_band="B08"), "ref_b08")
     dc_10m = _build(dataclasses.replace(no_mask, reference_band="B04"), "ref_b04")
 
