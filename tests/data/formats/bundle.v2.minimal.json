@@ -1,0 +1,24 @@
+{
+  "fsd_bundle_version": 2,
+  "adapter": "golden_minimal_adapter:GoldenMinimalAdapter",
+  "artifacts": {
+    "model": "model.bin"
+  },
+  "code_origin": "installed",
+  "feature": {
+    "kind": "sequence",
+    "steps": [
+      "ndvi"
+    ]
+  },
+  "required_bands": [
+    "B04",
+    "B08"
+  ],
+  "n_timestamps": 3,
+  "output_dtype": "uint8",
+  "output_nodata": 255,
+  "output_band_names": [
+    "klass"
+  ]
+}
