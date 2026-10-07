@@ -203,8 +203,11 @@ def test_minimal_bundle_format_matches_golden(tmp_path, golden_minimal_adapter):
     )
 
 
-def test_minimal_bundle_golden_still_loads(tmp_path, golden_minimal_adapter):
-    manifest = _read_golden("bundle", bundle.BUNDLE_VERSION, ".minimal")
+@pytest.mark.parametrize("version", bundle.SUPPORTED_BUNDLE_VERSIONS)
+def test_minimal_bundle_golden_still_loads(tmp_path, golden_minimal_adapter, version):
+    if not os.path.exists(_golden_path("bundle", version, ".minimal")):
+        pytest.skip(f"no minimal golden for bundle v{version}")
+    manifest = _read_golden("bundle", version, ".minimal")
     bdir = tmp_path / "b"
     bdir.mkdir()
     (bdir / "bundle.json").write_text(json.dumps(manifest))
