@@ -15,7 +15,7 @@ A second bundle golden, `bundle.v<N>.minimal.json`, pins the writer's other bran
 "installed" (saved with `code=False`), a `sequence` feature and no `requirements`.
 
 To change a format: bump the constant, add `<kind>.v<N+1>.json` (copy the failing test's "got"
-output), keep the old files.
+output), keep the old files. A bundle bump also needs `bundle.v<N+1>.minimal.json`.
 
 Provenance: `declaration.v1.json` was produced by running the v1 `to_json` from git history
 (`2398c13^`) on `SourceDeclaration(reference_band="B08", mask_spec=MaskSpec(band="SCL",
