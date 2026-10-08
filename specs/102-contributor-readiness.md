@@ -841,8 +841,9 @@ This is a quality change, not a token-cost change: each rule adds a line or two 
   Tests bullet starts: "Does risky new logic (a branch, a loop, a parser, a data write) have a test?"
   `pr-reviewer-small` follows `pr-reviewer.md` for the review, so it needs no edit.
 - **A7.5** `AGENTS.md`, code conventions, a new bullet: "**Keep the safety checks.** Never drop checks on user input
-  (ROIs, dates, config, paths), or an error that would silently skip or lose data." The reviewers already check every
-  `AGENTS.md` rule ("Standards"), so they need no extra line.
+  (ROIs, dates, config, paths), or an error whose removal would let data be skipped or lost silently." The
+  reviewers already check every `AGENTS.md` rule ("Standards"), so they need no extra line. (Wording from review
+  round 1, chosen by the user over the first draft, which could be read as if the error itself loses the data.)
 - **A7.6** **Not adopted from ponytail:** installing it as a plugin (per-user, so contributors would not get it, and
   `/ponytail-review` would break "one reviewer per PR"); "the shortest working diff wins"; `ponytail:` comments for
   known limits (deferred work goes in an issue, and comments describe the code as it is now); its four-part finding

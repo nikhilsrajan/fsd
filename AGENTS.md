@@ -64,7 +64,7 @@ A PR merges when it passes four gates (details in `CONTRIBUTING.md`):
   abstractions. Few comments. A docstring is one plain sentence saying what the function does. History
   belongs in git and the PR description, so comments describe the code as it is now.
 - **Keep the safety checks.** Never drop checks on user input (ROIs, dates, config, paths), or an error
-  that would silently skip or lose data.
+  whose removal would let data be skipped or lost silently.
 - **All file I/O goes through `fsd.storage`** (fsspec), so local disk, Azure Blob and S3 are config, not
   code. The one exception: raster pixel reads use rasterio/GDAL. S3 access is generic (`s3fs`, any
   `endpoint_url`); never `boto3` directly.
