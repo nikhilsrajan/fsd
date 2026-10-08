@@ -32,8 +32,9 @@ The delegation prompt gives a PR number. Everything else you find yourself:
 
 ## What to check (first review)
 
-Read the diff, plus the functions the diff calls or changes. Open any other file only to check a specific
-claim.
+Read the diff, plus the functions the diff calls or changes. When the diff changes a function's
+signature, return value or behaviour, grep its callers and read the ones it could break: a change can
+break a file it does not touch. Open any other file only to check a specific claim.
 
 - **Spec.** (a) Asked for but missing or partial; (b) done but not asked for; (c) looks implemented but
   is wrong. Quote the spec line for each.
@@ -43,7 +44,8 @@ claim.
   provenance, reproduce it: `git show <rev>:<path>`, `git archive <rev> src | tar -x -C <scratch>` and
   run the old code, or read the primitive it cites. "Verify the primitive a spec cites" is a checklist
   line because a docstring and our own issues have both been wrong.
-- **Tests.** Do the new tests fail for the bug or change they claim to guard? Are they deterministic
+- **Tests.** Does risky new logic (a branch, a loop, a parser, a data write) have a test? Do the new tests
+  fail for the bug or change they claim to guard? Are they deterministic
   across machines (no timestamps, absolute paths, ordering)? Do they leak global state (`sys.path`,
   `sys.modules`, environment, cwd) into other tests?
 - **Gates.** CI status (`gh pr checks <N>`), linked issue, and whether gate 4 (real-run evidence) applies.
