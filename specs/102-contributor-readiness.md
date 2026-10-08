@@ -899,3 +899,46 @@ before/after benchmark.
   you write" scope list, the reuse ladder, the test-for-logic rule, the "what you skipped or did not check"
   ending, and the review's "a change can break code it does not touch" (A7.1–A7.4, reworded in our own words).
   Its benchmark is `benchmarks/results/2026-10-07-agentic.md` (not used as evidence; see Prior art).
+
+## Amendment A8 — the author marks a PR ready when gates 1–3 hold (2026-10-08)
+
+**Status:** DRAFT, awaiting sign-off. Decided by the user on 2026-10-08 (item 3 of the P4 handoff on #102). Signed
+off when the user merges the PR that adds it.
+
+**Problem.** `AGENTS.md` says "open a draft PR" but not who marks it ready, or when. Both D17 dry runs ended with a
+finished PR (CI green, review approved) still a draft, and the A7 PR (#139) did the same. A draft cannot be merged,
+so the maintainer cannot tell a finished PR from one still in progress without reading each description.
+
+**Decision.**
+- **A8.1** The **author** marks the PR ready (`gh pr ready <N>`) when gates 1–3 hold: CI green, an issue linked,
+  the review posted and every finding fixed or filed. In an agent run (A4), the author is the planning session,
+  and the run ends after it marks the PR ready (A4.4 otherwise unchanged). The implementer and the reviewers do
+  not change a PR's state.
+- **A8.2** Gate 4 does not hold a PR back from ready: if it waits on the maintainer's or a reviewer's run, the PR
+  description says so. Draft means "still being worked on"; ready means "waiting for the maintainer to merge".
+- **A8.3** The living docs say this where the PR flow is stated: `AGENTS.md` ("How a change reaches `main`", and
+  the "Writing the code" bullet's end of a run) and `CONTRIBUTING.md` (the four-gates section).
+
+**Prior art (D9).** Not homemade: this is how GitHub defines the two states (sources below). A8 only picks the
+point (gates 1–3) at which an fsd PR stops being a work in progress.
+
+**How to verify.** `grep -n "gh pr ready" AGENTS.md` prints one line; `CONTRIBUTING.md`'s four-gates section says
+to mark the PR ready when gates 1–3 hold. The next agent-run PR ends ready, not as a draft. That is an
+observation, not a gate.
+
+**Out of scope.** A `CODEOWNERS` file: fsd has none, so marking a PR ready requests no review automatically.
+Marking ready automatically from CI. Who merges (unchanged: the maintainer).
+
+**Outside the repo (the user applies this, as in §8).** Workspace `CLAUDE.md`, "Git": "Commit, push and open a
+draft PR without asking" gains "and mark it ready when gates 1–3 hold".
+
+**Sources (per-source credit).**
+- **GitHub Docs, "Changing the stage of a pull request"**
+  (<https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/changing-the-stage-of-a-pull-request>):
+  "When you're ready to get feedback on your pull request, you can mark your draft pull request as ready for
+  review", and "No one can merge the pull request until you mark the pull request as ready for review again" (the
+  author marks it ready, A8.1; a draft blocks the merge, the Problem). Marking ready "will request reviews from any
+  code owners" (why a `CODEOWNERS` file is named in Out of scope).
+- **GitHub Blog, "Introducing draft pull requests"** (2019-02-14,
+  <https://github.blog/news-insights/product-news/introducing-draft-pull-requests/>): "With draft pull requests,
+  you can clearly tag when you're coding a work in progress" (draft = still being worked on, A8.2).

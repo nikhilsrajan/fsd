@@ -28,8 +28,9 @@ A git worktree has no `.venv`. Run tests there with
 
 ## How a change reaches `main`
 
-Every change is a pull request. Work on a branch, push it, and open a draft PR. Only the maintainer
-merges; never push to `main`. The PR description holds the state of the work: what is done, what is
+Every change is a pull request. Work on a branch, push it, and open a draft PR. When gates 1–3 hold,
+mark it ready (`gh pr ready <N>`); if gate 4 still waits on the maintainer's run, say so in the PR
+description. Only the maintainer merges; never push to `main`. The PR description holds the state of the work: what is done, what is
 next, and the review findings. The PR title becomes the line in the release notes.
 
 A PR merges when it passes four gates (details in `CONTRIBUTING.md`):
@@ -106,7 +107,7 @@ A PR merges when it passes four gates (details in `CONTRIBUTING.md`):
   agent (`.claude/agents/implementer.md`) with the spec sections, the branch and the PR number. That is
   the only subagent that writes code. When it returns, the planning session spawns the reviewer
   itself; the implementer cannot spawn agents. One run covers one PR. It ends when gates 1–3
-  hold; it never merges and never starts the next PR. Writing the code in a separate cheaper-model
+  hold and the planning session has marked the PR ready; it never merges and never starts the next PR. Writing the code in a separate cheaper-model
   session instead also works.
 - **Choosing the reviewer (Claude Code).** Spawn `pr-reviewer-small` when all three hold, otherwise
   `pr-reviewer`:
