@@ -11,8 +11,11 @@
   `SUPPORTED_BUNDLE_VERSIONS`; the declaration has no such list (`from_json` accepts any version
   <= current), so its equivalent is `range(1, FSD_DECLARATION_VERSION + 1)`.
 
+A second bundle golden, `bundle.v<N>.minimal.json`, pins the writer's other branches: `code_origin`
+"installed" (saved with `code=False`), a `sequence` feature and no `requirements`.
+
 To change a format: bump the constant, add `<kind>.v<N+1>.json` (copy the failing test's "got"
-output), keep the old files.
+output), keep the old files. A bundle bump also needs `bundle.v<N+1>.minimal.json`.
 
 Provenance: `declaration.v1.json` was produced by running the v1 `to_json` from git history
 (`2398c13^`) on `SourceDeclaration(reference_band="B08", mask_spec=MaskSpec(band="SCL",
@@ -37,17 +40,19 @@ from fsd.model import bundle
 GOLDEN_DIR = os.path.join(os.path.dirname(__file__), "data", "formats")
 
 
-def _golden_path(kind: str, version: int) -> str:
-    return os.path.join(GOLDEN_DIR, f"{kind}.v{version}.json")
+def _golden_path(kind: str, version: int, variant: str = "") -> str:
+    return os.path.join(GOLDEN_DIR, f"{kind}.v{version}{variant}.json")
 
 
-def _read_golden(kind: str, version: int) -> dict:
-    with open(_golden_path(kind, version)) as f:
+def _read_golden(kind: str, version: int, variant: str = "") -> dict:
+    with open(_golden_path(kind, version, variant)) as f:
         return json.load(f)
 
 
-def _assert_matches_golden(kind: str, const: str, version: int, got: dict) -> None:
-    path = _golden_path(kind, version)
+def _assert_matches_golden(
+    kind: str, const: str, version: int, got: dict, variant: str = ""
+) -> None:
+    path = _golden_path(kind, version, variant)
     rel = os.path.relpath(path, os.path.dirname(GOLDEN_DIR))
     assert os.path.exists(path), (
         f"{const} is {version} but {rel} does not exist. Add it with this content:\n"
@@ -57,7 +62,7 @@ def _assert_matches_golden(kind: str, const: str, version: int, got: dict) -> No
         want = json.load(f)
     assert got == want, (
         f"The {kind} format written by today's code differs from {rel}. If the change is "
-        f"intended, bump {const} to {version + 1} and add {kind}.v{version + 1}.json with:\n"
+        f"intended, bump {const} to {version + 1} and add {kind}.v{version + 1}{variant}.json with:\n"
         f"{json.dumps(got, indent=2)}"
     )
 
@@ -148,6 +153,68 @@ def test_bundle_format_matches_golden(tmp_path, golden_adapter):
     _assert_matches_golden(
         "bundle", "BUNDLE_VERSION", bundle.BUNDLE_VERSION, bundle.read_spec(bdir)
     )
+
+
+_MINIMAL_ADAPTER_SRC = '''
+from fsd.model.adapter import BaseModelAdapter
+
+
+def ndvi(data, profile):
+    return data, profile
+
+
+class GoldenMinimalAdapter(BaseModelAdapter):
+    required_bands = ["B04", "B08"]
+    n_timestamps = 3
+    output_dtype = "uint8"
+    output_nodata = 255
+    output_band_names = ["klass"]
+    feature_sequence = [(ndvi, {})]
+
+    def load(self):
+        self.loaded = True
+
+    def predict(self, X):
+        return X
+'''
+
+
+@pytest.fixture
+def golden_minimal_adapter(tmp_path, monkeypatch):
+    src_dir = tmp_path / "minimal_srcroot"
+    src_dir.mkdir()
+    (src_dir / "golden_minimal_adapter.py").write_text(_MINIMAL_ADAPTER_SRC)
+    monkeypatch.syspath_prepend(str(src_dir))
+    import golden_minimal_adapter as mod
+
+    yield mod.GoldenMinimalAdapter
+    sys.modules.pop("golden_minimal_adapter", None)
+
+
+def test_minimal_bundle_format_matches_golden(tmp_path, golden_minimal_adapter):
+    model = tmp_path / "model.bin"
+    model.write_bytes(b"x")
+    bdir = bundle.save(
+        golden_minimal_adapter(), {"model": str(model)}, str(tmp_path / "b"),
+        code=False, verbose=False,
+    )
+    _assert_matches_golden(
+        "bundle", "BUNDLE_VERSION", bundle.BUNDLE_VERSION, bundle.read_spec(bdir), ".minimal"
+    )
+
+
+@pytest.mark.parametrize("version", bundle.SUPPORTED_BUNDLE_VERSIONS)
+def test_minimal_bundle_golden_still_loads(tmp_path, golden_minimal_adapter, version):
+    if not os.path.exists(_golden_path("bundle", version, ".minimal")):
+        pytest.skip(f"no minimal golden for bundle v{version}")
+    manifest = _read_golden("bundle", version, ".minimal")
+    bdir = tmp_path / "b"
+    bdir.mkdir()
+    (bdir / "bundle.json").write_text(json.dumps(manifest))
+    (bdir / "model.bin").write_bytes(b"x")
+    adapter = bundle.load(str(bdir))
+    assert type(adapter).__name__ == "GoldenMinimalAdapter"
+    assert adapter.loaded
 
 
 def test_every_bundle_golden_is_a_supported_version():
