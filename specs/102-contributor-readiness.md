@@ -848,8 +848,11 @@ This is a quality change, not a token-cost change: each rule adds a line or two 
   known limits (deferred work goes in an issue, and comments describe the code as it is now); its four-part finding
   format (the reviewer's labels and 300-word fold already do this job).
 
-**Prior art (D9).** Each rule except A7.3 restates a practice documented before 2022-11-30 (sources below):
-- A7.1's "reuse before you write" is DRY (*The Pragmatic Programmer*);
+**Prior art (D9).** Each rule except A7.3, and A7.1's order of reuse, restates a practice documented before
+2022-11-30 (sources below):
+- A7.1's "reuse an fsd helper before you write" is DRY (*The Pragmatic Programmer*). The rest of A7.1's order
+  (standard library, then an installed dependency) and "never add a dependency to save a few lines" are
+  homemade, from ponytail;
 - A7.2 and the Tests half of A7.4 are Google's review guide, "tests should be added in the same CL as the production
   code";
 - the callers half of A7.4 is the same guide's "Context" section: look beyond the lines the review tool shows;
@@ -857,10 +860,9 @@ This is a quality change, not a token-cost change: each rule adds a line or two 
 
 A7.3 is **homemade**. Searched: PR-description and code-review practice for a "what was not tested" section. I found
 only recent blog posts and issue threads, no pre-2022 practice, and claim none. Ponytail (2026) is the source of
-the wording ideas, not prior art. Its own benchmark (author-run; Opus at default effort, Bash off, `CLAUDE.md` off)
-reports that a test was written where the logic needed one in 98% of runs vs 68% without it, and found
-correctness unchanged (hidden checks 96.7% vs 95.6%). Our setup differs (Sonnet implementer, signed-off scope,
-tests can run), so we cite no expected gain.
+the wording ideas, not prior art. Its own benchmark is author-run, in a setup unlike ours (Opus at default effort,
+Bash off, `CLAUDE.md` off, scope chosen by the agent), and its results go both ways, so we cite no numbers and
+expect no particular gain.
 
 **How to verify.**
 - `grep -n "list every place the change must reach" .claude/agents/implementer.md`,
@@ -879,11 +881,12 @@ before/after benchmark.
 **Sources (per-source credit).**
 - **A. Hunt, D. Thomas, *The Pragmatic Programmer*, 20th anniversary ed. (2019), Tip 15, p. 31**, "DRY—Don't
   Repeat Yourself: Every piece of knowledge must have a single, unambiguous, authoritative representation within a
-  system" (checked at <https://pragprog.com/tips/>): A7.1's order, reuse what exists before you write new code.
+  system" (checked at <https://pragprog.com/tips/>): A7.1's first step, reuse an fsd helper before you write new
+  code.
 - **Google Engineering Practices, "What to look for in a code review"**
   (<https://google.github.io/eng-practices/review/reviewer/looking-for.html>, published 2019-09; date from the
   `google/eng-practices` repo history). The "Tests" section ("tests should be added in the same CL as the production
-  code"; reviewers check that tests "will actually fail when code breaks") supports A7.2 and A7.4's Tests line. The
+  code"; "Will the tests actually fail when the code is broken?") supports A7.2 and A7.4's Tests line. The
   "Context" section ("Sometimes you have to look at the whole file to be sure that the change actually makes
   sense") supports A7.4's callers check.
 - **J. Shore, "Fail Fast", *IEEE Software*, 2004, p. 21** (<https://martinfowler.com/ieeeSoftware/failFast.pdf>):
@@ -894,4 +897,4 @@ before/after benchmark.
 - **ponytail, by GitHub user DietrichGebert** (<https://github.com/DietrichGebert/ponytail>, MIT): the "before
   you write" scope list, the reuse ladder, the test-for-logic rule, the "what you skipped or did not check"
   ending, and the review's "a change can break code it does not touch" (A7.1–A7.4, reworded in our own words).
-  Its benchmark is `benchmarks/results/2026-10-07-agentic.md`, quoted above.
+  Its benchmark is `benchmarks/results/2026-10-07-agentic.md` (not used as evidence; see Prior art).
