@@ -217,13 +217,43 @@ def test_minimal_bundle_golden_still_loads(tmp_path, golden_minimal_adapter, ver
     assert adapter.loaded
 
 
-def test_every_bundle_golden_is_a_supported_version():
-    """Dropping a version from `SUPPORTED_BUNDLE_VERSIONS` must mean deleting its golden file."""
-    assert bundle.BUNDLE_VERSION in bundle.SUPPORTED_BUNDLE_VERSIONS
-    on_disk = {
-        int(f.split(".v")[1].split(".")[0]) for f in os.listdir(GOLDEN_DIR) if f.startswith("bundle.v")
+def _expected_golden_names() -> set[str]:
+    """Names the golden tests load, built from the same constants they use.
+
+    Minimal bundle files are optional: `test_minimal_bundle_golden_still_loads`
+    skips a missing one, but a present one is still a name that test opens.
+    """
+    names = {
+        f"declaration.v{n}.json" for n in range(1, declaration.FSD_DECLARATION_VERSION + 1)
     }
-    assert on_disk == set(bundle.SUPPORTED_BUNDLE_VERSIONS)
+    for n in bundle.SUPPORTED_BUNDLE_VERSIONS:
+        names.add(f"bundle.v{n}.json")
+        names.add(f"bundle.v{n}.minimal.json")
+    return names
+
+
+def test_every_format_golden_file_is_one_the_tests_load():
+    """Every file in tests/data/formats/ is a name the golden tests load.
+
+    The other tests open files by exact name (`_golden_path`). A file nothing
+    opens is never checked, and parsing only the version out of `bundle.v*`
+    names treats `bundle.v2.extra.json` as supported version 2. Dropping a
+    version from `SUPPORTED_BUNDLE_VERSIONS` must still mean deleting its
+    required golden file (`bundle.v<N>.json`; minimal files may be absent).
+    """
+    assert bundle.BUNDLE_VERSION in bundle.SUPPORTED_BUNDLE_VERSIONS
+    on_disk = set(os.listdir(GOLDEN_DIR))
+    expected = _expected_golden_names()
+    unexpected = sorted(on_disk - expected)
+    assert not unexpected, (
+        "tests/data/formats/ has files the golden tests never load: " + ", ".join(unexpected)
+    )
+    required = {
+        f"declaration.v{n}.json" for n in range(1, declaration.FSD_DECLARATION_VERSION + 1)
+    }
+    required.update(f"bundle.v{n}.json" for n in bundle.SUPPORTED_BUNDLE_VERSIONS)
+    missing = sorted(required - on_disk)
+    assert not missing, "supported format versions are missing golden files: " + ", ".join(missing)
 
 
 @pytest.mark.parametrize("version", bundle.SUPPORTED_BUNDLE_VERSIONS)
