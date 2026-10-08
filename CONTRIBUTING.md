@@ -13,8 +13,9 @@ python3.11 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev,l
 ## Every change is a pull request that passes four gates
 
 `main` is protected: no direct pushes. Work on a branch and open a PR from the template, as a draft
-while you are still working. When gates 1–3 hold, mark it ready for review: that tells the maintainer it
-is waiting to be merged. If gate 4 waits on someone else's run, say so in the PR description.
+while you are still working. When gates 1–3 hold, mark it ready ("Ready for review" on GitHub): that tells
+the maintainer it is waiting to be merged. If the review or the real run waits on the maintainer, mark it
+ready once the other gates hold, and say what waits in the PR description.
 
 1. **CI green**: ruff, the fast pytest suite, the guard tests, `scripts/docs_kwarg_sweep.py`. A PR that
    changes only Markdown files (or `LICENSE` / `NOTICE`) runs ruff, the docs guards and the sweep, not the rest.

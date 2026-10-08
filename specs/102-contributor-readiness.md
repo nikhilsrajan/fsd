@@ -913,14 +913,20 @@ so the maintainer cannot tell a finished PR from one still in progress without r
 - **A8.1** The **author** marks the PR ready (`gh pr ready <N>`) when gates 1–3 hold: CI green, an issue linked,
   the review posted and every finding fixed or filed. In an agent run (A4), the author is the planning session,
   and the run ends after it marks the PR ready (A4.4 otherwise unchanged). The implementer and the reviewers do
-  not change a PR's state.
-- **A8.2** Gate 4 does not hold a PR back from ready: if it waits on the maintainer's or a reviewer's run, the PR
-  description says so. Draft means "still being worked on"; ready means "waiting for the maintainer to merge".
+  not change a PR's state; `implementer.md` and `pr-reviewer.md` say so.
+- **A8.2** A gate that waits on the maintainer does not hold a PR back from ready. If the review (gate 3) is the
+  maintainer's or another person's, or the real run (gate 4) is the maintainer's or a reviewer's, the author marks
+  the PR ready once the other gates hold and the PR description says what waits. Draft means "still being worked
+  on"; ready means "waiting on the maintainer" (to review, to run, or to merge). (From review round 1: without
+  the gate-3 case, a contributor whose reviewer is the maintainer had no step that asked for the review.)
 - **A8.3** The living docs say this where the PR flow is stated: `AGENTS.md` ("How a change reaches `main`", and
-  the "Writing the code" bullet's end of a run) and `CONTRIBUTING.md` (the four-gates section).
+  the "Writing the code" bullet's end of a run) and `CONTRIBUTING.md` (the four-gates section). The `AGENTS.md`
+  handoff bullet says "the PR description", not "the draft PR description".
 
-**Prior art (D9).** Not homemade: this is how GitHub defines the two states (sources below). A8 only picks the
-point (gates 1–3) at which an fsd PR stops being a work in progress.
+**Prior art (D9).** Not homemade: the two states and who changes them are GitHub's (sources below). One deliberate
+difference: GitHub says to mark a PR ready "when you're ready to get feedback", while A8 marks it ready after the
+review when a reviewer agent is available, because fsd's gate 3 can be met inside the draft. When the review needs
+the maintainer, A8.2 falls back to GitHub's meaning.
 
 **How to verify.** `grep -n "gh pr ready" AGENTS.md` prints one line; `CONTRIBUTING.md`'s four-gates section says
 to mark the PR ready when gates 1–3 hold. The next agent-run PR ends ready, not as a draft. That is an

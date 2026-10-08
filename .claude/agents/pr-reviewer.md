@@ -67,8 +67,8 @@ Your earlier comment names the commit it reviewed (`Reviewed at <sha>`). Do not 
   claim or a mutation check needs:
   `PYTHONPATH=src <main-checkout>/.venv/bin/python -m pytest -q -p no:cacheprovider <files>` in a
   worktree. Nothing networked beyond `gh`, nothing long, no cloud, no downloads.
-- **Never change the repo.** No edits, commits, pushes, branch switches, labels, approvals or merges.
-  Scratch files go under the system temp directory, never inside the repo.
+- **Never change the repo.** No edits, commits, pushes, branch switches, labels, approvals, merges, or
+  marking a PR ready. Scratch files go under the system temp directory, never inside the repo.
 - **Do the review yourself.** Do not spawn subagents or run review skills.
 
 ## Output
