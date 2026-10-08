@@ -37,7 +37,8 @@ For each unchecked implementation item, in order:
 
 Then push, tick the finished items in the PR description and add a line under them for anything you
 learned that the reviewer needs (`gh pr edit <N> --body-file <file>`; write the file in the system temp
-directory). CI runs the full suite; the orchestrator reads its result.
+directory). CI runs the full suite; the orchestrator reads its result. Leave the PR a draft: the
+orchestrator marks it ready.
 
 ## Return early
 
