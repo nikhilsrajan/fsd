@@ -23,13 +23,17 @@ sections it names are the contract; `AGENTS.md` holds the rules and code convent
 
 For each unchecked implementation item, in order:
 
-1. Make the change, matching the surrounding code.
-2. Check it: ruff and the tests that cover what you touched, always including `tests/test_docs.py` and
+1. Before you edit, list every place the change must reach: its callers (grep them), tests, fixtures,
+   docs and exports. Reuse before you write: an fsd helper first, then the standard library, then an
+   installed dependency; write new code only when none fits. Never add a dependency to save a few lines.
+2. Make the change, matching the surrounding code. New logic with a branch, a loop or a parser gets a test
+   that fails without it.
+3. Check it: ruff and the tests that cover what you touched, always including `tests/test_docs.py` and
    `tests/test_notebooks.py`, plus `scripts/docs_kwarg_sweep.py` when a doc or notebook changed. The main
    checkout is the first line of `git worktree list`; run
    `PYTHONPATH=src <main-checkout>/.venv/bin/python -m pytest -q -p no:cacheprovider <files>` and
    `<main-checkout>/.venv/bin/ruff check src/ tests/`. The item is done when these are green.
-3. Commit it as its own commit. End the message with a `Co-Authored-By:` line naming your actual model.
+4. Commit it as its own commit. End the message with a `Co-Authored-By:` line naming your actual model.
 
 Then push, tick the finished items in the PR description and add a line under them for anything you
 learned that the reviewer needs (`gh pr edit <N> --body-file <file>`; write the file in the system temp
@@ -56,5 +60,5 @@ update the PR description as above.
 
 ## Return
 
-A few lines: each commit (short SHA, one line), the checks you ran and their result, any issue you filed,
+A few lines: each commit (short SHA, one line), the checks you ran and their result, what you did not check, any issue you filed,
 and anything left undone with the reason.

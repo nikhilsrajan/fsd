@@ -805,3 +805,97 @@ entry points under gate 4. The D17 re-try is not needed for this amendment: it w
 
 **Out of scope.** Automating the gate-4 decision (for example by path in CI). Changing which reviewer A3 picks,
 beyond what this definition implies.
+
+## Amendment A7 — five working rules for the implementer and the reviewer (2026-10-08)
+
+**Status:** DRAFT, awaiting sign-off. Requested by the user 2026-10-08, after evaluating the ponytail prompt
+pack (<https://github.com/DietrichGebert/ponytail>) for the implementer and `AGENTS.md`. The user chose all five
+rules, with rule 5 in a stand-alone wording that does not mention code size. Signed off when the user merges the
+PR that adds it. Builds on A1, A3 and A4.
+
+**Problem.** The agent files say what to build and how to check it, but leave four gaps, and `AGENTS.md` has one
+more:
+- the implementer is told to "match the surrounding code", but not to find everything a change reaches (callers,
+  tests, fixtures, docs) or to reuse what fsd already has before writing new code;
+- nothing tells the implementer to add a test for new logic. It runs the existing tests;
+- its return lists what it ran, not what it did not check, so the orchestrator cannot tell a check that passed from
+  one that never ran;
+- `pr-reviewer` reads "the functions the diff calls or changes", not the code that calls them, so a changed
+  signature or behaviour can break an untouched file without anyone looking at it;
+- "Write the smallest code that does the job" (`AGENTS.md`, code style) has no counterweight. An agent could read it
+  as permission to drop input checks or error handling. fsd's worst failure is quiet: a swallowed download error
+  leaves a datacube with gaps, and nodata is 0, so the gaps can pass for real values.
+
+This is a quality change, not a token-cost change: each rule adds a line or two to a base context of ~30k tokens.
+
+**Decision.** Optional method, like A1 and A4 (A1.3 applies), except A7.5, which is a code convention.
+- **A7.1** `implementer.md`, a new Work step 1: "Before you edit, list every place the change must reach: its
+  callers (grep them), tests, fixtures, docs and exports. Reuse before you write: an fsd helper first, then the
+  standard library, then an installed dependency; write new code only when none fits. Never add a dependency to save
+  a few lines."
+- **A7.2** `implementer.md`, Work step 2 adds: "New logic with a branch, a loop or a parser gets a test that fails
+  without it."
+- **A7.3** `implementer.md`, Return adds "what you did not check" to the list.
+- **A7.4** `pr-reviewer.md`, "What to check": "When the diff changes a function's signature, return value or
+  behaviour, grep its callers and read the ones it could break: a change can break a file it does not touch." The
+  Tests bullet starts: "Does risky new logic (a branch, a loop, a parser, a data write) have a test?"
+  `pr-reviewer-small` follows `pr-reviewer.md` for the review, so it needs no edit.
+- **A7.5** `AGENTS.md`, code conventions, a new bullet: "**Keep the safety checks.** Never drop checks on user input
+  (ROIs, dates, config, paths), or an error whose removal would let data be skipped or lost silently." The
+  reviewers already check every `AGENTS.md` rule ("Standards"), so they need no extra line. (Wording from review
+  round 1, chosen by the user over the first draft, which could be read as if the error itself loses the data.)
+- **A7.6** **Not adopted from ponytail:** installing it as a plugin (per-user, so contributors would not get it, and
+  `/ponytail-review` would break "one reviewer per PR"); "the shortest working diff wins"; `ponytail:` comments for
+  known limits (deferred work goes in an issue, and comments describe the code as it is now); its four-part finding
+  format (the reviewer's labels and 300-word fold already do this job).
+
+**Prior art (D9).** Each rule except A7.3, and A7.1's order of reuse, restates a practice documented before
+2022-11-30 (sources below):
+- A7.1's "reuse an fsd helper before you write" is DRY (*The Pragmatic Programmer*). The rest of A7.1's order
+  (standard library, then an installed dependency) and "never add a dependency to save a few lines" are
+  homemade, from ponytail;
+- A7.2 and the Tests half of A7.4 are Google's review guide, "tests should be added in the same CL as the production
+  code";
+- the callers half of A7.4 is the same guide's "Context" section: look beyond the lines the review tool shows;
+- A7.5 is "fail fast" (Shore, 2004) and PEP 20's "Errors should never pass silently".
+
+A7.3 is **homemade**. Searched: PR-description and code-review practice for a "what was not tested" section. I found
+only recent blog posts and issue threads, no pre-2022 practice, and claim none. Ponytail (2026) is the source of
+the wording ideas, not prior art. Its own benchmark is author-run, in a setup unlike ours (Opus at default effort,
+Bash off, `CLAUDE.md` off, scope chosen by the agent), and its results go both ways, so we cite no numbers and
+expect no particular gain.
+
+**How to verify.**
+- `grep -n "list every place the change must reach" .claude/agents/implementer.md`,
+  `grep -n "what you did not check" .claude/agents/implementer.md`,
+  `grep -n "grep its callers" .claude/agents/pr-reviewer.md` and `grep -n "Keep the safety checks" AGENTS.md` each
+  print one line.
+- `tests/test_docs.py` and `tests/test_notebooks.py` stay green.
+- The next PR written by the `implementer` shows A7.3 in its return ("did not check"), and its reviewer comment
+  shows a callers check whenever a signature or behaviour changed. This is an observation, not a gate: one run cannot
+  measure a change this small.
+
+**Out of scope.** Installing ponytail or any other always-on prompt pack. A Haiku web-reading subagent (still open
+from the 2026-10-08 handoff). Adding these rules to `CONTRIBUTING.md`'s review checklist for human reviewers. A
+before/after benchmark.
+
+**Sources (per-source credit).**
+- **A. Hunt, D. Thomas, *The Pragmatic Programmer*, 20th anniversary ed. (2019), Tip 15, p. 31**, "DRY—Don't
+  Repeat Yourself: Every piece of knowledge must have a single, unambiguous, authoritative representation within a
+  system" (checked at <https://pragprog.com/tips/>): A7.1's first step, reuse an fsd helper before you write new
+  code.
+- **Google Engineering Practices, "What to look for in a code review"**
+  (<https://google.github.io/eng-practices/review/reviewer/looking-for.html>, published 2019-09; date from the
+  `google/eng-practices` repo history). The "Tests" section ("tests should be added in the same CL as the production
+  code"; "Will the tests actually fail when the code is broken?") supports A7.2 and A7.4's Tests line. The
+  "Context" section ("Sometimes you have to look at the whole file to be sure that the change actually makes
+  sense") supports A7.4's callers check.
+- **J. Shore, "Fail Fast", *IEEE Software*, 2004, p. 21** (<https://martinfowler.com/ieeeSoftware/failFast.pdf>):
+  "when a problem occurs, it fails immediately and visibly". Its example is a missing config value that returns a
+  default instead of raising, the case A7.5 names.
+- **PEP 20, "The Zen of Python"** (<https://peps.python.org/pep-0020/>, created 2004-08-19): "Errors should never pass
+  silently. Unless explicitly silenced." A7.5's error half, in the language fsd is written in.
+- **ponytail, by GitHub user DietrichGebert** (<https://github.com/DietrichGebert/ponytail>, MIT): the "before
+  you write" scope list, the reuse ladder, the test-for-logic rule, the "what you skipped or did not check"
+  ending, and the review's "a change can break code it does not touch" (A7.1–A7.4, reworded in our own words).
+  Its benchmark is `benchmarks/results/2026-10-07-agentic.md` (not used as evidence; see Prior art).
