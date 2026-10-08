@@ -175,8 +175,8 @@ guards user input or prevents silent data loss (`AGENTS.md`, "Keep the safety ch
    Then, as **[judgement]**, say whether they change for the same reason, before you propose a merge.
    (Fowler "Duplicated Code"; Metz)
 3. **[objective]** Does the code break a written rule: a bare "tile", file I/O outside `fsd.storage`, a
-   changelog or date-stamped comment, more than one spec reference per function, a docstring longer than
-   it needs? (`AGENTS.md` "Code conventions"; `code-comments.md`)
+   changelog or date-stamped comment, more than one spec reference per function, a docstring past
+   `code-comments.md`'s ~15 lines? (`AGENTS.md` "Code conventions"; `code-comments.md`)
 4. **[objective]** What is the function's cyclomatic complexity (`ruff check --select C901`)? Above 10,
    say what the independent paths are. Splitting is a separate judgement. (McCabe 1976)
 5. **[judgement]** Does the name say what the function returns (query) or does (command)? Would a reader
