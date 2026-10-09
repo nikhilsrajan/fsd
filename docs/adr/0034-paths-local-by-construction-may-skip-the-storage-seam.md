@@ -15,10 +15,16 @@ standard library on paths that can only be local:
 The refactor audit (#145) counted them as violations next to the sites the rule really exists for: paths that come
 from a caller and may be a URL.
 
-**Decision.** The exception covers raster pixel I/O through rasterio/GDAL, and paths that are **local by
-construction**: temporary and scratch directories the process creates itself, the user config file, and source
-trees read in order to package them. A path that comes from a caller, a CLI flag or config, and so may be a URL,
-always goes through `fsd.storage`.
+**Decision.** The exception covers raster pixel reads through rasterio/GDAL, and paths that are **local by
+construction**:
+- temporary and scratch directories the process creates itself, which covers GDAL's temporary writes;
+- the user config file;
+- a source tree read in order to package it, such as `bundle.save(code=[…])` or
+  `ImageDefinition(build_context=…)`. That holds even when a caller supplies it, because its consumer (the bundle
+  writer, `docker build`) works only on local disk.
+
+Any other path that comes from a caller, a CLI flag or config may be a URL, so it goes through `fsd.storage`. A
+GDAL write to a caller's path stays forbidden: it goes scratch → `transfer`, as ADR 0003's Consequences describe.
 
 **Options rejected.**
 - *Route every site through `fs`.* `fs` would need `mkdtemp`, `shutil` and GDAL-temp equivalents. That is more code

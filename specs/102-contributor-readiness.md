@@ -977,20 +977,30 @@ draft PR without asking" gains "and mark it ready when gates 1–3 hold".
   the two together makes the real ones hard to see.
 
 **Decision.**
-- **A9.1** Gate 4 does not apply to a diff whose executable code is unchanged. Both checks must hold, and the PR
-  description pastes the commands and their output as the evidence:
+- **A9.1** Gate 4 does not apply to a diff whose executable code is unchanged. Run the four checks on a clean
+  checkout of the PR head, with `<base>` = `git merge-base origin/main HEAD` (the script reads the working tree).
+  All four must hold, and the PR description pastes the commands and their output as the evidence:
   - `scripts/comment_astcheck.py <base>` exits 0 and prints no `NEW` line. It compares the docstring-stripped ASTs
     of every `.py` file under `src/fsd`.
   - `git diff --diff-filter=ADR --name-only <base> -- src/` prints nothing, so no file was added, deleted or
     renamed. The script reports a new file without failing, and never sees a deleted one.
-  - The exemption holds only while no code in `src/` reads a docstring at runtime. The check is
-    `grep -rn "__doc__" src/fsd`, which prints nothing on 2026-10-09.
-  - It covers `.py` files only. A Snakefile, a notebook or an image-definition file that is not `.py` still follows
-    gate 4 as before.
-- **A9.2** The `fsd.storage` rule's exception widens to: raster pixel I/O through rasterio/GDAL, **and paths that
-  are local by construction**. Those are the temporary and scratch directories the process creates itself, the
-  user config file, and source trees read in order to package them. A path that comes from a caller, a CLI flag
-  or config, and so may be a URL, always goes through `fsd.storage`.
+  - `git diff --name-only <base> -- src/ ':(exclude)*.py'` prints nothing, so no Snakefile or other non-`.py` file
+    under `src/` changed. The script reads only `.py` files, and such a file still follows gate 4 as before.
+  - `grep -rn "__doc__" src/fsd` prints nothing (true on 2026-10-09). The script ignores docstrings, so the
+    exemption holds only while no code reads one at runtime.
+
+  (From review round 1: the third and fourth checks were in the prose, not in what a contributor pastes.)
+- **A9.2** The `fsd.storage` rule's exception widens to: raster pixel **reads** through rasterio/GDAL, **and paths
+  that are local by construction**. Those are:
+  - the temporary and scratch directories the process creates itself, which covers GDAL's temporary writes;
+  - the user config file;
+  - a source tree that is read in order to package it, for example `bundle.save(code=[…])` and
+    `ImageDefinition(build_context=…)`. It is local by construction even when a caller supplies it, because its
+    consumer (the bundle writer, `docker build`) works only on local disk.
+
+  Any other path that comes from a caller, a CLI flag or config may be a URL, so it always goes through
+  `fsd.storage`. A GDAL **write** to a caller's path stays forbidden: it goes scratch → `transfer` (TODO #39,
+  `raster/cog.py`). (From review round 1: the first draft said "pixel I/O", which would have allowed it.)
 - **A9.3** ADR 0034 records A9.2 and supersedes ADR 0003 in part: its "one documented exception" clause. ADR 0003's
   Status line says so, which `docs/adr/README.md` asks for. Nothing else in ADR 0003 changes.
 - **A9.4** The living docs say this where the rules are stated:

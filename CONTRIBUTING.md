@@ -29,9 +29,12 @@ ready once the other gates hold, and say what waits in the PR description.
    `fsd.workflows.shard` / `infer_shard`, the `fsd.workflows.runners` they call, image definitions. That holds
    even when tests use fakes. A run with the real tools and no fakes (e.g. real Snakemake on a laptop) counts,
    unless the change depends on Azure itself. No archive or Azure access? Say so; the reviewer runs it.
-   A comments-only diff needs no run when `scripts/comment_astcheck.py <base>` exits 0 with no `NEW` line
-   and `git diff --diff-filter=ADR --name-only <base> -- src/` prints nothing; paste both outputs instead
-   (spec 102 A9.1). This covers `.py` files only.
+   A comments-only diff needs no run when all four hold on a clean checkout of the PR head, with
+   `<base>` = `git merge-base origin/main HEAD`; paste the four outputs instead (spec 102 A9.1):
+   `scripts/comment_astcheck.py <base>` exits 0 with no `NEW` line;
+   `git diff --diff-filter=ADR --name-only <base> -- src/` prints nothing;
+   `git diff --name-only <base> -- src/ ':(exclude)*.py'` prints nothing;
+   `grep -rn "__doc__" src/fsd` prints nothing.
 
 The PR title becomes the release-note line. The maintainer labels and merges (merge commit).
 
