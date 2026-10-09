@@ -977,3 +977,56 @@ def test_dedupe_on_unit_identity_is_non_vacuous(tmp_path):
     deduped = _dedupe_on_unit_identity(rows)
     assert len(deduped) == 1                       # the dupe collapsed
     assert len(rows) == 2                           # ...and the input really did have two
+
+
+# --- E1 (#145): skip_nan / predict_batch_size / overwrite travel the whole chain ----------
+# (The Snakefile -> infer_task CLI hop is not pinned here: the existing Snakefile tests are
+# dry-runs that assert only `returncode == 0`, so no test reads the shell command they plan.)
+
+_E1_KW = dict(skip_nan=False, predict_batch_size=16, overwrite=True)
+
+
+def test_run_aml_inference_command_carries_skip_nan_batch_size_overwrite(
+    tmp_path, fake_aml_command,
+):
+    input_csv = "memory://run_e1/cells/input.csv"
+    _write_input_csv(input_csv, n_units=1)
+    ml_client = _FakeMLClient({"0": "Completed"})
+    runners.run_aml_inference(
+        input_csv, _write_bundle(tmp_path), cluster="c", environment="e:1",
+        root="memory://run_e1/root", identity_client_id="x", n_shards=1,
+        ml_client=ml_client, run_id="e1", skip_smoke=True, **_E1_KW,
+    )
+    cmd = ml_client.submitted[0][1].command
+    assert "--no-skip-nan" in cmd and "--predict-batch-size 16" in cmd and "--overwrite" in cmd
+
+
+def test_infer_shard_main_forwards_flags_to_run_infer_shard(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(infer_shard, "run_infer_shard",
+                        lambda *a, **kw: seen.update(kw) or {"status": "ok"})
+    infer_shard.main(["s.csv", "b", "--no-skip-nan", "--predict-batch-size", "16", "--overwrite"])
+    assert {k: seen[k] for k in _E1_KW} == _E1_KW
+
+
+def test_run_infer_shard_forwards_flags_to_run_local_inference(tmp_path, monkeypatch):
+    staged_bundle_url = "memory://run_e1b/_bundle"
+    runners._stage_bundle(_write_bundle(tmp_path), staged_bundle_url)
+    shard_url = "memory://run_e1b/shards/0.csv"
+    _write_input_csv(shard_url, n_units=1)
+    seen = {}
+    monkeypatch.setattr(runners, "run_local_inference",
+                        lambda *a, **kw: seen.update(kw) or types.SimpleNamespace(returncode=0))
+    infer_shard.run_infer_shard(shard_url, staged_bundle_url, cores=1, **_E1_KW)
+    assert {k: seen[k] for k in _E1_KW} == _E1_KW
+
+
+@pytest.mark.parametrize("runner", ["run_local_inference", "run_local_infer_only"])
+def test_local_inference_runners_put_flags_in_snakemake_config(tmp_path, monkeypatch, runner):
+    input_csv = "memory://run_e1c/input.csv"
+    _write_input_csv(input_csv, n_units=1)
+    seen = {}
+    monkeypatch.setattr(runners, "_run_snakemake",
+                        lambda snakefile, cores, conf, **kw: seen.update(conf))
+    getattr(runners, runner)(input_csv, cores=1, bundle_path=str(tmp_path / "b"), **_E1_KW)
+    assert (seen["skip_nan"], seen["predict_batch_size"], seen["overwrite"]) == (0, 16, 1)
