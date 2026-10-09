@@ -199,3 +199,25 @@ def test_download_forwards_max_concurrent_to_both_sources(monkeypatch, tmp_path)
         source="mpc", max_tiles=10,
     )
     assert seen["max_concurrent"] is None
+
+
+def test_download_local_hop_forwards_cloudcover_progress_tiles_cog_creds(monkeypatch, tmp_path):
+    """D10 (#145): the local hop hands each source `max_tiles`, `max_cloudcover` and
+    `progress`; CDSE also gets `cog` and `creds` (MPC takes neither)."""
+    seen = {}
+    monkeypatch.setattr(api, "_mpc_download", lambda **kw: seen.setdefault("mpc", kw))
+    monkeypatch.setattr(api, "_cdse_download", lambda **kw: seen.setdefault("cdse", kw))
+    monkeypatch.setattr(api, "_configure_storage", lambda *a, **kw: None)
+    creds = object()
+
+    for source in ("mpc", "cdse"):
+        api.download(
+            "roi.geojson", "2018-06-01", "2018-06-11", ["B04"], str(tmp_path / source),
+            source=source, creds=creds if source == "cdse" else None, max_tiles=7,
+            max_cloudcover=12.5, cog=False, progress=False,
+        )
+
+    for source in ("mpc", "cdse"):
+        assert (seen[source]["max_tiles"], seen[source]["max_cloudcover"],
+                seen[source]["progress"]) == (7, 12.5, False)
+    assert seen["cdse"]["cog"] is False and seen["cdse"]["creds"] is creds

@@ -859,3 +859,44 @@ def test_run_aml_download_cdse_enforces_max_tiles_before_dispatch(fake_aml_comma
             ml_client=ml_client, run_id="capcdse",
         )
     assert ml_client.submitted == []      # nothing dispatched -- the point of a driver-side guard
+
+
+# --- E2 (#145): cloud-download forwarding ------------------------------------
+
+def test_run_aml_download_cdse_command_carries_cloudcover_and_no_cog(
+    fake_aml_command, monkeypatch,
+):
+    monkeypatch.setattr(runners, "_cdse_query_catalog", lambda *a, **kw: _tiles(2))
+    ml_client = _FakeMLClient(["Completed"])
+    root = "memory://aml_dl_cc/root"
+    _write_status(root, "ccrun", 0)
+
+    runners.run_aml_download(
+        "memory://roi.geojson", "2018-06-01", "2018-06-11", ["B04"],
+        "memory://aml_dl_cc/data", "memory://aml_dl_cc/data/catalog.parquet",
+        source="cdse", cluster="c", environment="fsd-env:1", root=root,
+        identity_client_id="g", max_tiles=100, vault_url="kv", secret_name="n",
+        get_secret=_fake_get_secret, max_cloudcover=12.5, cog=False,
+        ml_client=ml_client, run_id="ccrun",
+    )
+
+    command = ml_client.submitted[0].command
+    assert "--max-cloudcover 12.5" in command
+    assert "--no-cog" in command
+
+
+def test_download_main_roi_mode_forwards_cloudcover_and_cog_to_run_roi(monkeypatch):
+    seen = {}
+
+    def _fake_run_roi(**kw):
+        seen.update(kw)
+        return {"status": "ok"}
+
+    monkeypatch.setattr(download_cli, "run_roi", _fake_run_roi)
+    argv = ["--roi", "r.geojson", "--startdate", "2018-06-01", "--enddate", "2018-06-11",
+            "--bands", "B04", "--dst", "d", "--catalog", "c", "--max-tiles", "3",
+            "--status-url", "s", "--creds-url", "u", "--max-cloudcover", "12.5"]
+    download_cli.main(argv + ["--no-cog"])
+    assert (seen["max_cloudcover"], seen["cog"]) == (12.5, False)
+    download_cli.main(argv)
+    assert (seen["max_cloudcover"], seen["cog"]) == (12.5, True)

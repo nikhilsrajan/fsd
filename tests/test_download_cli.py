@@ -275,3 +275,28 @@ def test_cli_exception_writes_failed_result_then_reraises(monkeypatch, tmp_path)
     data = json.loads(open(result_json).read())
     assert data["status"] == "failed"
     assert "STAC endpoint unreachable" in data["error"]
+
+
+def test_cli_forwards_processing_cloudcover_cog_and_passes(monkeypatch, tmp_path):
+    """A14 (#145): `--processing`, `--max-cloudcover`, `--no-cog` and `--max-passes` reach
+    `download_resume` (`--no-cog` as `cog=False`)."""
+    monkeypatch.setattr(
+        download_cli.CdseCredentials, "from_json",
+        classmethod(lambda cls, fp, **kw: cls(**DUMMY_FIELDS)),
+    )
+    captured = {}
+
+    def fake_resume(*a, **k):
+        captured.update(k)
+        return [cdse.DownloadResult(successful_count=1, total_count=1, failed_count=0)]
+
+    monkeypatch.setattr(download_cli.cdse, "download_resume", fake_resume)
+    rc = download_cli.main([
+        "--roi", "roi.geojson", "--start", "2018-04-01", "--end", "2018-06-01",
+        "--bands", "B04", "--dst", str(tmp_path), "--catalog", str(tmp_path / "c.parquet"),
+        "--max-tiles", "5", "--no-probe", "--creds", str(tmp_path / "creds.json"),
+        "--processing", "<=2.0", "--max-cloudcover", "12.5", "--no-cog", "--max-passes", "3",
+    ])
+    assert rc == 0
+    assert (captured["processing"], captured["max_cloudcover"], captured["cog"],
+            captured["max_passes"]) == ("<=2.0", 12.5, False, 3)

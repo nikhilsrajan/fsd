@@ -582,3 +582,55 @@ def test_existing_outputs_prints_progress_before_and_after(tmp_path, capsys):
     assert final, lines
     assert final[-1].endswith("| 2 already have an output.tif")
     assert "eta" not in final[-1]        # nothing to extrapolate a rate from
+
+
+@pytest.mark.parametrize("runner", ["local", "aml"])
+def test_run_inference_roi_forwards_options_to_tiling_runner_and_finalize(
+    tmp_path, monkeypatch, runner,
+):
+    """D10 (#145): `grid_size_km`/`scale_fact` reach the tiler; `skip_nan`,
+    `predict_batch_size` and `overwrite` reach the runner (local and AML); `collection_id`
+    and `dt` reach `_finalize_outputs`."""
+    import pandas as pd
+
+    import fsd.api as api
+    import fsd.grid as _grid_mod
+    from fsd.workflows import runners as _runners
+
+    fresh = gpd.GeoDataFrame({"id": ["cell_a"]}, geometry=[box(0, 0, 1, 1)], crs="EPSG:4326")
+    dt = datetime.datetime(2018, 6, 1, tzinfo=datetime.timezone.utc)  # run_inference makes dt UTC
+    tiled, ran, finalized = {}, {}, {}
+    monkeypatch.setattr(_grid_mod, "roi_to_s2_grids",
+                        lambda *a, **kw: tiled.update(kw) or fresh)
+    monkeypatch.setattr(api, "_ensure_bundle", lambda *a, **kw: "bundle_path")
+    monkeypatch.setattr(api, "_configure_storage", lambda *a, **kw: None)  # no global fsspec leak
+    monkeypatch.setattr(api._create_datacube, "setup", lambda *a, **kw: None)
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(_runners, "run_local_inference",
+                        lambda *a, **kw: ran.update(kw) or _Result())
+    monkeypatch.setattr(_runners, "run_aml_inference", lambda *a, **kw: ran.update(kw))
+    monkeypatch.setattr(api, "_existing_outputs", lambda paths, **kw: list(paths))
+    monkeypatch.setattr(api, "_finalize_outputs",
+                        lambda *a, **kw: finalized.update(collection_id=a[4], dt=a[5]) or "DONE")
+
+    csv_filepath, _ = _write_grids_and_csv(tmp_path, ["cell_a"], [])
+    pd.DataFrame({"id": ["cell_a"], "export_folderpath": ["a"],
+                  "shapefilepath": ["/nope/a.geojson"]}).to_csv(csv_filepath, index=False)
+
+    extra = {"runner": "aml", "storage": "azure",
+             "runner_kwargs": {"cluster": "c", "environment": "e:1", "root": "memory://r",
+                               "identity_client_id": "id"}} if runner == "aml" else {}
+    fsd.run_inference(
+        _Tiny(), output_folderpath=str(tmp_path), roi=ROI,
+        catalog_filepath="sentinel-2-l2a/c.parquet",
+        startdate=datetime.datetime(2018, 6, 1), enddate=datetime.datetime(2018, 7, 11),
+        mosaic_days=20, bands=["B04", "B08"], grid_size_km=7, scale_fact=1.3,
+        skip_nan=False, predict_batch_size=16, overwrite=True,
+        collection_id="my-coll", dt=dt, **extra,
+    )
+    assert (tiled["grid_size_km"], tiled["scale_fact"]) == (7, 1.3)
+    assert (ran["skip_nan"], ran["predict_batch_size"], ran["overwrite"]) == (False, 16, True)
+    assert finalized == {"collection_id": "my-coll", "dt": dt}
