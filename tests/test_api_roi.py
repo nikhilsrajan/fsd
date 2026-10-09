@@ -603,6 +603,7 @@ def test_run_inference_roi_forwards_options_to_tiling_runner_and_finalize(
     monkeypatch.setattr(_grid_mod, "roi_to_s2_grids",
                         lambda *a, **kw: tiled.update(kw) or fresh)
     monkeypatch.setattr(api, "_ensure_bundle", lambda *a, **kw: "bundle_path")
+    monkeypatch.setattr(api, "_configure_storage", lambda *a, **kw: None)  # no global fsspec leak
     monkeypatch.setattr(api._create_datacube, "setup", lambda *a, **kw: None)
 
     class _Result:
