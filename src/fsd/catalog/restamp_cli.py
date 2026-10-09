@@ -1,5 +1,5 @@
 """Stamp/re-stamp a catalog Parquet file's collection-level `CollectionDeclaration`
-footer (`fsd-restamp-catalog`).
+footer (`python -m fsd.catalog.restamp_cli`).
 
 A catalog written before declarations were persisted carries no stamp and will raise at build
 time. No re-download is needed -- only the catalog Parquet is

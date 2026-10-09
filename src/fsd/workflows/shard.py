@@ -32,9 +32,9 @@ EXPORT_FOLDERPATH_COL = "export_folderpath"
 
 
 def _status_url(shard_csv_url: str) -> str:
-    """`<root>/runs/<run_id>/shards/<k>.csv` -> `<root>/runs/<run_id>/_status/<k>.json`
- -- derived from the shard's own path so the CLI stays the two
-    arguments the shard url already implies -- no extra "where do I report" argument."""
+    """`<root>/runs/<run_id>/shards/<k>.csv` -> `<root>/runs/<run_id>/_status/<k>.json`,
+    derived from the shard's own path so the CLI stays the two arguments the shard url
+    already implies -- no extra "where do I report" argument."""
     root, name = shard_csv_url.rsplit("/shards/", 1)
     stem = name[:-4] if name.endswith(".csv") else name
     return f"{root}/_status/{stem}.json"

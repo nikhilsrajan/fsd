@@ -363,8 +363,9 @@ def _derive_timing(
 
 
 def _import_aml_command():
-    """Lazy handle to `azure.ai.ml.command` -- the sole azure-ai-ml import in `fsd/`, and
-    inside a function, so `import fsd` never needs the `[aml]` extra.
+    """Lazy handle to `azure.ai.ml.command` -- imported inside a function, like every
+    `azure.ai.ml` import in `fsd/` (here and in `model/verify_image.py`), so `import fsd`
+    never needs the `[aml]` extra.
 
     Indirected through a helper so the AML job-builder sits on `run_aml`'s injection
     boundary: no test may require Azure, so tests substitute a fake here. Production
@@ -689,7 +690,7 @@ def run_aml(
     `ml_client` is the test/injection seam: pass a fake with
     `.compute.get`, `.environments.get`, `.jobs.create_or_update`, `.jobs.get` to avoid
     any network call; when omitted, a real `azure.ai.ml.MLClient` is constructed here
-    (lazy import -- this is the only place in `fsd/` that imports `azure-ai-ml`).
+    (lazy import, so `import fsd` never needs the `[aml]` extra).
 
     `root` is the storage root (any `fsd.storage` URL, typically `abfss://...`) under
     which `runs/<run_id>/{shards,_status}/...` is laid out. `n_shards` defaults to

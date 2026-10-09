@@ -1,5 +1,5 @@
 """Print a catalog Parquet file's stamped `CollectionDeclaration`, footer-only --
-no row group is read (`fsd-catalog-inspect`).
+no row group is read (`python -m fsd.catalog.inspect_cli`).
 
 Recovers the sidecar-JSON option's one real advantage (human legibility)
 without its separation risk: the

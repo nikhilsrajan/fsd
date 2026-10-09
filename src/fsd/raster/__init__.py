@@ -23,8 +23,9 @@ __all__ = ["rio_open", "rio_env"]
 #
 # ⚠️ The named risk: EMPTY_DIR means a sidecar that DOES exist stops being read. This applies
 # to every remote raster open (download, datacube, merge, collect), not just one call site --
-# both `rio_env` (N datasets) and `rio_open` (one) build their env_kwargs from this same dict
-# so the two cannot drift.
+# both `rio_env` (N datasets) and `rio_open` (one) spread this same `_REMOTE_OPEN_CONFIG`
+# into their env_kwargs. The token/account assembly around it is written out in each, so
+# a change to it must be made in both.
 #
 # Sources (GDAL config docs, gdal.org/en/stable/user/configoptions.html):
 # GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR -- "only the target file is visible; side-car/auxiliary

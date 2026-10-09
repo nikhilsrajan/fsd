@@ -485,8 +485,7 @@ def publish(
     Idempotent by content digest: if a version with identical content already
     exists, it is returned and nothing is written -- `publish` is safe to call again
     from a re-run notebook cell. Otherwise the next integer version is allocated and
-    published in place, marked complete only once its bytes are re-digested and confirmed
-.
+    published in place, marked complete only once its bytes are re-digested and confirmed.
 
     `storage_options` reaches the registry; `bundle_storage_options` reaches
     `bundle_path` (only needed when the bundle itself is not local).

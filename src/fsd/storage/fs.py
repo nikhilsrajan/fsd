@@ -1,9 +1,11 @@
 """fsspec-based storage seam + first-class S3-compatible transport.
 
-**Rule: no other module in fsd opens files directly.** Catalog, tiles, datacubes and
-training arrays all read and write through here, which is what makes local -> Azure Blob
-/ S3 a config change rather than a code change. (The one documented exception is raster
-pixel reads, which go through rasterio/GDAL VSI.)
+**Rule: a path that comes from a caller, a CLI flag or config may be a URL, so no other
+module in fsd opens it directly.** Catalog, tiles, datacubes and training arrays all read and
+write through here, which is what makes local -> Azure Blob / S3 a config change rather
+than a code change. Exceptions (ADR 0034): raster pixel reads, which go through
+rasterio/GDAL VSI, and paths that are local by construction (scratch directories, the user
+config file, a source tree read to package it).
 
 Any S3-compatible store (AWS, CDSE EODATA, MinIO, …) is just an s3fs filesystem
 distinguished by `endpoint_url` + keys in `storage_options`, so a tile download is

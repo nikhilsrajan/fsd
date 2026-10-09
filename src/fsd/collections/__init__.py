@@ -4,7 +4,7 @@ Spec: specs/58-collection-agnostic-verbs.md D2, D13. ADR 0030, 0031.
 
 Per-collection facts (bands, mask, radiometry, grid) live here, keyed by STAC collection
 id, rather than hardcoded into a source module. Built-in collections register themselves
-at import time (`s2_l2a`); a caller's own variant calls `register()` directly -- no entry
+at import time (`s2_l2a`, `s1_rtc`); a caller's own variant calls `register()` directly -- no entry
 points, no packaging, no image rebuild.
 
 **The registry is consulted ONLY on the driver.** A `collection=` string is resolved to a
