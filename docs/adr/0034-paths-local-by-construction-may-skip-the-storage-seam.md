@@ -33,6 +33,8 @@ GDAL write to a caller's path stays forbidden: it goes scratch → `transfer`, a
 - *Keep the rule and accept the exceptions silently.* The rule would then flag about 15 harmless sites in every
   audit and hide the few real ones.
 
-**Consequences.** A reviewer asks one question of a direct `open`/`os` call: can this path ever be a URL? If it
-can, it is a finding. Temp and scratch code stays plain standard library. Watch for a "local" path that starts
-arriving from config: once it can, it moves to `fs`.
+**Consequences.** A reviewer asks two questions of a direct `open`/`os` call: can this path be a URL, and would
+its consumer accept one? If both answers are yes, it is a finding. A source tree for `docker build` or the bundle
+writer fails the second question, so it stays local even when a caller supplies it. Caller-supplied files that
+are not a source tree, such as `bundle.save(artifacts=…)`, are findings. Temp and scratch code stays plain
+standard library. Watch for a consumer that learns to accept a URL: its path then moves to `fs`.
