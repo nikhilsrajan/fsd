@@ -105,8 +105,8 @@ def write_new_version(
 ) -> int:
     """Write `files` under the next free `v<N>` and mark it complete last, returning the
     version that actually holds them. Mirrors `fsd.model.registry._write_new_version`
- exactly, generalized over the content digest and the "write this file
-    last" manifest convention (bundle.json there, image.json here).
+    exactly, generalized over the content digest and the "write this file last" manifest
+    convention (bundle.json there, image.json here).
     """
     version = max(list_versions(root, storage_options), default=0) + 1
     if manifest_rel is not None:

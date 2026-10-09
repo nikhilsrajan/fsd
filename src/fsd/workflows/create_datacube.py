@@ -367,8 +367,7 @@ def setup(
         row = {
             "shapefilepath": shape_path,
             # Calendar anchor = the caller's window, not per-shape actual
-            # acquisition min/max — so all shapes mosaic on the same grid. actual_start/
-            # actual_end are used above for the run-folder name only.
+            # acquisition min/max — so all shapes mosaic on the same grid.
             "startdate": startdate,
             "enddate": enddate,
             "catalog_filepath": catalog_path,
@@ -539,7 +538,7 @@ def _cube_present_many(
 ) -> dict[str, bool]:
     """`_cube_present` for many cubes: concurrent (latency-bound blob I/O, exactly
     `setup`'s own argument for threads) and ticked, so a long sweep is never silent.
-    The fallback for when `_present_cube_ids` cannot list the folder."""
+    The fallback for when `_present_cube_ids_at` cannot list the folder."""
     paths = list(datacube_filepaths)
     out: dict[str, bool] = {}
     if not paths:

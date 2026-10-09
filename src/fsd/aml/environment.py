@@ -46,9 +46,9 @@ def create_environment(
     version AML assigned. Writes `environment.yml` there if `write_context`/the caller
     didn't already leave one (the `build_context=` escape hatch may).
 
-    Guarded on purpose: `v = !az ...` cannot
-    fail on its own -- a broken `az` once silently produced
-    `built fsd-aml-env:No module named 'rpds.rpds'`. A non-numeric version raises, loudly.
+    Guarded on purpose: `az` can print something other than a version without failing
+    (a broken `az` once silently produced `built fsd-aml-env:No module named 'rpds.rpds'`),
+    so a non-numeric version raises, loudly.
     """
     env_yml = os.path.join(context_dir, "environment.yml")
     if not os.path.exists(env_yml):

@@ -59,7 +59,7 @@ def run_infer_task(
     Returns immediately, without building or inferring, if `output_filepath`
     already exists and `overwrite=False` — the durable per-cell resume signal (mirrors
     `task.run_task`'s own `datacube.npy`-exists skip), so a group retried on a fresh node
- redoes only its unfinished cells.
+    redoes only its unfinished cells.
 
     The adapter is resolved via the per-process bundle cache (TODO #25)
     (`engine._adapter_from_bundle_cached`), not a fresh `bundle.load` — a bundle loads once

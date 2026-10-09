@@ -1,18 +1,19 @@
 """fsd high-level API — the verbs users call.
 
-Spec: specs/16-packaging-and-api.md. A thin façade over the internal modules
+Spec: specs/16-packaging-and-api.md. A façade over the internal modules
 (`sources`, `catalog`, `datacube`, `workflows`, `flatten`) that raises the scope from
 implementation vocabulary ("flatten", "input.csv") to user intent ("make training data").
-Adds no pipeline logic.
+Besides the verbs it holds the preflight checks, the flatten identity and the raster
+merge of per-cell outputs.
 
 - `download(...)`            -> fetch S2 L2A tiles + build a TileCatalog (its own verb).
 - `create_training_data(...)`-> label polygons + catalog -> datacubes -> flattened arrays.
 - `run_inference(...)`       -> model over pre-built cubes OR an ROI (tile -> per-cell
                                build+infer via the runner seam) -> COG + STAC.
-- `deploy(...)`              -> stub: register a model bundle.
+- `deploy(...)`              -> register a model bundle in a registry.
 
-`runner=`/`storage=` are the seams (ROADMAP §2.2/§2.3): only `runner="local"` and local
-`storage` are wired in P0; Azure Batch / blob arrive in P1/P2 as config, not API changes.
+`runner=`/`storage=` are the seams (ROADMAP §2.2/§2.3): `runner` is `"local"` or `"aml"`,
+and `storage` is local or Azure blob, per verb (`_check_local_seams`).
 Every verb runs a cheap **preflight** (ROADMAP §2.6) before any heavy work.
 """
 
@@ -123,9 +124,11 @@ _VALID_RUNNERS = ("local", "aml")
 def _check_local_seams(runner: str, storage, *, storage_allowed: bool = True) -> list[str]:
     """Collect seam errors for a verb: `runner` must be `"local"` (Snakemake) or `"aml"`.
 
-    `storage_allowed=False` for verbs whose artifacts are not on the storage seam yet
-    (`run_inference`, `deploy`), so a non-local `storage=` is refused loudly rather than
-    silently writing local paths a remote runner cannot read.
+    `storage_allowed=False` refuses a non-local `storage=` loudly rather than silently
+    writing local paths a remote runner cannot read. `run_inference` passes
+    `roi_mode and runner == "aml"`, `verify_adapter` passes `runner == "aml"`; the other
+    verbs (`download`, `create_training_data`, `flatten_training_data`, `deploy`) use the
+    default `True`.
     """
     errs = []
     if runner not in _VALID_RUNNERS:
@@ -400,7 +403,7 @@ def download(
     unserved pair raises at preflight, naming what the source DOES serve (spec 58 D15).
     The default `source` changed `"cdse"` -> `"mpc"` (spec 58 D1): the documented,
     credential-free happy path should not require credentials by default. Preflighted.
-    `storage` is a seam; only local is wired here.
+    `storage` is a seam: `_check_local_seams` accepts local or `"azure"`.
 
     `max_cloudcover` requires the collection to declare `supports_cloud_cover=True` (spec
     58 D6, a discovery-only capability, e.g. every optical collection but not Sentinel-1) --
@@ -1808,10 +1811,15 @@ def _existing_outputs(candidates, *, run_folderpath: str) -> list[str]:
     "no per-cell outputs were produced" on that — a loud failure, not a silent one.
 
     ⚠️ The `*/*` depth is a **contract with `create_datacube.setup`**, which builds
-    `export_folderpath = run_folderpath/<window>/<id>`. The glob deliberately spans any
-    middle component, because archives written under an older layout carry a different
-    `<window>` name and their outputs must still be found. A change to that layout must
-    change this pattern too.
+    `export_folderpath = run_folderpath/<window>/<id>`. The middle `*` is
+    the `<window>` segment (`create_datacube.window_folder_segment`). It is a wildcard
+    because the candidates are `input.csv`'s `export_folderpath` values: a resume reuses a
+    cached `input.csv` without re-running `setup` (`_run_inference_roi`;
+    `_check_resume_identity` compares cell ids only), so a candidate's `<window>` can
+    differ from what `window_folder_segment` computes today, e.g. an `input.csv` written
+    before the window key last changed. `_output_key` keeps `<window>` in the match, so
+    outputs of another window in the same run folder are never counted. A change to the
+    `run_folderpath/<window>/<id>` depth must change this pattern too.
     """
     # One `fs.glob` round trip, so there is no per-candidate loop left to tick against:
     # print before/after in the same `[label] done/total | elapsed` shape instead. `done`

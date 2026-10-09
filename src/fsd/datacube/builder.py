@@ -538,7 +538,7 @@ def build_datacube(
         # don't fit in the numpy array. It's pickled via np.save (allow_pickle) rather
         # than raw pickle because a raw pickle written on macOS could not be read on
         # Ubuntu (and vice versa) — np.save's pickling proved cross-platform stable.
-        # (xarray is a possible future alternative; see TODO.)
+        # (xarray is a possible future alternative.)
         # ⚠️ Each artifact is written to a per-attempt temp path and renamed into place only
         # once fully written, so a reader never observes a partial file. metadata is
         # published FIRST and datacube.npy LAST: `datacube.npy`'s existence is the resume
@@ -842,7 +842,7 @@ def _stack_datacube(catalog_gdf, data_profile_list, bands, reference_profile,
                     shape_gdf, nodata):
     """Stack aligned images into (timestamps, H, W, bands). Every present band is
     (1, H, W) on the reference grid; a missing (ts, band) is nodata-filled to the
-    same shape (legacy filled (H, W), which could not stack — fixed, see CHANGES).
+    same shape (legacy filled (H, W), which could not stack).
 
     When several tiles of the SAME acquisition cover the shape (it straddles an MGRS
     tile boundary) they collide on (timestamp, band). ALL of them are merged onto the
