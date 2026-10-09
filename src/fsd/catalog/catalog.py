@@ -298,9 +298,10 @@ class TileCatalog:
 
         ⚠️ **No back-compat shim, deliberately.** A catalog predating the
         `offset`/`nodata` columns is NOT patched up here. It is disposable and must be
-        re-ingested, never silently defaulted: `read()` itself raises `ValueError` on a
-        pre-spec-59 schema, so any catalog that passes has `offset` and `nodata` and a
-        cube is never built against wrong radiometry.
+        re-ingested, never silently defaulted: `read()` raises `ValueError` on a
+        pre-spec-59 schema (`SPEC59_COLUMNS`). Every catalog `add()` writes carries
+        `offset` and `nodata`, but `read()` does not check them: a hand-built file without
+        them passes, and `flatten_catalog` then reads a missing value as 0.
         """
         gdf = fs.read_parquet(self.filepath)
         missing = [c for c in SPEC59_COLUMNS if c not in gdf.columns]
