@@ -460,3 +460,24 @@ def test_aml_without_root_raises_naming_it(tmp_path, monkeypatch):
             export_folderpath=str(tmp_path / "export"), cell="cell_a",
             runner="aml", runner_kwargs={"cluster": "c"},
         )
+
+
+def test_verify_adapter_forwards_skip_nan_and_batch_size_to_run_infer_only(tmp_path, monkeypatch):
+    """D10 (#145): the inference leg gets the caller's `skip_nan` and `predict_batch_size`."""
+    _patch_grid(monkeypatch)
+    _patch_build_and_infer(monkeypatch)
+    seen = {}
+    fake_infer = _infer_only_task.run_infer_only
+
+    def spy(*a, **kw):
+        seen.update(kw)
+        return fake_infer(*a, **kw)
+
+    monkeypatch.setattr(_infer_only_task, "run_infer_only", spy)
+    fsd.verify_adapter(
+        _FakeAdapter(), roi=ROI, catalog_filepath=_catalog(tmp_path),
+        startdate=JAN1, enddate=JAN60, mosaic_days=20, bands=BANDS,
+        export_folderpath=str(tmp_path / "export"), cell="cell_a",
+        skip_nan=False, predict_batch_size=16,
+    )
+    assert (seen["skip_nan"], seen["predict_batch_size"]) == (False, 16)
