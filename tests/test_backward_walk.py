@@ -453,6 +453,44 @@ def test_build_shortfall_only_calls_setup_for_missing_ids_only(tmp_path, monkeyp
     assert calls == [[3, 4]]
 
 
+_FORWARDED = dict(
+    collection="fwd-coll", properties_filter={"s2:foo": "bar"}, processing="latest",
+    mosaic_scheme="acquisition",
+)
+
+
+@pytest.mark.parametrize("hop", [
+    "run_create_datacube", "run_create_datacube_incremental", "build_shortfall_only",
+])
+def test_build_legs_forward_collection_filter_processing_scheme_to_setup(
+    tmp_path, monkeypatch, hop,
+):
+    """E3 (#145): `run_create_datacube` (both legs) and `build_shortfall_only` hand
+    `setup` the request's `collection`, `properties_filter`, `processing` and
+    `mosaic_scheme`."""
+    monkeypatch.setitem(_collections.REGISTRY, "fwd-coll",
+                        _collections.get(config.SATELLITE_S2L2A))
+    shapes = tmp_path / "shapes.geojson"
+    _shapes(shapes, [0, 1])
+    got = []
+
+    def fake_setup(**kw):
+        got.append(kw)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(create_datacube, "setup", fake_setup)
+    kwargs = _walk_kwargs(tmp_path / "c.parquet", tmp_path / "run",
+                          str(tmp_path / "run" / "input.csv"),
+                          shapefilepath=str(shapes), **_FORWARDED)
+    with pytest.raises(RuntimeError, match="stop"):
+        if hop == "build_shortfall_only":
+            create_datacube.build_shortfall_only(**kwargs)
+        else:
+            create_datacube.run_create_datacube(
+                cores=1, overwrite_setup_csv=(hop == "run_create_datacube"), **kwargs)
+    assert {k: got[0][k] for k in _FORWARDED} == _FORWARDED
+
+
 def test_build_shortfall_only_no_setup_call_when_nothing_missing(tmp_path, monkeypatch):
     """AC5, in spirit: cube targets are enumerated with no catalog access -- `setup` (the
     only catalog reader in this module) is proven never called on a fully-satisfied
