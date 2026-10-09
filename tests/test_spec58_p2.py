@@ -673,3 +673,25 @@ def test_create_training_data_forwards_properties_filter_to_its_download(monkeyp
 
     assert seen["collection"] == "sentinel-1-rtc"
     assert seen["properties_filter"] == _S1_FILTER
+
+
+def test_run_aml_download_mpc_forwards_max_cloudcover_to_discovery(monkeypatch):
+    from fsd.workflows import runners
+    seen = {}
+
+    def _discover(*a, **kw):
+        seen.update(kw)
+        return []
+
+    monkeypatch.setattr(runners._mpc, "discover_shard_rows", _discover)
+    monkeypatch.setattr(runners, "_import_aml_command", lambda: None)
+    monkeypatch.setattr(runners, "_import_command_job_limits", lambda: None)
+
+    runners.run_aml_download(
+        "memory://roi.geojson", "2018-06-01", "2018-07-01", ["vv", "vh"],
+        "memory://s1dl/data", "memory://s1dl/data/catalog.parquet",
+        source="mpc", cluster="c", environment="e:1", root="memory://s1dl/root",
+        identity_client_id="id", max_tiles=10, ml_client=object(), max_cloudcover=12.5,
+    )
+
+    assert seen["max_cloudcover"] == 12.5
