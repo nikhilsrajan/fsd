@@ -122,7 +122,8 @@ Three tools (each docstring says how to run it):
   (`(spec 50)`, `(D4)`) from comments and docstrings; never one that holds a `#`;
 - `scripts/comment_astcheck.py <git-ref> src/fsd` — proves the diff is comments-only by comparing
   docstring-stripped ASTs. **Run it on every comment pass**: in #85 it caught three "comment" edits
-  that were inside a `raise ValueError(...)` and an argparse `help=`.
+  that were inside a `raise ValueError(...)` and an argparse `help=`. Its output, with the three
+  other checks in `CONTRIBUTING.md` gate 4, stands in for gate 4's real run on a cloud-job file.
 
 Target after a pass: **~0.30 prose lines per code line**, down from 0.49. That is a guide, not a
 quota — `storage/fs.py` is a thin seam over fsspec whose whole value is knowing which backend

@@ -45,7 +45,8 @@ A PR merges when it passes four gates (details in `CONTRIBUTING.md`):
 4. **A real run is shown** when the change touches real data, the cloud or pixels: the output or a
    screenshot, pasted into the PR. Code that runs as a cloud job (the AML runner, `fsd.workflows.shard` /
    `infer_shard`, the runners they call) counts as the cloud even when tests use fakes; `CONTRIBUTING.md`
-   gate 4 says which runs count.
+   gate 4 says which runs count. A diff that `scripts/comment_astcheck.py` proves comments-only needs no
+   run (`CONTRIBUTING.md` gate 4 has the two checks).
 
 ## Rules for all agents
 
@@ -68,8 +69,11 @@ A PR merges when it passes four gates (details in `CONTRIBUTING.md`):
 - **Keep the safety checks.** Never drop checks on user input (ROIs, dates, config, paths), or an error
   whose removal would let data be skipped or lost silently.
 - **All file I/O goes through `fsd.storage`** (fsspec), so local disk, Azure Blob and S3 are config, not
-  code. The one exception: raster pixel reads use rasterio/GDAL. S3 access is generic (`s3fs`, any
-  `endpoint_url`); never `boto3` directly.
+  code. The exceptions: raster pixel reads use rasterio/GDAL, and a path that is local by construction (a
+  temp or scratch directory the process creates, the user config file, a source tree read to package it)
+  may use the standard library. Any other path from a caller, a CLI flag or config may be a URL, so it goes
+  through `fsd.storage` (ADR 0034). S3 access is generic (`s3fs`, any `endpoint_url`); never `boto3`
+  directly.
 - **Raster ops take and return `(data, profile)`**, so they chain as `sequence=[(func, kwargs), ...]`.
 - **Band math uses 5-D arrays** `(samples, timestamps, height, width, bands)` plus a `band_indices` dict
   `{band_name: index}`.

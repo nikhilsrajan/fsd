@@ -1,6 +1,8 @@
 # All file I/O flows through the `fsd.storage` (fsspec) seam
 
-**Status:** accepted (spec 00 requirements interview; spec 10 / P1)
+**Status:** accepted (spec 00 requirements interview; spec 10 / P1). Its "one documented exception"
+clause is superseded in part by ADR [0034](0034-paths-local-by-construction-may-skip-the-storage-seam.md)
+(spec 102 A9, 2026-10-09).
 
 **Context.** v1 runs entirely on local disk, but the real end goal is to run at scale on Azure Blob
 (and generically S3) **without cloud lock-in**. The legacy repos opened paths directly (`os.*`,
