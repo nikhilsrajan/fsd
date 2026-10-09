@@ -1367,3 +1367,29 @@ def test_roi_gdf_still_accepts_a_local_path_and_a_gdf(tmp_path):
 
     assert len(cdse._roi_gdf(str(p))) == 1
     assert cdse._roi_gdf(gdf) is gdf
+
+
+def test_download_resume_forwards_every_option_to_download(monkeypatch):
+    """A14 (#145): each resume pass hands `download` the caller's `collection`, `processing`,
+    `max_cloudcover`, `cog`, `max_convert_procs`, `max_staged`, `max_concurrent_s3` and
+    `chunksize` (non-default values, so a dropped one cannot hide behind a default)."""
+    from fsd.sources.cdse import DownloadResult
+
+    seen = []
+
+    def fake_download(*a, **k):
+        seen.append(k)
+        return DownloadResult(1, 1, failed_count=0)
+
+    monkeypatch.setattr(cdse, "download", fake_download)
+    expected = dict(
+        collection="c-x", processing="<=2.0", max_cloudcover=12.5, cog=False,
+        max_convert_procs=3, max_staged=4, max_concurrent_s3=5, chunksize=7,
+    )
+    roi = gpd.GeoDataFrame(geometry=[sg.box(0, 0, 1, 1)], crs="EPSG:4326")
+    cdse.download_resume(
+        roi, datetime.datetime(2018, 1, 1), datetime.datetime(2018, 2, 1),
+        ["B02"], "/root", object(), CdseCredentials(**DUMMY_FIELDS),
+        max_tiles=10, cooldown_s=0, max_passes=1, **expected,
+    )
+    assert {k: seen[0][k] for k in expected} == expected
