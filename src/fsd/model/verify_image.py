@@ -151,8 +151,9 @@ def verify_image(
 
     Returns a `_result.json`-shaped dict: `{"step", "status", "pass", "metrics",
     "expected", "error"}`. `metrics["bundle_digest"]` records the content digest of what was
-    verified, which is what `fsd.deploy(verified=...)` matches against. Every driver-detectable failure
-    (no `code` block, a stale wheel, a partial stage, a missing node status file) sets `pass=False` with a populated `error`.
+    verified, which is what `fsd.deploy(verified=...)` matches against. Every
+    driver-detectable failure (no `code` block, a stale wheel, a partial stage, a missing
+    node status file) sets `pass=False` with a populated `error`.
     `verify_image` raises only on caller misuse it cannot report as a verification result --
     a non-`"aml"` `runner`, or `runner_kwargs` missing `cluster`/`root`/`identity_client_id`.
     """

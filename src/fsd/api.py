@@ -127,7 +127,8 @@ def _check_local_seams(runner: str, storage, *, storage_allowed: bool = True) ->
     `storage_allowed=False` refuses a non-local `storage=` loudly rather than silently
     writing local paths a remote runner cannot read. `run_inference` passes
     `roi_mode and runner == "aml"`, `verify_adapter` passes `runner == "aml"`; the other
-    verbs (`download`, `create_training_data`, `deploy`) use the default `True`.
+    verbs (`download`, `create_training_data`, `flatten_training_data`, `deploy`) use the
+    default `True`.
     """
     errs = []
     if runner not in _VALID_RUNNERS:
