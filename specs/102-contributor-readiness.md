@@ -948,3 +948,97 @@ draft PR without asking" gains "and mark it ready when gates 1–3 hold".
 - **GitHub Blog, "Introducing draft pull requests"** (2019-02-14,
   <https://github.blog/news-insights/product-news/introducing-draft-pull-requests/>): "With draft pull requests,
   you can clearly tag when you're coding a work in progress" (draft = still being worked on, A8.2).
+
+## Amendment A9 — gate 4 skips a proven comments-only diff; local-only paths may skip `fsd.storage` (2026-10-09)
+
+**Status:** DRAFT, awaiting sign-off. Decided by the user on 2026-10-09: questions Q2 and Q4 of the refactor audit
+(#145). Signed off when the user merges the PR that adds it. Builds on A6.
+
+**Problem.**
+- **Gate 4 and comments.** Since A6.1, gate 4 covers code that dispatches to, runs as or reports from a cloud job
+  "even when unit tests cover the code with fakes". Read literally, that includes an edit to a comment or a
+  docstring in such a file. The audit found comments there that are false: `runners.py` says it is "the only place
+  in `fsd/` that imports `azure-ai-ml`", but `model/verify_image.py` imports it too. It also found about 110 lines
+  of oversized docstrings in `runners.py` and `task.py`. Each fix changes no instruction Python runs, yet the rule
+  asks for a real run. So false comments in the files that most need true ones stay false the longest.
+- **Local-only paths.** `AGENTS.md` and ADR 0003 say all file I/O goes through `fsd.storage`, with one exception:
+  raster pixel reads. The audit found about 15 sites that use the standard library on paths that can only ever be
+  local:
+  - the user config file `~/.config/fsd`;
+  - adapter source trees read to package a bundle;
+  - docker build contexts;
+  - node-local scratch directories, the "scratch → `transfer` → `rename`" pattern that ADR 0003's own
+    Consequences describe;
+  - GDAL's temporary writes.
+
+  The rule calls them violations. Routing them through `fs` would mean adding helpers (`fs` has no `mkdtemp` or
+  `shutil` equivalent) and would change nothing. The sites the rule exists for, a path that may be a URL, are a
+  different set. For example, `download_cli` writes `_result.json` under `--dst`, which may be `abfss://…`. Lumping
+  the two together makes the real ones hard to see.
+
+**Decision.**
+- **A9.1** Gate 4 does not apply to a diff whose executable code is unchanged. Both checks must hold, and the PR
+  description pastes the commands and their output as the evidence:
+  - `scripts/comment_astcheck.py <base>` exits 0 and prints no `NEW` line. It compares the docstring-stripped ASTs
+    of every `.py` file under `src/fsd`.
+  - `git diff --diff-filter=ADR --name-only <base> -- src/` prints nothing, so no file was added, deleted or
+    renamed. The script reports a new file without failing, and never sees a deleted one.
+  - The exemption holds only while no code in `src/` reads a docstring at runtime. The check is
+    `grep -rn "__doc__" src/fsd`, which prints nothing on 2026-10-09.
+  - It covers `.py` files only. A Snakefile, a notebook or an image-definition file that is not `.py` still follows
+    gate 4 as before.
+- **A9.2** The `fsd.storage` rule's exception widens to: raster pixel I/O through rasterio/GDAL, **and paths that
+  are local by construction**. Those are the temporary and scratch directories the process creates itself, the
+  user config file, and source trees read in order to package them. A path that comes from a caller, a CLI flag
+  or config, and so may be a URL, always goes through `fsd.storage`.
+- **A9.3** ADR 0034 records A9.2 and supersedes ADR 0003 in part: its "one documented exception" clause. ADR 0003's
+  Status line says so, which `docs/adr/README.md` asks for. Nothing else in ADR 0003 changes.
+- **A9.4** The living docs say this where the rules are stated:
+  - `AGENTS.md`: the gate 4 line and the "All file I/O goes through `fsd.storage`" bullet;
+  - `CONTRIBUTING.md`: gate 4;
+  - `docs/reference/code-comments.md`: "Reviewing a trim", which already requires the script on every comment pass.
+
+  The `fsd/storage/fs.py` module docstring, which says "no other module in fsd opens files directly", is fixed in
+  the audit's comment slice P2 (#145), not here, so that this PR stays docs-only.
+
+**Prior art (D9).**
+- **A9.1 restates an established practice.** The Black formatter proves a reformatted file safe the same way:
+  "When run with `--safe` (the default), *Black* checks that the code before and after is semantically
+  equivalent. This check is done by comparing the AST of the source with the AST of the target." `--safe` predates
+  2022: Black 19.10b0's changelog says "`--safe` now works with Python 2 code". Black treats docstrings as a known
+  exception to strict AST equality. `comment_astcheck.py` strips docstrings for the same reason, and A9.1's
+  `__doc__` condition is what makes that safe. fsd already treats non-code diffs differently in CI (A2).
+- **A9.2 is partly homemade.** fsspec, the library under `fsd.storage`, keeps its own process-local temporaries in
+  the standard library's temp space, not in a remote-capable filesystem: `MMapCache` says "If None, a temporary
+  file is created using tempfile.TemporaryFile()", and the caching filesystems take `cache_storage="TMP"`, which
+  "is a temporary directory, and will be cleaned up by the OS when this process ends". The boundary wording,
+  "local by construction" against "comes from a caller and may be a URL", is homemade. Searched: storage
+  abstraction rules with an exception for temporary/scratch files, and fsspec temp-file practice. Nothing stated
+  that boundary as a rule.
+
+**How to verify.**
+- `grep -n "comment_astcheck" AGENTS.md CONTRIBUTING.md` prints the new gate 4 lines.
+- `grep -n "local by construction" AGENTS.md docs/adr/0034-*.md` prints the widened exception.
+- `grep -n "0034" docs/adr/0003-*.md` prints ADR 0003's updated Status line.
+- The audit's first comment slice that touches a gate-4 file cites A9.1 and pastes the script's output instead of
+  a run. That is an observation, not a gate.
+
+**Out of scope.**
+- An AST check for Snakefiles or notebooks.
+- Moving the sites that may be remote onto `fsd.storage` (audit findings A12 and E19, code slices of #145).
+- Fixing `fs.py`'s docstring (slice P2).
+- Any change to which code counts as "the cloud" (A6.1 is unchanged).
+
+**Outside the repo.** None.
+
+**Sources (per-source credit).**
+- **Black, "The Black code style"** (<https://black.readthedocs.io/en/stable/the_black_code_style/current_style.html>):
+  the `--safe` AST-equivalence quotation, and docstrings as the documented exception (A9.1 prior art; why the
+  `__doc__` condition exists).
+- **Black changelog** (<https://black.readthedocs.io/en/stable/change_log.html>), 19.10b0: "`--safe` now works with
+  Python 2 code" (the practice predates 2022-11-30).
+- **fsspec API reference** (<https://filesystem-spec.readthedocs.io/en/latest/api.html>): `MMapCache`'s
+  `tempfile.TemporaryFile()` default, and `cache_storage="TMP"` for `CachingFileSystem`,
+  `WholeFileCacheFileSystem` and `SimpleCacheFileSystem` (A9.2's partial prior art).
+- **fsd ADR 0003** (`docs/adr/0003-all-file-io-through-storage-seam.md`): the rule A9.2 narrows, and its
+  Consequences paragraph, which already relies on node-local scratch.
