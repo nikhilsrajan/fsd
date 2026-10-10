@@ -579,8 +579,8 @@ def _write_raster(path, width=32, height=32):
 
 
 def test_transfer_then_convert_cog_converts_and_is_idempotent(monkeypatch, tmp_path):
-    """cog=True: a fetched JP2 band is converted to a COG .tif, the staging file is
-    removed, and a second call skips the existing .tif."""
+    """A fetched JP2 band is converted to a COG .tif, the staging file is removed, and a
+    second transfer skips the existing .tif."""
     import os
 
     import rasterio
