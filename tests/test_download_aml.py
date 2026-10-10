@@ -16,7 +16,7 @@ import types
 import pandas as pd
 import pytest
 
-from fsd import api, config
+from fsd import api
 from fsd.catalog.catalog import TileCatalog
 from fsd.sources import cdse, mpc
 from fsd.storage import fs
@@ -735,10 +735,6 @@ def test_cdse_credentials_from_json_str_roundtrips_legacy_keys():
     assert creds.sh_client_secret == "sh-secret"
     assert creds.s3_access_key == "ak"
     assert creds.s3_secret_key == "sk"
-
-
-def test_config_has_cdse_monthly_quota():
-    assert config.CDSE_MONTHLY_QUOTA_GB > 0
 
 
 # --- TODO #49: MPC is anonymous -- creds arguments are refused, not ignored ----

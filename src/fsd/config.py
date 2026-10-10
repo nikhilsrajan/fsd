@@ -23,9 +23,6 @@ S2L2A_ALL_BANDS = [
     "B08", "B8A", "B09", "B11", "B12", "SCL",
 ]
 
-# Default bands used by the demo pipeline (demo_01_data_prep).
-BANDS_DEFAULT = ["B02", "B03", "B04", "B05", "B06", "B07", "B08", "B11", "B12", "SCL"]
-
 # --- Datacube defaults -------------------------------------------------------
 SCL_MASK_CLASSES = [
     0,   # No data
@@ -65,7 +62,6 @@ CDSE_STAC_URL = "https://stac.dataspace.copernicus.eu/v1/"
 # S3-compatible object store (tile bytes). Just an endpoint to s3fs. The OTC-pinned
 # host reduces load-balancer routing variance vs the GSLB alias (BUG-001).
 CDSE_S3_ENDPOINT_URL = "https://eodata.ams.dataspace.copernicus.eu"
-CDSE_S3_REGION = "default"
 
 # CDSE caps concurrent S3 connections at 4.
 # https://documentation.dataspace.copernicus.eu/Quotas.html
@@ -105,10 +101,6 @@ STOP_CHECK_EVERY_S = 1.0
 
 # Rough size guard for the download safety check (~GB per tile).
 APPROX_GB_PER_TILE = 0.725
-
-# CDSE's rolling 30-day S3 transfer quota: past this, every transfer
-# drops to 1 MB/s / 1 connection. https://documentation.dataspace.copernicus.eu/Quotas.html
-CDSE_MONTHLY_QUOTA_GB = 12 * 1000
 
 # --- COG conversion (convert-on-download) ------------------------------------
 # Native on-disk format at ingest. DEFLATE + PREDICTOR=2 is fully lossless
