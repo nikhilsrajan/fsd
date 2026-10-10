@@ -54,6 +54,11 @@ __all__ = [
     "is_local",
     "write_bytes",
     "write_text",
+    "rm",
+    "size",
+    "modified",
+    "read_geo",
+    "find_sizes",
     "SOURCE_PATH_ATTRS_KEY",
 ]
 
@@ -108,8 +113,6 @@ def is_local(path: str) -> bool:
     `os.path.abspath` corrupts the scheme and host, `os.makedirs` and bare `open` cannot
     see it at all.
     """
-    import fsspec.utils
-
     return fsspec.utils.get_protocol(path) in ("file", "local")
 
 

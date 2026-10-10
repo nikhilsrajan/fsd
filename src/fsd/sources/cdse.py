@@ -1182,7 +1182,7 @@ def probe_throughput(
     if not len(tiles):
         return (0.0, 0, 0.0)
     tile_ids = set(tiles["id"])
-    item = next(it for it, _ in surviving_items(items, dict.fromkeys(tile_ids),
+    item = next(it for it, _ in surviving_items(items, tile_ids,
                                             config.SATELLITE_S2L2A))
     band = bands[0]
     keys = sorted(k for k in item.assets if k.split("_")[0] == band)
