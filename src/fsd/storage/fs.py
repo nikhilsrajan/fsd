@@ -1,14 +1,14 @@
 """fsspec-based storage seam + first-class S3-compatible transport.
 
 **Rule: a path that comes from a caller, a CLI flag or config may be a URL, so no other
-module in fsd opens it directly.** Catalog, tiles, datacubes and training arrays all read and
+module in fsd opens it directly.** Catalog, granules, datacubes and training arrays all read and
 write through here, which is what makes local -> Azure Blob / S3 a config change rather
 than a code change. Exceptions (ADR 0034): raster pixel reads, which go through
 rasterio/GDAL VSI, and paths that are local by construction (scratch directories, the user
 config file, a source tree read to package it).
 
 Any S3-compatible store (AWS, CDSE EODATA, MinIO, …) is just an s3fs filesystem
-distinguished by `endpoint_url` + keys in `storage_options`, so a tile download is
+distinguished by `endpoint_url` + keys in `storage_options`, so a granule download is
 `transfer(src_s3_url, dst_url)`.
 
 `path` may be a local path or an fsspec URL (`file://`, `s3://`, `az://`, …).
@@ -386,7 +386,7 @@ def transfer(
 ) -> None:
     """Copy one object between fsspec filesystems (provider-agnostic).
 
-    A tile band-file download is `transfer(s3_src, local_or_blob_dst)`. Bytes are
+    A granule band-file download is `transfer(s3_src, local_or_blob_dst)`. Bytes are
     streamed, so source and destination need not share a backend (e.g. CDSE S3 -> Azure
     Blob); configure each side through `src_options`/`dst_options`.
 

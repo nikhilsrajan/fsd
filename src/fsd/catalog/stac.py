@@ -1,4 +1,4 @@
-"""STAC export view over the tile catalog.
+"""STAC export view over the granule catalog.
 
 Spec: specs/17-stac-catalog.md
 
@@ -11,7 +11,7 @@ Serialization is a static, self-contained STAC catalog (JSON) via `pystac`, writ
 `fsd.storage` seam so a blob/S3 destination works later unchanged. `stac-geoparquet` is deferred.
 
 Designed so the future inference-output catalog (P4/P5, one Item per output COG) reuses
-`write_stac_catalog` + the asset helpers via a second item-builder; only the tile-catalog path
+`write_stac_catalog` + the asset helpers via a second item-builder; only the granule-catalog path (`tile_catalog_to_items`)
 is implemented here.
 """
 
@@ -128,7 +128,7 @@ def _band_role(band: str, declaration: CollectionDeclaration) -> str:
     declared mask band, e.g. SCL/QA), `"reference"` (the declared resample-reference
     band), else `"reflectance"` for a band the declaration says carries radiometry
     (`is_radiometry_band`), else the generic `"data"` (e.g. AOT/WVP/visual — present
-    in a tile's `files` but not consumed by the builder's radiometry/mask/reference
+    in a granule's `files` but not consumed by the builder's radiometry/mask/reference
     logic)."""
     if declaration.mask_spec is not None and band == declaration.mask_spec.band:
         return "mask"
@@ -169,14 +169,14 @@ def _read_proj_fields(href: str) -> dict:
         return {"shape": [src.height, src.width], "transform": list(src.transform)[:6]}
 
 
-# --- tile catalog -> STAC items ----------------------------------------------
+# --- granule catalog -> STAC items -------------------------------------------
 
 def tile_catalog_to_items(
     gdf, *, collection_id=None, read_proj=False, declaration: CollectionDeclaration | None = None,
 ) -> list[pystac.Item]:
     """Map `TileCatalog` rows (a GeoDataFrame from `.read()`) to STAC Items.
 
-    One Item per row (a tile-product acquisition); one asset per band file in `files`.
+    One Item per row (one granule); one asset per band file in `files`.
     Pure-metadata unless `read_proj=True` (which opens each raster for proj:shape/transform).
 
     `declaration` resolves the mask/reference/radiometry-band facts used for asset role
@@ -477,7 +477,7 @@ def items_to_rows(items: list[pystac.Item]):
         folders = {os.path.dirname(h) for h in hrefs}
         source = next((lk.get_href() for lk in item.get_links(_SOURCE_LINK_REL)), None)
         # Spec 34: recover the declared offset/nodata from any asset's raster:bands
-        # (all assets on one item share the same tile-level values, §1) — 0 if the
+        # (all assets on one item share the same granule-level values, §1) — 0 if the
         # item predates the extension (no raster:bands asset at all).
         offset, nodata, scale = 0, 0, 1.0
         if RasterExtension.has_extension(item):  # item-level: hoisted out of the loop

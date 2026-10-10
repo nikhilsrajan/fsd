@@ -17,7 +17,7 @@ extras are `[local,azure,mpc]`.
 through the storage seam, managed-identity auth, Key Vault creds on the node. `mpc` brings
 `planetary-computer` -- it signs asset hrefs on the node, right before transfer. NOT
 `aml`: `azure-ai-ml` is the driver-side dispatch SDK: the node never submits jobs. NOT
-`grid`: `s2`/`s2cell` tile the ROI into grid cells on the driver, before any job exists --
+`grid`: `s2`/`s2cell` split the ROI into grid cells on the driver, before any job exists --
 a node only ever reads the cells it is handed.
 
 **The escape hatch** (#79: "caller may pass their own build context"): `ImageDefinition(

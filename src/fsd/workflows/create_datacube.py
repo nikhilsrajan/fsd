@@ -94,7 +94,7 @@ def _canonicalize_properties_filter(
 
 
 class NoWorkUnitsError(ValueError):
-    """`setup` was handed shapes but none of them had tiles in range/overlap.
+    """`setup` was handed shapes but none of them had granules in range/overlap.
 
     A `ValueError` subclass so every existing `except ValueError` caller (notably
     `api.verify_adapter`, which turns it into an actionable `PreflightError`) keeps
@@ -202,7 +202,7 @@ def setup(
 
     Reads the catalog **once**, then reuses `catalog.filter_gdf` for each shape's
     date+overlap slice (which also persists `area_contribution`). Shapes with no
-    intersecting tiles are skipped with a note. Prints live progress + ETA: the
+    intersecting granules are skipped with a note. Prints live progress + ETA: the
     per-shape writes are network I/O on a remote run folder, so this can run for
     minutes and must not look like a hang.
 
@@ -869,7 +869,7 @@ def build_shortfall_only(
                 properties_filter=properties_filter, processing=processing,
             )
         except NoWorkUnitsError:
-            # `setup` raises when NONE of the shapes it was handed have tiles in range.
+            # `setup` raises when NONE of the shapes it was handed have granules in range.
             # That is reachable here precisely because this call is scoped to the shortfall,
             # where one out-of-coverage polygon can be the whole batch. Record the shortfall
             # as known-empty and let the caller's request converge, rather than crashing the

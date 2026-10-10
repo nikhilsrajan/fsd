@@ -881,7 +881,7 @@ def _aml_inference_preflight(
 
     Covers cluster/environment/root (shared, `_aml_preflight_common`), input_csv
     non-emptiness, the duplicate-unit guard, and the `max_cells` guardrail: refuse an ROI
-    that tiles into more cells than intended, before dispatching thousands of jobs.
+    that splits into more grid cells than intended, before dispatching thousands of jobs.
     Model-spec checks (bands/T) are hoisted into `api._run_inference_roi`'s own preflight,
     ahead of this call, rather than duplicated here.
     """

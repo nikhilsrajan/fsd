@@ -6,9 +6,9 @@ implementation vocabulary ("flatten", "input.csv") to user intent ("make trainin
 Besides the verbs it holds the preflight checks, the flatten identity and the raster
 merge of per-cell outputs.
 
-- `download(...)`            -> fetch S2 L2A tiles + build a TileCatalog (its own verb).
+- `download(...)`            -> fetch S2 L2A granules + build a TileCatalog (its own verb).
 - `create_training_data(...)`-> label polygons + catalog -> datacubes -> flattened arrays.
-- `run_inference(...)`       -> model over pre-built cubes OR an ROI (tile -> per-cell
+- `run_inference(...)`       -> model over pre-built cubes OR an ROI (grid cells -> per-cell
                                build+infer via the runner seam) -> COG + STAC.
 - `deploy(...)`              -> register a model bundle in a registry.
 
@@ -376,7 +376,7 @@ def download(
     runner: str = "local",
     runner_kwargs: dict | None = None,
 ) -> str:
-    """Fetch `collection` tiles for the ROI/date range into the archive rooted at
+    """Fetch `collection` granules for the ROI/date range into the archive rooted at
     `dst_folderpath`, build/append the collection's TileCatalog, and return that catalog's
     filepath (feed it to `create_training_data`).
 
@@ -410,7 +410,7 @@ def download(
     passing it against a collection with no cloud-cover concept raises rather than
     silently being a no-op filter.
 
-    `properties_filter` (spec 58 D9) narrows discovered tiles by STAC property, e.g.
+    `properties_filter` (spec 58 D9) narrows discovered granules by STAC property, e.g.
     `{"sat:orbit_state": "descending"}`, **before** `max_tiles` is checked. A download is a
     whole-asset byte copy -- a ~5 km ROI still fetches entire ~250 km Sentinel-1 scenes --
     and a build can only ever use ONE value of a partitioned property (D9's enforcement),
@@ -420,7 +420,7 @@ def download(
     `max_concurrent` is how many band files transfer at once (`sources.mpc.download`'s
     `max_concurrent`, `sources.cdse.download`'s `max_concurrent_s3`). `None` keeps each
     source's default -- for MPC that is `config.MPC_MAX_CONCURRENT` (4), a value chosen for
-    a one-tile smoke run and far too low for a whole archive: 200+ granules x 4 bands over
+    a one-granule smoke run and far too low for a whole archive: 200+ granules x 4 bands over
     4 threads is latency-bound, not bandwidth-bound. Raise it (16-32 against MPC, which is
     a public Azure endpoint) when the run is large. It was previously not reachable from
     this verb at all, which made a big download slow with no way to say so.
@@ -1589,7 +1589,7 @@ def run_inference(
     size (`workflows.infer_shard`). Pass ``cores=1`` there for the heavy-model
     *load-once-per-node* opt-out (one whole-shard group, one bundle load).
     - **ROI**: pass ``roi`` (+ ``catalog_filepath``,
-      ``startdate``/``enddate``/``mosaic_days``/``bands``). fsd tiles the ROI into S2 grid cells
+      ``startdate``/``enddate``/``mosaic_days``/``bands``). fsd splits the ROI into S2 grid cells
       (``fsd.grid``), then fans out a per-cell **build-datacube + infer -> COG** task through the
       **runner seam** (Snakemake locally; Batch swaps in unchanged). Imagery is assumed
       already present in ``catalog_filepath`` — inference never touches CDSE (conserve quota).
@@ -1865,7 +1865,7 @@ def _run_inference_roi(
     predict_batch_size, skip_nan, merge, merge_crs, cores, cubes_per_task, overwrite,
     collection_id, dt, runner="local", runner_kwargs=None, registry=None,
 ) -> InferenceResult:
-    """ROI mode: preflight -> tile -> per-cell setup -> runner build+infer -> STAC/merge."""
+    """ROI mode: preflight -> grid cells -> per-cell setup -> runner build+infer -> STAC/merge."""
     from fsd import grid as _grid
     from fsd.workflows import runners as _runners
 
@@ -1912,12 +1912,12 @@ def _run_inference_roi(
     if roi_gdf is not None and len(roi_gdf) == 0:
         errs.append("roi is empty.")
 
-    # Tile the ROI -> S2 grid cells INSIDE preflight. Tiling is local, CPU-only work, so
+    # Split the ROI into S2 grid cells INSIDE preflight. Splitting is local, CPU-only work, so
     # doing it here rather than after `_ensure_bundle` means a bad ROI costs seconds instead
     # of a blob `makedirs`, a bundle upload (627 s for 13 MB over VPN), setup's N per-cell
     # blob writes, and an AML dispatch.
     #
-    # What it catches: an ROI that tiles to nothing, and DUPLICATE CELL IDS. `id` is the
+    # What it catches: an ROI that yields no grid cells, and DUPLICATE CELL IDS. `id` is the
     # work-unit key -- `setup` derives `export_folderpath` from it -- so duplicates put N
     # tasks on one folder, which on blob is a concurrent same-blob write (`InvalidBlockList`)
     # and locally a silent overwrite. `roi_to_s2_grids` prevents them at source; this is the

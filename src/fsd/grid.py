@@ -3,7 +3,7 @@
 Spec: specs/21-roi-inference-verb.md
 
 Cover a region of interest with fixed-size S2 cells — one cell = one inference datacube = one
-task when `run_inference(roi=…)` lands. Cells are scaled up slightly so adjacent tiles
+task when `run_inference(roi=…)` lands. Cells are scaled up slightly so adjacent cells
 overlap (no seams at mosaic time) and clipped to the ROI so they don't spill outside it.
 
 Clean-room port of `rsutils.s2_grid_utils.get_s2_grids_gdf` (read-only reference). Needs the
@@ -52,7 +52,7 @@ def _as_gdf_4326(roi) -> gpd.GeoDataFrame:
     elif isinstance(roi, str):
         # Storage seam, not gpd.read_file: GDAL has no abfss:// driver and reports a
         # blob-hosted roi as "No such file or directory" (TODO #47). `run_inference`
-        # re-tiles in preflight, so a blob roi reaches here on every P4 ROI-mode run.
+        # splits the ROI into grid cells again in preflight, so a blob roi reaches here on every P4 ROI-mode run.
         gdf = fs.read_geo(roi)
     else:  # a geojson dict / __geo_interface__ / shapely geometry
         geom = shapely.geometry.shape(roi["geometry"]) if isinstance(roi, dict) and "geometry" in roi \
@@ -67,7 +67,7 @@ def _as_gdf_4326(roi) -> gpd.GeoDataFrame:
 
 def roi_to_s2_grids(roi, *, grid_size_km: float = 5, scale_fact: float = 1.1,
                     res: int | None = None, clip: bool = True) -> gpd.GeoDataFrame:
-    """Tile an ROI into overlapping S2 cells, clipped to the ROI.
+    """Split an ROI into overlapping S2 grid cells, clipped to the ROI.
 
     Steps (per the ROADMAP §4 recipe): S2-`polyfill` the ROI's **convex hull** at the level for
     `grid_size_km` (5 km → res 11), keep cells that **intersect** the ROI, **scale** each by

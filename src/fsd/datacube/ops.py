@@ -75,7 +75,7 @@ def median_mosaic(datacube, metadata, *, startdate: datetime.datetime,
       emitted (an empty window → an all-`mask_value` slice). The output `timestamps`
       are thus a pure function of `(startdate, enddate, mosaic_days)`, identical across
       any two datacubes built with those inputs — so `flatten` can concatenate cubes
-      from different tiles/orbits/zones.
+      from different MGRS tiles/orbits/zones.
 
       How the window vs the revisit cadence interact:
         * `mosaic_days` > cadence  → several acquisitions per window get composited

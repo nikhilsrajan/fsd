@@ -37,7 +37,7 @@ MOSAIC_DAYS = 20
 # Mosaic window scheme. "calendar" buckets acquisitions into fixed calendar
 # windows anchored at the caller's startdate — so every datacube built over the same
 # startdate/enddate/mosaic_days shares an identical `timestamps` axis regardless of
-# which tiles/orbits/zones a shape hits (required to `flatten` across shapes). Empty
+# which MGRS tiles/orbits/zones a shape hits (required to `flatten` across shapes). Empty
 # windows are emitted as all-nodata slices, labels are window-start boundaries.
 # "acquisition" = legacy behavior (windows track actual acquisition dates; labels =
 # first acquisition per window; empty windows skipped).
@@ -59,7 +59,7 @@ S2_REFLECTANCE_SCALE = 1 / 10000
 # pystac-client. Each item's `assets` give the per-band S3 hrefs directly, so we
 # never list the .SAFE over S3 (that listing failed intermittently: BUG-001, ADR 0009).
 CDSE_STAC_URL = "https://stac.dataspace.copernicus.eu/v1/"
-# S3-compatible object store (tile bytes). Just an endpoint to s3fs. The OTC-pinned
+# S3-compatible object store (granule bytes). Just an endpoint to s3fs. The OTC-pinned
 # host reduces load-balancer routing variance vs the GSLB alias (BUG-001).
 CDSE_S3_ENDPOINT_URL = "https://eodata.ams.dataspace.copernicus.eu"
 
@@ -74,7 +74,7 @@ MAX_CONCURRENT_S3 = 4
 MPC_STAC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1"
 
 # Phase-1 default concurrency for the (no-convert) MPC transfer pool — a single
-# tile/band runbook is trivial either way; kept small and hotspot-friendly.
+# granule/band runbook is trivial either way; kept small and hotspot-friendly.
 MPC_MAX_CONCURRENT = 4
 
 # Concurrency for `workflows.create_datacube.setup`'s per-shape control-file writes.
@@ -99,7 +99,7 @@ PROGRESS_EVERY_S = 5
 # separate — see download()'s cooperative-stop docstring).
 STOP_CHECK_EVERY_S = 1.0
 
-# Rough size guard for the download safety check (~GB per tile).
+# Rough size guard for the download safety check (~GB per granule).
 APPROX_GB_PER_TILE = 0.725
 
 # --- COG conversion (convert-on-download) ------------------------------------
