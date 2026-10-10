@@ -97,23 +97,6 @@ def test_from_json_tolerates_extra_and_optional_keys(tmp_path):
                              "note": "rotate soon", "unknown": "ignored"}))
     creds = CdseCredentials.from_json(str(p))
     assert creds.s3_keys_expire == "2026-08-01"
-    assert creds.note == "rotate soon"
-
-
-def test_to_json_round_trip(tmp_path):
-    p = tmp_path / "out.json"
-    original = CdseCredentials(**{
-        "sh_client_id": "id-123", "sh_client_secret": "secret-abc",
-        "s3_access_key": "akia-xyz", "s3_secret_key": "s3secret-789",
-        "s3_keys_expire": "2026-08-01", "note": "hi",
-    })
-    original.to_json(str(p))
-    # written in legacy key format
-    on_disk = json.loads(p.read_text())
-    assert set(["sh_clientid", "sh_clientsecret", "s3_access_key", "s3_secret_key"]) \
-        <= set(on_disk)
-    # and reads back equal
-    assert CdseCredentials.from_json(str(p)) == original
 
 
 def test_from_env():
@@ -144,14 +127,6 @@ def test_s3_storage_options_shape():
     assert opts["key"] == "akia-xyz"
     assert opts["secret"] == "s3secret-789"
     assert "endpoint_url" in opts["client_kwargs"]
-
-
-def test_require_complete():
-    import pytest
-
-    CdseCredentials(**DUMMY_FIELDS).require_complete()  # no raise
-    with pytest.raises(ValueError):
-        CdseCredentials(sh_client_id="only-one").require_complete()
 
 
 def test_is_expired():

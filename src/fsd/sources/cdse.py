@@ -75,7 +75,6 @@ class CdseCredentials:
     s3_access_key: str | None = None      # tile download (S3)
     s3_secret_key: str | None = None
     s3_keys_expire: str | None = None     # optional ISO date (YYYY-MM-DD), informational
-    note: str | None = None               # optional free text
 
     def __repr__(self) -> str:
         def m(v):
@@ -86,55 +85,35 @@ class CdseCredentials:
             f"sh_client_secret={m(self.sh_client_secret)}, "
             f"s3_access_key={m(self.s3_access_key)}, "
             f"s3_secret_key={m(self.s3_secret_key)}, "
-            f"s3_keys_expire={self.s3_keys_expire!r}, note={self.note!r})"
+            f"s3_keys_expire={self.s3_keys_expire!r})"
+        )
+
+    @classmethod
+    def _from_dict(cls, data: dict) -> "CdseCredentials":
+        return cls(
+            sh_client_id=data.get(_JSON_SH_CLIENT_ID),
+            sh_client_secret=data.get(_JSON_SH_CLIENT_SECRET),
+            s3_access_key=data.get(_JSON_S3_ACCESS_KEY),
+            s3_secret_key=data.get(_JSON_S3_SECRET_KEY),
+            s3_keys_expire=data.get("s3_keys_expire"),
         )
 
     @classmethod
     def from_json(cls, filepath: str, **storage_options) -> "CdseCredentials":
         """Load from a JSON file using the legacy `cdse_credentials.json` keys.
 
-        Tolerates extra keys; picks up optional `s3_keys_expire` / `note`.
+        Tolerates extra keys; picks up optional `s3_keys_expire`.
         """
         with fs.open(filepath, "r", **storage_options) as f:
             data = json.load(f)
-        return cls(
-            sh_client_id=data.get(_JSON_SH_CLIENT_ID),
-            sh_client_secret=data.get(_JSON_SH_CLIENT_SECRET),
-            s3_access_key=data.get(_JSON_S3_ACCESS_KEY),
-            s3_secret_key=data.get(_JSON_S3_SECRET_KEY),
-            s3_keys_expire=data.get("s3_keys_expire"),
-            note=data.get("note"),
-        )
+        return cls._from_dict(data)
 
     @classmethod
     def from_json_str(cls, s: str) -> "CdseCredentials":
         """Sibling of `from_json`: parse an in-memory JSON string in the same key format,
         instead of a file path -- the shape a Key Vault secret comes back in, having no
         filepath of its own."""
-        data = json.loads(s)
-        return cls(
-            sh_client_id=data.get(_JSON_SH_CLIENT_ID),
-            sh_client_secret=data.get(_JSON_SH_CLIENT_SECRET),
-            s3_access_key=data.get(_JSON_S3_ACCESS_KEY),
-            s3_secret_key=data.get(_JSON_S3_SECRET_KEY),
-            s3_keys_expire=data.get("s3_keys_expire"),
-            note=data.get("note"),
-        )
-
-    def to_json(self, filepath: str, **storage_options) -> None:
-        """Write to JSON in the legacy key format (round-trips with `from_json`)."""
-        data = {
-            _JSON_SH_CLIENT_ID: self.sh_client_id,
-            _JSON_SH_CLIENT_SECRET: self.sh_client_secret,
-            _JSON_S3_ACCESS_KEY: self.s3_access_key,
-            _JSON_S3_SECRET_KEY: self.s3_secret_key,
-        }
-        if self.s3_keys_expire is not None:
-            data["s3_keys_expire"] = self.s3_keys_expire
-        if self.note is not None:
-            data["note"] = self.note
-        with fs.open(filepath, "w", **storage_options) as f:
-            json.dump(data, f, indent=2)
+        return cls._from_dict(json.loads(s))
 
     @classmethod
     def from_env(cls, environ: dict | None = None) -> "CdseCredentials":
@@ -165,21 +144,6 @@ class CdseCredentials:
                 "retries": {"max_attempts": 1},
             },
         }
-
-    def require_complete(self) -> None:
-        """Raise if any of the four core credential fields is missing."""
-        missing = [
-            name
-            for name in (
-                "sh_client_id",
-                "sh_client_secret",
-                "s3_access_key",
-                "s3_secret_key",
-            )
-            if not getattr(self, name)
-        ]
-        if missing:
-            raise ValueError(f"CdseCredentials missing required fields: {missing}")
 
     def require_s3(self) -> None:
         """Raise if the S3 keys are missing. Discovery (STAC) is anonymous, so only
