@@ -228,7 +228,7 @@ def query_catalog(
     return processing_module.select_processing(gdf, processing).kept
 
 
-# --- granule download (byte-copy + GDAL metadata stamp) -------------------------
+# --- granule download (byte-copy + GDAL metadata stamp) ----------------------
 
 
 def _select_item_files(

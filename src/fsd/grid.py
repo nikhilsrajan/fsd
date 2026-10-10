@@ -52,7 +52,8 @@ def _as_gdf_4326(roi) -> gpd.GeoDataFrame:
     elif isinstance(roi, str):
         # Storage seam, not gpd.read_file: GDAL has no abfss:// driver and reports a
         # blob-hosted roi as "No such file or directory" (TODO #47). `run_inference`
-        # splits the ROI into grid cells again in preflight, so a blob roi reaches here on every P4 ROI-mode run.
+        # splits the ROI into grid cells again in preflight, so a blob roi reaches here
+        # on every P4 ROI-mode run.
         gdf = fs.read_geo(roi)
     else:  # a geojson dict / __geo_interface__ / shapely geometry
         geom = shapely.geometry.shape(roi["geometry"]) if isinstance(roi, dict) and "geometry" in roi \

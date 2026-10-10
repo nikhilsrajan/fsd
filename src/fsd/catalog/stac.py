@@ -11,8 +11,8 @@ Serialization is a static, self-contained STAC catalog (JSON) via `pystac`, writ
 `fsd.storage` seam so a blob/S3 destination works later unchanged. `stac-geoparquet` is deferred.
 
 Designed so the future inference-output catalog (P4/P5, one Item per output COG) reuses
-`write_stac_catalog` + the asset helpers via a second item-builder; only the granule-catalog path (`tile_catalog_to_items`)
-is implemented here.
+`write_stac_catalog` + the asset helpers via a second item-builder; only the granule-catalog
+path (`tile_catalog_to_items`) is implemented here.
 """
 
 from __future__ import annotations

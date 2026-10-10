@@ -834,12 +834,11 @@ def _stack_datacube(catalog_gdf, data_profile_list, bands, reference_profile,
     (1, H, W) on the reference grid; a missing (ts, band) is nodata-filled to the
     same shape (legacy filled (H, W), which could not stack).
 
-    When several granules of the SAME acquisition (one per MGRS tile) cover the shape (it
-    straddles an MGRS tile boundary) they collide on (timestamp, band). ALL of them are
-    merged onto the reference grid by nodata-fill, never one kept and the rest dropped --
-    keeping one silently discards the coverage of every other granule. Overlap tie-break: dst_crs-native
-    granules win
-    over reprojected ones, then lower image_index (deterministic first-valid-wins).
+    When several granules of the SAME acquisition cover the shape (it straddles an MGRS
+    tile boundary) they collide on (timestamp, band). ALL of them are merged onto the
+    reference grid by nodata-fill, never one kept and the rest dropped -- keeping one
+    silently discards the coverage of every other granule. Overlap tie-break: dst_crs-native
+    granules win over reprojected ones, then lower image_index (deterministic first-valid-wins).
     Each band is merged independently — an S2 granule shares one valid footprint across
     bands, so a pixel resolves to the same granule for every band."""
     dst_crs = reference_profile["crs"]
