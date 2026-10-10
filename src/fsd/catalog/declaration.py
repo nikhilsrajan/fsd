@@ -7,7 +7,7 @@ needs from a `CollectionDeclaration`, carried on the flattened catalog as the JS
 `GeoDataFrame.attrs[ATTRS_KEY]` (set by `flatten_catalog`, restored from the Parquet footer
 by `fsd.storage.fs.read_parquet`; never the dataclass itself) or passed explicitly. A
 collection that needs different mask/reference/mosaic behavior registers its own
-declaration (`fsd.collections.register`); see `fsd/docs/adding-a-source.md`.
+declaration (`fsd.collections.register`); see `docs/adding-a-source.md`.
 
 Per-row values that vary (the radiometric `offset`, the per-row `nodata`) live in catalog
 columns (`fsd.catalog.catalog.COLUMNS`); the declaration's `nodata` is only the fallback
@@ -179,7 +179,7 @@ class CollectionDeclaration:
         return dict(self.band_aliases).get(band, band)
 
 
-# Kept here (rather than only in `fsd.collections.s2_l2a`) because
+# Kept here (rather than only in `fsd.collections.s2_l2a`) for existing imports and because
 # `builder._resolve_declaration`'s hand-built-GeoDataFrame fallback needs a concrete
 # default without importing the registry package (a declaration<->collections import
 # cycle: `fsd.collections` imports this module).

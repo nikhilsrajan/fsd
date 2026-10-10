@@ -73,9 +73,10 @@ def roi_to_s2_grids(roi, *, grid_size_km: float = 5, scale_fact: float = 1.1,
     `grid_size_km` (5 km → res 11), keep cells that **intersect** the ROI, **scale** each by
     `scale_fact` (1.1 → 10 % overlap per side), then **clip** to the ROI so grids stay inside it
     (`clip=False` keeps the scaled, unclipped cells). Finally, any cell fully `covered_by`
-    another cell in the result is dropped (#69). A dropped cell is always a subset of a kept
-    one, so the union of the returned cells is unchanged, and the drop count is always
-    printed -- never silent.
+    another cell in the result is dropped (#69): an ROI that is itself one S2 cell
+    polyfills its 8 neighbours too, and after clip+scale they come back as slivers inside
+    the central cell. A dropped cell is always a subset of a kept one, so the union of the
+    returned cells is unchanged, and the drop count is always printed -- never silent.
 
     **An ROI is one region, not a list of shapes.** A multi-row `roi` is `unary_union`-ed into a
     single (multi)polygon *first*, and every step — hull, intersect, clip — works against that
