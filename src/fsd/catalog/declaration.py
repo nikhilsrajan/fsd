@@ -42,7 +42,6 @@ __all__ = [
     "MaskSpec",
     "CollectionDeclaration",
     "ARTIFACT_FACT_FIELDS",
-    "BUILD_POLICY_FIELDS",
     "FSD_DECLARATION_VERSION",
     "ATTRS_KEY",
     "to_json",
@@ -71,13 +70,9 @@ _DECLARATION_FIELDS = (
 )
 _MASK_SPEC_FIELDS = ("band", "mask_type", "classes", "bits")
 
-# `CollectionDeclaration` field groups (spec 58 D14) -- documentation + a machine-checkable
-# split, e.g. for a future D14 equality check between a catalog's stamp and a build variant.
+# The `CollectionDeclaration` fields that are facts about the stored artifact (spec 58 D14).
 ARTIFACT_FACT_FIELDS = (
     "nodata", "scale", "radiometry_bands", "band_aliases", "requires_subscription_key",
-)
-BUILD_POLICY_FIELDS = (
-    "mask_spec", "mosaic_method", "mosaic_partition", "partition_policy", "reference_band",
 )
 
 # The only implemented `MaskSpec.mask_type`: mask wherever the
@@ -85,10 +80,6 @@ BUILD_POLICY_FIELDS = (
 # (Landsat/HLS QA) and `threshold` (continuous cloud-probability) are the
 # named-but-unimplemented seam for a later source -- see `CollectionDeclaration`.
 MASK_TYPE_CATEGORICAL_CLASSES = "categorical_classes"
-# Named but not implemented in P1 (spec 58 D7): "any listed bit set" masking, for HLS
-# Fmask. `MaskSpec.bits` is accepted and round-trips through JSON now so the v2 bump
-# lands once, but `builder.build_datacube` still raises `NotImplementedError` for it.
-MASK_TYPE_BITMASK = "bitmask"
 
 
 @dataclasses.dataclass(frozen=True)
