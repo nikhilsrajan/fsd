@@ -5,7 +5,7 @@ through GDAL's VSI layer, not fsspec. It is a plain passthrough for local paths 
 `abfss://`/`az://` source through GDAL's `/vsiadls/` handler with a fresh access token.
 Writing to a remote path raises.
 
-Spec: specs/07-raster.md, specs/31-p1-azure-storage-seam.md, specs/10.
+Spec: specs/07-raster.md, specs/31-p1-azure-storage-seam.md, specs/10-storage-and-scale.md.
 """
 
 from __future__ import annotations
@@ -49,7 +49,8 @@ def rio_env(paths):
     `EnvError: No GDAL environment exists`. With 300 merge inputs that is a hard failure.
     `rio_open` is for ONE scoped dataset (`with rio_open(p) as src:`); this is for N.
 
-    Returns a null context for all-local `paths`, like `rio_open`.
+    Returns a null context for all-local `paths` (no `rasterio.Env`, as `rio_open`'s local
+    passthrough).
     Open the datasets with `rasterio.open(to_vsi(fp))` *inside* the `with`, and keep every pixel
     read inside it too: the env carries the credentials.
     """
