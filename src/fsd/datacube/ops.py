@@ -30,10 +30,10 @@ def run_ops(datacube, metadata, sequence):
 
 
 def apply_cloud_mask_scl(datacube, metadata, *, mask_classes, mask_band="SCL",
-                         bands_to_modify=None, mask_value=0):
+                         mask_value=0):
     """Set pixels to `mask_value` where the categorical mask band (`mask_band`,
-    default `"SCL"`) has a value in `mask_classes`, across the requested
-    (non-mask) bands. The mask band itself is left untouched (drop it separately).
+    default `"SCL"`) has a value in `mask_classes`, across every
+    non-mask band. The mask band itself is left untouched (drop it separately).
 
     `mask_band` generalizes this beyond S2 (`mask_type="categorical_classes"`) — any
     source whose QA band encodes
@@ -43,10 +43,7 @@ def apply_cloud_mask_scl(datacube, metadata, *, mask_classes, mask_band="SCL",
     if mask_band not in band_indices:
         raise ValueError(f"{mask_band} band not present in datacube")
 
-    if bands_to_modify is None:
-        bands_to_modify = [b for b in band_indices if b != mask_band]
-    present = [b for b in bands_to_modify if b in band_indices]
-    idx_to_modify = [band_indices[b] for b in present]
+    idx_to_modify = [i for b, i in band_indices.items() if b != mask_band]
 
     mask_col = datacube[:, :, :, band_indices[mask_band]]
     selected = datacube[:, :, :, idx_to_modify]
