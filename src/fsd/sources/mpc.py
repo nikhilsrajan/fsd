@@ -611,17 +611,6 @@ def download(
 
 # --- AML fan-out: driver-side discovery + per-shard download -----------------
 
-# A `discover_shard_rows` row (also the shard CSV's columns): one MPC asset,
-# unsigned, plus the per-tile catalog metadata `_append_downloaded` needs to
-# upsert a row once the asset lands. `geometry` rides as WKT (CSV-safe).
-_SHARD_ROW_COLUMNS = [
-    "tile_id", "band", "href", "dst", "offset",
-    "collection", "timestamp", "s3url", "cloud_cover", "scale", "nodata",
-    "acquisition_key", "processing_version", "processing_datetime",
-    "properties", "geometry",
-]
-
-
 def discover_shard_rows(
     roi,
     startdate: datetime.datetime,

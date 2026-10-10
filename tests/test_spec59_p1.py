@@ -492,11 +492,17 @@ def test_ac12_cdse_rerun_after_a_stamp_failure_transfers_again(monkeypatch, tmp_
     real = cdse.stamp_or_reencode
     monkeypatch.setattr(cdse, "stamp_or_reencode",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stamp died")))
-    ok, reason, _ = cdse._download_one("s3://eodata/x/B04.jp2", str(dst), {}, tries=1)
+    ok, reason, _, _ = cdse._transfer_one(
+        "s3://eodata/x/B04.jp2", str(dst), {}, needs_convert=True, tries=1)
+    assert ok
+    ok, reason, _ = cdse._convert_one(str(dst) + ".src.jp2", str(dst))
     assert (ok, reason) == (False, "ConvertError") and not dst.exists()
 
     monkeypatch.setattr(cdse, "stamp_or_reencode", real)
-    ok, reason, _ = cdse._download_one("s3://eodata/x/B04.jp2", str(dst), {}, tries=1)
+    ok, reason, _, _ = cdse._transfer_one(
+        "s3://eodata/x/B04.jp2", str(dst), {}, needs_convert=True, tries=1)
+    assert ok
+    ok, reason, _ = cdse._convert_one(str(dst) + ".src.jp2", str(dst))
     assert (ok, reason) == (True, "ok") and len(transfers) == 2           # transferred AGAIN
     assert _tags(dst)[2] == config.NODATA                                 # and stamped
 

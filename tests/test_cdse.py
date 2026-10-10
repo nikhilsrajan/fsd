@@ -302,28 +302,28 @@ def test_error_reason_maps_known_codes():
     assert cdse._error_reason(ValueError("weird")) == "ValueError"
 
 
-def test_download_one_skips_and_reports_reason(monkeypatch, tmp_path):
+def test_transfer_one_skips_and_reports_reason(monkeypatch, tmp_path):
     import os
 
     monkeypatch.setattr(cdse.fs, "exists", lambda p, **k: os.path.exists(p))
     existing = tmp_path / "x.jp2"
     existing.write_bytes(b"data")
-    assert cdse._download_one(
-        "s3://eodata/a.jp2", str(existing), {}, cog=False
+    assert cdse._transfer_one(
+        "s3://eodata/a.jp2", str(existing), {}, needs_convert=False
     )[:2] == (True, "skipped")
 
     def boom(src, dst, **kw):
         raise PermissionError("An error occurred (Forbidden) ...")
 
     monkeypatch.setattr(cdse.fs, "transfer", boom)
-    ok, reason, _metrics = cdse._download_one(
-        "s3://eodata/b.jp2", str(tmp_path / "nope.jp2"), {}, cog=False, tries=1
+    ok, reason, _t_s, _nbytes = cdse._transfer_one(
+        "s3://eodata/b.jp2", str(tmp_path / "nope.jp2"), {}, needs_convert=False, tries=1
     )
     assert (ok, reason) == (False, "Forbidden")
     assert "Forbidden" in cdse._RETRYABLE_S3  # 403 is transient on CDSE (BUG-001)
 
 
-def test_download_one_redownloads_zero_byte_file(monkeypatch, tmp_path):
+def test_transfer_one_redownloads_zero_byte_file(monkeypatch, tmp_path):
     """A 0-byte 'touched' leftover must NOT be treated as done — it re-downloads."""
     import os
 
@@ -339,8 +339,8 @@ def test_download_one_redownloads_zero_byte_file(monkeypatch, tmp_path):
             f.write(b"realbytes")
 
     monkeypatch.setattr(cdse.fs, "transfer", good_transfer)
-    assert cdse._download_one(
-        "s3://eodata/z.jp2", str(dst), {}, cog=False
+    assert cdse._transfer_one(
+        "s3://eodata/z.jp2", str(dst), {}, needs_convert=False
     )[:2] == (True, "ok")
     assert calls == [str(dst)]  # actually re-downloaded, not skipped
 
@@ -578,7 +578,7 @@ def _write_raster(path, width=32, height=32):
     return data
 
 
-def test_download_one_cog_converts_and_is_idempotent(monkeypatch, tmp_path):
+def test_transfer_then_convert_cog_converts_and_is_idempotent(monkeypatch, tmp_path):
     """cog=True: a fetched JP2 band is converted to a COG .tif, the staging file is
     removed, and a second call skips the existing .tif."""
     import os
@@ -599,7 +599,10 @@ def test_download_one_cog_converts_and_is_idempotent(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cdse.fs, "transfer", fake_transfer)
 
-    ok, reason, (t_s, c_s, nbytes) = cdse._download_one("s3://eodata/x/B04.jp2", dst, {}, cog=True)
+    ok, reason, t_s, nbytes = cdse._transfer_one(
+        "s3://eodata/x/B04.jp2", dst, {}, needs_convert=True)
+    assert (ok, reason) == (True, "ok")
+    ok, reason, c_s = cdse._convert_one(dst + ".src.jp2", dst)
     assert (ok, reason) == (True, "ok")
     assert nbytes > 0 and t_s >= 0 and c_s >= 0  # spec 23: transfer/convert/bytes metrics
     assert os.path.exists(dst) and not os.path.exists(dst + ".src.jp2")  # staging gone
@@ -609,8 +612,8 @@ def test_download_one_cog_converts_and_is_idempotent(monkeypatch, tmp_path):
 
     # second call: final .tif present -> skip, no further transfer
     calls.clear()
-    assert cdse._download_one("s3://eodata/x/B04.jp2", dst, {}, cog=True)[:2] == (
-        True, "skipped")
+    assert cdse._transfer_one(
+        "s3://eodata/x/B04.jp2", dst, {}, needs_convert=True)[:2] == (True, "skipped")
     assert calls == []
 
 
