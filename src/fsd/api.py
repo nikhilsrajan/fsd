@@ -180,7 +180,9 @@ def _check_window(startdate, enddate, mosaic_days, bands) -> list[str]:
 def _check_catalog_collection_dir(catalog_filepath: str, collection: str) -> list[str]:
     """The directory holding `catalog.parquet` is part of the contract --
     `{root}/{collection}/catalog.parquet` -- so a catalog of one collection handed to a verb
-    for another is caught before any work, naming both. Spec: 59."""
+    for another is caught before any work, naming both.
+
+    Spec: 59."""
     parent = os.path.basename(os.path.dirname(str(catalog_filepath).rstrip("/")))
     if parent == collection:
         return []
@@ -203,7 +205,9 @@ _SOURCE_SERVED_COLLECTIONS = {"cdse": _CDSE_SERVED_COLLECTIONS, "mpc": _MPC_SERV
 def _check_source_collection(source: str, collection: str) -> list[str]:
     """Not every (source, collection) pair is valid -- each source module declares what it
     serves; an unserved pair raises at preflight, naming what the source DOES serve, rather
-    than failing deep inside discovery. Spec: 58."""
+    than failing deep inside discovery.
+
+    Spec: 58."""
     served = _SOURCE_SERVED_COLLECTIONS.get(source)
     if served is not None and collection not in served:
         return [
@@ -216,7 +220,9 @@ def _check_source_collection(source: str, collection: str) -> list[str]:
 def _check_cloudcover_capability(collection: str, max_cloudcover: float) -> list[str]:
     """`max_cloudcover` requires the collection to declare `supports_cloud_cover=True`
     -- passing it against a collection with no cloud-cover concept (e.g. Sentinel-1) would
-    otherwise silently be a no-op filter. Spec: 58."""
+    otherwise silently be a no-op filter.
+
+    Spec: 58."""
     declaration = _collections.get(collection)
     if not declaration.supports_cloud_cover:
         return [
@@ -400,7 +406,8 @@ def download(
     credential-free) wraps `sources.mpc.download` (Microsoft Planetary Computer, anonymous:
     `creds` is not required and `cog` is ignored, MPC assets are already COG);
     `source="cdse"` wraps `sources.cdse.download` and requires `creds`. Each source serves a
-    fixed set of collections; an unserved pair raises at preflight, naming what the source
+    fixed set of collections (`sources.mpc.SERVED_COLLECTIONS`/`sources.cdse.SERVED_COLLECTIONS`);
+    an unserved pair raises at preflight, naming what the source
     DOES serve. `storage` is local or `"azure"`.
 
     `max_cloudcover` requires the collection to declare `supports_cloud_cover=True` (every
@@ -563,7 +570,8 @@ def create_training_data(
     `runner="local"`.
 
     **In-memory polygons:** for `runner="aml"`, an in-memory `label_polygons` GeoDataFrame is
-    materialized once to a GeoJSON under the blob `root` and that one URL serves as both the
+    materialized once to a GeoJSON under `run_folderpath` (by default under the blob `root`)
+    and that one URL serves as both the
     download ROI and the per-cell build shapefile. A path/URL `label_polygons` is used as-is.
 
     **Feature engineering:** pass an `adapter` (preferred — its `feature_sequence` is the
