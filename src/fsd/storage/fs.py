@@ -383,7 +383,6 @@ def transfer(
     *,
     src_options: dict | None = None,
     dst_options: dict | None = None,
-    njobs: int = 1,  # reserved for future directory/bulk transfers
 ) -> None:
     """Copy one object between fsspec filesystems (provider-agnostic).
 

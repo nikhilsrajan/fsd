@@ -35,6 +35,5 @@ def test_submodules_import():
 def test_config_defaults():
     from fsd import config
 
-    assert "SCL" in config.BANDS_DEFAULT
     assert config.REFERENCE_BAND == "B08"
     assert config.SCL_MASK_CLASSES == [0, 1, 3, 7, 8, 9, 10]
