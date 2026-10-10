@@ -523,14 +523,20 @@ def test_ac12_stamping_a_dot_stage_name_takes_the_inplace_path(monkeypatch, tmp_
     stage = tmp_path / "B04.tif.stage"        # GDAL identifies GeoTIFF by content, not name
     _write_cog(stage)
     real, calls = cog.stamp_gdal_tags, []
+    real_copy, copies = cog.rasterio.shutil.copy, []
 
     def _spy(*a, **k):
         calls.append(1)
         return real(*a, **k)
 
+    def _copy_spy(*a, **k):
+        copies.append(1)
+        return real_copy(*a, **k)
+
     monkeypatch.setattr(cog, "stamp_gdal_tags", _spy)
+    monkeypatch.setattr(cog.rasterio.shutil, "copy", _copy_spy)
     cog.stamp_or_reencode(str(stage), offset=-0.1, scale=0.0001, set_nodata_if_missing=0)
-    assert len(calls) == 1                     # stamped in place, no re-encode
+    assert len(calls) == 1 and copies == []    # stamped in place, no re-encode
     assert _tags(stage) == (0.0001, -0.1, 0.0)
 
 
