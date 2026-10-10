@@ -337,11 +337,12 @@ def _select_item_files(
     the `.jp2` asset; when `cog` the local destination is `Bxx.tif`, converted on arrival,
     else `Bxx.jp2`.
 
-    `bands` may be canonical STAC EO `common_name`s (spec 58 D8) or already-native asset
-    keys -- `declaration.canonical_to_native` normalizes either spelling to the same
-    native key. **Raises**, naming the band and collection, when a requested band does
-    not exist on this item, rather than skipping it: a skipped band lets a cube build
-    without it.
+    `bands` may be canonical STAC EO `common_name`s or already-native asset keys --
+    `declaration.canonical_to_native` normalizes either spelling to the same native key.
+    **Raises**, naming the band and collection, when a requested band does not exist on
+    this item, rather than skipping it: a skipped band lets a cube build without it.
+
+    Spec: 58 D8.
     """
     if declaration is None:
         declaration = _collections.get(collection)
@@ -754,7 +755,7 @@ def download(
         roi_gdf, max_cloudcover,
     )
     # CDSE's own forum guidance for near-duplicate products is "use the most recent",
-    # hence "latest" by default (D7).
+    # hence "latest" by default.
     tiles = select_granules(tiles, processing=processing, prefix="[fsd.cdse.download]")
 
     if len(tiles) > max_tiles:
