@@ -609,7 +609,7 @@ def _write_read_log(export_folderpath, reads):
 
 def _mgrs_tile(product_id, filepath) -> str | None:
     """Parse the MGRS tile (`..._T36NXF_...`) from the product id or the parent
-    folder name. Returns None if neither carries the `_T<MGRS tile>_` marker (e.g. the
+    folder name. Returns None if neither carries the `_T<MGRS tile>` marker (e.g. the
     synthetic granules in tests) — the same-file key is `filepath`, not this."""
     for s in (product_id, os.path.basename(os.path.dirname(filepath))):
         s = str(s)
