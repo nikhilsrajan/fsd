@@ -534,7 +534,7 @@ def test_missing_files_raises_on_incomplete_area():
             catalog_gdf=tile, shape_gdf=shape,
             startdate=datetime.datetime(2018, 5, 30),
             enddate=datetime.datetime(2018, 6, 2), bands=["B04"],
-            if_missing_files="raise_error",
+            if_missing_files="raise_error", max_timedelta_days=5,
         )
 
 
