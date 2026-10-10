@@ -990,30 +990,29 @@ def run_create_datacube(
     if overwrite_setup_csv:
         if fs.exists(csv_filepath):
             fs.rm(csv_filepath)
-        if not fs.exists(csv_filepath):
-            setup(
-                catalog_filepath=catalog_filepath, timestamp_col=timestamp_col,
-                shapefilepath=shapefilepath, id_col=id_col, run_folderpath=run_folderpath,
-                startdate=startdate, enddate=enddate, bands=bands,
-                mosaic_days=mosaic_days,
-                csv_filepath=csv_filepath, label_col=label_col, mosaic_scheme=mosaic_scheme,
-                collection=collection, properties_filter=properties_filter,
-                processing=processing,
-            )
-            # This pass just re-derived every shape straight from the catalog, so any
-            # known-empty record for this window is superseded by what `input.csv` now
-            # says. Clearing it here is what makes a forced rebuild the escape hatch
-            # from a stale manifest, rather than a way to leave the manifest and
-            # `input.csv` disagreeing.
-            _clear_known_empty(
-                run_folderpath,
-                window_folder_segment(startdate, enddate, mosaic_days, bands=bands,
-                                      mosaic_scheme=mosaic_scheme,
-                                      collection=collection,
-                                      declaration=_collections.get(collection),
-                                      properties_filter=properties_filter,
-                                      processing=processing),
-            )
+        setup(
+            catalog_filepath=catalog_filepath, timestamp_col=timestamp_col,
+            shapefilepath=shapefilepath, id_col=id_col, run_folderpath=run_folderpath,
+            startdate=startdate, enddate=enddate, bands=bands,
+            mosaic_days=mosaic_days,
+            csv_filepath=csv_filepath, label_col=label_col, mosaic_scheme=mosaic_scheme,
+            collection=collection, properties_filter=properties_filter,
+            processing=processing,
+        )
+        # This pass just re-derived every shape straight from the catalog, so any
+        # known-empty record for this window is superseded by what `input.csv` now
+        # says. Clearing it here is what makes a forced rebuild the escape hatch
+        # from a stale manifest, rather than a way to leave the manifest and
+        # `input.csv` disagreeing.
+        _clear_known_empty(
+            run_folderpath,
+            window_folder_segment(startdate, enddate, mosaic_days, bands=bands,
+                                  mosaic_scheme=mosaic_scheme,
+                                  collection=collection,
+                                  declaration=_collections.get(collection),
+                                  properties_filter=properties_filter,
+                                  processing=processing),
+        )
     else:
         build_shortfall_only(
             catalog_filepath=catalog_filepath, timestamp_col=timestamp_col,

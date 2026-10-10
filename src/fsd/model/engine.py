@@ -71,7 +71,7 @@ def infer_datacube(adapter, datacube: np.ndarray, band_indices: dict, *,
     return adapter.to_output(raw_full, (h, w))
 
 
-def _write_output_cog(out: Output, transform, crs, dst_path: str) -> int:
+def _write_output_cog(out: Output, transform, crs, dst_path: str) -> None:
     """Write an `Output` as a lossless COG (via `raster.cog.to_cog`) at `dst_path`.
 
     Writes a plain GeoTIFF sibling first, then converts. `to_cog` publishes to a remote
@@ -98,11 +98,10 @@ def _write_output_cog(out: Output, transform, crs, dst_path: str) -> int:
     try:
         with rasterio.open(raw_tif, "w", **profile) as dst:
             dst.write(out.array)
-        nbytes = to_cog(raw_tif, dst_path)
+        to_cog(raw_tif, dst_path)
     finally:
         if os.path.exists(raw_tif):
             os.remove(raw_tif)
-    return nbytes
 
 
 def infer_datacube_to_cog(adapter, datacube_filepath: str, output_filepath: str, *,

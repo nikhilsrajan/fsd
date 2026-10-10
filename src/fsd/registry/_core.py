@@ -48,18 +48,6 @@ def name_root(registry: str, name: str) -> str:
     return os.path.join(registry, name)
 
 
-def list_names(registry: str, storage_options: dict) -> list[str]:
-    if not fs.exists(registry, **storage_options):
-        return []
-    names = []
-    for entry in fs.ls(registry, **storage_options):
-        leaf = entry.rstrip("/").rsplit("/", 1)[-1]
-        if leaf.startswith("."):
-            continue
-        names.append(leaf)
-    return sorted(names)
-
-
 def is_version_complete(version_dir: str, storage_options: dict) -> bool:
     """A version counts once `_complete.json` is there -- there is no legacy carve-out
     here, unlike `fsd.model.registry`: every caller of this module writes
@@ -229,11 +217,7 @@ def set_alias(
         raise ValueError(f"cannot set alias {alias!r} -> v{version}: {target!r} does not exist")
 
     path = os.path.join(root, ALIASES_FILE)
-    try:
-        with fs.open(path, "r", **storage_options) as f:
-            aliases = json.load(f)
-    except FileNotFoundError:
-        aliases = {}
+    aliases = read_aliases(registry, name, storage_options)
     aliases[alias] = version
     stage = os.path.join(root, f"{STAGING_PREFIX}{uuid.uuid4().hex}.json")
     try:

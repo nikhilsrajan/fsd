@@ -153,7 +153,7 @@ class CdseCredentials:
 
         Includes connect/read timeouts so a stalled connection (common during CDSE's
         flaky windows, BUG-001) raises instead of hanging a worker forever; botocore's
-        own retries are disabled so our `_download_one` layer owns retry/labeling.
+        own retries are disabled so our `_transfer_one` layer owns retry/labeling.
         """
         return {
             "key": self.s3_access_key,
@@ -555,35 +555,6 @@ def _convert_one(
                     fs.rm(leftover)
                 except Exception:
                     pass
-
-
-def _download_one(
-    src_url: str,
-    dst_path: str,
-    s3opts: dict,
-    *,
-    cog: bool = True,
-    tries: int = 3,
-    base_delay: float = 0.5,
-) -> tuple[bool, str, tuple[float, float, int]]:
-    """Sequential reference wrapper = `_transfer_one` then, inline,
-    `_convert_one`. Kept for its direct-call unit tests and as the single-worker
-    reference unit; `download()` no longer calls this — it drives the two stages
-    across a transfer thread pool and a convert process pool instead (see `download`).
-
-    Returns `(ok, reason, metrics)` where `reason` is ``"skipped"``/``"ok"`` on
-    success or a short error label (transfer or ``"ConvertError"``) on failure, and
-    `metrics` is `(transfer_s, convert_s, bytes)` — zeros on skip/failure.
-    """
-    needs_convert = cog and src_url.endswith(".jp2")
-    ok, reason, t_s, nbytes = _transfer_one(
-        src_url, dst_path, s3opts, needs_convert=needs_convert,
-        tries=tries, base_delay=base_delay,
-    )
-    if not ok or reason == "skipped" or not needs_convert:
-        return ok, reason, (t_s, 0.0, nbytes)
-    c_ok, c_reason, c_s = _convert_one(dst_path + ".src.jp2", dst_path)
-    return c_ok, c_reason, (t_s, c_s, nbytes)
 
 
 def _append_downloaded(
@@ -1211,7 +1182,7 @@ def probe_throughput(
     if not len(tiles):
         return (0.0, 0, 0.0)
     tile_ids = set(tiles["id"])
-    item = next(it for it, _ in surviving_items(items, dict.fromkeys(tile_ids),
+    item = next(it for it, _ in surviving_items(items, tile_ids,
                                             config.SATELLITE_S2L2A))
     band = bands[0]
     keys = sorted(k for k in item.assets if k.split("_")[0] == band)

@@ -79,9 +79,7 @@ def _resolve_declaration(
     stamped = declaration_module.from_attrs(gdf)
     if stamped is not None:
         return stamped
-    from fsd.storage import fs as fs_module
-
-    source_path = gdf.attrs.get(fs_module.SOURCE_PATH_ATTRS_KEY)
+    source_path = gdf.attrs.get(fs.SOURCE_PATH_ATTRS_KEY)
     if source_path is not None:
         raise ValueError(
             f"no CollectionDeclaration stamp found on the catalog read from "
@@ -648,59 +646,51 @@ def _query_stats(catalog_gdf: gpd.GeoDataFrame, shape_gdf: gpd.GeoDataFrame) -> 
 def _check_missing(shape_gdf, catalog_gdf, startdate, enddate, bands,
                    max_timedelta_days):
     stats = _query_stats(catalog_gdf=catalog_gdf, shape_gdf=shape_gdf)
-    flags = {"all": False, "area": False, "time": False, "bands": False}
     msgs = []
 
     if stats["tile_count"] == 0:
-        for k in flags:
-            flags[k] = True
-        return stats, flags, "No tiles found."
+        return "No tiles found.", True
 
     if stats["area_coverage"] < 1:
-        flags["area"] = True
         msgs.append(f"Incomplete area coverage: {stats['area_coverage'] * 100:.2f}%")
 
     gaps = [td for td in stats["timedelta_days"] if td > max_timedelta_days]
     if gaps:
-        flags["time"] = True
         msgs.append("Unusual time gaps found (days): " + ", ".join(map(str, gaps)))
 
     first_gap = (stats["timestamp_range"][0] - ops._dt2ts(startdate)).days
     last_gap = (ops._dt2ts(enddate) - stats["timestamp_range"][1]).days
     if first_gap > max_timedelta_days:
-        flags["time"] = True
         msgs.append(f"First available image is {first_gap} days from startdate")
     if last_gap > max_timedelta_days:
-        flags["time"] = True
         msgs.append(f"Last available image is {last_gap} days from enddate")
 
     completely = [b for b in bands if b not in stats["band_counts"]]
     partially = [b for b in bands if b in stats["band_counts"]
                  and stats["band_counts"][b] < stats["tile_count"]]
     if completely or partially:
-        flags["bands"] = True
         if completely:
             msgs.append(f"Completely missing bands: {completely}")
         if partially:
             msgs.append(f"Partially missing bands: {partially}")
 
-    return stats, flags, "; ".join(msgs)
+    return "; ".join(msgs), False
 
 
 def _missing_files_action(catalog_gdf, shape_gdf, startdate, enddate, bands,
-                          if_missing_files="raise_error", max_timedelta_days=5):
+                          if_missing_files, max_timedelta_days):
     if not any(if_missing_files is x for x in _VALID_IF_MISSING):
         raise ValueError(
             f"Invalid if_missing_files={if_missing_files}. "
             f"Must be one of {_VALID_IF_MISSING}"
         )
-    _, flags, msg = _check_missing(
+    msg, nothing_found = _check_missing(
         shape_gdf=shape_gdf, catalog_gdf=catalog_gdf, startdate=startdate,
         enddate=enddate, bands=bands, max_timedelta_days=max_timedelta_days,
     )
-    if flags["all"]:
+    if nothing_found:
         raise ValueError("Missing files error -- " + msg)
-    if any(flags.values()):
+    if msg:
         if if_missing_files == "raise_error":
             raise ValueError("Missing files error -- " + msg)
         if if_missing_files == "warn":

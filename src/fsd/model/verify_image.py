@@ -25,7 +25,6 @@ from __future__ import annotations
 import glob
 import json
 import os
-import urllib.error
 import urllib.request
 import uuid
 import zipfile

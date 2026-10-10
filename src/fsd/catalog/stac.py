@@ -288,8 +288,6 @@ def _output_item_id(fp) -> str:
 def _read_footprint_geometry(geom_path):
     """Read the polygon + `properties.id` from a `geometry.geojson` (CRS84, one Feature),
     through the `fsd.storage` seam. Returns `(None, None)` if the FeatureCollection is empty."""
-    import json
-
     with fs.open(str(geom_path), "r") as f:
         fc = json.load(f)
     features = fc.get("features") or []
@@ -458,8 +456,6 @@ def cog_outputs_to_items_from_manifest(input_csv_filepath, **kwargs) -> list[pys
     output, e.g. a partial/resumed run). `kwargs` forwards to `cog_outputs_to_items`
     (`collection_id`, `band_names`, `dt`).
     """
-    import pandas as pd
-
     with fs.open(str(input_csv_filepath), "r") as f:
         rows = pd.read_csv(f)
     geometries = {
@@ -473,7 +469,6 @@ def cog_outputs_to_items_from_manifest(input_csv_filepath, **kwargs) -> list[pys
 def items_to_rows(items: list[pystac.Item]):
     """Inverse mapping — reconstruct the `TileCatalog` columns from Items (round-trip check)."""
     import geopandas as gpd
-    import pandas as pd
 
     rows = []
     for item in items:
