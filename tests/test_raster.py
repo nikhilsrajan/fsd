@@ -1,7 +1,7 @@
 """Tests for fsd.raster.images (spec 07).
 
 Synthetic in-memory rasters (no real .jp2 files) exercise the (data, profile)
-ops, the sequence runners, the file-based round-trip, and the path helpers.
+ops, the sequence runners, the file-based round-trip, and the helpers.
 """
 
 import geopandas as gpd
@@ -12,9 +12,14 @@ import rasterio.crs
 import rasterio.transform
 import shapely.geometry as sg
 
-from fsd.raster import images
+from fsd.raster import images, rio_open
 
 UTM = rasterio.crs.CRS.from_epsg(32643)  # metres, so area/extent math is sane
+
+
+def _read_tif(filepath):
+    with rio_open(filepath) as src:
+        return src.read(), src.meta.copy()
 
 
 def _synthetic(width=10, height=10, west=0.0, north=100.0, res=10.0, fill=None):
@@ -196,22 +201,6 @@ def test_load_images_serial(tmp_path):
     assert (out[1][0] == 2).all()
 
 
-def test_modify_image_writes_destination(tmp_path):
-    data, profile = _synthetic(fill=5)
-    src = str(tmp_path / "src.tif")
-    dst = str(tmp_path / "out/dst.tif")
-    _write_tif(src, data, profile)
-    ok = images.modify_image(src, dst, sequence=[(_add, dict(amount=2))])
-    assert ok
-    out_data, _ = images.read_tif(dst)
-    assert (out_data == 7).all()
-
-
-def test_modify_images_length_mismatch_raises():
-    with pytest.raises(ValueError):
-        images.modify_images(["a.tif", "b.tif"], ["x.tif"], sequence=[])
-
-
 # --- geotiff save / stack ----------------------------------------------------
 
 
@@ -219,7 +208,7 @@ def test_save_geotiff_roundtrip(tmp_path):
     data, profile = _synthetic(fill=42)
     dst = str(tmp_path / "out/saved.tif")
     images.save_geotiff(dst, data, profile)
-    out_data, out_profile = images.read_tif(dst)
+    out_data, out_profile = _read_tif(dst)
     assert np.array_equal(out_data, data)
     assert out_profile["driver"] == "GTiff"
     assert out_profile["crs"] == UTM
@@ -246,7 +235,7 @@ def test_save_rgb_geotiff_native(tmp_path):
     r, g, b = _synthetic(fill=100), _synthetic(fill=200), _synthetic(fill=300)
     dst = str(tmp_path / "rgb.tif")
     images.save_rgb_geotiff(dst, [r, g, b])
-    out_data, out_profile = images.read_tif(dst)
+    out_data, out_profile = _read_tif(dst)
     assert out_data.shape == (3, 10, 10)
     assert out_profile["dtype"] == "uint16"
     assert (out_data[0] == 100).all()
@@ -257,7 +246,7 @@ def test_save_rgb_geotiff_scaled_to_uint8(tmp_path):
     r, g, b = _synthetic(fill=1500), _synthetic(fill=3000), _synthetic(fill=6000)
     dst = str(tmp_path / "rgb8.tif")
     images.save_rgb_geotiff(dst, [r, g, b], scale_max=3000)
-    out_data, out_profile = images.read_tif(dst)
+    out_data, out_profile = _read_tif(dst)
     assert out_profile["dtype"] == "uint8"
     assert out_data[0].flat[0] == 127  # 1500/3000*255 = 127.5 -> 127
     assert out_data[1].flat[0] == 255  # 3000 -> 255
@@ -273,27 +262,9 @@ def test_save_rgb_geotiff_wrong_band_count_raises():
 # --- helpers -----------------------------------------------------------------
 
 
-def test_modify_filepath():
-    assert (
-        images.modify_filepath("/a/b/c.tif", prefix="x_", new_ext="jp2")
-        == "/a/b/x_c.jp2"
-    )
-
-
-def test_get_epochs_str_unique():
-    assert images.get_epochs_str() != images.get_epochs_str()
-
-
 def test_driver_specific_meta_updates_gtiff():
     meta = images.driver_specific_meta_updates({"driver": "GTiff"})
     assert meta["compress"] == "lzw"
-
-
-def test_add_epochs_prefix_changes_basename():
-    out = images.add_epochs_prefix("/a/b/c.tif")
-    assert out.startswith("/a/b/")
-    assert out.endswith("c.tif")
-    assert out != "/a/b/c.tif"
 
 
 # --- COG conversion (spec 14) ------------------------------------------------
