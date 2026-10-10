@@ -471,7 +471,8 @@ def _convert_one(
     The COG is built at `<dst>.stage`, stamped THERE, and only then `os.replace`d onto
     `dst_path` (#74). `staging` and any leftover `.stage` are removed in a `finally`: an
     unstamped `.tif` under its final name would be trusted forever by the `size > 0` skip,
-    so a crash leaves none and the next resume pass re-transfers and re-converts.
+    so a crash or stamp error leaves none and the next resume pass re-transfers and
+    re-converts.
 
     Top-level and picklable, for `ProcessPoolExecutor` under spawn; it touches only local
     files and a frozen `CollectionDeclaration`. `declaration=None` falls back to the S2 L2A
@@ -706,9 +707,12 @@ def download(
     `download_resume` to retry the remainder later.
 
     `should_stop` (default None) is a user-stop predicate checked in the submit loop,
-    throttled to once per `config.PROGRESS_EVERY_S`. Halts **new** submissions only:
+    throttled to once per `config.STOP_CHECK_EVERY_S`. Halts **new** submissions only:
     already-submitted work finalizes and drains, and a stopped item is never attempted, so
     it is not a failure and not counted. Sets `DownloadResult.stopped=True`.
+
+    ⚠️ Only a converted band takes the `max_staged` semaphore, so with `cog=False` the
+    whole work list is queued at once and neither a trip nor a stop halts the pass (#157).
 
     Spec: 01.
     """

@@ -476,7 +476,8 @@ def download(
 
     Assets are already COG, so this is a thread-pool transfer + stamp with no convert
     process pool. Idempotent: files already on disk are skipped. `should_stop` (optional)
-    has the same halt-new-submissions-only semantics as in `cdse.download`.
+    halts new submissions only, but every unit is submitted up front, so once the run
+    starts it halts nothing (#157).
 
     `properties_filter` narrows the discovered granules by STAC property, e.g.
     `{"sat:orbit_state": "descending"}`, **before** the `max_tiles` cap, so the cap counts
