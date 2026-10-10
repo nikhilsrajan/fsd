@@ -218,20 +218,20 @@ def flatten_catalog(
     catalog_gdf: gpd.GeoDataFrame,
     declaration: CollectionDeclaration | None = None,
 ) -> gpd.GeoDataFrame:
-    """Explode a filtered `TileCatalog` (one row per tile, with
+    """Explode a filtered `TileCatalog` (one row per granule, with
     `area_contribution` from `TileCatalog.filter`) into one row per raster band
     file — the band-flattened form `build_datacube` consumes.
 
     Output cols: `id, filepath, band, timestamp, geometry, area_contribution,
     offset, nodata, properties`. Non-raster files (e.g. `MTD_TL.xml`) are skipped; `band` =
-    filename minus ext. `properties` is the tile-row's source-item STAC properties
-    verbatim (JSON string, spec 58 D12), duplicated across a tile's band rows -- what
-    `build_datacube`'s `mosaic_partition` enforcement reads. `offset` is the tile-row's
+    filename minus ext. `properties` is the granule row's source-item STAC properties
+    verbatim (JSON string, spec 58 D12), duplicated across a granule's band rows -- what
+    `build_datacube`'s `mosaic_partition` enforcement reads. `offset` is the granule row's
     declared additive radiometric offset
     for a band the resolved declaration says carries radiometry
     (`CollectionDeclaration.is_radiometry_band`), else 0 — mask/QA bands are never
     harmonized.
-    `nodata` is the tile-row's declared nodata,
+    `nodata` is the granule row's declared nodata,
     defaulting to 0 when the row doesn't carry one. Missing `offset`/`nodata`
     columns on `catalog_gdf` (a source with no radiometric-offset concept)
     default every row to 0.
@@ -290,7 +290,7 @@ def flatten_catalog(
 # --- the seam ----------------------------------------------------------------
 
 def build_datacube(
-    catalog_subset: gpd.GeoDataFrame,   # band-flattened tiles for this shape
+    catalog_subset: gpd.GeoDataFrame,   # band-flattened granules for this shape
     shape_gdf: gpd.GeoDataFrame,        # single geometry (+ id, optional label)
     startdate: datetime.datetime,
     enddate: datetime.datetime,
@@ -443,7 +443,7 @@ def build_datacube(
             max_timedelta_days=max_timedelta_days,
         )
 
-    # Load + crop each (tile, band) to the shape; adds crs/image_index, drops
+    # Load + crop each (granule, band) to the shape; adds crs/image_index, drops
     # unreadable rows. Raster pixel reads use rasterio directly -- the documented seam
     # exception. This is the read phase the benchmarks scrutinise.
     with _timed(timings, "load_images"):
@@ -609,8 +609,8 @@ def _write_read_log(export_folderpath, reads):
 
 def _mgrs_tile(product_id, filepath) -> str | None:
     """Parse the MGRS tile (`..._T36NXF_...`) from the product id or the parent
-    folder name. Returns None if neither carries the `_T<tile>` marker (e.g. the
-    synthetic tiles in tests) — the same-file key is `filepath`, not this."""
+    folder name. Returns None if neither carries the `_T<MGRS tile>` marker (e.g. the
+    synthetic granules in tests) — the same-file key is `filepath`, not this."""
     for s in (product_id, os.path.basename(os.path.dirname(filepath))):
         s = str(s)
         if "_T" in s:
@@ -700,7 +700,7 @@ def _missing_files_action(catalog_gdf, shape_gdf, startdate, enddate, bands,
 # --- load / dst_crs / reference / resample -----------------------------------
 
 def _load_images(catalog_gdf, shape_gdf, nodata, njobs=1, write_read_log=False):
-    """Crop every (tile, band) to the shape; return (kept rows, data_profile_list,
+    """Crop every (granule, band) to the shape; return (kept rows, data_profile_list,
     reads). Adds `image_index` (position in the list) and `crs` (str, for grouping);
     drops rows that failed to read. `image_index` still indexes the full list.
 
@@ -834,14 +834,13 @@ def _stack_datacube(catalog_gdf, data_profile_list, bands, reference_profile,
     (1, H, W) on the reference grid; a missing (ts, band) is nodata-filled to the
     same shape (legacy filled (H, W), which could not stack).
 
-    When several tiles of the SAME acquisition cover the shape (it straddles an MGRS
+    When several granules of the SAME acquisition cover the shape (it straddles an MGRS
     tile boundary) they collide on (timestamp, band). ALL of them are merged onto the
     reference grid by nodata-fill, never one kept and the rest dropped -- keeping one
-    silently discards the coverage of every other tile. Overlap tie-break: dst_crs-native
-    tiles win
-    over reprojected ones, then lower image_index (deterministic first-valid-wins).
-    Each band is merged independently — S2 tiles share one valid footprint across
-    bands, so a pixel resolves to the same tile for every band."""
+    silently discards the coverage of every other granule. Overlap tie-break: dst_crs-native
+    granules win over reprojected ones, then lower image_index (deterministic first-valid-wins).
+    Each band is merged independently — an S2 granule shares one valid footprint across
+    bands, so a pixel resolves to the same granule for every band."""
     dst_crs = reference_profile["crs"]
     native_crs = {c for c in catalog_gdf["crs"].dropna().unique()
                   if CRS.from_string(c) == dst_crs}

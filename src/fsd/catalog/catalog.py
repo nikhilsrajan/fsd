@@ -1,4 +1,4 @@
-"""TileCatalog — read/append/filter the downloaded-tile catalog.
+"""TileCatalog — read/append/filter the downloaded-granule catalog.
 
 Spec: specs/02-catalog.md
 
@@ -206,7 +206,7 @@ class TileCatalog:
         return self._declaration_default
 
     def append(self, rows: list[dict], declaration: CollectionDeclaration | None = None) -> None:
-        """Upsert by id; union `files` for an existing tile (don't overwrite).
+        """Upsert by id; union `files` for an existing granule (don't overwrite).
 
         A re-download of more bands extends the recorded `files` list rather than
         replacing it; all other columns take the newest value.
@@ -335,7 +335,7 @@ class TileCatalog:
     ) -> gpd.GeoDataFrame:
         """Date-range (inclusive) + spatial-overlap filter against the ROI union.
 
-        Adds `area_contribution` (% of the ROI union each tile covers). This is
+        Adds `area_contribution` (% of the ROI union each granule covers). This is
         exactly the query the datacube builder consumes.
 
         Reads the catalog file on **every** call. Filtering many shapes against one

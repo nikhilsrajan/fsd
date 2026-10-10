@@ -1,4 +1,4 @@
-"""CDSE source: Sentinel-2 L2A discovery + tile download. See specs/01-sources.md.
+"""CDSE source: Sentinel-2 L2A discovery + granule download. See specs/01-sources.md.
 
 Discovery is the **CDSE STAC API** (`pystac-client`, anonymous — no credentials):
 each STAC item's `assets` already carry the per-band S3 `href`s, so we never list a
@@ -72,7 +72,7 @@ class CdseCredentials:
 
     sh_client_id: str | None = None       # catalog (Sentinel Hub)
     sh_client_secret: str | None = None
-    s3_access_key: str | None = None      # tile download (S3)
+    s3_access_key: str | None = None      # granule download (S3)
     s3_secret_key: str | None = None
     s3_keys_expire: str | None = None     # optional ISO date (YYYY-MM-DD), informational
 
@@ -278,8 +278,8 @@ def _items_to_gdf(
 def _finalize_catalog_gdf(
     gdf: gpd.GeoDataFrame, roi_gdf: gpd.GeoDataFrame, max_cloudcover: float | None
 ) -> gpd.GeoDataFrame:
-    """Apply the cloud filter, keep only tiles intersecting the real ROI, and assert
-    tile-id uniqueness."""
+    """Apply the cloud filter, keep only granules intersecting the real ROI, and assert
+    granule-id uniqueness."""
     if max_cloudcover is not None:
         gdf = gdf[gdf["cloud_cover"] <= max_cloudcover]
 
@@ -303,7 +303,7 @@ def query_catalog(
     collection: str = config.SATELLITE_S2L2A,
     processing: str | None = processing_module.LATEST,
 ) -> gpd.GeoDataFrame:
-    """Discover `collection` tiles intersecting `roi` within the date range, via the CDSE
+    """Discover `collection` granules intersecting `roi` within the date range, via the CDSE
     STAC API (anonymous — no credentials).
 
     Returns a GeoDataFrame: id (canonical granule name), collection, timestamp, s3url,
@@ -320,7 +320,7 @@ def query_catalog(
     return processing_module.select_processing(gdf, processing).kept
 
 
-# --- tile download -----------------------------------------------------------
+# --- granule download --------------------------------------------------------
 
 
 def _select_item_files(
@@ -524,8 +524,8 @@ def _convert_one(
 def _append_downloaded(
     catalog, tile_meta: dict, results: list[tuple], declaration: CollectionDeclaration,
 ) -> int:
-    """Group successful (tile_id, dst, ok) downloads by tile and upsert catalog rows
-    (`catalog.append` unions `files`, so partially-downloaded tiles complete on a
+    """Group successful (tile_id, dst, ok) downloads by granule and upsert catalog rows
+    (`catalog.append` unions `files`, so partially-downloaded granules complete on a
     later append). Returns the number of successful files."""
     import collections
 
@@ -681,13 +681,13 @@ def download(
     `"==05.00"` -- before `max_tiles`. `None` raises. Skips are printed, and so is any
     acquisition this download leaves holding more than one processing in the archive.
 
-    Discover matching tiles and download the requested band files (+ MTD_TL.xml) to
+    Discover matching granules and download the requested band files (+ MTD_TL.xml) to
     `root_folderpath` via a **pipeline**: a `MAX_CONCURRENT_S3`-wide thread
     pool transfers bytes while a separate process pool converts fetched JP2s to COGs
     concurrently, chained by `add_done_callback` and bounded by a `max_staged`
     backpressure semaphore (staged-but-unconverted JP2s on disk). Idempotent (skips
     files already on disk); the catalog is upserted every `chunksize` completions so a
-    crash doesn't lose progress; refuses if matched tiles exceed `max_tiles`.
+    crash doesn't lose progress; refuses if matched granules exceed `max_tiles`.
 
     `cog` (default True): convert each fetched JP2 band to a lossless COG
     (`Bxx.tif`, with overviews) on arrival — the native ingest format, which the
@@ -1183,11 +1183,11 @@ def plan_download(
 ) -> dict:
     """Compute an actionable download plan **without downloading**.
 
-    Queries the CDSE STAC (anonymous, no bytes) for the tiles this request needs, diffs them
+    Queries the CDSE STAC (anonymous, no bytes) for the granules this request needs, diffs them
     against what is already in `catalog_filepath` (if given), and returns a plan dict: needed /
-    present / missing tile counts + ids, the exact `fsd.download(...)` params to satisfy it
+    present / missing granule counts + ids, the exact `fsd.download(...)` params to satisfy it
     (`max_tiles` = needed count), and — when a `cost_model` is supplied — the estimated GB + ETA
-    for the missing tiles. This is the CDSE (materializing-source) arm of the guardrail; a
+    for the missing granules. This is the CDSE (materializing-source) arm of the guardrail; a
     streamable source (MPC) would never need it (TODO #21).
     """
     needed = query_catalog(roi, startdate, enddate, max_cloudcover=max_cloudcover,

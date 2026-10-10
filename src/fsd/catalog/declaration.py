@@ -13,12 +13,12 @@ mask/reference/mosaic behavior registers its own `CollectionDeclaration`
 (`fsd.collections.register`) — no change to `builder.py` is required. See
 `fsd/docs/adding-a-source.md`.
 
-Per-tile/per-band values that genuinely vary row-to-row (the radiometric
+Per-granule/per-band values that genuinely vary row-to-row (the radiometric
 `offset`, the declared `nodata`) are NOT here — they live as catalog columns
 (`fsd.catalog.catalog.COLUMNS`), carried through `flatten_catalog`. This
 module only holds the *collection-level* declaration: which band is the
 mask/reference, how to interpret the mask, whether the collection's grid needs
-the S2-style multi-tile collapse, and (spec 58) which bands carry radiometry,
+the S2-style multi-MGRS-tile collapse, and (spec 58) which bands carry radiometry,
 how bands alias to canonical names, and what must not be mosaicked together.
 
 **Two kinds of fact** (spec 58 D14), documented so a caller knows what is safe to vary
@@ -119,7 +119,7 @@ class CollectionDeclaration:
     (`native_grid=False`) rather than one native global grid.
 
     `native_grid` — `True` means "this collection has one native
-    global/regional grid, skip the multi-tile single-CRS collapse" —
+    global/regional grid, skip the multi-MGRS-tile single-CRS collapse" —
     **designed-for, not implemented** (`[G2]`): `build_datacube` raises
     `NotImplementedError` when `native_grid=True`, because the non-tiled path
     needs a real non-tiled collection to build+test against (the ERA5/CHIRPS

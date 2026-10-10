@@ -1,4 +1,4 @@
-"""MPC source: Sentinel-2 L2A discovery + near-pure-copy tile download.
+"""MPC source: Sentinel-2 L2A discovery + near-pure-copy granule download.
 
 Spec: specs/32-mpc-source-baseline-harmonization.md
 
@@ -210,7 +210,7 @@ def query_catalog(
     collection: str = config.SATELLITE_S2L2A,
     processing: str | None = processing_module.LATEST,
 ) -> gpd.GeoDataFrame:
-    """Discover `collection` tiles intersecting `roi` within the date range, via the
+    """Discover `collection` granules intersecting `roi` within the date range, via the
     MPC STAC API (anonymous by default).
 
     Returns a GeoDataFrame: id (canonical granule name), collection, timestamp, s3url,
@@ -228,7 +228,7 @@ def query_catalog(
     return processing_module.select_processing(gdf, processing).kept
 
 
-# --- tile download (byte-copy + GDAL metadata stamp) -------------------------
+# --- granule download (byte-copy + GDAL metadata stamp) ----------------------
 
 
 def _select_item_files(
@@ -433,7 +433,7 @@ def _none_if_nan(value):
 def _append_downloaded(
     catalog, tile_meta: dict, results: list[tuple], declaration: CollectionDeclaration,
 ) -> int:
-    """Group successful (tile_id, dst, ok) downloads by tile and upsert catalog
+    """Group successful (tile_id, dst, ok) downloads by granule and upsert catalog
     rows. Mirrors `cdse._append_downloaded`, plus `offset`/`scale`/`nodata`/`properties`."""
     import collections
 
@@ -490,7 +490,7 @@ def download(
     properties_filter: Mapping[str, str | Sequence[str]] | None = None,
     processing: str = processing_module.LATEST,
 ) -> DownloadResult:
-    """Discover matching MPC `collection` tiles and download the requested band files
+    """Discover matching MPC `collection` granules and download the requested band files
     to `root_folderpath`, local or remote/blob. No credentials required: MPC is anonymous.
 
     `processing` (spec 59 D7) selects ONE processing per acquisition among what MPC offers
@@ -506,13 +506,13 @@ def download(
     `should_stop` (optional) is checked in the submit loop, with the same
     halt-new-submissions-only semantics as `cdse.download`.
 
-    `properties_filter` (spec 58 D9) narrows the discovered tiles by STAC property —
+    `properties_filter` (spec 58 D9) narrows the discovered granules by STAC property —
     e.g. `{"sat:orbit_state": "descending"}` — **before** the `max_tiles` cap, so the cap
     measures what will actually be transferred. This matters because a transfer is a
     whole-asset byte copy: a partitioned collection like `sentinel-1-rtc` returns every
     orbit's scenes over an ROI, and a build can only ever use one of them (D9's partition
     enforcement), so downloading both is pure waste. Same semantics as everywhere else —
-    a key no discovered tile carries raises, naming the keys they do carry.
+    a key no discovered granule carries raises, naming the keys they do carry.
     """
     import concurrent.futures
     import time
@@ -538,7 +538,7 @@ def download(
     )
 
     # Applied BEFORE the cap: `max_tiles` is a guardrail on bytes about to be moved, so it
-    # must count the tiles this run will actually transfer, not the ones discovery saw.
+    # must count the granules this run will actually transfer, not the ones discovery saw.
     n_discovered = len(tiles)
     tiles = select_granules(tiles, processing=processing, prefix="[fsd.mpc.download]",
                            properties_filter=properties_filter)
@@ -637,8 +637,8 @@ def discover_shard_rows(
     a-registry rule targets the *build* path's collection-variant resolution; this is
     ingest, where the declaration is only artifact facts, not a user-choosable variant).
 
-    `properties_filter` narrows the tiles exactly as in `download()` above (spec 58 D9), and
-    here too it lands before any row exists, so `max_tiles` downstream counts only the tiles
+    `properties_filter` narrows the granules exactly as in `download()` above (spec 58 D9), and
+    here too it lands before any row exists, so `max_tiles` downstream counts only the granules
     that will actually transfer.
 
     `processing` (spec 59 D7) is applied here, on the driver, per acquisition -- the shard

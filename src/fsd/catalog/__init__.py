@@ -1,1 +1,1 @@
-"""File-based tile catalog (GeoParquet). See specs/02-catalog.md."""
+"""File-based granule catalog (GeoParquet). See specs/02-catalog.md."""
