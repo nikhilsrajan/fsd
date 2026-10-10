@@ -175,7 +175,7 @@ def _enforce_mosaic_partition(
         return
 
     # Report `sat:relative_orbit` alongside the enforced key(s) when the catalog
-    # carries it -- offered and reported, never enforced (D9's evidence split).
+    # carries it -- offered and reported, never enforced.
     report_keys = list(enforced_keys)
     if "sat:relative_orbit" not in report_keys and any(
         "sat:relative_orbit" in props for props in parsed.values()
