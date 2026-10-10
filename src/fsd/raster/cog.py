@@ -178,19 +178,17 @@ def stamp_or_reencode(
     offset: float = 0.0,
     scale: float = 1.0,
     set_nodata_if_missing: float | None = None,
-) -> str:
+) -> None:
     """`stamp_gdal_tags`, falling back to a GDAL-COG-driver re-encode if the in-place
     stamp breaks COG validity (whether an in-place
     tag edit keeps a strictly-valid COG is source/GDAL-version dependent; this is the
-    documented fallback, not the expected path). Returns ``"stamped"`` or
-    ``"reencoded"`` (informational, for a runbook to report which path was taken).
+    documented fallback, not the expected path).
     """
     try:
         stamp_gdal_tags(
             filepath, offset=offset, scale=scale,
             set_nodata_if_missing=set_nodata_if_missing,
         )
-        return "stamped"
     except Exception:
         tmp = f"{filepath}.reencode.part"
         try:
@@ -206,4 +204,3 @@ def stamp_or_reencode(
             filepath, offset=offset, scale=scale,
             set_nodata_if_missing=set_nodata_if_missing,
         )
-        return "reencoded"
