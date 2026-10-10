@@ -1,6 +1,7 @@
 """Raster image utilities: crop / reproject / resample / merge / load.
 
-Spec: specs/07-raster.md. Folds in rsutils.modify_images.
+Spec: specs/07-raster.md. Folds in rsutils.modify_images + the raster helpers
+from rsutils.utils that the data-prep path actually uses.
 
 Convention (locked, specs/07): every in-memory op takes ``(data, profile)`` as
 its first two arguments and returns ``(data, profile)``. This lets ops be chained
