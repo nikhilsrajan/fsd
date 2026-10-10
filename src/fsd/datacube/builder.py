@@ -341,8 +341,9 @@ def build_datacube(
     dates.
 
     `write_timings=True` writes a `timings.json` sidecar (per-phase seconds + counts).
-    `write_read_log=True` writes a `reads.jsonl` sidecar (one row per windowed read, wall
-    clock) and needs `njobs_load_images == 1` (no-op with a warning otherwise). The
+    `write_read_log=True` writes a `reads.jsonl` sidecar (one row per windowed read: grid
+    id, mgrs_tile, product_id, band, filepath, wall-clock epoch start/end, duration) and
+    needs `njobs_load_images == 1` (no-op with a warning otherwise). The
     workflow enables them via `FSD_WRITE_TIMINGS` / `FSD_WRITE_READ_LOG` (see
     workflows.task).
 
